@@ -11,6 +11,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 
 | Key | Env override | Default | Allowed |
 |---|---|---|---|
+| `instance.name` | `ANGELIA_INSTANCE_NAME` | `angelia` | `^[a-z0-9][a-z0-9.-]{0,62}$` |
 | `listen` | `ANGELIA_LISTEN` | `:8080` | `host:port` |
 | `database.dsn` | `ANGELIA_DATABASE_DSN` | `sqlite:///var/lib/angelia/angelia.db` | `sqlite://`, `postgres://`, `postgresql://` URL |
 | `roles` | `ANGELIA_ROLES` (comma-separated) | `[all]` | `api`, `scheduler`, `worker`, `dispatcher`, `all` |
@@ -24,6 +25,12 @@ Check a configuration with `angelia config check [--config FILE]`.
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
 - Tokens are never configured inline: `token_env` names the variable that holds the token. A
   `token:` key is an unknown key and an error.
+- `instance.name` names this instance. It is the `<instance>` in the `source` of every release event,
+  `angelia://<instance>/watches/<watch_id>` (see the
+  [event contract](architecture.md#4-the-event-contract-the-product)). Pick a stable name: changing it
+  changes the `source` of later events, and consumers that deduplicate on `source` + `id` see them as
+  coming from a new instance. Use a different name per instance if events from several instances reach
+  one consumer.
 - The config file is optional; select it with `--config` or `ANGELIA_CONFIG`.
 - Unknown keys are errors reported as `<file>: line N: ...`.
 - Environment variables that are set but empty still override (`ANGELIA_LISTEN=` is then an invalid

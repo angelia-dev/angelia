@@ -23,6 +23,7 @@ import (
 
 // Defaults for keys that are not set anywhere.
 const (
+	DefaultInstance  = "angelia"
 	DefaultListen    = ":8080"
 	DefaultDSN       = "sqlite:///var/lib/angelia/angelia.db"
 	DefaultLogLevel  = "info"
@@ -34,9 +35,12 @@ const (
 var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "worker": true, "dispatcher": true}
 
 var (
-	envNameRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	kindRE     = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	unknownRE  = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
+	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	kindRE    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	unknownRE = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
+	// instanceRE is the <instance> part of the CloudEvents source
+	// angelia://<instance>/watches/<watch_id> (spec envelope profile v1).
+	instanceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,62}$`)
 	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
 )
 
@@ -54,6 +58,7 @@ func (secret) Format(f fmt.State, _ rune)   { _, _ = io.WriteString(f, redacted)
 
 // Config is the typed instance configuration. Create it with Load or Default.
 type Config struct {
+	Instance Instance          `yaml:"instance"`
 	Listen   string            `yaml:"listen"`
 	Roles    []string          `yaml:"roles"`
 	Database Database          `yaml:"database"`
@@ -66,6 +71,12 @@ type Config struct {
 	// keyed by kind. It is not part of the file format; use SourceToken.
 	Tokens   map[string]secret `yaml:"-"`
 	warnings []string
+}
+
+// Instance identifies this Angelia instance. Name is the <instance> part of
+// the CloudEvents source attribute angelia://<instance>/watches/<watch_id>.
+type Instance struct {
+	Name string `yaml:"name"`
 }
 
 // Database configures the store.
@@ -116,6 +127,7 @@ type Source struct {
 // Default returns the configuration used when nothing is configured.
 func Default() *Config {
 	return &Config{
+		Instance: Instance{Name: DefaultInstance},
 		Listen:   DefaultListen,
 		Roles:    []string{"all"},
 		Database: Database{DSN: DefaultDSN},
@@ -217,6 +229,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 			*dst = v
 		}
 	}
+	str("INSTANCE_NAME", &cfg.Instance.Name)
 	str("LISTEN", &cfg.Listen)
 	str("DATABASE_DSN", &cfg.Database.DSN)
 	str("SECRETS_KEY_FILE", &cfg.Secrets.KeyFile)
@@ -272,6 +285,10 @@ func applyEnv(cfg *Config, env map[string]string) error {
 func (c *Config) Validate() error {
 	var errs []error
 	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+
+	if !instanceRE.MatchString(c.Instance.Name) {
+		bad("instance.name %q: must match ^[a-z0-9][a-z0-9.-]{0,62}$ (lower-case letters, digits, '.' and '-', 1-63 characters, starting with a letter or digit)", c.Instance.Name)
+	}
 
 	if _, port, err := net.SplitHostPort(c.Listen); err != nil {
 		bad("listen %q: must be host:port", c.Listen)
