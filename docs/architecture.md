@@ -152,7 +152,7 @@ Event types: `release.published`, `release.yanked`, `release.prerelease`, and la
 ```
 target(id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count)
 watch(id, target_id, policy_json, labels_json, baseline_done)
-version(target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at)   -- known set
+version(target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)   -- known set, never shrinks (ADR 0010)
 event(seq, id ULID, watch_id, type, payload_json, created_at)                          -- immutable log
 subscription(id, filter_json, sink_id, template)
 sink(id, kind, config_json_encrypted)
