@@ -1,0 +1,102 @@
+# Releasing Angelia
+
+Angelia ships signed, multi-arch artifacts with SBOMs ([architecture.md §8](../architecture.md#8-security)). This page explains how to cut a release, what the pipeline produces, and how to verify it.
+
+## What a release contains
+
+| Artifact | Details |
+|---|---|
+| Archives | `angelia_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows), for linux, darwin and windows on amd64 and arm64. Static (`CGO_ENABLED=0`), built with `-trimpath`, timestamps taken from the commit. |
+| `checksums.txt` | SHA-256 of every archive. |
+| `checksums.txt.sigstore.json` | Keyless cosign bundle (signature, certificate, transparency log entry) for `checksums.txt`. |
+| `*.spdx.json` | SPDX JSON SBOM per archive (syft). |
+| `angelia-image.spdx.json` | SPDX JSON SBOM of the container image (syft). Also attached to the image as a signed attestation. |
+| Image | `ghcr.io/angelia-dev/angelia:<version>`, linux/amd64 and linux/arm64, on `gcr.io/distroless/static-debian12:nonroot` (no shell, uid 65532, under 50 MB). Signed with cosign. |
+| Provenance | SLSA build provenance (`actions/attest-build-provenance`) for the archives and for the image. |
+
+## Cut a release
+
+1. Make sure `main` is green (**CI OK**) and the [snapshot workflow](#dry-run-locally-and-in-ci) passed for the last change to release files.
+2. Choose the version (SemVer, `vMAJOR.MINOR.PATCH`, `-rc.N` for prereleases).
+3. Tag the commit on `main` and push the tag:
+   ```
+   git tag -s v0.1.0 -m "v0.1.0"
+   git push origin v0.1.0
+   ```
+4. The **Release** workflow runs:
+   - `build and publish`: GoReleaser builds, checksums and SBOMs the archives, pushes the multi-arch image, and creates a **draft** GitHub release.
+   - `sign and attest`: signs `checksums.txt` and the image digest produced by the build job (so the tag cannot be moved in between), creates the image SBOM and attestation, and attaches provenance.
+   - `attach signatures to the release`: uploads the cosign bundle and the image SBOM to the draft release. It is the only other job with `contents: write`, and has no signing or registry access.
+5. Review the draft release (assets, changelog), then publish it by hand. The workflow never publishes on its own.
+
+Publishing credentials and the first real release are outside this story (H-publish).
+
+## Dry run locally and in CI
+
+```
+scripts/install-release-tools.sh          # goreleaser, syft, cosign at pinned versions
+goreleaser check
+goreleaser release --snapshot --clean     # needs a Docker daemon with buildx for the image
+```
+
+Output lands in `dist/` (git-ignored). Without Docker, add `--skip=docker`.
+
+The **Release snapshot** workflow runs the same on pull requests that touch release files (`.goreleaser.yaml`, `Dockerfile`, the release workflows and scripts, `cmd/`, `go.mod`). It then builds the image for linux/amd64 from the snapshot binary and runs `scripts/check-image.sh`, which fails unless the image runs as non-root, has no shell and is under 50 MB, and which writes the measured size to the job summary. It also writes an SPDX SBOM of the image.
+
+## Verify a release
+
+Replace `v0.1.0` with the tag. The certificate identity pins the signature to this repository's release workflow at that tag.
+
+```
+TAG=v0.1.0
+IDENTITY="https://github.com/angelia-dev/angelia/.github/workflows/release.yml@refs/tags/${TAG}"
+ISSUER="https://token.actions.githubusercontent.com"
+```
+
+**Checksums and archives**
+
+```
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
+  checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+gh attestation verify angelia_0.1.0_linux_amd64.tar.gz --repo angelia-dev/angelia
+```
+
+**Image**
+
+```
+cosign verify ghcr.io/angelia-dev/angelia:${TAG#v} \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
+gh attestation verify oci://ghcr.io/angelia-dev/angelia:${TAG#v} --repo angelia-dev/angelia
+cosign verify-attestation --type spdxjson ghcr.io/angelia-dev/angelia:${TAG#v} \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
+```
+
+**Which image SBOM to use.** The image carries two SBOMs. The documented path is the syft SBOM attested by cosign (`cosign verify-attestation` above, also attached to the release as `angelia-image.spdx.json`), because its signer identity is verified. BuildKit may also attach its own SBOM attestation to the image index; it is unsigned by cosign and only informational.
+
+For production, deploy by digest (`ghcr.io/angelia-dev/angelia@sha256:...`) after verifying it.
+
+## Workflow permissions
+
+`release.yml` sets `permissions: {}` at the top; each job lists its own. Reviewers: check this table against the workflow.
+
+| Workflow / job | Permission | Why |
+|---|---|---|
+| `release.yml` / `build` | `contents: write` | Create the draft release and upload assets. |
+| | `packages: write` | Push the image to ghcr.io. |
+| `release.yml` / `sign` | `id-token: write` | Request the GitHub OIDC token that Sigstore (Fulcio) exchanges for a short-lived signing certificate. Only this job has it. |
+| | `attestations: write` | Store the SLSA provenance attestations. |
+| | `packages: write` | Push signatures and attestations to the image repository on ghcr.io. |
+| `release.yml` / `publish-assets` | `contents: write` | Upload the cosign bundle and the image SBOM to the draft release. Nothing else. |
+| `release-snapshot.yml` / `snapshot` | `contents: read` | Check out the code. Publishes nothing, has no `id-token`. |
+
+The base image is pinned by digest in the `Dockerfile`, and the BuildKit image used by `docker buildx create` in `release.yml` is pinned by digest too; Renovate updates the Dockerfile digest.
+
+Other hardening: `persist-credentials: false` on checkouts, no secrets other than the automatic `GITHUB_TOKEN`, release tools installed with `go install` at exact versions (verified by the Go checksum database) instead of third-party actions, and the release is created as a draft.
+
+## Notes and known limits
+
+- Tool versions are pinned in `scripts/install-release-tools.sh`; bump them there.
+- The container runs as uid 65532. A volume for SQLite must be writable by that user.

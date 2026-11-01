@@ -1,6 +1,18 @@
 -- name: CreateTarget :exec
-INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetTargetByCoordinates :one
+SELECT * FROM target WHERE kind = ? AND coordinates_json = ?;
+
+-- name: SetTargetInterval :execrows
+UPDATE target SET interval_ms = ?, next_check_at = ? WHERE id = ?;
+
+-- name: DeleteTargetVersions :exec
+DELETE FROM version WHERE target_id = ?;
+
+-- name: DeleteTargetIfUnused :execrows
+DELETE FROM target WHERE target.id = ? AND NOT EXISTS (SELECT 1 FROM watch w WHERE w.target_id = target.id);
 
 -- name: GetTarget :one
 SELECT * FROM target WHERE id = ?;
@@ -11,8 +23,17 @@ SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = 
 WHERE id = ?;
 
 -- name: CreateWatch :exec
-INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done)
-VALUES (?, ?, ?, ?, ?);
+INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- name: UpdateWatchConfig :execrows
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ? WHERE id = ?;
+
+-- name: ResetWatchBaseline :execrows
+UPDATE watch SET baseline_done = 0 WHERE id = ?;
+
+-- name: ListWatchesManagedBy :many
+SELECT * FROM watch WHERE managed_by = ? ORDER BY name;
 
 -- name: GetWatch :one
 SELECT * FROM watch WHERE id = ?;
@@ -38,13 +59,28 @@ UPDATE version SET yanked = ?, removed_at = ? WHERE target_id = ? AND raw = ?;
 SELECT * FROM version WHERE target_id = ? ORDER BY first_seen_at, raw;
 
 -- name: CreateSink :exec
-INSERT INTO sink (id, kind, config_json_encrypted) VALUES (?, ?, ?);
+INSERT INTO sink (id, kind, config_json_encrypted, name, managed_by) VALUES (?, ?, ?, ?, ?);
+
+-- name: UpdateSink :execrows
+UPDATE sink SET kind = ?, config_json_encrypted = ? WHERE id = ?;
+
+-- name: ListSinksManagedBy :many
+SELECT * FROM sink WHERE managed_by = ? ORDER BY name;
 
 -- name: DeleteSink :execrows
 DELETE FROM sink WHERE id = ?;
 
 -- name: CreateSubscription :exec
-INSERT INTO subscription (id, filter_json, sink_id, template) VALUES (?, ?, ?, ?);
+INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by) VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: UpdateSubscription :execrows
+UPDATE subscription SET filter_json = ?, sink_id = ?, template = ? WHERE id = ?;
+
+-- name: ListSubscriptionsManagedBy :many
+SELECT * FROM subscription WHERE managed_by = ? ORDER BY name;
+
+-- name: DeletePendingDeliveries :execrows
+DELETE FROM delivery WHERE subscription_id = ? AND status = 'pending';
 
 -- name: DeleteSubscription :execrows
 DELETE FROM subscription WHERE id = ?;

@@ -37,7 +37,7 @@ var (
 	envNameRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE     = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	unknownRE  = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
-	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-"}
+	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
 )
 
 // secret holds a credential. It prints as [REDACTED] with every fmt verb and
@@ -71,6 +71,23 @@ type Config struct {
 // Database configures the store.
 type Database struct {
 	DSN string `yaml:"dsn"`
+}
+
+// SQLitePath returns the database file of a sqlite DSN (sqlite:///abs/path.db;
+// the scheme is case-insensitive). A DSN with a host, such as
+// sqlite://./data/a.db, is rejected: the host would be silently dropped.
+func (d Database) SQLitePath() (string, error) {
+	u, err := url.Parse(d.DSN)
+	if err != nil || !strings.EqualFold(u.Scheme, "sqlite") {
+		return "", errors.New("database.dsn is not a sqlite DSN")
+	}
+	if u.Host != "" {
+		return "", errors.New("database.dsn: a sqlite DSN has no host; write sqlite:///absolute/path.db (three slashes) for an absolute path")
+	}
+	if u.Path == "" {
+		return "", errors.New("database.dsn: sqlite DSN needs a file path, e.g. sqlite:///var/lib/angelia/angelia.db")
+	}
+	return u.Path, nil
 }
 
 // Secrets configures the key file used for secrets (encryption is Phase 1).
@@ -337,6 +354,15 @@ func (c *Config) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// IsEnvName reports whether s is a valid environment variable name. Other
+// files that reference a secret by variable name (the watch file) use it so
+// the rule is the same everywhere.
+func IsEnvName(s string) bool { return envNameRE.MatchString(s) }
+
+// LooksLikeToken reports whether v starts with a well-known credential prefix.
+// Callers must not echo v when it does.
+func LooksLikeToken(v string) bool { return hasTokenPrefix(v) }
 
 func hasTokenPrefix(v string) bool {
 	for _, p := range tokenStart {
