@@ -10,12 +10,12 @@ set -euo pipefail
 
 GORELEASER_VERSION="v2.19.0"
 SYFT_VERSION="v1.55.0"
-COSIGN_VERSION="v2.6.5"
+COSIGN_VERSION="v3.1.4"
 
 declare -A pkg=(
 	[goreleaser]="github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
 	[syft]="github.com/anchore/syft/cmd/syft@${SYFT_VERSION}"
-	[cosign]="github.com/sigstore/cosign/v2/cmd/cosign@${COSIGN_VERSION}"
+	[cosign]="github.com/sigstore/cosign/v3/cmd/cosign@${COSIGN_VERSION}"
 )
 
 tools=("$@")
