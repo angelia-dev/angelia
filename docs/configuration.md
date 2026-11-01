@@ -28,8 +28,8 @@ Check a configuration with `angelia config check [--config FILE]`.
 - `instance.name` names this instance. It is the `<instance>` in the `source` of every release event,
   `angelia://<instance>/watches/<watch_id>` (see the
   [event contract](architecture.md#4-the-event-contract-the-product)). Pick a stable name: changing it
-  changes the `source` of later events, and consumers that deduplicate on `source` + `id` see them as
-  coming from a new instance. Use a different name per instance if events from several instances reach
+  changes the `source` of later events, and consumers that key on `source` see them as coming from a
+  new instance. Use a different name per instance if events from several instances reach
   one consumer.
 - The config file is optional; select it with `--config` or `ANGELIA_CONFIG`.
 - Unknown keys are errors reported as `<file>: line N: ...`.
