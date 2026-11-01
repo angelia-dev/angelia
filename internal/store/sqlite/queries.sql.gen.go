@@ -444,6 +444,87 @@ func (q *Queries) MarkBaselineDone(ctx context.Context, id string) (int64, error
 	return result.RowsAffected()
 }
 
+const pruneBatchEnd = `-- name: PruneBatchEnd :many
+SELECT seq FROM event WHERE seq > ?1 AND created_at < ?2 ORDER BY seq LIMIT ?3
+`
+
+type PruneBatchEndParams struct {
+	AfterSeq int64
+	Before   int64
+	Batch    int64
+}
+
+// There is no index on event.created_at, so this scans by seq from after_seq
+// and stops at batch matches. That is fine for a periodic job, not for a hot path.
+func (q *Queries) PruneBatchEnd(ctx context.Context, arg PruneBatchEndParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, pruneBatchEnd, arg.AfterSeq, arg.Before, arg.Batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pruneDeliveries = `-- name: PruneDeliveries :execrows
+DELETE FROM delivery
+WHERE status IN ('delivered', 'dead')
+  AND event_id IN (
+    SELECT e.id FROM event e
+    WHERE e.seq > ?1 AND e.seq <= ?2 AND e.created_at < ?3
+      AND NOT EXISTS (
+        SELECT 1 FROM delivery p WHERE p.event_id = e.id AND p.status IN ('pending', 'in_flight')
+      )
+  )
+`
+
+type PruneDeliveriesParams struct {
+	AfterSeq int64
+	UpToSeq  int64
+	Before   int64
+}
+
+func (q *Queries) PruneDeliveries(ctx context.Context, arg PruneDeliveriesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneDeliveries, arg.AfterSeq, arg.UpToSeq, arg.Before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneEvents = `-- name: PruneEvents :execrows
+DELETE FROM event
+WHERE seq > ?1 AND seq <= ?2 AND created_at < ?3
+  AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id)
+`
+
+type PruneEventsParams struct {
+	AfterSeq int64
+	UpToSeq  int64
+	Before   int64
+}
+
+func (q *Queries) PruneEvents(ctx context.Context, arg PruneEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneEvents, arg.AfterSeq, arg.UpToSeq, arg.Before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const releaseLease = `-- name: ReleaseLease :exec
 DELETE FROM lease WHERE name = ? AND holder = ?
 `
