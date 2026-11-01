@@ -107,6 +107,29 @@ type Store interface {
 	// time. It reports false when another holder owns an unexpired lease.
 	AcquireLease(ctx context.Context, name, holder string, now, until time.Time) (bool, error)
 	ReleaseLease(ctx context.Context, name, holder string) error
+	// LeaseDueTargets atomically leases up to limit due targets for holder:
+	// targets with NextCheckAt <= now that no unexpired lease named
+	// TargetLeaseName(id) covers, oldest due first. Each returned target is
+	// leased to holder until the given time; renew it with AcquireLease and
+	// release it with ReleaseLease under TargetLeaseName. On Postgres this
+	// becomes SELECT ... FOR UPDATE SKIP LOCKED.
+	LeaseDueTargets(ctx context.Context, holder string, now, until time.Time, limit int) ([]Target, error)
+	// CountDueTargets counts the targets LeaseDueTargets would return
+	// without a limit: due and not under an unexpired lease.
+	CountDueTargets(ctx context.Context, now time.Time) (int64, error)
+	// HasDueTargets reports whether LeaseDueTargets would return anything,
+	// with a read only: callers check it before leasing so that idle polls
+	// take no write lock.
+	HasDueTargets(ctx context.Context, now time.Time) (bool, error)
+	// UpdateTargetLeased is UpdateTarget fenced by a lease: it writes only
+	// while holder owns an unexpired lease named leaseName at now, and
+	// reports false, writing nothing, otherwise. A missing target is
+	// ErrNotFound.
+	UpdateTargetLeased(ctx context.Context, t Target, leaseName, holder string, now time.Time) (bool, error)
+	// DeleteExpiredTargetLeases deletes the target leases (TargetLeaseName)
+	// that expired at or before now, left by crashed holders, and returns
+	// how many it deleted.
+	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
 	Close() error
 }
 
@@ -152,6 +175,10 @@ type ConfigTx interface {
 	// subscription and returns how many. In-flight, delivered and dead rows stay.
 	DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error)
 }
+
+// TargetLeaseName is the name of the lease a scheduler holds on a target
+// while it checks it. The SQLite due-target query relies on this format.
+func TargetLeaseName(targetID string) string { return "target:" + targetID }
 
 // PruneResult counts the rows PruneHistory deleted.
 type PruneResult struct {
