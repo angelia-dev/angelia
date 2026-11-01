@@ -462,7 +462,14 @@ func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs ma
 			}); err != nil {
 				return err
 			}
-			r.add(KindSubscription, d.Name, Update, "")
+			detail := ""
+			if !samePolicy(cur.Policy, d.Policy) {
+				var err error
+				if detail, err = r.reevaluateHeld(cur.ID, d.Policy); err != nil {
+					return err
+				}
+			}
+			r.add(KindSubscription, d.Name, Update, detail)
 		default:
 			r.add(KindSubscription, d.Name, Unchanged, "")
 		}
