@@ -1,0 +1,442 @@
+package crates_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/crates"
+	"github.com/angelia-dev/angelia/internal/source/sourcetest"
+)
+
+const widgetIndexPath = "/an/ge/angelia-test-widget"
+
+func fixture(t testing.TB, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // G304: fixed testdata names.
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// upstream is a fake sparse index plus crates.io API, on one server.
+type upstream struct {
+	mu       sync.Mutex
+	docs     map[string][]byte // path to body
+	requests []string          // paths, in order
+	agents   []string
+	apiCode  int // if non-zero, the status of every API request
+}
+
+func (u *upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	body, ok := u.docs[r.URL.Path]
+	u.requests = append(u.requests, r.URL.Path)
+	u.agents = append(u.agents, r.Header.Get("User-Agent"))
+	code := u.apiCode
+	u.mu.Unlock()
+	isAPI := strings.HasPrefix(r.URL.Path, "/api/")
+	if isAPI && code != 0 {
+		http.Error(w, "boom", code)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	w.Header().Set("ETag", etag)
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+func (u *upstream) set(path string, body []byte) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.docs[path] = body
+}
+
+func (u *upstream) paths() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.requests...)
+}
+
+func (u *upstream) apiRequests() int {
+	n := 0
+	for _, p := range u.paths() {
+		if strings.HasPrefix(p, "/api/") {
+			n++
+		}
+	}
+	return n
+}
+
+func newUpstream(t testing.TB) *upstream {
+	return &upstream{docs: map[string][]byte{
+		widgetIndexPath:                      fixture(t, "widget.index"),
+		"/api/v1/crates/angelia-test-widget": fixture(t, "widget.api.json"),
+	}}
+}
+
+func target(name string) source.Target {
+	return source.Target{Kind: crates.Kind, Coordinates: map[string]string{"name": name}}
+}
+
+func newSource(t *testing.T, up *upstream, opts ...crates.Option) (*crates.Source, *http.Client) {
+	t.Helper()
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	c := sourcetest.Client(t, srv)
+	return crates.New(srv.URL, c, opts...), c
+}
+
+func byRaw(vs []source.Version) map[string]source.Version {
+	m := map[string]source.Version{}
+	for _, v := range vs {
+		m[v.Raw] = v
+	}
+	return m
+}
+
+func rawOf(vs []source.Version) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = v.Raw
+	}
+	return out
+}
+
+func TestContract(t *testing.T) {
+	up := newUpstream(t)
+	missing := target("angelia-test-nope")
+	sourcetest.Run(t, nil, sourcetest.Fixtures{
+		Handler: up,
+		New: func(baseURL string, hc *http.Client) source.Source {
+			return crates.New(baseURL, hc)
+		},
+		Valid: target("angelia-test-widget"),
+		Invalid: []source.Target{
+			{Kind: crates.Kind},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": ""}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "has space"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "a/b"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "../etc"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "1abc"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "-abc"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "x?y=1"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "@scope/name"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": " serde "}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": "serde\n"}},
+			{Kind: crates.Kind, Coordinates: map[string]string{"name": strings.Repeat("a", 65)}},
+			{Kind: "npm", Coordinates: map[string]string{"name": "serde"}},
+		},
+		Missing:        &missing,
+		WantRaw:        []string{"1.1.0-rc.1", "1.0.0", "0.2.0", "0.1.0"},
+		Conditional:    true,
+		HasPublishedAt: true,
+		// A new yank flag changes the index document, like a new release.
+		Change: func() { up.set(widgetIndexPath, fixture(t, "widget-after.index")) },
+	})
+}
+
+func TestYankTransitions(t *testing.T) {
+	up := newUpstream(t)
+	s, _ := newSource(t, up)
+	ctx := context.Background()
+	tgt := target("angelia-test-widget")
+
+	first, err := s.List(ctx, tgt, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs := byRaw(first.Versions)
+	if !vs["0.2.0"].Yanked || vs["1.0.0"].Yanked || vs["0.1.0"].Yanked || vs["1.1.0-rc.1"].Yanked {
+		t.Fatalf("initial yank flags wrong: %+v", vs)
+	}
+
+	// 1.0.0 is yanked and 0.2.0 is un-yanked, nothing else changes.
+	up.set(widgetIndexPath, fixture(t, "widget-after.index"))
+	second, err := s.List(ctx, tgt, first.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.NotModified {
+		t.Fatal("a yank must invalidate the fetch state")
+	}
+	if second.State.ETag == first.State.ETag {
+		t.Error("ETag did not change")
+	}
+	vs = byRaw(second.Versions)
+	if vs["0.2.0"].Yanked || !vs["1.0.0"].Yanked {
+		t.Errorf("after: 0.2.0 yanked=%v (want false), 1.0.0 yanked=%v (want true)", vs["0.2.0"].Yanked, vs["1.0.0"].Yanked)
+	}
+	if len(second.Versions) != len(first.Versions) {
+		t.Errorf("versions %d -> %d, a yank must not add or remove any", len(first.Versions), len(second.Versions))
+	}
+
+	// And it settles: the new state is a 304.
+	third, err := s.List(ctx, tgt, second.State)
+	if err != nil || !third.NotModified {
+		t.Fatalf("third: NotModified=%v err=%v, want a 304", third.NotModified, err)
+	}
+}
+
+func TestNotModifiedSkipsAPI(t *testing.T) {
+	up := newUpstream(t)
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := up.apiRequests(); got != 1 {
+		t.Fatalf("API requests after a full fetch = %d, want 1", got)
+	}
+	again, err := s.List(context.Background(), target("angelia-test-widget"), res.State)
+	if err != nil || !again.NotModified {
+		t.Fatalf("NotModified=%v err=%v", again.NotModified, err)
+	}
+	if got := up.apiRequests(); got != 1 {
+		t.Errorf("API requests after a 304 = %d, want still 1: the API is only for created_at of a changed index", got)
+	}
+}
+
+func TestIndexPaths(t *testing.T) {
+	line := `{"name":"x","vers":"1.0.0","cksum":"aa","yanked":false}` + "\n"
+	for _, c := range []struct{ name, path string }{
+		{"a", "/1/a"},
+		{"ab", "/2/ab"},
+		{"abc", "/3/a/abc"},
+		{"abcd", "/ab/cd/abcd"},
+		{"serde_json", "/se/rd/serde_json"},
+		{"Serde-JSON", "/se/rd/serde-json"}, // the index is lower case
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			up := &upstream{docs: map[string][]byte{
+				c.path:                     []byte(line),
+				"/api/v1/crates/" + c.name: []byte(`{"versions":[]}`),
+			}}
+			s, _ := newSource(t, up)
+			if _, err := s.List(context.Background(), target(c.name), source.FetchState{}); err != nil {
+				t.Fatalf("List: %v (requests %v)", err, up.paths())
+			}
+			if got := up.paths()[0]; got != c.path {
+				t.Errorf("index path = %q, want %q", got, c.path)
+			}
+		})
+	}
+}
+
+func TestVersionDetails(t *testing.T) {
+	up := newUpstream(t)
+	s, _ := newSource(t, up, crates.WithPageURL("https://pages.example/c/"))
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs := byRaw(res.Versions)
+	v := vs["1.0.0"]
+	if want := time.Date(2024, 3, 12, 11, 0, 0, 500000000, time.UTC); !v.PublishedAt.Equal(want) {
+		t.Errorf("PublishedAt = %v, want %v", v.PublishedAt, want)
+	}
+	if v.PublishedAt.Location() != time.UTC {
+		t.Errorf("PublishedAt location = %v, want UTC", v.PublishedAt.Location())
+	}
+	if v.Prerelease != nil {
+		t.Errorf("Prerelease = %v, want nil", *v.Prerelease)
+	}
+	if want := "https://pages.example/c/angelia-test-widget/1.0.0"; v.URL != want {
+		t.Errorf("URL = %q, want %q", v.URL, want)
+	}
+	if v.Metadata["checksum"] != strings.Repeat("3", 64) || v.Metadata["rust_version"] != "1.70" || v.Metadata["license"] != "MIT OR Apache-2.0" {
+		t.Errorf("Metadata = %v", v.Metadata)
+	}
+	old := vs["0.1.0"]
+	if _, ok := old.Metadata["rust_version"]; ok {
+		t.Errorf("0.1.0 has no rust_version, Metadata = %v", old.Metadata)
+	}
+	if _, ok := old.Metadata["license"]; ok {
+		t.Errorf("0.1.0 has no license, Metadata = %v", old.Metadata)
+	}
+}
+
+func TestNoPageURLForCustomIndex(t *testing.T) {
+	s, _ := newSource(t, newUpstream(t))
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Versions[0].URL != "" {
+		t.Errorf("URL = %q, want empty for a non-default registry", res.Versions[0].URL)
+	}
+}
+
+func TestSeparateAPIURL(t *testing.T) {
+	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != widgetIndexPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(fixture(t, "widget.index"))
+	}))
+	t.Cleanup(idx.Close)
+	api := httptest.NewServer(newUpstream(t))
+	t.Cleanup(api.Close)
+	// sourcetest.Client talks to one server only, so use a plain client for
+	// the two-host case; both are loopback test servers.
+	hc := &http.Client{Transport: http.DefaultTransport}
+	s := crates.New(idx.URL, hc, crates.WithAPIURL(api.URL+"/"))
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Versions[0].PublishedAt.IsZero() {
+		t.Error("created_at not read from the API server")
+	}
+}
+
+func TestOrderWithoutTimes(t *testing.T) {
+	// The API knows only 0.1.0: the rest have no PublishedAt and follow it in
+	// reverse index order.
+	up := newUpstream(t)
+	up.set("/api/v1/crates/angelia-test-widget",
+		[]byte(`{"versions":[{"num":"0.1.0","created_at":"2024-01-10T09:00:00+00:00"}]}`))
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"0.1.0", "1.1.0-rc.1", "1.0.0", "0.2.0"}
+	if got := rawOf(res.Versions); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+	if !res.Versions[1].PublishedAt.IsZero() {
+		t.Errorf("unknown time must stay zero, got %v", res.Versions[1].PublishedAt)
+	}
+}
+
+func TestAPIFailureIsAnError(t *testing.T) {
+	up := newUpstream(t)
+	up.apiCode = http.StatusInternalServerError
+	s, _ := newSource(t, up)
+	_, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	var se *netguard.StatusError
+	if !errors.As(err, &se) || se.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("err = %v, want one wrapping *netguard.StatusError 500", err)
+	}
+}
+
+func TestMissingCrateIs404(t *testing.T) {
+	s, _ := newSource(t, newUpstream(t))
+	_, err := s.List(context.Background(), target("angelia-test-nope"), source.FetchState{})
+	var se *netguard.StatusError
+	if !errors.As(err, &se) || se.StatusCode != http.StatusNotFound {
+		t.Fatalf("err = %v, want one wrapping *netguard.StatusError 404", err)
+	}
+}
+
+func TestBadDocuments(t *testing.T) {
+	for name, c := range map[string]struct {
+		index, api string
+	}{
+		"index not JSON":     {"not json\n", `{"versions":[]}`},
+		"index without vers": {`{"name":"x"}` + "\n", `{"versions":[]}`},
+		"API not JSON":       {`{"vers":"1.0.0"}` + "\n", `<html>`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := &upstream{docs: map[string][]byte{widgetIndexPath: []byte(c.index), "/api/v1/crates/angelia-test-widget": []byte(c.api)}}
+			s, _ := newSource(t, up)
+			if _, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{}); err == nil {
+				t.Error("want an error")
+			}
+		})
+	}
+}
+
+func TestBlankLinesIgnored(t *testing.T) {
+	up := &upstream{docs: map[string][]byte{
+		widgetIndexPath:                      []byte("\n" + `{"vers":"1.0.0","cksum":"aa","yanked":false}` + "\n\n"),
+		"/api/v1/crates/angelia-test-widget": []byte(`{"versions":[]}`),
+	}}
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil || len(res.Versions) != 1 {
+		t.Fatalf("res=%+v err=%v, want one version", res, err)
+	}
+}
+
+func TestCursorIsKept(t *testing.T) {
+	s, _ := newSource(t, newUpstream(t))
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{Cursor: "c1"})
+	if err != nil || res.State.Cursor != "c1" {
+		t.Fatalf("cursor = %q err=%v, want it kept", res.State.Cursor, err)
+	}
+}
+
+func TestNilClient(t *testing.T) {
+	_, err := crates.New("http://unused.invalid", nil).List(context.Background(), target("serde"), source.FetchState{})
+	if err == nil || errors.Is(err, source.ErrInvalidTarget) {
+		t.Errorf("err = %v, want a missing-client error", err)
+	}
+}
+
+func TestDefaultURLs(t *testing.T) {
+	// The default sources point at the public hosts; a request to one of them
+	// is blocked by the guard, which proves the URL without touching the net.
+	var hosts []string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		hosts = append(hosts, r.URL.Host)
+		return nil, errors.New("blocked")
+	})
+	_, _ = crates.New("", &http.Client{Transport: rt}).List(context.Background(), target("serde"), source.FetchState{})
+	if len(hosts) != 1 || hosts[0] != "index.crates.io" {
+		t.Errorf("hosts = %v, want index.crates.io", hosts)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestUserAgentIdentifiesAngelia checks the crawler-policy requirement that
+// a request carries a User-Agent with a way to get in touch, using the
+// default netguard client.
+func TestUserAgentIdentifiesAngelia(t *testing.T) {
+	up := newUpstream(t)
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	c, err := netguard.New(netguard.Config{MaxAttempts: 1, Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := crates.New(srv.URL, c.HTTPClient()).List(context.Background(), target("angelia-test-widget"), source.FetchState{}); err != nil {
+		t.Fatal(err)
+	}
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.agents) != 2 {
+		t.Fatalf("got %d requests, want index and API", len(up.agents))
+	}
+	for _, ua := range up.agents {
+		if !strings.HasPrefix(ua, "angelia/") || !strings.Contains(ua, "(+https://") {
+			t.Errorf("User-Agent = %q, want product/version with a contact URL", ua)
+		}
+	}
+}
