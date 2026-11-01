@@ -53,6 +53,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 -- name: ListDeliveries :many
 SELECT * FROM delivery WHERE event_id = ? ORDER BY id;
 
+-- name: PruneBatchEnd :many
+SELECT seq FROM event WHERE seq > sqlc.arg(after_seq) AND created_at < sqlc.arg(before) ORDER BY seq LIMIT sqlc.arg(batch);
+
+-- name: PruneDeliveries :execrows
+DELETE FROM delivery
+WHERE status IN ('delivered', 'dead')
+  AND event_id IN (
+    SELECT e.id FROM event e
+    WHERE e.seq > sqlc.arg(after_seq) AND e.seq <= sqlc.arg(up_to_seq) AND e.created_at < sqlc.arg(before)
+      AND NOT EXISTS (
+        SELECT 1 FROM delivery p WHERE p.event_id = e.id AND p.status IN ('pending', 'in_flight')
+      )
+  );
+
+-- name: PruneEvents :execrows
+DELETE FROM event
+WHERE seq > sqlc.arg(after_seq) AND seq <= sqlc.arg(up_to_seq) AND created_at < sqlc.arg(before)
+  AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id);
+
 -- name: DeleteExpiredLease :exec
 DELETE FROM lease WHERE name = ? AND expires_at <= ?;
 
