@@ -335,3 +335,134 @@ func FuzzCompare(f *testing.F) {
 		}
 	})
 }
+
+func TestParseLooseCoercesShortCores(t *testing.T) {
+	tests := []struct {
+		in, str, core string
+		coerced, pre  bool
+	}{
+		{"3.12", "3.12", "3.12.0", true, false},
+		{"v2", "v2", "2.0.0", true, false},
+		{" 1.2 ", "1.2", "1.2.0", true, false},
+		{"3.12-alpine", "3.12-alpine", "3.12.0", true, true},
+		{"v2-rc.1+b5", "v2-rc.1+b5", "2.0.0", true, true},
+		{"v1.2.3", "1.2.3", "1.2.3", false, false}, // full versions are not coerced
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			v, err := ParseLoose(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			core := v.Major() + "." + v.Minor() + "." + v.Patch()
+			if v.String() != tt.str || core != tt.core || v.Coerced() != tt.coerced || v.IsPrerelease() != tt.pre {
+				t.Errorf("ParseLoose(%q) = %q core %s coerced %v pre %v", tt.in, v.String(), core, v.Coerced(), v.IsPrerelease())
+			}
+			if _, err := Parse(tt.in); tt.coerced && err == nil {
+				t.Errorf("strict Parse(%q) should fail", tt.in)
+			}
+		})
+	}
+	for _, in := range []string{"", "v", "1.", ".1", "01.2", "1.02", "1..2", "1.2.3.4", "a.b", "1.2-", "-rc"} {
+		if _, err := ParseLoose(in); !errors.Is(err, version.ErrInvalid) {
+			t.Errorf("ParseLoose(%q) error = %v, want ErrInvalid", in, err)
+		}
+	}
+}
+
+func TestCoercedOrdering(t *testing.T) {
+	s := Scheme{Coerce: true}
+	lists := [][]string{
+		{"1.2", "1.3.0", "1.10", "1.10.1"}, // pins 1.3.0 < 1.10
+		{"1.2", "1.10.0"},
+		{"1", "1.0.1", "1.1", "2-rc.1", "v2", "2.0.1"},
+	}
+	for _, list := range lists {
+		vs := make([]version.Version, len(list))
+		for i, raw := range list {
+			v, err := s.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vs[i] = v
+		}
+		for i, a := range vs {
+			for j, b := range vs {
+				want := 0
+				switch {
+				case i < j:
+					want = -1
+				case i > j:
+					want = 1
+				}
+				if got := s.Compare(a, b); got != want {
+					t.Errorf("Compare(%s, %s) = %d, want %d", a, b, got, want)
+				}
+			}
+		}
+	}
+	a, b := mustLoose(t, "1.2"), mustLoose(t, "1.2.0")
+	if Compare(a, b) != 0 {
+		t.Error("1.2 and 1.2.0 must have equal precedence")
+	}
+	if got := s.Bump(a, mustLoose(t, "1.3")); got != version.BumpMinor {
+		t.Errorf("Bump(1.2, 1.3) = %s", got)
+	}
+	if _, err := (Scheme{}).Parse("1.2"); err == nil {
+		t.Error("the zero Scheme must stay strict")
+	}
+}
+
+func mustLoose(t *testing.T, s string) Version {
+	t.Helper()
+	v, err := ParseLoose(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// Bump must be given the greatest known version below next: a backport
+// released after a newer major is a patch of its own line.
+func TestBumpBackport(t *testing.T) {
+	s := Scheme{}
+	next := mustLoose(t, "1.9.4")
+	var prev version.Version
+	for _, k := range []string{"1.9.2", "2.0.0", "1.9.3"} {
+		kv, err := s.Parse(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Compare(kv, next) < 0 && (prev == nil || s.Compare(kv, prev) > 0) {
+			prev = kv
+		}
+	}
+	if prev == nil || prev.String() != "1.9.3" {
+		t.Fatalf("greatest known below 1.9.4 = %v", prev)
+	}
+	if got := s.Bump(prev, next); got != version.BumpPatch {
+		t.Errorf("Bump(1.9.3, 1.9.4) = %s, want patch", got)
+	}
+	if got := s.Bump(mustLoose(t, "2.0.0"), next); got != version.BumpOther {
+		t.Errorf("Bump(2.0.0, 1.9.4) = %s, want other", got)
+	}
+}
+
+func FuzzParseLoose(f *testing.F) {
+	for _, s := range []string{"3.12", "v2", "3.12-alpine", "1.2.3", "v2-rc.1+b5", "1.", ""} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		v, err := ParseLoose(raw)
+		if err != nil {
+			if !errors.Is(err, version.ErrInvalid) {
+				t.Fatalf("ParseLoose(%q) error %v does not wrap ErrInvalid", raw, err)
+			}
+			return
+		}
+		w, err := ParseLoose(v.String())
+		if err != nil || w.String() != v.String() || Compare(v, w) != 0 {
+			t.Fatalf("String() %q of %q does not round-trip: %v", v.String(), raw, err)
+		}
+	})
+}

@@ -16,6 +16,10 @@ arguments) from the packaging-26.3 sdist published on PyPI. Test cases that
 only make sense in Python (non-string arguments, sys.set_int_max_str_digits,
 replace(), pickling, hashing) were not ported.
 
+To regenerate (for example for a newer packaging release), run
+extract_packaging_vectors.py in this directory; its docstring has the exact
+commands. It reads literals with ast.literal_eval and never runs the tests.
+
 Licence
 -------
 

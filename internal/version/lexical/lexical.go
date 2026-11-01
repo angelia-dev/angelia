@@ -80,7 +80,9 @@ func isPrereleaseWord(w string) bool {
 // v's string is a common pre-release marker such as "alpha", "beta", "rc",
 // "dev", "snapshot" or "nightly" ("1.0-rc1", "2.0b3", "3.1-SNAPSHOT").
 // A single letter counts only next to a digit ("2.0b3", "5.0-M1", not
-// "debian-b").
+// "debian-b"). Being a heuristic it has false positives: "latest-next"
+// (an npm-style channel name) and hex hashes such as "1a2b" read as
+// pre-releases. Policies that need certainty should use a real scheme.
 func (Scheme) IsPrerelease(v version.Version) bool {
 	if v == nil {
 		return false

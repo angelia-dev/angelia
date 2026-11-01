@@ -4,6 +4,11 @@
 // Everything else follows the spec strictly: three numeric components
 // without leading zeros, dot-separated pre-release and build identifiers.
 // Numbers have no size limit; they are compared as digit strings.
+//
+// ParseLoose (and Scheme{Coerce: true}) additionally coerces a short core
+// like npm's semver.coerce: "X.Y" means X.Y.0 and "X" means X.0.0, so tags
+// such as "3.12" or "v2" order among full versions instead of falling back
+// to lexical order. A coerced version keeps its original string.
 package semver
 
 import (
@@ -22,6 +27,7 @@ type Version struct {
 	major, minor, patch string   // digits, no leading zeros
 	pre                 []string // pre-release identifiers, nil for a release
 	build               []string // build metadata identifiers
+	orig                string   // trimmed input of a coerced version, "" otherwise
 }
 
 // Major returns the major version as a decimal string.
@@ -39,8 +45,13 @@ func (v Version) Prerelease() string { return strings.Join(v.pre, ".") }
 // Build returns the build metadata without the leading "+", or "".
 func (v Version) Build() string { return strings.Join(v.build, ".") }
 
-// String returns the canonical form, without any "v" prefix and with build metadata.
+// String returns the canonical form, without any "v" prefix and with build
+// metadata. A coerced version ("3.12", see ParseLoose) returns its original
+// trimmed string instead.
 func (v Version) String() string {
+	if v.orig != "" {
+		return v.orig
+	}
 	var b strings.Builder
 	b.WriteString(v.major)
 	b.WriteByte('.')
@@ -61,12 +72,21 @@ func (v Version) String() string {
 // Scheme returns Name.
 func (Version) Scheme() string { return Name }
 
+// Coerced reports whether v was completed from a short core by ParseLoose.
+func (v Version) Coerced() bool { return v.orig != "" }
+
 // IsPrerelease reports whether v has pre-release identifiers.
 func (v Version) IsPrerelease() bool { return len(v.pre) > 0 }
 
 // Parse parses a SemVer 2.0.0 version with the loose prefix described in the
 // package documentation. Errors wrap version.ErrInvalid.
-func Parse(raw string) (Version, error) {
+func Parse(raw string) (Version, error) { return parse(raw, false) }
+
+// ParseLoose is Parse, but also accepts a core of one or two numbers and
+// completes it with zeros ("3.12" == 3.12.0, "v2-rc.1" == 2.0.0-rc.1).
+func ParseLoose(raw string) (Version, error) { return parse(raw, true) }
+
+func parse(raw string, coerce bool) (Version, error) {
 	fail := func(reason string) (Version, error) {
 		return Version{}, &version.ParseError{Scheme: Name, Raw: raw, Reason: reason}
 	}
@@ -99,6 +119,12 @@ func Parse(raw string) (Version, error) {
 		v.pre = ids
 	}
 	parts := strings.Split(s, ".")
+	if coerce && len(parts) < 3 {
+		v.orig = strings.TrimFunc(raw, unicode.IsSpace)
+		for len(parts) < 3 {
+			parts = append(parts, "0")
+		}
+	}
 	if len(parts) != 3 {
 		return fail("want MAJOR.MINOR.PATCH")
 	}
@@ -214,8 +240,13 @@ func Diff(prev, next Version) version.Bump {
 	return version.BumpPatch
 }
 
-// Scheme implements version.Scheme for SemVer. The zero value is ready to use.
-type Scheme struct{}
+// Scheme implements version.Scheme for SemVer. The zero value is strict
+// SemVer (npm, crates); set Coerce for sources whose tags often omit the
+// patch or minor number (OCI images, Git tags).
+type Scheme struct {
+	// Coerce makes Parse use ParseLoose.
+	Coerce bool
+}
 
 var _ version.Scheme = Scheme{}
 
@@ -223,8 +254,8 @@ var _ version.Scheme = Scheme{}
 func (Scheme) Name() string { return Name }
 
 // Parse implements version.Scheme.
-func (Scheme) Parse(raw string) (version.Version, error) {
-	v, err := Parse(raw)
+func (s Scheme) Parse(raw string) (version.Version, error) {
+	v, err := parse(raw, s.Coerce)
 	if err != nil {
 		return nil, err
 	}

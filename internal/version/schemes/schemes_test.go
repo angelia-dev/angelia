@@ -47,6 +47,51 @@ func TestForSourceKind(t *testing.T) {
 			t.Errorf("ForSourceKind(%q) = %s, want %s", kind, got, want)
 		}
 	}
+	// Short tags are coerced only where they are common.
+	coerce := map[string]bool{
+		"oci": true, "github-tag": true, "go-proxy": true,
+		"npm": false, "crates": false, "github-release": false, "gitlab-release": false,
+	}
+	for kind, want := range coerce {
+		_, err := ForSourceKind(kind).Parse("3.12")
+		if got := err == nil; got != want {
+			t.Errorf("ForSourceKind(%q).Parse(3.12) ok = %v, want %v", kind, got, want)
+		}
+	}
+}
+
+// Two-part and one-part tags sort among full versions for coercing kinds.
+func TestCoercedTagsOrderAmongFullVersions(t *testing.T) {
+	s, err := Select("oci", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []string{"1.10.0", "1.10", "latest", "1.2", "1.3.0", "3.12-alpine", "3.12", "v2"}
+	want := []string{"latest", "1.2", "1.3.0", "1.10.0", "1.10", "v2", "3.12-alpine", "3.12"} // stable: 1.10.0 == 1.10
+	vs := make([]version.Version, 0, len(raw))
+	for _, r := range raw {
+		v, err := s.Parse(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vs = append(vs, v)
+	}
+	slices.SortStableFunc(vs, s.Compare)
+	got := make([]string, len(vs))
+	for i, v := range vs {
+		got[i] = v.String()
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("sorted = %v, want %v", got, want)
+	}
+	// An explicit `scheme: semver` on an oci watch keeps the coercion.
+	s, err = Select("oci", "semver", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Parse("3.12"); err != nil || v.Scheme() != semver.Name {
+		t.Errorf("Select(oci, semver).Parse(3.12) = %v, %v", v, err)
+	}
 }
 
 func TestSelect(t *testing.T) {
@@ -75,9 +120,9 @@ func TestSelect(t *testing.T) {
 	}
 }
 
-func TestFallbackWarnsAndNeverFails(t *testing.T) {
+func TestFallbackLogsDebugAndNeverFails(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	tests := []struct {
 		scheme, raw, wantScheme string
 	}{
@@ -102,13 +147,30 @@ func TestFallbackWarnsAndNeverFails(t *testing.T) {
 		if v.Scheme() != tt.wantScheme {
 			t.Errorf("%s.Parse(%q) scheme = %s, want %s", tt.scheme, tt.raw, v.Scheme(), tt.wantScheme)
 		}
-		warned := strings.Contains(buf.String(), "level=WARN")
-		if warned != (tt.wantScheme == lexical.Name) {
-			t.Errorf("%s.Parse(%q): warning logged = %v, log %q", tt.scheme, tt.raw, warned, buf.String())
+		logged := strings.Contains(buf.String(), "level=DEBUG")
+		if logged != (tt.wantScheme == lexical.Name) {
+			t.Errorf("%s.Parse(%q): debug logged = %v, log %q", tt.scheme, tt.raw, logged, buf.String())
 		}
-		if warned && !strings.Contains(buf.String(), "scheme="+tt.scheme) {
-			t.Errorf("warning does not name the scheme: %q", buf.String())
+		if strings.Contains(buf.String(), "level=WARN") {
+			t.Errorf("fallback must not log per-version warnings: %q", buf.String())
 		}
+		if logged && (!strings.Contains(buf.String(), "scheme="+tt.scheme) || !strings.Contains(buf.String(), "raw=")) {
+			t.Errorf("record does not name the scheme and raw version: %q", buf.String())
+		}
+	}
+}
+
+func TestFallbackTruncatesLoggedRaw(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := WithFallback(semver.Scheme{}, logger)
+	raw := strings.Repeat("é", 1000)
+	v, err := s.Parse(raw)
+	if err != nil || v.Scheme() != lexical.Name {
+		t.Fatalf("Parse = %v, %v", v, err)
+	}
+	if buf.Len() > 1000 || strings.Contains(buf.String(), `�`) {
+		t.Errorf("logged raw not truncated at a rune boundary: %d bytes", buf.Len())
 	}
 }
 
@@ -177,6 +239,41 @@ func FuzzFallbackParse(f *testing.F) {
 			}
 			_ = s.IsPrerelease(v)
 			_ = s.Bump(v, v)
+		}
+	})
+}
+
+// FuzzFallbackTransitive checks that Compare through the fallback wrapper
+// is a total order on mixed sets (parsed and lexical versions): antisymmetric
+// and transitive on any three inputs.
+func FuzzFallbackTransitive(f *testing.F) {
+	f.Add("1.2", "v1.10.0", "latest")
+	f.Add("1.0.0-rc.1", "1.0.0", "1.0.0+b")
+	f.Add("1.0", "1.0.post1", "french toast")
+	f.Add("3.12", "3.12-alpine", "3.12.0")
+	schemes := []version.Scheme{
+		WithFallback(semver.Scheme{}, nil),
+		WithFallback(semver.Scheme{Coerce: true}, nil),
+		WithFallback(pep440.Scheme{}, nil),
+	}
+	f.Fuzz(func(t *testing.T, a, b, c string) {
+		for _, s := range schemes {
+			va, errA := s.Parse(a)
+			vb, errB := s.Parse(b)
+			vc, errC := s.Parse(c)
+			if errA != nil || errB != nil || errC != nil {
+				continue
+			}
+			ab, bc, ac := s.Compare(va, vb), s.Compare(vb, vc), s.Compare(va, vc)
+			if ab != -s.Compare(vb, va) {
+				t.Fatalf("%s: Compare(%q, %q) not antisymmetric", s.Name(), a, b)
+			}
+			if ab <= 0 && bc <= 0 && ac > 0 {
+				t.Fatalf("%s: %q <= %q <= %q but Compare(a, c) = %d", s.Name(), a, b, c, ac)
+			}
+			if ab >= 0 && bc >= 0 && ac < 0 {
+				t.Fatalf("%s: %q >= %q >= %q but Compare(a, c) = %d", s.Name(), a, b, c, ac)
+			}
 		}
 	})
 }

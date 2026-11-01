@@ -96,6 +96,9 @@ func TestIsPrerelease(t *testing.T) {
 		{"release-1", false}, // "release" is not "rc"
 		{"1.0-final", false},
 		{"bookworm", false},
+		// Known false positives of the heuristic, pinned so a change is deliberate.
+		{"latest-next", true},
+		{"1a2b", true},
 	}
 	s := Scheme{}
 	for _, tt := range tests {

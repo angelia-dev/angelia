@@ -21,9 +21,11 @@ FUZZ_TARGETS := \
 	./internal/version:FuzzNatural \
 	./internal/version/semver:FuzzParse \
 	./internal/version/semver:FuzzCompare \
+	./internal/version/semver:FuzzParseLoose \
 	./internal/version/pep440:FuzzParse \
 	./internal/version/pep440:FuzzCompare \
-	./internal/version/schemes:FuzzFallbackParse
+	./internal/version/schemes:FuzzFallbackParse \
+	./internal/version/schemes:FuzzFallbackTransitive
 GOVULNCHECK_VERSION := v1.9.0
 
 .PHONY: help build test fuzz lint vuln generate clean

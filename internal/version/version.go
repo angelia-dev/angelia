@@ -9,9 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Version is a parsed version. Each scheme has its own concrete type.
+//
+// Never compare two Versions with == or use them as map keys: concrete types
+// hold slices, and equal precedence is not identity. Use Scheme.Compare to
+// order them and String to display them. Compare returning 0 does not mean
+// the same version ("1.0" and "1.0.0" in PEP 440, "1.0.0+a" and "1.0.0+b"
+// in SemVer), so key known-version sets by the raw upstream string.
 type Version interface {
 	// String returns the normalized form, e.g. "1.0rc1" for the PEP 440 input "1.0-RC1".
 	String() string
@@ -37,6 +44,10 @@ type Scheme interface {
 	IsPrerelease(v Version) bool
 	// Bump classifies the change from prev to next. It returns BumpOther
 	// unless next is strictly greater than prev and both belong to the scheme.
+	//
+	// prev must be the greatest known version below next, not the latest
+	// known version: when 2.0.0 is known and the backport 1.9.4 appears, pass
+	// prev = 1.9.3 to get BumpPatch (with prev = 2.0.0 the result is BumpOther).
 	Bump(prev, next Version) Bump
 }
 
@@ -67,11 +78,21 @@ type ParseError struct {
 }
 
 func (e *ParseError) Error() string {
-	raw := e.Raw
-	if len(raw) > maxQuoted {
-		raw = raw[:maxQuoted] + "..."
+	return fmt.Sprintf("%s: %q: %s: %v", e.Scheme, Truncate(e.Raw, maxQuoted), e.Reason, ErrInvalid)
+}
+
+// Truncate shortens s to at most n bytes, cut at a UTF-8 rune boundary,
+// and appends "..." when it cut anything. Use it before logging or quoting
+// untrusted upstream strings.
+func Truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return fmt.Sprintf("%s: %q: %s: %v", e.Scheme, raw, e.Reason, ErrInvalid)
+	i := n
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i] + "..."
 }
 
 // Unwrap makes errors.Is(err, ErrInvalid) true.

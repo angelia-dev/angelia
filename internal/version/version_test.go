@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCompareDigits(t *testing.T) {
@@ -93,4 +94,27 @@ func FuzzNatural(f *testing.F) {
 			t.Fatalf("Natural(%q, %q) = %d", a, b, ab)
 		}
 	})
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"short", 10, "short"},
+		{"exactly10!", 10, "exactly10!"},
+		{"abcdefghijkl", 5, "abcde..."},
+		{"aé", 2, "a..."},              // é is two bytes: do not split it
+		{"日本語", 4, "日..."},             // 3-byte runes
+		{"\xff\xfe\xfd", 1, "\xff..."}, // invalid UTF-8 bytes count as rune starts
+	}
+	for _, tt := range tests {
+		if got := Truncate(tt.in, tt.n); got != tt.want {
+			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+		}
+		if got := Truncate(tt.in, tt.n); !utf8.ValidString(got) && utf8.ValidString(tt.in) {
+			t.Errorf("Truncate(%q, %d) = %q is not valid UTF-8", tt.in, tt.n, got)
+		}
+	}
 }
