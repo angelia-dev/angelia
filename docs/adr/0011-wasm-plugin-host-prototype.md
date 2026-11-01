@@ -132,8 +132,19 @@ it in wazero's call trampoline and the Extism kernel: Extism keeps plugin data i
 Rust PDK (1.4.1) copies it in and out with one host call per 8 bytes (`load_u64` / `store_u64`). Host-side HTTP and
 JSON are a small share. The 304 path, the most common one with ETags, is well within target.
 
-**Benchmark 4 does not pass for realistic payloads.** This is the go/no-go question for the maintainer (see Open
-questions); this ADR stays Proposed until it is answered.
+**Benchmark 4 does not pass for realistic payloads.** The maintainer's answer (2026-11-01, PR #144) is **go**:
+the overhead is accepted for Phase 0, and the 5 ms target becomes a per-size budget. A zero-copy ABI (option b
+below) is measured before the plugin SDK freezes the ABI.
+
+### Maintainer decisions (2026-11-01, PR #144)
+
+- **Benchmark 4: go.** Overhead accepted for Phase 0.
+- **`allowed_hosts` ownership:** the manifest declares it, and the operator can extend or configure it when the
+  plugin is installed (for example a registry mirror). Not implemented in this prototype; follow-up #145.
+- **Credentials:** configured in the host when the plugin is installed, never in the plugin source. The host
+  injects them; the plugin does not need to see the token. Not implemented in this prototype; follow-up #145.
+- **Choices within the draft confirmed:** JSON with base64 and buffered bodies, GET/HEAD/POST only, 100 requests
+  per call, exact-match `allowed_hosts`, and a `User-Agent` the plugin can override.
 
 ## Consequences
 
@@ -147,7 +158,7 @@ questions); this ADR stays Proposed until it is answered.
 ### Negative
 
 - Per-call overhead scales with payload size and misses the 5 ms target from ~100 versions per page.
-- Credentials reach the plugin in its config map; the plugin can send them to any of its allowed hosts.
+- In this prototype credentials still reach the plugin in its config map; host-side injection is follow-up #145.
 - Buffered bodies: a plugin cannot stream a large response.
 - Nothing in CI runs `bench/plugins/build.sh --check` yet, so a committed `.wasm` that no longer matches its Rust
   source would go unnoticed. A follow-up issue is #143 for a CI job (it needs the Rust toolchain and
@@ -156,20 +167,6 @@ questions); this ADR stays Proposed until it is answered.
 
 ### Open questions
 
-- **Go/no-go on benchmark 4** (human decision). Options: (a) accept the overhead (polling every hour, 20 ms per
-  call is negligible next to network latency) and relax the target to a per-KiB budget; (b) change the ABI beyond
-  this draft so the host writes response bodies straight into the plugin's own linear memory (a guest-provided
-  buffer), bypassing the Extism kernel copies; (c) drop base64 and send raw bodies (saves ~25%, not enough alone);
-  (d) use plain wazero without Extism and define our own ABI. Recommendation: (a) for Phase 0, and measure (b)
-  before the plugin SDK (Phase 2) freezes the ABI.
-- Should the host inject credentials per allowed host (the plugin never sees the token) instead of passing them
-  in the config map? A security decision.
-- Who owns `allowed_hosts`? Today the plugin's manifest declares it and the operator takes it or leaves it. Should
-  the operator be able to narrow (or widen) it in the core's config, and must the core show it for approval when
-  a plugin is installed? A maintainer decision.
-- Should `User-Agent` stay overridable by the plugin? Some registries ask for a client-specific User-Agent, but
-  overriding it hides the core's identity from upstream operators. Options: keep it overridable (today), append
-  the plugin's value to the core's, or refuse it. Recommendation: append.
 - Wildcards in `allowed_hosts` (`*.example.com`): not supported; needed for CDNs.
 - Full JSON Schema validation of the plugin config needs a dependency not listed in §6.
 - Streaming bodies, methods beyond GET/HEAD/POST (sinks will need PUT), the size of the request and log budgets.
