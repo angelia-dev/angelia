@@ -76,3 +76,11 @@ func TestConfigCheckRejectsArgs(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestConfigCheckWarnsOnUnsetTokenEnv(t *testing.T) {
+	p := writeCfg(t, "sources:\n  pypi:\n    token_env: ANGELIA_TEST_UNSET_TOK\n")
+	out, errb, err := runCheck(t, "--config", p)
+	if err != nil || !strings.Contains(out, "configuration OK") || !strings.Contains(errb, "warning:") || !strings.Contains(errb, "ANGELIA_TEST_UNSET_TOK") {
+		t.Fatalf("out=%q err=%q %v", out, errb, err)
+	}
+}

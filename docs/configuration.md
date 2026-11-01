@@ -25,3 +25,14 @@ Check a configuration with `angelia config check [--config FILE]`.
   `token:` key is an unknown key and an error.
 - The config file is optional; select it with `--config` or `ANGELIA_CONFIG`.
 - Unknown keys are errors reported as `<file>: line N: ...`.
+- Environment variables that are set but empty still override (`ANGELIA_LISTEN=` is then an invalid
+  value); for `token_env`, an empty variable counts as unset and `config check` warns.
+- The `ANGELIA_SOURCES_` prefix is reserved for source overrides; only names ending in `_BASE_URL`
+  or `_TOKEN_ENV` are read, others are ignored (so a `token_env` may be called e.g.
+  `ANGELIA_SOURCES_GITHUB_TOKEN`). Source kinds are lower-case `[a-z0-9]` words joined by hyphens.
+- `roles`: `all` cannot be combined with other roles; duplicates are removed. `listen` port is 1-65535.
+  A sqlite DSN needs a path, a postgres DSN a host.
+- `base_url` must not contain credentials, and `token_env` must be a variable name: values that
+  look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
+  rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
+- A config file must contain a single YAML document.

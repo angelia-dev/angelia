@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +33,24 @@ const (
 // Valid roles, matching `angelia serve --roles`.
 var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "worker": true, "dispatcher": true}
 
-var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	envNameRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	kindRE     = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	unknownRE  = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
+	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-"}
+)
+
+// secret holds a credential. It prints as [REDACTED] with every fmt verb and
+// in slog, so a Config can be logged safely. Use string(s) to read it.
+type secret string
+
+const redacted = "[REDACTED]"
+
+func (secret) String() string               { return redacted }
+func (secret) GoString() string             { return redacted }
+func (secret) LogValue() slog.Value         { return slog.StringValue(redacted) }
+func (secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
+func (secret) Format(f fmt.State, _ rune)   { _, _ = io.WriteString(f, redacted) }
 
 // Config is the typed instance configuration. Create it with Load or Default.
 type Config struct {
@@ -43,7 +62,10 @@ type Config struct {
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
 
-	tokens map[string]string // resolved from token_env at load time
+	// Tokens holds the values read from each source's token_env variable,
+	// keyed by kind. It is not part of the file format; use SourceToken.
+	Tokens   map[string]secret `yaml:"-"`
+	warnings []string
 }
 
 // Database configures the store.
@@ -83,7 +105,7 @@ func Default() *Config {
 		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		HTTP:     HTTP{UserAgent: "angelia/" + buildinfo.Version()},
 		Sources:  map[string]Source{},
-		tokens:   map[string]string{},
+		Tokens:   map[string]secret{},
 	}
 }
 
@@ -115,6 +137,7 @@ func Load(ctx context.Context, opts Options) (*Config, error) {
 	if err := applyEnv(cfg, env); err != nil {
 		return nil, err
 	}
+	cfg.Roles = dedupe(cfg.Roles)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -130,16 +153,35 @@ func decode(r io.Reader, path string, cfg *Config) error {
 		if errors.As(err, &te) {
 			errs := make([]error, 0, len(te.Errors))
 			for _, m := range te.Errors {
+				if g := unknownRE.FindStringSubmatch(m); g != nil {
+					m = fmt.Sprintf("%s: unknown key %q", g[1], g[2])
+				}
 				errs = append(errs, fmt.Errorf("%s: %s", path, m))
 			}
 			return errors.Join(errs...)
 		}
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%s: multiple YAML documents are not supported", path)
+	}
 	if cfg.Sources == nil {
 		cfg.Sources = map[string]Source{}
 	}
 	return nil
+}
+
+func dedupe(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func environMap(environ []string) map[string]string {
@@ -192,12 +234,12 @@ func applyEnv(cfg *Config, env map[string]string) error {
 			field = "token_env"
 			rest = strings.TrimSuffix(rest, "_TOKEN_ENV")
 		default:
-			return fmt.Errorf("environment variable %s: unknown sources key (want _BASE_URL or _TOKEN_ENV)", k)
+			continue // reserved prefix, but not a config key (e.g. a token_env name)
 		}
 		if rest == "" {
 			return fmt.Errorf("environment variable %s: missing source kind", k)
 		}
-		kind := sourceKind(cfg, rest)
+		kind := strings.ToLower(strings.ReplaceAll(rest, "_", "-"))
 		s := cfg.Sources[kind]
 		if field == "base_url" {
 			s.BaseURL = env[k]
@@ -209,17 +251,6 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	return nil
 }
 
-// sourceKind maps an env spelling (GITHUB_RELEASE) to the configured kind,
-// or to the lower-case hyphenated form for a new one.
-func sourceKind(cfg *Config, envKind string) string {
-	for k := range cfg.Sources {
-		if strings.ToUpper(strings.ReplaceAll(k, "-", "_")) == envKind {
-			return k
-		}
-	}
-	return strings.ToLower(strings.ReplaceAll(envKind, "_", "-"))
-}
-
 // Validate checks every value and reports all problems at once.
 func (c *Config) Validate() error {
 	var errs []error
@@ -227,18 +258,32 @@ func (c *Config) Validate() error {
 
 	if _, port, err := net.SplitHostPort(c.Listen); err != nil {
 		bad("listen %q: must be host:port", c.Listen)
-	} else if p, err := strconv.Atoi(port); err != nil || p < 0 || p > 65535 {
+	} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
 		bad("listen %q: invalid port", c.Listen)
 	}
 
 	if u, err := url.Parse(c.Database.DSN); err != nil || u.Scheme == "" {
 		bad("database.dsn: must be a URL such as sqlite:///path or postgres://host/db")
-	} else if s := strings.ToLower(u.Scheme); s != "sqlite" && s != "postgres" && s != "postgresql" {
-		bad("database.dsn: unsupported scheme %q (want sqlite or postgres)", u.Scheme)
+	} else {
+		switch strings.ToLower(u.Scheme) {
+		case "sqlite":
+			if u.Path == "" {
+				bad("database.dsn: sqlite DSN needs a file path, e.g. sqlite:///var/lib/angelia/angelia.db")
+			}
+		case "postgres", "postgresql":
+			if u.Host == "" {
+				bad("database.dsn: postgres DSN needs a host")
+			}
+		default:
+			bad("database.dsn: unsupported scheme %q (want sqlite or postgres)", u.Scheme)
+		}
 	}
 
 	if len(c.Roles) == 0 {
 		bad("roles: must not be empty")
+	}
+	if len(c.Roles) > 1 && slices.Contains(c.Roles, "all") {
+		bad("roles: \"all\" cannot be combined with other roles")
 	}
 	for _, r := range c.Roles {
 		if !validRoles[r] {
@@ -268,27 +313,66 @@ func (c *Config) Validate() error {
 	sort.Strings(kinds)
 	for _, k := range kinds {
 		s := c.Sources[k]
+		if !kindRE.MatchString(k) {
+			bad("sources: invalid kind name (want lower-case letters, digits and single hyphens)")
+			continue
+		}
 		if s.BaseURL != "" {
-			if u, err := url.Parse(s.BaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				bad("sources.%s.base_url %q: must be an absolute http(s) URL", k, s.BaseURL)
+			u, err := url.Parse(s.BaseURL)
+			switch {
+			case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
+				bad("sources.%s.base_url: must be an absolute http(s) URL", k)
+			case u.User != nil:
+				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env", k)
 			}
 		}
-		if s.TokenEnv != "" && !envNameRE.MatchString(s.TokenEnv) {
-			bad("sources.%s.token_env %q: must be an environment variable name, not a token", k, s.TokenEnv)
+		if s.TokenEnv != "" {
+			switch {
+			case hasTokenPrefix(s.TokenEnv):
+				bad("sources.%s.token_env: looks like a token, not an environment variable name", k)
+			case !envNameRE.MatchString(s.TokenEnv):
+				bad("sources.%s.token_env: must be an environment variable name, not a token", k)
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (c *Config) resolveTokens(env map[string]string) {
-	c.tokens = map[string]string{}
-	for k, s := range c.Sources {
-		if s.TokenEnv != "" {
-			c.tokens[k] = env[s.TokenEnv]
+func hasTokenPrefix(v string) bool {
+	for _, p := range tokenStart {
+		if strings.HasPrefix(v, p) {
+			return true
 		}
+	}
+	return false
+}
+
+// resolveTokens runs after Validate, so every token_env here is a plain
+// variable name that is safe to print. An empty variable counts as unset.
+func (c *Config) resolveTokens(env map[string]string) {
+	c.Tokens = map[string]secret{}
+	c.warnings = nil
+	kinds := make([]string, 0, len(c.Sources))
+	for k := range c.Sources {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	for _, k := range kinds {
+		name := c.Sources[k].TokenEnv
+		if name == "" {
+			continue
+		}
+		if env[name] == "" {
+			c.warnings = append(c.warnings, fmt.Sprintf("sources.%s.token_env: environment variable %s is not set or empty", k, name))
+			continue
+		}
+		c.Tokens[k] = secret(env[name])
 	}
 }
 
+// Warnings lists non-fatal findings, such as a token_env naming an unset variable.
+func (c *Config) Warnings() []string { return slices.Clone(c.warnings) }
+
 // SourceToken returns the token for a source kind, read from the environment
 // variable named by its token_env. It is empty when none is configured or set.
-func (c *Config) SourceToken(kind string) string { return c.tokens[kind] }
+func (c *Config) SourceToken(kind string) string { return string(c.Tokens[kind]) }

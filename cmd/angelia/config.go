@@ -31,8 +31,12 @@ func newConfigCheckCmd() *cobra.Command {
 			if path == "" {
 				path = os.Getenv("ANGELIA_CONFIG")
 			}
-			if _, err := config.Load(cmd.Context(), config.Options{Path: path, Environ: os.Environ()}); err != nil {
+			cfg, err := config.Load(cmd.Context(), config.Options{Path: path, Environ: os.Environ()})
+			if err != nil {
 				return fmt.Errorf("invalid configuration: %w", err)
+			}
+			for _, w := range cfg.Warnings() {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK")
 			return err

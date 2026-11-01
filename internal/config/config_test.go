@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -149,7 +152,7 @@ func TestEnvOverrides(t *testing.T) {
 }
 
 func TestEnvBadSourcesKeys(t *testing.T) {
-	for _, e := range []string{"ANGELIA_SOURCES_PYPI_TOKEN=abc", "ANGELIA_SOURCES__BASE_URL=x"} {
+	for _, e := range []string{"ANGELIA_SOURCES__BASE_URL=x", "ANGELIA_SOURCES_PYPI-X_BASE_URL=x"} {
 		if _, err := load(t, "", e); err == nil {
 			t.Errorf("%s: expected error", e)
 		}
@@ -172,9 +175,9 @@ func TestInlineTokenRejected(t *testing.T) {
 }
 
 func TestTokenEnvMustBeVariableName(t *testing.T) {
-	p := writeFile(t, "sources:\n  pypi:\n    token_env: ghp_abc123!secret\n")
+	p := writeFile(t, "sources:\n  pypi:\n    token_env: my!secret\n")
 	_, err := load(t, p)
-	if err == nil || !strings.Contains(err.Error(), "not a token") {
+	if err == nil || !strings.Contains(err.Error(), "not a token") || strings.Contains(err.Error(), "my!secret") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -207,6 +210,11 @@ func TestValidation(t *testing.T) {
 		"ua":        "http:\n  user_agent: ''",
 		"base_url":  "sources:\n  pypi:\n    base_url: ftp://x",
 		"base_url2": "sources:\n  pypi:\n    base_url: example.com",
+		"port0":     "listen: ':0'",
+		"allmixed":  "roles: [all, api]",
+		"pgnohost":  "database:\n  dsn: postgres:///db",
+		"sqlnopath": "database:\n  dsn: sqlite://",
+		"badkind":   "sources:\n  Py_PI:\n    base_url: https://x.example.com",
 	}
 	for name, y := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -220,6 +228,105 @@ func TestValidation(t *testing.T) {
 func TestValidationReportsAllProblems(t *testing.T) {
 	_, err := load(t, writeFile(t, "listen: bad\nlog:\n  level: loud\n"))
 	if err == nil || !strings.Contains(err.Error(), "listen") || !strings.Contains(err.Error(), "log.level") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTokenEnvValueNeverEchoed(t *testing.T) {
+	for _, v := range []string{"ghp_SECRETSECRET123", "pypi-AgEIcHlwaS5vcmc", "npm_abcdef", "my token!secret", "glpat-xyz", "github_pat_11AAA"} {
+		_, err := load(t, writeFile(t, "sources:\n  pypi:\n    token_env: '"+v+"'\n"))
+		if err == nil {
+			t.Fatalf("%q: expected error", v)
+		}
+		if strings.Contains(err.Error(), v) || strings.Contains(err.Error(), v[:6]) {
+			t.Fatalf("error echoes the value: %v", err)
+		}
+	}
+}
+
+func TestMultipleDocumentsRejected(t *testing.T) {
+	_, err := load(t, writeFile(t, "listen: :1\n---\nlisten: :2\n"))
+	if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestReservedPrefixDoesNotBreakLoad(t *testing.T) {
+	p := writeFile(t, "sources:\n  github-release:\n    token_env: ANGELIA_SOURCES_GITHUB_TOKEN\n")
+	cfg, err := load(t, p, "ANGELIA_SOURCES_GITHUB_TOKEN=tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SourceToken("github-release") != "tok" {
+		t.Fatal("token not resolved")
+	}
+}
+
+func TestEnvKindIsNormalisedDeterministically(t *testing.T) {
+	cfg, err := load(t, "", "ANGELIA_SOURCES_GITHUB_RELEASE_BASE_URL=https://a.example.com")
+	if err != nil || cfg.Sources["github-release"].BaseURL != "https://a.example.com" {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestBaseURLCredentialsRejectedAndNotPrinted(t *testing.T) {
+	_, err := load(t, writeFile(t, "sources:\n  pypi:\n    base_url: https://user:hunter2@example.com\n"))
+	if err == nil || !strings.Contains(err.Error(), "credentials not allowed") || strings.Contains(err.Error(), "hunter2") {
+		t.Fatalf("got %v", err)
+	}
+	_, err = load(t, writeFile(t, "sources:\n  pypi:\n    base_url: 'ftp://hunter2'\n"))
+	if err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUnsetTokenEnvWarns(t *testing.T) {
+	p := writeFile(t, "sources:\n  pypi:\n    token_env: MY_TOK\n")
+	cfg, err := load(t, p, "MY_TOK=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Warnings()
+	if len(w) != 1 || !strings.Contains(w[0], "MY_TOK") || !strings.Contains(w[0], "pypi") {
+		t.Fatalf("warnings=%v", w)
+	}
+	cfg, _ = load(t, p, "MY_TOK=x")
+	if len(cfg.Warnings()) != 0 {
+		t.Fatal("unexpected warning")
+	}
+}
+
+func TestTokensDoNotLeakInFormatting(t *testing.T) {
+	p := writeFile(t, "sources:\n  pypi:\n    token_env: MY_TOK\n")
+	cfg, err := load(t, p, "MY_TOK=sup3rs3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"%v", "%+v", "%#v", "%s"} {
+		if out := fmt.Sprintf(f, cfg); strings.Contains(out, "sup3rs3cret") {
+			t.Fatalf("%s leaks: %s", f, out)
+		}
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("cfg", "tokens", cfg.Tokens, "tok", cfg.Tokens["pypi"])
+	if strings.Contains(buf.String(), "sup3rs3cret") || !strings.Contains(buf.String(), "[REDACTED]") {
+		t.Fatalf("slog leaks: %s", buf.String())
+	}
+	if cfg.SourceToken("pypi") != "sup3rs3cret" {
+		t.Fatal("SourceToken must still return the value")
+	}
+}
+
+func TestRolesDedupe(t *testing.T) {
+	cfg, err := load(t, "", "ANGELIA_ROLES=api,worker,api")
+	if err != nil || !reflect.DeepEqual(cfg.Roles, []string{"api", "worker"}) {
+		t.Fatalf("cfg=%v err=%v", cfg, err)
+	}
+}
+
+func TestUnknownKeyMessageHasNoGoTypeNames(t *testing.T) {
+	_, err := load(t, writeFile(t, "bogus: 1\n"))
+	if err == nil || !strings.Contains(err.Error(), `unknown key "bogus"`) || strings.Contains(err.Error(), "config.Config") {
 		t.Fatalf("got %v", err)
 	}
 }
