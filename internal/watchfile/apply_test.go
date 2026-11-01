@@ -1,6 +1,7 @@
 package watchfile
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -307,7 +308,10 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	// the baseline; the old target goes with its known set.
 	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
 		_, err := tx.AddVersion(ctx, store.Version{TargetID: req.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock})
-		return err
+		if err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: req.ID, TargetID: req.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
 	}))
 	plan = mustApply(t, st, strings.Replace(twoWatches, "coordinates: {name: requests}", "coordinates: {name: httpx}", 1))
 	if plan.Count(KindTarget, Create) != 1 || plan.Count(KindTarget, Delete) != 1 {
@@ -323,6 +327,62 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	}
 	if vs, _ := st.ListVersions(ctx, req.TargetID); len(vs) != 0 {
 		t.Fatalf("old versions kept: %v", vs)
+	}
+	// (The held release on the old target goes with it through the foreign
+	// key cascade; TestMovedWatchDropsHeldReleasesOfSharedTarget covers the
+	// explicit delete.)
+}
+
+func heldOn(t *testing.T, st store.Store, target string) int {
+	t.Helper()
+	ps, err := st.ListPendingReleases(t.Context(), target)
+	mustNoErr(t, err)
+	return len(ps)
+}
+
+// An update that does not move the watch keeps what it holds.
+func TestUpdateWithoutMoveKeepsHeldReleases(t *testing.T) {
+	st := openStore(t)
+	shared := "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}}\n"
+	mustApply(t, st, shared)
+	ctx := t.Context()
+	a := snap(t, st, store.ManagedByFile).watches[0]
+	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: a.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock}); err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: a.ID, TargetID: a.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
+	}))
+	mustApply(t, st, "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}, labels: {x: y}, policy: {cooldown: 1h}}\n")
+	if n := heldOn(t, st, a.TargetID); n != 1 {
+		t.Fatalf("held releases after a policy and labels update: %d, want 1", n)
+	}
+}
+
+// Moving a watch drops what it held even when the old target stays, because
+// another watch still uses it.
+func TestMovedWatchDropsHeldReleasesOfSharedTarget(t *testing.T) {
+	st := openStore(t)
+	shared := "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}}\n  - {name: b, source: pypi, coordinates: {name: requests}}\n"
+	mustApply(t, st, shared)
+	ctx := t.Context()
+	var a store.Watch
+	for _, w := range snap(t, st, store.ManagedByFile).watches {
+		if w.Name == "a" {
+			a = w
+		}
+	}
+	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: a.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock}); err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: a.ID, TargetID: a.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
+	}))
+	mustApply(t, st, strings.Replace(shared, "{name: a, source: pypi, coordinates: {name: requests}}", "{name: a, source: pypi, coordinates: {name: httpx}}", 1))
+	// Moving back would bring a surviving row back into view.
+	mustApply(t, st, shared)
+	if n := heldOn(t, st, a.TargetID); n != 0 {
+		t.Fatalf("held releases came back after moving away and back: %d", n)
 	}
 }
 

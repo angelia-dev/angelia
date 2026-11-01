@@ -370,6 +370,10 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 					return err
 				}
 				if moved {
+					// Held versions of the old target must not come back if the watch moves back.
+					if _, err := r.tx.DeletePendingReleasesOfWatch(r.ctx, cur.ID); err != nil {
+						return err
+					}
 					return r.tx.ResetWatchBaseline(r.ctx, cur.ID)
 				}
 				return nil
