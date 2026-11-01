@@ -104,6 +104,26 @@ func (s *Store) AddVersion(ctx context.Context, v store.Version) (bool, error) {
 	return txOps{q: s.q}.AddVersion(ctx, v)
 }
 
+// UpdateVersion implements [store.Tx] in its own statement.
+func (s *Store) UpdateVersion(ctx context.Context, v store.Version) error {
+	return txOps{q: s.q}.UpdateVersion(ctx, v)
+}
+
+// MarkBaselineDone implements [store.Tx] in its own statement.
+func (s *Store) MarkBaselineDone(ctx context.Context, watchID string) error {
+	return txOps{q: s.q}.MarkBaselineDone(ctx, watchID)
+}
+
+// ListVersions implements [store.Tx] outside a transaction.
+func (s *Store) ListVersions(ctx context.Context, targetID string) ([]store.Version, error) {
+	return txOps{q: s.q}.ListVersions(ctx, targetID)
+}
+
+// ListWatches implements [store.Tx] outside a transaction.
+func (s *Store) ListWatches(ctx context.Context, targetID string) ([]store.Watch, error) {
+	return txOps{q: s.q}.ListWatches(ctx, targetID)
+}
+
 // UpdateTarget implements [store.Tx] in its own statement.
 func (s *Store) UpdateTarget(ctx context.Context, t store.Target) error {
 	return txOps{q: s.q}.UpdateTarget(ctx, t)
@@ -124,8 +144,67 @@ func (o txOps) AddVersion(ctx context.Context, v store.Version) (bool, error) {
 	n, err := o.q.AddVersion(ctx, AddVersionParams{
 		TargetID: v.TargetID, Raw: v.Raw, Normalized: v.Normalized, PublishedAt: nullMillis(v.PublishedAt),
 		Prerelease: boolInt(v.Prerelease), Yanked: boolInt(v.Yanked), FirstSeenAt: millis(v.FirstSeenAt),
+		RemovedAt: nullMillis(v.RemovedAt),
 	})
 	return n == 1, wrap(err, "add version", v.TargetID+"@"+v.Raw)
+}
+
+func (o txOps) UpdateVersion(ctx context.Context, v store.Version) error {
+	n, err := o.q.UpdateVersionState(ctx, UpdateVersionStateParams{
+		Yanked: boolInt(v.Yanked), RemovedAt: nullMillis(v.RemovedAt), TargetID: v.TargetID, Raw: v.Raw,
+	})
+	if err == nil && n == 0 {
+		err = sql.ErrNoRows
+	}
+	return wrap(err, "update version", v.TargetID+"@"+v.Raw)
+}
+
+func (o txOps) MarkBaselineDone(ctx context.Context, watchID string) error {
+	n, err := o.q.MarkBaselineDone(ctx, watchID)
+	if err == nil && n == 0 {
+		err = sql.ErrNoRows
+	}
+	return wrap(err, "mark baseline done", watchID)
+}
+
+func (o txOps) ListVersions(ctx context.Context, targetID string) ([]store.Version, error) {
+	rows, err := o.q.ListVersions(ctx, targetID)
+	if err != nil {
+		return nil, wrap(err, "list versions", targetID)
+	}
+	out := make([]store.Version, len(rows))
+	for i, r := range rows {
+		out[i] = store.Version{
+			TargetID: r.TargetID, Raw: r.Raw, Normalized: r.Normalized, PublishedAt: fromNullMillis(r.PublishedAt),
+			Prerelease: r.Prerelease != 0, Yanked: r.Yanked != 0, FirstSeenAt: fromMillis(r.FirstSeenAt),
+			RemovedAt: fromNullMillis(r.RemovedAt),
+		}
+	}
+	return out, nil
+}
+
+func (o txOps) ListWatches(ctx context.Context, targetID string) ([]store.Watch, error) {
+	rows, err := o.q.ListWatchesByTarget(ctx, targetID)
+	if err != nil {
+		return nil, wrap(err, "list watches", targetID)
+	}
+	out := make([]store.Watch, len(rows))
+	for i, r := range rows {
+		w, err := watchFromRow(r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = w
+	}
+	return out, nil
+}
+
+func watchFromRow(r Watch) (store.Watch, error) {
+	w := store.Watch{ID: r.ID, TargetID: r.TargetID, Policy: json.RawMessage(r.PolicyJson), BaselineDone: r.BaselineDone != 0}
+	if err := json.Unmarshal([]byte(r.LabelsJson), &w.Labels); err != nil {
+		return store.Watch{}, fmt.Errorf("store: watch %s labels: %w", r.ID, err)
+	}
+	return w, nil
 }
 
 // targetStateArgs validates t and encodes its fetch state.
@@ -336,11 +415,7 @@ func (s *Store) GetWatch(ctx context.Context, id string) (store.Watch, error) {
 	if err != nil {
 		return store.Watch{}, wrap(err, "get watch", id)
 	}
-	w := store.Watch{ID: r.ID, TargetID: r.TargetID, Policy: json.RawMessage(r.PolicyJson), BaselineDone: r.BaselineDone != 0}
-	if err := json.Unmarshal([]byte(r.LabelsJson), &w.Labels); err != nil {
-		return store.Watch{}, fmt.Errorf("store: watch %s labels: %w", id, err)
-	}
-	return w, nil
+	return watchFromRow(r)
 }
 
 // DeleteWatch implements [store.Store].
@@ -368,22 +443,6 @@ func deleted(n int64, err error, op, id string) error {
 		err = sql.ErrNoRows
 	}
 	return wrap(err, op, id)
-}
-
-// ListVersions implements [store.Store].
-func (s *Store) ListVersions(ctx context.Context, targetID string) ([]store.Version, error) {
-	rows, err := s.q.ListVersions(ctx, targetID)
-	if err != nil {
-		return nil, wrap(err, "list versions", targetID)
-	}
-	out := make([]store.Version, len(rows))
-	for i, r := range rows {
-		out[i] = store.Version{
-			TargetID: r.TargetID, Raw: r.Raw, Normalized: r.Normalized, PublishedAt: fromNullMillis(r.PublishedAt),
-			Prerelease: r.Prerelease != 0, Yanked: r.Yanked != 0, FirstSeenAt: fromMillis(r.FirstSeenAt),
-		}
-	}
-	return out, nil
 }
 
 // CreateSink implements [store.Store].

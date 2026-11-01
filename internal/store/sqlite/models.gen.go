@@ -64,6 +64,7 @@ type Version struct {
 	Prerelease  int64
 	Yanked      int64
 	FirstSeenAt int64
+	RemovedAt   sql.NullInt64
 }
 
 type Watch struct {
