@@ -150,7 +150,7 @@ questions); this ADR stays Proposed until it is answered.
 - Credentials reach the plugin in its config map; the plugin can send them to any of its allowed hosts.
 - Buffered bodies: a plugin cannot stream a large response.
 - Nothing in CI runs `bench/plugins/build.sh --check` yet, so a committed `.wasm` that no longer matches its Rust
-  source would go unnoticed. A follow-up issue is to be filed for a CI job (it needs the Rust toolchain and
+  source would go unnoticed. A follow-up issue is #143 for a CI job (it needs the Rust toolchain and
   crates.io access); this story does not change the CI workflows.
 - Untrusted plugins must wait for angelia-dev/angelia#76 (DNS rebinding, above).
 
