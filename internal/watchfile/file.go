@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
 
@@ -76,9 +77,12 @@ type Policy struct {
 
 // Subscription routes the events matching Filter to the sink named Sink.
 type Subscription struct {
-	Name     string
-	Sink     string
-	Filter   Filter
+	Name   string
+	Sink   string
+	Filter Filter
+	// Policy narrows the watch policy (docs/watch-file.md section 2.6). The
+	// zero value narrows nothing.
+	Policy   subscription.Policy
 	Template string
 	Line     int
 }
@@ -140,6 +144,9 @@ func (s Subscription) FilterJSON() json.RawMessage {
 	})
 	return b
 }
+
+// PolicyJSON returns the canonical JSON stored as subscription.policy_json.
+func (s Subscription) PolicyJSON() json.RawMessage { return marshal(s.Policy.Clamp()) }
 
 // marshal encodes v as compact JSON without HTML escaping, so stored values
 // read like the file ("<" stays "<"). Map keys are sorted: the output is

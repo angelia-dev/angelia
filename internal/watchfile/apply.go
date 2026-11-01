@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/subscription"
 )
 
 // Action is what apply does, or would do, to one object.
@@ -428,6 +429,13 @@ func jsonEqual(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(x, y)
 }
 
+// samePolicy compares a stored subscription policy with the file's by value, so
+// the '{}' that rows have before the policy keys existed equals "no policy".
+func samePolicy(stored json.RawMessage, p subscription.Policy) bool {
+	cur, err := subscription.PolicyFromJSON(stored)
+	return err == nil && cur == p.Clamp()
+}
+
 func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs map[string]string) error {
 	byName := map[string]store.Subscription{}
 	for _, s := range old {
@@ -435,22 +443,22 @@ func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs ma
 	}
 	for _, d := range f.Subscriptions {
 		sinkID := sinkIDs[d.Sink]
-		filter := d.FilterJSON()
+		filter, policy := d.FilterJSON(), d.PolicyJSON()
 		cur, ok := byName[d.Name]
 		switch {
 		case !ok:
 			id := r.newID()
 			if err := r.write(func() error {
 				return r.tx.CreateSubscription(r.ctx, store.Subscription{
-					ID: id, Filter: filter, SinkID: sinkID, Template: d.Template, Name: d.Name, ManagedBy: store.ManagedByFile,
+					ID: id, Filter: filter, Policy: policy, SinkID: sinkID, Template: d.Template, Name: d.Name, ManagedBy: store.ManagedByFile,
 				})
 			}); err != nil {
 				return err
 			}
 			r.add(KindSubscription, d.Name, Create, "sink "+d.Sink)
-		case cur.SinkID != sinkID || cur.Template != d.Template || !jsonEqual(cur.Filter, filter):
+		case cur.SinkID != sinkID || cur.Template != d.Template || !jsonEqual(cur.Filter, filter) || !samePolicy(cur.Policy, d.Policy):
 			if err := r.write(func() error {
-				return r.tx.UpdateSubscription(r.ctx, store.Subscription{ID: cur.ID, Filter: filter, SinkID: sinkID, Template: d.Template})
+				return r.tx.UpdateSubscription(r.ctx, store.Subscription{ID: cur.ID, Filter: filter, Policy: policy, SinkID: sinkID, Template: d.Template})
 			}); err != nil {
 				return err
 			}
