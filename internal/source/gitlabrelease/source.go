@@ -5,17 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/internal/apiclient"
 )
 
 // Kind is the registry key of this source.
@@ -47,28 +45,14 @@ var (
 )
 
 // secret hides a token from fmt, slog and JSON.
-type secret string
-
-func (secret) String() string               { return "[REDACTED]" }
-func (secret) GoString() string             { return "[REDACTED]" }
-func (secret) LogValue() slog.Value         { return slog.StringValue("[REDACTED]") }
-func (secret) MarshalText() ([]byte, error) { return []byte("[REDACTED]"), nil }
+type secret = apiclient.Secret
 
 // Option configures a Source.
 type Option func(*Source)
 
 // WithToken sets a fixed API token. A blank token makes List fail.
 func WithToken(token string) Option {
-	return func(s *Source) {
-		s.tokenSet = true
-		s.token = func() (secret, error) {
-			t := secret(strings.TrimSpace(token))
-			if t == "" {
-				return "", errors.New("token is configured but blank")
-			}
-			return t, nil
-		}
-	}
+	return func(s *Source) { s.tok = apiclient.FixedToken(token) }
 }
 
 // WithTokenEnv reads the token from the environment variable name on every
@@ -76,16 +60,7 @@ func WithToken(token string) Option {
 // empty or blank, List fails rather than silently falling back to anonymous
 // access, which cannot see private projects.
 func WithTokenEnv(name string) Option {
-	return func(s *Source) {
-		s.tokenSet = true
-		s.token = func() (secret, error) {
-			t := secret(strings.TrimSpace(os.Getenv(name)))
-			if t == "" {
-				return "", fmt.Errorf("token_env %q is unset or empty", name)
-			}
-			return t, nil
-		}
-	}
+	return func(s *Source) { s.tok = apiclient.EnvToken(name) }
 }
 
 // WithBearerAuth sends the token as "Authorization: Bearer" (OAuth 2 access
@@ -115,8 +90,7 @@ func WithClock(now func() time.Time) Option {
 type Source struct {
 	base     string // instance root, without "/api/v4"
 	hc       *http.Client
-	token    func() (secret, error)
-	tokenSet bool
+	tok      apiclient.Token
 	bearer   bool
 	pageSize int
 	now      func() time.Time
@@ -124,8 +98,6 @@ type Source struct {
 }
 
 var _ source.Source = (*Source)(nil)
-
-var errBasePlain = errors.New("refusing to send the token over plain http to a non-loopback host")
 
 // New returns a Source that sends requests to the GitLab instance at baseURL
 // (DefaultBaseURL if empty) with hc, normally the netguard client. hc must not
@@ -143,40 +115,20 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	}
 	s := &Source{
 		base:     trimAPISuffix(strings.TrimRight(baseURL, "/")),
-		token:    func() (secret, error) { return "", nil },
 		pageSize: defaultPageSize,
 		now:      time.Now,
 	}
 	for _, o := range opts {
 		o(s)
 	}
-	cp := *hc
-	orig := cp.CheckRedirect
-	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		// The credentials are those of the original request: net/http drops
-		// Authorization on a cross-domain hop but keeps PRIVATE-TOKEN, so
-		// req.Header says nothing about what the first request carried.
-		if h := via[0].Header; h.Get("PRIVATE-TOKEN") != "" || h.Get("Authorization") != "" {
-			if !tokenSafe(req.URL) || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
-				return fmt.Errorf("gitlab-release: refusing to follow a redirect to %s with credentials", req.URL.Host)
-			}
-		}
-		if orig != nil {
-			return orig(req, via)
-		}
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
-		}
-		return nil
-	}
-	s.hc = &cp
+	s.hc = apiclient.GuardRedirects(Kind, hc)
 	u, err := url.Parse(s.base)
 	switch {
 	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(baseURL, "?#"):
 		s.cfgErr = errors.New("invalid base URL: want an absolute http(s) URL without credentials, query or fragment")
-	case s.tokenSet && !tokenSafe(u):
-		s.cfgErr = errBasePlain
+	case s.tok.Set() && !apiclient.TokenSafe(u):
+		s.cfgErr = apiclient.ErrBasePlain
 	}
 	return s
 }
@@ -265,7 +217,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if err != nil {
 		return source.Result{}, err
 	}
-	tok, err := s.token()
+	tok, err := s.tok.Get()
 	if err != nil {
 		return source.Result{}, fmt.Errorf("gitlab-release %s: %w", project, err)
 	}
@@ -414,8 +366,8 @@ func (s *Source) get(ctx context.Context, u string, v netguard.Validators, tok s
 	}
 	req.Header.Set("Accept", "application/json")
 	if tok != "" {
-		if !tokenSafe(req.URL) {
-			return nil, errBasePlain
+		if !apiclient.TokenSafe(req.URL) {
+			return nil, apiclient.ErrBasePlain
 		}
 		if s.bearer {
 			req.Header.Set("Authorization", "Bearer "+string(tok))
@@ -423,27 +375,5 @@ func (s *Source) get(ctx context.Context, u string, v netguard.Validators, tok s
 			req.Header.Set("PRIVATE-TOKEN", string(tok))
 		}
 	}
-	res, err := netguard.Fetch(ctx, s.hc, req, v)
-	if err != nil {
-		var se *netguard.StatusError
-		if errors.As(err, &se) && se.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf("project not found (or not visible to the token): %w", err)
-		}
-		if errors.As(err, &se) && se.StatusCode == http.StatusUnauthorized {
-			return nil, fmt.Errorf("the token is invalid or expired: %w", err)
-		}
-		return nil, err
-	}
-	return res, nil
-}
-
-// tokenSafe reports whether credentials may be sent to u.
-func tokenSafe(u *url.URL) bool {
-	if u.Scheme == "https" {
-		return true
-	}
-	if ip := net.ParseIP(u.Hostname()); ip != nil {
-		return ip.IsLoopback()
-	}
-	return strings.EqualFold(u.Hostname(), "localhost")
+	return apiclient.Fetch(ctx, s.hc, req, v, "project not found")
 }

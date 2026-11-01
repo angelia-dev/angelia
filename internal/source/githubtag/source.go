@@ -15,6 +15,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/internal/apiclient"
 	"github.com/angelia-dev/angelia/internal/source/internal/ghapi"
 )
 
@@ -41,14 +42,14 @@ var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$|^[0-9a-f]{64}$`)
 
 // secret hides a token from fmt, slog and JSON. The alias is kept for
 // secret_test.go.
-type secret = ghapi.Secret
+type secret = apiclient.Secret
 
 // Option configures a Source.
 type Option func(*Source)
 
 // WithToken sets a fixed API token. A blank token makes List fail.
 func WithToken(token string) Option {
-	return func(s *Source) { s.tok = ghapi.FixedToken(token) }
+	return func(s *Source) { s.tok = apiclient.FixedToken(token) }
 }
 
 // WithTokenEnv reads the token from the environment variable name on every
@@ -56,7 +57,7 @@ func WithToken(token string) Option {
 // empty or blank, List fails rather than silently falling back to the 60
 // requests per hour anonymous limit.
 func WithTokenEnv(name string) Option {
-	return func(s *Source) { s.tok = ghapi.EnvToken(name) }
+	return func(s *Source) { s.tok = apiclient.EnvToken(name) }
 }
 
 // WithPageSize overrides the page size (default 100, GitHub's maximum).
@@ -77,7 +78,7 @@ func WithClock(now func() time.Time) Option {
 // use.
 type Source struct {
 	api      *ghapi.Client
-	tok      ghapi.Token
+	tok      apiclient.Token
 	pageSize int
 	now      func() time.Time
 }
