@@ -204,6 +204,8 @@ func indexPath(name string) string {
 // indexLine is one line of the sparse index. Dependencies and features are
 // not read.
 type indexLine struct {
+	// Name is the crate name as published, in its original case.
+	Name        string  `json:"name"`
 	Vers        string  `json:"vers"`
 	Cksum       string  `json:"cksum"`
 	Yanked      bool    `json:"yanked"`
@@ -353,6 +355,9 @@ func (s *Source) versions(name string, lines []indexLine, info map[string]apiVer
 		v := source.Version{Raw: l.Vers, Yanked: l.Yanked, PublishedAt: info[l.Vers].created, Metadata: map[string]any{}}
 		if s.pageBase != "" {
 			v.URL = s.pageBase + "/" + name + "/" + url.PathEscape(l.Vers)
+		}
+		if l.Name != "" {
+			v.Metadata["crate_name"] = l.Name // the purl name (spec: "name as published")
 		}
 		if l.Cksum != "" {
 			v.Metadata["checksum"] = l.Cksum
