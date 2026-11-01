@@ -87,10 +87,10 @@ Keys follow architecture.md section 3.4 and PRD F4.
 | `cooldown` | duration | no | `0` | Go syntax, at most `8760h` |
 | `baseline` | boolean | no | `true` | when true, versions known at the first check are recorded without events |
 
-The policy engine (`internal/policy`) does not exist yet. In Phase 0 the loader validates structure
-(types, enums, regex compilation, durations) and stores the policy as `watch.policy_json`. The syntax of
-`constraint` is validated once the policy package lands; until then it must be a non-empty single-line
-string.
+The loader validates each policy structurally (types, enums, regex compilation, durations), then
+decodes the stored form with the policy engine (`policy.Decode`) and compiles it with the watch's scheme
+(`policy.Compile`). A `constraint` with a syntax error, or with an operand the scheme cannot parse, fails
+at load time with the file, line and path of the key. The policy is stored as `watch.policy_json`.
 
 ### 2.4 `sinks[]`
 

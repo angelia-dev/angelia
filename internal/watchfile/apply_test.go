@@ -1,6 +1,7 @@
 package watchfile
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -307,7 +308,10 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	// the baseline; the old target goes with its known set.
 	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
 		_, err := tx.AddVersion(ctx, store.Version{TargetID: req.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock})
-		return err
+		if err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: req.ID, TargetID: req.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
 	}))
 	plan = mustApply(t, st, strings.Replace(twoWatches, "coordinates: {name: requests}", "coordinates: {name: httpx}", 1))
 	if plan.Count(KindTarget, Create) != 1 || plan.Count(KindTarget, Delete) != 1 {
@@ -323,6 +327,35 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	}
 	if vs, _ := st.ListVersions(ctx, req.TargetID); len(vs) != 0 {
 		t.Fatalf("old versions kept: %v", vs)
+	}
+	// The release the watch held on the old target is dropped too.
+	if n, err := st.DeletePendingReleasesOfWatch(ctx, req.ID); err != nil || n != 0 {
+		t.Fatalf("held releases left after the move: %d, %v", n, err)
+	}
+}
+
+// Moving a watch drops what it held even when the old target stays, because
+// another watch still uses it.
+func TestMovedWatchDropsHeldReleasesOfSharedTarget(t *testing.T) {
+	st := openStore(t)
+	shared := "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}}\n  - {name: b, source: pypi, coordinates: {name: requests}}\n"
+	mustApply(t, st, shared)
+	ctx := t.Context()
+	var a store.Watch
+	for _, w := range snap(t, st, store.ManagedByFile).watches {
+		if w.Name == "a" {
+			a = w
+		}
+	}
+	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: a.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock}); err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: a.ID, TargetID: a.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
+	}))
+	mustApply(t, st, strings.Replace(shared, "{name: a, source: pypi, coordinates: {name: requests}}", "{name: a, source: pypi, coordinates: {name: httpx}}", 1))
+	if n, err := st.DeletePendingReleasesOfWatch(ctx, a.ID); err != nil || n != 0 {
+		t.Fatalf("held releases left after the move: %d, %v", n, err)
 	}
 }
 

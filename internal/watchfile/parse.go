@@ -21,7 +21,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
 
@@ -540,7 +542,56 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 	if pn := m["policy"]; pn != nil && !isNull(pn) {
 		p.policy(pn, jp+".policy", &w.Policy)
 	}
+	if len(p.errs) == before {
+		p.compilePolicy(w, m, n, jp)
+	}
 	return w, len(p.errs) == before
+}
+
+// compilePolicy runs the stored form of the watch's policy through the
+// policy engine, so that what the engine would reject on every check (a
+// constraint with an operand the watch's scheme cannot parse, say) fails at
+// load time instead.
+func (p *parser) compilePolicy(w Watch, m map[string]*yaml.Node, wn *yaml.Node, jp string) {
+	pol, err := policy.Decode(w.PolicyJSON())
+	if err == nil {
+		var s version.Scheme
+		if s, err = schemes.Select(w.Source, w.Scheme, nil); err == nil {
+			_, err = policy.Compile(pol, s)
+		}
+	}
+	if err == nil {
+		return
+	}
+	at := wn
+	if pn := m["policy"]; pn != nil && !isNull(pn) {
+		at = pn
+	}
+	for _, line := range strings.Split(err.Error(), "\n") {
+		line = strings.TrimPrefix(line, policy.ErrInvalid.Error()+": ")
+		path, node := jp+".policy", at
+		if key, _, ok := strings.Cut(line, ":"); ok && at != wn {
+			switch key {
+			case "constraint", "prerelease", "cooldown", "baseline":
+				if kn := mapValue(at, key); kn != nil {
+					path, node = jp+".policy."+key, kn
+					line = strings.TrimPrefix(strings.TrimPrefix(line, key+":"), " ")
+					line = strings.TrimPrefix(strings.TrimPrefix(line, key+":"), " ")
+				}
+			}
+		}
+		p.errf(node, path, "%s", line)
+	}
+}
+
+// mapValue returns the value node of key in a mapping node, or nil.
+func mapValue(n *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func defaultPolicy() Policy { return Policy{Prerelease: "none", Baseline: true} }
