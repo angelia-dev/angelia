@@ -114,38 +114,54 @@ Built-ins are compiled in. For third-party plugins there are three options, to c
 
 ## 4. The event contract (the product)
 
-CloudEvents 1.0, JSON format. The schema lives in its own repo and is versioned with SemVer.
+CloudEvents 1.0, JSON structured mode. The contract lives in its own repo, [angelia-dev/spec](https://github.com/angelia-dev/spec), and is versioned with SemVer (draft, pre-1.0: it may still change in a 0.x release). The three event types share one `data` schema, [`schemas/release/v1.json`](https://github.com/angelia-dev/spec/blob/main/schemas/release/v1.json), inside the envelope profile [`schemas/release/envelope/v1.json`](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json). The field-by-field reference is [`docs/release-event-v1.md`](https://github.com/angelia-dev/spec/blob/main/docs/release-event-v1.md); this section is a summary and the spec wins if they differ.
 
 ```json
 {
   "specversion": "1.0",
-  "id": "01JBX2V7Q8T3K9…",
-  "source": "angelia://my-instance/watches/pypi/requests",
+  "id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
+  "source": "angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2",
   "type": "dev.angelia.release.published.v1",
   "subject": "pypi:requests@2.33.0",
-  "time": "2026-10-30T17:00:00Z",
+  "time": "2026-10-30T17:00:02.512Z",
   "datacontenttype": "application/json",
+  "dataschema": "https://github.com/angelia-dev/spec/schemas/release/v1.json",
   "data": {
-    "ecosystem": "pypi",
+    "source": "pypi",
     "package": "requests",
     "version": "2.33.0",
+    "normalized_version": "2.33.0",
     "previous_version": "2.32.5",
     "scheme": "pep440",
     "bump": "minor",
+    "backport": false,
     "prerelease": false,
     "yanked": false,
     "published_at": "2026-10-27T14:02:11Z",
     "detected_at": "2026-10-30T17:00:00Z",
     "cooldown_satisfied_at": "2026-10-30T14:02:11Z",
-    "urls": { "release": "…", "changelog": "…", "artifact": "…" },
-    "notes": { "format": "markdown", "body": "…", "truncated": true },
-    "watch": { "id": "w_123", "labels": { "team": "platform", "repo": "api" } },
+    "urls": {
+      "release": "https://pypi.org/project/requests/2.33.0/",
+      "changelog": "https://github.com/psf/requests/blob/main/HISTORY.md",
+      "artifact": null
+    },
+    "notes": null,
+    "watch": {
+      "id": "01JBX1Z3M4N5P6Q7R8S9T0V1W2",
+      "name": "requests",
+      "labels": { "team": "platform", "repo": "api" }
+    },
     "purl": "pkg:pypi/requests@2.33.0"
   }
 }
 ```
 
-Event types: `release.published`, `release.yanked`, `release.prerelease`, and later `release.advisory` (OSV enrichment). Packages are identified with **purl** so consumers can join with SBOMs, OSV and Renovate.
+- **Envelope.** `source` is `angelia://<instance>/watches/<watch_id>`: `<instance>` is the `instance.name` of the [instance configuration](configuration.md) (default `angelia`) and `<watch_id>` is the watch's bare ULID, equal to `data.watch.id`. `id` is a ULID generated once when the event is written; every delivery attempt, retry and replay carries the same id (at-least-once delivery, consumers deduplicate on it). `subject` is `<source kind>:<package>@<version>` with the raw version. `time` is the **emission** time (the end of the check that emitted the event), not `detected_at`: with a cooldown it is later.
+- **`data.source`** is the source kind of the watch (`pypi`, `npm`, `github-release`, a plugin's kind, ...). It is not the CloudEvents `source` attribute; in templates write `.data.source`.
+- **Versions.** `version` is the raw upstream string; `normalized_version` is the scheme's normalised form; `previous_version` is the greatest earlier version of the same scheme, and `bump` is the change from it (both `null` when there is nothing to compare with). `backport` is `true` when a greater version was already known (`1.9.4` after `2.0.0`).
+- **Always present.** Every documented field is always present: a field with no value is `null`, never omitted. For example `notes` is `null` until notes enrichment exists (PRD F12), and `urls.artifact` is `null` for PyPI. `watch.name` is `null` for a watch created through the API without a name; `watch.labels` is `{}` when empty.
+- **Open objects.** Producers emit only the documented fields and no CloudEvents extension attributes. Consumers must ignore fields and extension attributes they do not know (a new optional field is a minor change). The values of `data.source`, `scheme` and `notes.format` are open sets; `bump` and `type` are closed enums.
+- **Types.** `release.published`, `release.prerelease` and `release.yanked` (one `data` schema, with a few rules that depend on the type, such as `yanked` being true only on `release.yanked`); later `release.advisory` (OSV enrichment). Packages are identified with **purl** so consumers can join with SBOMs, OSV and Renovate.
 
 ## 5. Data model (simplified)
 
