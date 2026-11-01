@@ -25,7 +25,8 @@ Angelia ships signed, multi-arch artifacts with SBOMs ([architecture.md §8](../
    ```
 4. The **Release** workflow runs:
    - `build and publish`: GoReleaser builds, checksums and SBOMs the archives, pushes the multi-arch image, and creates a **draft** GitHub release.
-   - `sign and attest`: signs `checksums.txt` and the image, creates the image SBOM and attestation, and attaches provenance.
+   - `sign and attest`: signs `checksums.txt` and the image digest produced by the build job (so the tag cannot be moved in between), creates the image SBOM and attestation, and attaches provenance.
+   - `attach signatures to the release`: uploads the cosign bundle and the image SBOM to the draft release. It is the only other job with `contents: write`, and has no signing or registry access.
 5. Review the draft release (assets, changelog), then publish it by hand. The workflow never publishes on its own.
 
 Publishing credentials and the first real release are outside this story (H-publish).
@@ -73,6 +74,8 @@ cosign verify-attestation --type spdxjson ghcr.io/angelia-dev/angelia:${TAG#v} \
   --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
 ```
 
+**Which image SBOM to use.** The image carries two SBOMs. The documented path is the syft SBOM attested by cosign (`cosign verify-attestation` above, also attached to the release as `angelia-image.spdx.json`), because its signer identity is verified. BuildKit may also attach its own SBOM attestation to the image index; it is unsigned by cosign and only informational.
+
 For production, deploy by digest (`ghcr.io/angelia-dev/angelia@sha256:...`) after verifying it.
 
 ## Workflow permissions
@@ -86,13 +89,14 @@ For production, deploy by digest (`ghcr.io/angelia-dev/angelia@sha256:...`) afte
 | `release.yml` / `sign` | `id-token: write` | Request the GitHub OIDC token that Sigstore (Fulcio) exchanges for a short-lived signing certificate. Only this job has it. |
 | | `attestations: write` | Store the SLSA provenance attestations. |
 | | `packages: write` | Push signatures and attestations to the image repository on ghcr.io. |
-| | `contents: write` | Upload the cosign bundle and the image SBOM to the draft release. |
+| `release.yml` / `publish-assets` | `contents: write` | Upload the cosign bundle and the image SBOM to the draft release. Nothing else. |
 | `release-snapshot.yml` / `snapshot` | `contents: read` | Check out the code. Publishes nothing, has no `id-token`. |
+
+The base image is pinned by digest in the `Dockerfile`, and the BuildKit image used by `docker buildx create` in `release.yml` is pinned by digest too; Renovate updates the Dockerfile digest.
 
 Other hardening: `persist-credentials: false` on checkouts, no secrets other than the automatic `GITHUB_TOKEN`, release tools installed with `go install` at exact versions (verified by the Go checksum database) instead of third-party actions, and the release is created as a draft.
 
 ## Notes and known limits
 
 - Tool versions are pinned in `scripts/install-release-tools.sh`; bump them there.
-- The base image tag `gcr.io/distroless/static-debian12:nonroot` is not pinned by digest yet. Pin it (and let Renovate update it) once the first release is planned.
 - The container runs as uid 65532. A volume for SQLite must be writable by that user.

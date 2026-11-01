@@ -20,8 +20,12 @@ image)
 	esac
 	;;
 run)
-	[[ "${FAKE_SHELL:-}" == yes ]] && exit 0
-	exit 127
+	if [[ "$*" == *--entrypoint* ]]; then
+		[[ "${FAKE_SHELL:-}" == yes ]] && exit 0
+		echo "${FAKE_PROBE_MSG:-exec: not found: no such file or directory}" >&2
+		exit "${FAKE_PROBE_RC:-127}"
+	fi
+	exit "${FAKE_VERSION_RC:-0}"
 	;;
 esac
 EOF
@@ -51,5 +55,9 @@ FAKE_SIZE=60000000 FAKE_USER=65532:65532 FAKE_SHELL=no expect "too big" 1
 FAKE_SIZE=6000000 FAKE_USER= FAKE_SHELL=no expect "no user (root)" 1
 FAKE_SIZE=6000000 FAKE_USER=root FAKE_SHELL=no expect "root user" 1
 FAKE_SIZE=6000000 FAKE_USER=65532 FAKE_SHELL=yes expect "has shell" 1
+FAKE_SIZE=6000000 FAKE_USER=0:0 FAKE_SHELL=no expect "user 0:0" 1
+FAKE_SIZE=6000000 FAKE_USER=65532 FAKE_VERSION_RC=1 expect "image does not start" 1
+FAKE_SIZE=6000000 FAKE_USER=65532 FAKE_PROBE_RC=125 FAKE_PROBE_MSG="docker: daemon error" expect "probe fails for another reason" 1
+FAKE_SIZE=6000000 FAKE_USER=65532 FAKE_PROBE_RC=1 FAKE_PROBE_MSG="OCI runtime: executable file not found" expect "not-found message with odd rc" 0
 grep -q SPDX "$tmp/sbom.json" || { echo "FAIL: sbom not written"; fail=1; }
 exit "$fail"

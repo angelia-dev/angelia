@@ -13,6 +13,7 @@ on:
       - "scripts/check-image_test.sh"
       - "scripts/install-release-tools.sh"
       - "cmd/**"
+      - "internal/**"
       - "go.mod"
       - "go.sum"
   workflow_dispatch:
@@ -49,16 +50,12 @@ jobs:
         run: goreleaser check
       - name: Snapshot build (no publish)
         run: goreleaser release --snapshot --clean
-      - name: Build the image for the runner platform from the snapshot binary
-        run: |
-          # GoReleaser only publishes multi-arch images; for the checks we need
-          # an image in the local daemon, built from the same binary and Dockerfile.
-          mkdir -p image-ctx/linux/amd64
-          cp dist/angelia_linux_amd64_v1/angelia image-ctx/linux/amd64/angelia
-          docker buildx build --load --platform linux/amd64 \
-            --file Dockerfile --tag angelia:snapshot-check image-ctx
       - name: Image is non-root, shell-less, under 50 MB; SBOM
-        run: scripts/check-image.sh angelia:snapshot-check dist/angelia-image.spdx.json
+        run: |
+          # In snapshot mode dockers_v2 loads one image per platform, tagged
+          # <version>-<arch>. Check the one that runs on this runner.
+          ver="$(jq -r .version dist/metadata.json)"
+          scripts/check-image.sh "ghcr.io/angelia-dev/angelia:${ver}-amd64" dist/angelia-image.spdx.json
       - name: List snapshot artifacts and SBOMs
         run: |
           {

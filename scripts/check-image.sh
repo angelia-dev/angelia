@@ -41,18 +41,38 @@ case "${user%%:*}" in
 *) row "User" "\`$user\`" "ok (non-root)" ;;
 esac
 
-# No shell: starting one must fail.
+# The image must actually start: a broken image would also "have no shell".
+if ! docker run --rm "$image" version >/dev/null 2>&1; then
+	row "Starts" "\`$image version\`" "FAIL (the image does not run)"
+	failed=1
+else
+	row "Starts" "\`version\`" "ok"
+fi
+
+# No shell: starting one must fail because it is not there (exit 126 or 127, or a
+# "not found" message). Any other failure (daemon error, OOM, ...) is an error,
+# not proof that the shell is absent.
 shell_found=""
-for sh in /bin/sh /busybox/sh /bin/bash; do
-	if docker run --rm --entrypoint "$sh" "$image" -c true >/dev/null 2>&1; then
+probe_error=""
+for sh in /bin/sh /bin/ash /bin/dash /bin/bash /busybox/sh; do
+	rc=0
+	out="$(docker run --rm --entrypoint "$sh" "$image" -c true 2>&1)" || rc=$?
+	if ((rc == 0)); then
 		shell_found="$sh"
+	elif ((rc == 126 || rc == 127)) || grep -qiE 'no such file|not found|executable file' <<<"$out"; then
+		: # absent, as wanted
+	else
+		probe_error="$sh (exit $rc)"
 	fi
 done
-if [[ -z "$shell_found" ]]; then
-	row "Shell" "none" "ok"
-else
+if [[ -n "$shell_found" ]]; then
 	row "Shell" "\`$shell_found\`" "FAIL (image has a shell)"
 	failed=1
+elif [[ -n "$probe_error" ]]; then
+	row "Shell" "\`$probe_error\`" "FAIL (probe failed for another reason)"
+	failed=1
+else
+	row "Shell" "none" "ok"
 fi
 
 # SBOM.
