@@ -3,6 +3,7 @@ package policy
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -20,22 +21,22 @@ import (
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
 
-// fixture is one target ("t", an npm package) in a SQLite store on disk.
+// fixture is a SQLite store on disk with one target ("t", an npm package)
+// and the watches given to newFixture; addTarget adds more.
 type fixture struct {
-	t    *testing.T
-	path string
-	s    *sqlite.Store
-	log  bytes.Buffer
+	t     *testing.T
+	path  string
+	s     *sqlite.Store
+	log   bytes.Buffer
+	kinds map[string]string // target ID -> kind
 }
 
 func newFixture(t *testing.T, watches ...store.Watch) *fixture {
 	t.Helper()
-	f := &fixture{t: t, path: filepath.Join(t.TempDir(), "angelia.db")}
+	f := &fixture{t: t, path: filepath.Join(t.TempDir(), "angelia.db"), kinds: map[string]string{}}
 	f.open()
 	ctx := t.Context()
-	if err := f.s.CreateTarget(ctx, store.Target{ID: "t", Kind: "npm", Coordinates: map[string]string{"name": "x"}, NextCheckAt: t0}); err != nil {
-		t.Fatal(err)
-	}
+	f.addTarget("t", "npm")
 	for _, w := range watches {
 		w.TargetID = "t"
 		if err := f.s.CreateWatch(ctx, w); err != nil {
@@ -43,6 +44,18 @@ func newFixture(t *testing.T, watches ...store.Watch) *fixture {
 		}
 	}
 	return f
+}
+
+func (f *fixture) addTarget(id, kind string) {
+	f.t.Helper()
+	coords := map[string]string{"name": "x-" + id}
+	if kind == "github-tag" || kind == "github-release" {
+		coords = map[string]string{"repo": "example/" + id}
+	}
+	if err := f.s.CreateTarget(f.t.Context(), store.Target{ID: id, Kind: kind, Coordinates: coords, NextCheckAt: t0}); err != nil {
+		f.t.Fatal(err)
+	}
+	f.kinds[id] = kind
 }
 
 func (f *fixture) open() {
@@ -62,35 +75,60 @@ func (f *fixture) restart() {
 	f.open()
 }
 
-// check runs diff.Apply then Apply in one transaction at now and returns
-// the emitted releases by watch ID.
+// check runs diff.Apply then Apply on target "t" in one transaction at now
+// and returns the emitted releases by watch ID.
 func (f *fixture) check(now time.Time, res source.Result) map[string][]Release {
 	f.t.Helper()
-	ctx := f.t.Context()
-	logger := slog.New(slog.NewTextHandler(&f.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	schemeFor := SchemeFor("npm", logger)
-	got := map[string][]Release{}
-	err := f.s.InTx(ctx, func(tx store.Tx) error {
-		def, _ := schemes.Select("npm", "", logger)
-		out, err := diff.Apply(ctx, tx, diff.Input{TargetID: "t", Fetched: res, Scheme: def, SchemeFor: schemeFor, Now: now, Logger: logger})
-		if err != nil {
-			return err
-		}
-		wrs, err := Apply(ctx, tx, out, Input{TargetID: "t", SchemeFor: schemeFor, Now: now, Logger: logger})
-		for _, wr := range wrs {
-			got[wr.Watch.ID] = wr.Releases
-		}
-		return err
-	})
+	got, err := f.checkOn("t", now, res, nil)
 	if err != nil {
 		f.t.Fatalf("check at %v: %v", now, err)
 	}
 	return got
 }
 
+// checkOn runs a check of target at now, as the scheduler would: diff.Apply,
+// Apply, then after (the caller's work in the same transaction, such as
+// appending the events), and commits only if all succeed.
+func (f *fixture) checkOn(target string, now time.Time, res source.Result, after func(store.Tx) error) (map[string][]Release, error) {
+	ctx := f.t.Context()
+	kind := f.kinds[target]
+	logger := slog.New(slog.NewTextHandler(&f.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	schemeFor := SchemeFor(kind, logger)
+	got := map[string][]Release{}
+	err := f.s.InTx(ctx, func(tx store.Tx) error {
+		def, _ := schemes.Select(kind, "", logger)
+		out, err := diff.Apply(ctx, tx, diff.Input{TargetID: target, Fetched: res, Scheme: def, SchemeFor: schemeFor, Now: now, Logger: logger})
+		if err != nil {
+			return err
+		}
+		wrs, err := Apply(ctx, tx, out, Input{
+			TargetID: target, SchemeFor: schemeFor, Now: now, Logger: logger, TrustPublishedAt: TrustsPublishedAt(kind),
+		})
+		if err != nil {
+			return err
+		}
+		for _, wr := range wrs {
+			got[wr.Watch.ID] = wr.Releases
+		}
+		if after != nil {
+			return after(tx)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return got, nil
+}
+
 func (f *fixture) held(watchID string) []string {
 	f.t.Helper()
-	ps, err := f.s.ListPendingReleases(f.t.Context(), "t")
+	return f.heldOn("t", watchID)
+}
+
+func (f *fixture) heldOn(target, watchID string) []string {
+	f.t.Helper()
+	ps, err := f.s.ListPendingReleases(f.t.Context(), target)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -221,6 +259,124 @@ func TestApplyRemovedWhileHeld(t *testing.T) {
 	}
 }
 
+// TestApplyRetargetedWatch: a watch moved to another target while it holds
+// a version, and the same raw version is then held on the new target. The
+// rows are keyed by target, so the check does not fail with a conflict and
+// each target's row is released on its own.
+func TestApplyRetargetedWatch(t *testing.T) {
+	f := newFixture(t, store.Watch{ID: "w", Policy: policyJSON(`{"cooldown":"1h"}`)})
+	f.addTarget("t2", "npm")
+	base := v("1.0.0", time.Time{})
+	f.check(t0, listed(base))
+	f.check(t0, listed(v("1.1.0", time.Time{}), base))
+	if !slices.Equal(f.held("w"), []string{"1.1.0"}) {
+		t.Fatalf("held on t: %q", f.held("w"))
+	}
+
+	// The watch-file apply (#48) re-targets the watch; it does not call
+	// DeletePendingReleasesOfWatch here, the worst case.
+	db, err := sql.Open("sqlite", f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE watch SET target_id = 't2' WHERE id = 'w'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	// t2 then lists 1.1.0 too: it is held on t2 next to the stale row on t
+	// (before the fix, AddPendingRelease failed with ErrConflict and the
+	// whole check rolled back, on every check).
+	// Its first fill (several versions) is a baseline for every watch.
+	old := v("0.9.0", time.Time{})
+	if _, err := f.checkOn("t2", t0.Add(5*time.Minute), listed(base, old), nil); err != nil {
+		t.Fatalf("first check of the new target: %v", err)
+	}
+	if _, err := f.checkOn("t2", t0.Add(10*time.Minute), listed(v("1.1.0", time.Time{}), base, old), nil); err != nil {
+		t.Fatalf("check of the new target: %v", err)
+	}
+	if got := f.heldOn("t2", "w"); !slices.Equal(got, []string{"1.1.0"}) {
+		t.Fatalf("held on t2: %q", got)
+	}
+	got, err := f.checkOn("t2", t0.Add(2*time.Hour), source.Result{NotModified: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := raws(got["w"]); !slices.Equal(r, []string{"1.1.0"}) {
+		t.Fatalf("released on t2: %q", r)
+	}
+	if got := f.heldOn("t2", "w"); len(got) != 0 {
+		t.Fatalf("still held on t2: %q", got)
+	}
+	// The stale row on t is not listed for t's checks and is forgotten
+	// with DeletePendingReleasesOfWatch.
+	if got := f.check(t0.Add(3*time.Hour), source.Result{NotModified: true}); len(got) != 0 {
+		t.Fatalf("t released a moved watch's row: %v", got)
+	}
+	if n, err := f.s.DeletePendingReleasesOfWatch(t.Context(), "w"); err != nil || n != 1 {
+		t.Fatalf("DeletePendingReleasesOfWatch = %d, %v; want the stale row on t", n, err)
+	}
+}
+
+// TestApplyRollback: when the caller's work after Apply fails (appending the
+// events, #106), the transaction rolls back: held rows are as before and the
+// released versions come out again at the next check.
+func TestApplyRollback(t *testing.T) {
+	f := newFixture(t, store.Watch{ID: "w", Policy: policyJSON(`{"cooldown":"1h"}`)})
+	base := v("1.0.0", time.Time{})
+	f.check(t0, listed(base))
+	f.check(t0, listed(v("1.1.0", time.Time{}), base))
+	errAppend := errors.New("append events failed")
+	fail := func(store.Tx) error { return errAppend }
+
+	// A new version to hold and a held one to release, then a failure.
+	got, err := f.checkOn("t", t0.Add(2*time.Hour), listed(v("1.2.0", time.Time{}), v("1.1.0", time.Time{}), base), fail)
+	if !errors.Is(err, errAppend) || got != nil {
+		t.Fatalf("checkOn = %v, %v; want the caller's error", got, err)
+	}
+	if h := f.held("w"); !slices.Equal(h, []string{"1.1.0"}) {
+		t.Fatalf("held after rollback: %q, want unchanged", h)
+	}
+	// Nothing was emitted: the next check releases 1.1.0 and holds 1.2.0.
+	got = f.check(t0.Add(2*time.Hour), listed(v("1.2.0", time.Time{}), v("1.1.0", time.Time{}), base))
+	if r := raws(got["w"]); !slices.Equal(r, []string{"1.1.0"}) || !slices.Equal(f.held("w"), []string{"1.2.0"}) {
+		t.Fatalf("after retry: emitted %q, held %q", r, f.held("w"))
+	}
+}
+
+// TestApplyUntrustedPublishedAt: a github-tag target's tag dated 2020 is
+// held for the full cooldown from detection; an npm version with the same
+// date emits at once.
+func TestApplyUntrustedPublishedAt(t *testing.T) {
+	f := newFixture(t, store.Watch{ID: "npm", Policy: policyJSON(`{"cooldown":"72h"}`)})
+	f.addTarget("tag", "github-tag")
+	ctx := t.Context()
+	if err := f.s.CreateWatch(ctx, store.Watch{ID: "tag", TargetID: "tag", Policy: policyJSON(`{"cooldown":"72h"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	base := v("1.0.0", old)
+	for _, target := range []string{"t", "tag"} {
+		if _, err := f.checkOn(target, t0, listed(base), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := f.checkOn("t", t0, listed(v("1.1.0", old), base), nil)
+	if err != nil || !slices.Equal(raws(got["npm"]), []string{"1.1.0"}) {
+		t.Fatalf("npm: %v, %v", got, err)
+	}
+	for _, at := range []time.Duration{0, 72*time.Hour - time.Minute} {
+		got, err := f.checkOn("tag", t0.Add(at), listed(v("1.1.0", old), base), nil)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("github-tag at +%v: %v, %v; want held", at, got, err)
+		}
+	}
+	got, err = f.checkOn("tag", t0.Add(72*time.Hour), listed(v("1.1.0", old), base), nil)
+	if err != nil || !slices.Equal(raws(got["tag"]), []string{"1.1.0"}) || !got["tag"][0].CooldownSatisfiedAt.Equal(t0.Add(72*time.Hour)) {
+		t.Fatalf("github-tag after the cooldown: %+v, %v", got, err)
+	}
+}
+
 func TestApplyPerWatchScheme(t *testing.T) {
 	f := newFixture(t,
 		store.Watch{ID: "cal", Policy: policyJSON(`{"scheme":"calver","constraint":">=2026"}`)},
@@ -295,7 +451,7 @@ func (f failTx) AddPendingRelease(context.Context, store.PendingRelease) error {
 	return f.err("AddPendingRelease")
 }
 
-func (f failTx) DeletePendingRelease(context.Context, string, string) error {
+func (f failTx) DeletePendingRelease(context.Context, string, string, string) error {
 	return f.err("DeletePendingRelease")
 }
 

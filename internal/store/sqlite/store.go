@@ -145,8 +145,13 @@ func (s *Store) AddPendingRelease(ctx context.Context, p store.PendingRelease) e
 }
 
 // DeletePendingRelease implements [store.Tx] in its own statement.
-func (s *Store) DeletePendingRelease(ctx context.Context, watchID, raw string) error {
-	return txOps{q: s.q}.DeletePendingRelease(ctx, watchID, raw)
+func (s *Store) DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error {
+	return txOps{q: s.q}.DeletePendingRelease(ctx, watchID, targetID, raw)
+}
+
+// DeletePendingReleasesOfWatch implements [store.Tx] in its own statement.
+func (s *Store) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	return txOps{q: s.q}.DeletePendingReleasesOfWatch(ctx, watchID)
 }
 
 // txOps runs the [store.Tx] writes on q, which may be bound to a transaction.
@@ -247,9 +252,14 @@ func (o txOps) AddPendingRelease(ctx context.Context, p store.PendingRelease) er
 	return wrap(err, "add pending release", id)
 }
 
-func (o txOps) DeletePendingRelease(ctx context.Context, watchID, raw string) error {
-	n, err := o.q.DeletePendingRelease(ctx, DeletePendingReleaseParams{WatchID: watchID, Raw: raw})
-	return deleted(n, err, "delete pending release", watchID+"@"+raw)
+func (o txOps) DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error {
+	n, err := o.q.DeletePendingRelease(ctx, DeletePendingReleaseParams{WatchID: watchID, TargetID: targetID, Raw: raw})
+	return deleted(n, err, "delete pending release", watchID+"@"+targetID+"@"+raw)
+}
+
+func (o txOps) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	n, err := o.q.DeletePendingReleasesOfWatch(ctx, watchID)
+	return n, wrap(err, "delete pending releases of watch", watchID)
 }
 
 func watchFromRow(r Watch) (store.Watch, error) {

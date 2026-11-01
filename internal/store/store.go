@@ -71,13 +71,20 @@ type Tx interface {
 	// watch that now points at another target are left out.
 	ListPendingReleases(ctx context.Context, targetID string) ([]PendingRelease, error)
 	// AddPendingRelease holds a known version for a watch. Yanked and
-	// Removed are ignored. ErrConflict when the watch already holds Raw;
-	// ErrInvalidRef when the watch or the version (TargetID, Raw) does not
-	// exist.
+	// Removed are ignored. ErrConflict when the watch already holds Raw of
+	// TargetID; ErrInvalidRef when the watch or the version (TargetID, Raw)
+	// does not exist. Rows are keyed by (WatchID, TargetID, Raw), so rows
+	// left on a watch's previous target never conflict.
 	AddPendingRelease(ctx context.Context, p PendingRelease) error
-	// DeletePendingRelease releases a held version (emitted or dropped).
-	// ErrNotFound when the watch does not hold it.
-	DeletePendingRelease(ctx context.Context, watchID, raw string) error
+	// DeletePendingRelease releases a version of targetID held by a watch
+	// (emitted or dropped). ErrNotFound when the watch does not hold it.
+	DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error
+	// DeletePendingReleasesOfWatch forgets every version a watch holds, on
+	// any target, and returns how many rows it deleted. The watch-file apply
+	// (#48, PR #132) must call it, in the same transaction, when it moves a
+	// watch to another target: the held versions of the old target must not
+	// come back if the watch later moves back.
+	DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error)
 }
 
 // Store is the persistence contract. Every engine must pass the same tests.

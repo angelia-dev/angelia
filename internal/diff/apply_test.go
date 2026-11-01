@@ -280,8 +280,12 @@ func (f failTx) AddPendingRelease(context.Context, store.PendingRelease) error {
 	return f.err("AddPendingRelease")
 }
 
-func (f failTx) DeletePendingRelease(context.Context, string, string) error {
+func (f failTx) DeletePendingRelease(context.Context, string, string, string) error {
 	return f.err("DeletePendingRelease")
+}
+
+func (f failTx) DeletePendingReleasesOfWatch(context.Context, string) (int64, error) {
+	return 0, f.err("DeletePendingReleasesOfWatch")
 }
 
 func (f failTx) AppendEvent(context.Context, store.Event, []store.Delivery) error {

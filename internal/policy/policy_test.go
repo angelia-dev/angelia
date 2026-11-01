@@ -80,6 +80,11 @@ func TestDecodeInvalid(t *testing.T) {
 		"baseline type":       `{"baseline":"yes"}`,
 		"not an object":       `["none"]`,
 		"trailing data":       `{} {}`,
+		"trailing brace":      `{}}`,
+		"trailing bracket":    `{"cooldown":"1h"}]`,
+		"trailing garbage":    `{} x`,
+		"cooldown fraction":   `{"cooldown":"1.5s"}`,
+		"cooldown millis":     `{"cooldown":"500ms"}`,
 		"include wrong type":  `{"include":"^v"}`,
 		"constraint too long": `{"constraint":"` + strings.Repeat("1", MaxConstraintLen+1) + `"}`,
 	} {
@@ -88,6 +93,15 @@ func TestDecodeInvalid(t *testing.T) {
 				t.Fatalf("Decode(%s) = %v, want ErrInvalid", in, err)
 			}
 		})
+	}
+}
+
+func TestDecodeWholeSeconds(t *testing.T) {
+	for in, want := range map[string]time.Duration{`"90s"`: 90 * time.Second, `"1.5h"`: 90 * time.Minute, `"0s"`: 0} {
+		p, err := Decode(json.RawMessage(`{"cooldown":` + in + `}  `))
+		if err != nil || time.Duration(p.Cooldown) != want {
+			t.Errorf("Decode cooldown %s = %v, %v; want %v", in, time.Duration(p.Cooldown), err, want)
+		}
 	}
 }
 

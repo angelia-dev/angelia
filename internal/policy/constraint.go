@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -60,16 +61,24 @@ func ParseConstraint(s string) (Constraint, error) {
 		}
 		var cmps []Comparator
 		for i := 0; i < len(fields); i++ {
-			op, operand := splitOp(fields[i])
-			if operand == "" && op != "" && i+1 < len(fields) {
+			op, operand, err := splitOp(fields[i])
+			if err != nil {
+				return Constraint{}, fmt.Errorf("%w: %q: %w", ErrInvalid, s, err)
+			}
+			if operand == "" && op != "" && i+1 < len(fields) && opPrefix(fields[i+1]) == "" {
 				i++
 				operand = fields[i]
 			}
 			if operand == "" {
 				return Constraint{}, fmt.Errorf("%w: %q: operator %q without a version", ErrInvalid, s, op)
 			}
-			if strings.ContainsAny(operand[:1], "<>=!|") || strings.Contains(operand, "|") {
-				return Constraint{}, fmt.Errorf("%w: %q: malformed comparator %q", ErrInvalid, s, version.Truncate(fields[i], 32))
+			if j := strings.IndexAny(operand, "<>=~^|"); j >= 0 {
+				if operand[j] == '|' {
+					return Constraint{}, fmt.Errorf("%w: %q: single \"|\" in %q: separate alternatives with \"||\"",
+						ErrInvalid, s, version.Truncate(operand, 32))
+				}
+				return Constraint{}, fmt.Errorf("%w: %q: missing separator before %q: separate comparators with a space or a comma",
+					ErrInvalid, s, version.Truncate(operand[j:], 32))
 			}
 			if op == "" || op == "=" {
 				op = "=="
@@ -84,13 +93,31 @@ func ParseConstraint(s string) (Constraint, error) {
 	return c, nil
 }
 
-func splitOp(tok string) (op, operand string) {
-	for _, o := range operators {
-		if strings.HasPrefix(tok, o) {
-			return o, tok[len(o):]
-		}
+// opChars are the characters an operator is made of, supported or not.
+const opChars = "<>=!~^"
+
+// opPrefix returns the leading run of operator characters of tok.
+func opPrefix(tok string) string {
+	n := 0
+	for n < len(tok) && strings.IndexByte(opChars, tok[n]) >= 0 {
+		n++
 	}
-	return "", tok
+	return tok[:n]
+}
+
+// splitOp splits a comparator token into its operator and operand. An
+// operator that is not one of operators ("~", "^", "=>", ">>") is an error
+// that names it.
+func splitOp(tok string) (op, operand string, err error) {
+	p := opPrefix(tok)
+	if p == "" {
+		return "", tok, nil
+	}
+	if !slices.Contains(operators, p) {
+		return "", "", fmt.Errorf("unsupported operator %q in %q (use >=, >, <=, <, ==, != or a bare version; ^, ~ and x ranges are not supported)",
+			version.Truncate(p, 8), version.Truncate(tok, 32))
+	}
+	return p, tok[len(p):], nil
 }
 
 // IsZero reports whether c matches every version.

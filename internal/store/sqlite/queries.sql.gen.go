@@ -33,7 +33,7 @@ func (q *Queries) AcquireLease(ctx context.Context, arg AcquireLeaseParams) (int
 const addPendingRelease = `-- name: AddPendingRelease :execrows
 INSERT INTO pending_release (watch_id, target_id, raw, held_at, release_json)
 VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (watch_id, raw) DO NOTHING
+ON CONFLICT (watch_id, target_id, raw) DO NOTHING
 `
 
 type AddPendingReleaseParams struct {
@@ -274,16 +274,29 @@ func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64
 }
 
 const deletePendingRelease = `-- name: DeletePendingRelease :execrows
-DELETE FROM pending_release WHERE watch_id = ? AND raw = ?
+DELETE FROM pending_release WHERE watch_id = ? AND target_id = ? AND raw = ?
 `
 
 type DeletePendingReleaseParams struct {
-	WatchID string
-	Raw     string
+	WatchID  string
+	TargetID string
+	Raw      string
 }
 
 func (q *Queries) DeletePendingRelease(ctx context.Context, arg DeletePendingReleaseParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deletePendingRelease, arg.WatchID, arg.Raw)
+	result, err := q.db.ExecContext(ctx, deletePendingRelease, arg.WatchID, arg.TargetID, arg.Raw)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deletePendingReleasesOfWatch = `-- name: DeletePendingReleasesOfWatch :execrows
+DELETE FROM pending_release WHERE watch_id = ?
+`
+
+func (q *Queries) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePendingReleasesOfWatch, watchID)
 	if err != nil {
 		return 0, err
 	}

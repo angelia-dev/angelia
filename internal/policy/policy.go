@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"time"
@@ -86,13 +87,20 @@ func Decode(raw json.RawMessage) (Policy, error) {
 	if err := dec.Decode(&p); err != nil {
 		return Policy{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	if dec.More() {
-		return Policy{}, fmt.Errorf("%w: trailing data after the policy object", ErrInvalid)
+	if tok, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return Policy{}, fmt.Errorf("%w: trailing data after the policy object (%v)", ErrInvalid, tokenOrErr(tok, err))
 	}
 	if err := p.Validate(); err != nil {
 		return Policy{}, err
 	}
 	return p, nil
+}
+
+func tokenOrErr(tok json.Token, err error) any {
+	if err != nil {
+		return err
+	}
+	return tok
 }
 
 // Validate checks every key that can be checked without a version scheme:
@@ -128,6 +136,8 @@ func (p Policy) Validate() error {
 	}
 	if d := time.Duration(p.Cooldown); d < 0 || d > MaxCooldown {
 		bad("cooldown: %s is outside 0 to %s", d, MaxCooldown)
+	} else if d%time.Second != 0 {
+		bad("cooldown: %s is not a whole number of seconds", d)
 	}
 	if _, err := ParseConstraint(p.Constraint); err != nil {
 		errs = append(errs, fmt.Errorf("constraint: %w", err))
@@ -139,6 +149,8 @@ func (p Policy) Validate() error {
 }
 
 // Duration is a time.Duration written as a Go duration string ("72h").
+// Validate accepts whole seconds only ("90s", "1h30m"; not "1.5s" or
+// "500ms"), as the watch file does.
 type Duration time.Duration
 
 // MarshalJSON writes d as a Go duration string.

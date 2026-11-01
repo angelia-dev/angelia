@@ -66,8 +66,9 @@ func TestPendingRelease(t *testing.T) {
 		t.Fatalf("pending after restart = %+v", got)
 	}
 
-	must(t, s2.DeletePendingRelease(ctx, "w1", "1.0.0"))
-	wantErr(t, s2.DeletePendingRelease(ctx, "w1", "1.0.0"), store.ErrNotFound, "delete twice")
+	wantErr(t, s2.DeletePendingRelease(ctx, "w1", "t2", "1.0.0"), store.ErrNotFound, "delete on another target")
+	must(t, s2.DeletePendingRelease(ctx, "w1", "t1", "1.0.0"))
+	wantErr(t, s2.DeletePendingRelease(ctx, "w1", "t1", "1.0.0"), store.ErrNotFound, "delete twice")
 	// Deleting a watch deletes what it holds.
 	must(t, s2.DeleteWatch(ctx, "w2"))
 	got, err = s2.ListPendingReleases(ctx, "t1")
@@ -85,5 +86,41 @@ func TestPendingRelease(t *testing.T) {
 	must(t, err)
 	if len(got) != 0 {
 		t.Fatalf("pending of a moved watch = %+v", got)
+	}
+
+	// The same raw version on the new target is held without a conflict
+	// with the row left on the old one, and deleted by its own key.
+	if _, err := s2.AddVersion(ctx, store.Version{TargetID: "t2", Raw: "1.1.0", Normalized: "1.1.0", FirstSeenAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	moved := p("w1", "1.1.0", t0.Add(2*time.Hour))
+	moved.TargetID = "t2"
+	must(t, s2.AddPendingRelease(ctx, moved))
+	wantErr(t, s2.AddPendingRelease(ctx, moved), store.ErrConflict, "held twice on the new target")
+	got, err = s2.ListPendingReleases(ctx, "t2")
+	must(t, err)
+	if len(got) != 1 || got[0].TargetID != "t2" || got[0].Raw != "1.1.0" {
+		t.Fatalf("pending on the new target = %+v", got)
+	}
+
+	// DeletePendingReleasesOfWatch forgets the rows of every target.
+	must(t, s2.CreateWatch(ctx, store.Watch{ID: "w3", TargetID: "t2"}))
+	must(t, s2.AddPendingRelease(ctx, store.PendingRelease{WatchID: "w3", TargetID: "t2", Raw: "1.1.0", HeldAt: t0, Release: rel("1.1.0")}))
+	var n int64
+	must(t, s2.InTx(ctx, func(tx store.Tx) error {
+		var err error
+		n, err = tx.DeletePendingReleasesOfWatch(ctx, "w1")
+		return err
+	}))
+	if n != 2 {
+		t.Fatalf("DeletePendingReleasesOfWatch deleted %d rows, want 2 (old and new target)", n)
+	}
+	if n, err := s2.DeletePendingReleasesOfWatch(ctx, "w1"); n != 0 || err != nil {
+		t.Fatalf("second DeletePendingReleasesOfWatch = %d, %v", n, err)
+	}
+	got, err = s2.ListPendingReleases(ctx, "t2")
+	must(t, err)
+	if len(got) != 1 || got[0].WatchID != "w3" {
+		t.Fatalf("other watches' rows must stay: %+v", got)
 	}
 }

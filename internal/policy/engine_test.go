@@ -151,19 +151,28 @@ func TestAliases(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		s       version.Scheme
+		p       Policy
 		known   []string
 		fetched []string
 		want    []string
 	}{
-		{"v prefix of a known version", sem, []string{"1.2.0"}, []string{"v1.2.0"}, nil},
-		{"build metadata", sem, []string{"1.2.0+a"}, []string{"1.2.0+b"}, nil},
-		{"same fetch: first entry wins", sem, []string{"1.0.0"}, []string{"1.1.0", "v1.1.0"}, []string{"1.1.0"}},
-		{"pep440 zero padding", pep, []string{"1.0"}, []string{"1.0.0"}, nil},
-		{"backport is not an alias", sem, []string{"1.0.0", "2.0.0"}, []string{"1.0.1"}, []string{"1.0.1"}},
-		{"first version is not an alias", sem, nil, []string{"1.0.0"}, []string{"1.0.0"}},
+		{"v prefix of a known version", sem, Policy{}, []string{"1.2.0"}, []string{"v1.2.0"}, nil},
+		{"build metadata", sem, Policy{}, []string{"1.2.0+a"}, []string{"1.2.0+b"}, nil},
+		{"same fetch: first entry wins", sem, Policy{}, []string{"1.0.0"}, []string{"1.1.0", "v1.1.0"}, []string{"1.1.0"}},
+		{"pep440 zero padding", pep, Policy{}, []string{"1.0"}, []string{"1.0.0"}, nil},
+		{"backport is not an alias", sem, Policy{}, []string{"1.0.0", "2.0.0"}, []string{"1.0.1"}, []string{"1.0.1"}},
+		{"first version is not an alias", sem, Policy{}, nil, []string{"1.0.0"}, []string{"1.0.0"}},
+		// The Previous is filtered out by this watch: not a duplicate for it.
+		{"previous not included", sem, Policy{Include: []string{`^v`}}, []string{"1.2.0"}, []string{"v1.2.0"}, []string{"v1.2.0"}},
+		{"previous excluded", sem, Policy{Exclude: []string{`^\d`}}, []string{"1.2.0"}, []string{"v1.2.0"}, []string{"v1.2.0"}},
+		{"same fetch: previous not included", sem, Policy{Include: []string{`^v`}}, []string{"1.0.0"}, []string{"1.1.0", "v1.1.0"}, []string{"v1.1.0"}},
+		{"same fetch: previous excluded", sem, Policy{Exclude: []string{`^1`}}, []string{"1.0.0"}, []string{"1.1.0", "v1.1.0"}, []string{"v1.1.0"}},
+		// The Previous passes the raw filters: still an alias.
+		{"previous included", sem, Policy{Include: []string{`1\.2`}}, []string{"1.2.0"}, []string{"v1.2.0"}, nil},
+		{"same fetch: previous included", sem, Policy{Include: []string{`1\.1`}}, []string{"1.0.0"}, []string{"1.1.0", "v1.1.0"}, []string{"1.1.0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := compile(t, Policy{}, tc.s)
+			e := compile(t, tc.p, tc.s)
 			d := e.Evaluate(newChanges(tc.s, tc.known, fetched(append(tc.fetched, tc.known...)...), t0), nil, t0)
 			if got := raws(d.Emit); !slices.Equal(got, tc.want) {
 				t.Fatalf("emitted %q, want %q (dropped %+v)", got, tc.want, d.Dropped)
@@ -217,15 +226,60 @@ func TestCooldownFrom(t *testing.T) {
 		{"published in the future", t0.Add(time.Hour), t0},
 		{"published at detection", t0, t0},
 	} {
-		if got := (Release{PublishedAt: tc.published, DetectedAt: t0}).CooldownFrom(); !got.Equal(tc.want) {
-			t.Errorf("%s: CooldownFrom = %v, want %v", tc.name, got, tc.want)
+		r := Release{PublishedAt: tc.published, DetectedAt: t0}
+		if got := r.CooldownFrom(true); !got.Equal(tc.want) {
+			t.Errorf("%s: CooldownFrom(trusted) = %v, want %v", tc.name, got, tc.want)
 		}
+		if got := r.CooldownFrom(false); !got.Equal(t0) {
+			t.Errorf("%s: CooldownFrom(untrusted) = %v, want detection %v", tc.name, got, t0)
+		}
+	}
+}
+
+func TestTrustsPublishedAt(t *testing.T) {
+	for kind, want := range map[string]bool{
+		"pypi": true, "npm": true, "crates": true, "github-release": true,
+		"github-tag": false, "oci": false, "fake": false, "": false, "PyPI": false,
+	} {
+		if got := TrustsPublishedAt(kind); got != want {
+			t.Errorf("TrustsPublishedAt(%q) = %v, want %v", kind, got, want)
+		}
+	}
+}
+
+// TestCooldownUntrustedDate: a version whose source kind does not assign
+// the date (github-tag) and that claims to be from 2020 is held for the full
+// cooldown from detection.
+func TestCooldownUntrustedDate(t *testing.T) {
+	const cool = 72 * time.Hour
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	f := []source.Version{{Raw: "1.1.0", PublishedAt: old}, {Raw: "1.0.0"}}
+	e := compile(t, Policy{Cooldown: Duration(cool)}, sem).WithPublishedAt(TrustsPublishedAt("github-tag"))
+	d := e.Evaluate(newChanges(sem, []string{"1.0.0"}, f, t0), nil, t0)
+	if len(d.Emit) != 0 || !slices.Equal(raws(d.Hold), []string{"1.1.0"}) {
+		t.Fatalf("untrusted 2020 date: emitted %q, held %q", raws(d.Emit), raws(d.Hold))
+	}
+	h := held(t, d.Hold[0], nil)
+	if d := e.Evaluate(nil, []store.PendingRelease{h}, t0.Add(cool-time.Second)); len(d.Emit) != 0 || len(d.Unhold) != 0 {
+		t.Fatalf("released before the cooldown from detection: %+v", d)
+	}
+	d = e.Evaluate(nil, []store.PendingRelease{h}, t0.Add(cool))
+	if !slices.Equal(raws(d.Emit), []string{"1.1.0"}) || !d.Emit[0].CooldownSatisfiedAt.Equal(t0.Add(cool)) {
+		t.Fatalf("after the cooldown from detection: %+v", d)
+	}
+	if !d.Emit[0].PublishedAt.Equal(old) {
+		t.Errorf("published_at not kept for the event: %v", d.Emit[0].PublishedAt)
+	}
+	// The same version from a registry-dated kind emits at once.
+	e = e.WithPublishedAt(TrustsPublishedAt("pypi"))
+	if d := e.Evaluate(newChanges(sem, []string{"1.0.0"}, f, t0), nil, t0); !slices.Equal(raws(d.Emit), []string{"1.1.0"}) {
+		t.Fatalf("trusted 2020 date: %+v", d)
 	}
 }
 
 func TestCooldownNewVersions(t *testing.T) {
 	const cool = 72 * time.Hour
-	e := compile(t, Policy{Cooldown: Duration(cool)}, sem)
+	e := compile(t, Policy{Cooldown: Duration(cool)}, sem).WithPublishedAt(true)
 	f := []source.Version{
 		{Raw: "1.3.0"}, // no date: from detection
 		{Raw: "1.2.0", PublishedAt: t0.Add(-100 * time.Hour)}, // already old enough
@@ -377,7 +431,7 @@ func TestCooldownHeldVersions(t *testing.T) {
 				t.Errorf("dropped %+v, want %+v", d.Dropped, tc.dropped)
 			}
 			for _, r := range d.Emit {
-				want := r.CooldownFrom().Add(time.Duration(tc.p.Cooldown))
+				want := r.CooldownFrom(false).Add(time.Duration(tc.p.Cooldown))
 				if tc.p.Cooldown == 0 {
 					want = time.Time{}
 				}
@@ -390,7 +444,7 @@ func TestCooldownHeldVersions(t *testing.T) {
 }
 
 func TestHeldThenNewOrder(t *testing.T) {
-	e := compile(t, Policy{Cooldown: Duration(time.Hour)}, sem)
+	e := compile(t, Policy{Cooldown: Duration(time.Hour)}, sem).WithPublishedAt(true)
 	old := Release{Raw: "1.1.0", Scheme: "semver", DetectedAt: t0.Add(-2 * time.Hour)}
 	f := []source.Version{{Raw: "1.2.0", PublishedAt: t0.Add(-3 * time.Hour)}, {Raw: "1.1.0"}, {Raw: "1.0.0"}}
 	d := e.Evaluate(newChanges(sem, []string{"1.0.0", "1.1.0"}, f, t0), []store.PendingRelease{held(t, old, nil)}, t0)

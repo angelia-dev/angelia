@@ -147,7 +147,7 @@ DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= ?;
 -- name: AddPendingRelease :execrows
 INSERT INTO pending_release (watch_id, target_id, raw, held_at, release_json)
 VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (watch_id, raw) DO NOTHING;
+ON CONFLICT (watch_id, target_id, raw) DO NOTHING;
 
 -- name: ListPendingReleases :many
 -- Rows of watches that moved to another target are left out.
@@ -159,4 +159,7 @@ WHERE p.target_id = ?
 ORDER BY p.watch_id, p.held_at, p.raw;
 
 -- name: DeletePendingRelease :execrows
-DELETE FROM pending_release WHERE watch_id = ? AND raw = ?;
+DELETE FROM pending_release WHERE watch_id = ? AND target_id = ? AND raw = ?;
+
+-- name: DeletePendingReleasesOfWatch :execrows
+DELETE FROM pending_release WHERE watch_id = ?;

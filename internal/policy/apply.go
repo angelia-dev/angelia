@@ -22,6 +22,10 @@ type Input struct {
 	SchemeFor func(store.Watch) (version.Scheme, error)
 	// Now is the time of the check, the same as diff.Input.Now.
 	Now time.Time
+	// TrustPublishedAt lets cooldowns count from the upstream publish date
+	// (Release.CooldownFrom). Set it to TrustsPublishedAt(target.Kind); the
+	// zero value counts from detection, which is always safe.
+	TrustPublishedAt bool
 	// Logger receives drops (Debug, Info for held versions) and invalid
 	// policies (Error). nil discards them.
 	Logger *slog.Logger
@@ -86,7 +90,7 @@ func Apply(ctx context.Context, tx store.Tx, out diff.Outcome, in Input) ([]Watc
 	for _, wc := range out.Watches {
 		w := wc.Watch
 		wlog := logger.With(slog.String("watch", w.ID))
-		e, err := compileFor(w, in.SchemeFor)
+		e, err := compileFor(w, in.SchemeFor, in.TrustPublishedAt)
 		if err != nil {
 			wlog.ErrorContext(ctx, "invalid watch policy; watch skipped for this check",
 				slog.String("error", err.Error()), slog.Int("changes", len(wc.Changes)))
@@ -94,7 +98,7 @@ func Apply(ctx context.Context, tx store.Tx, out diff.Outcome, in Input) ([]Watc
 		}
 		d := e.Evaluate(wc.Changes, held[w.ID], in.Now)
 		for _, raw := range d.Unhold {
-			if err := tx.DeletePendingRelease(ctx, w.ID, raw); err != nil {
+			if err := tx.DeletePendingRelease(ctx, w.ID, in.TargetID, raw); err != nil {
 				return nil, fmt.Errorf("policy: %w", err)
 			}
 		}
@@ -117,7 +121,7 @@ func Apply(ctx context.Context, tx store.Tx, out diff.Outcome, in Input) ([]Watc
 	return res, nil
 }
 
-func compileFor(w store.Watch, schemeFor func(store.Watch) (version.Scheme, error)) (*Engine, error) {
+func compileFor(w store.Watch, schemeFor func(store.Watch) (version.Scheme, error), trust bool) (*Engine, error) {
 	p, err := Decode(w.Policy)
 	if err != nil {
 		return nil, err
@@ -126,7 +130,11 @@ func compileFor(w store.Watch, schemeFor func(store.Watch) (version.Scheme, erro
 	if err != nil {
 		return nil, err
 	}
-	return Compile(p, s)
+	e, err := Compile(p, s)
+	if err != nil {
+		return nil, err
+	}
+	return e.WithPublishedAt(trust), nil
 }
 
 func logDecision(ctx context.Context, logger *slog.Logger, d Decision) {

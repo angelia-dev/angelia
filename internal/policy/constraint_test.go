@@ -51,6 +51,30 @@ func TestParseConstraintInvalid(t *testing.T) {
 			t.Errorf("ParseConstraint(%q) = %v, want ErrInvalid", in, err)
 		}
 	}
+	// The error names what is wrong.
+	for in, want := range map[string]string{
+		"~1.2":      `unsupported operator "~"`,
+		"^1.2":      `unsupported operator "^"`,
+		"=>2":       `unsupported operator "=>"`,
+		">>2":       `unsupported operator ">>"`,
+		">=<2":      `unsupported operator ">=<"`,
+		">=1 ~>2":   `unsupported operator "~>"`,
+		">=1<2":     `missing separator before "<2"`,
+		">=1.0,<2>": `missing separator before ">"`,
+		"1.0~1":     `missing separator before "~1"`,
+		"1|2":       `single "|" in "1|2"`,
+		">= <2":     `operator ">=" without a version`,
+		">=2 <":     `operator "<" without a version`,
+	} {
+		_, err := ParseConstraint(in)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParseConstraint(%q) = %v, want an error with %s", in, err, want)
+		}
+	}
+	// "!" inside an operand is a PEP 440 epoch, not an operator.
+	if c, err := ParseConstraint(">=1!2.0"); err != nil || c.String() != ">=1!2.0" {
+		t.Errorf("epoch: %v, %v", c, err)
+	}
 	if _, err := ParseConstraint(strings.TrimSpace(strings.Repeat(">=1 ", MaxComparators))); err != nil {
 		t.Errorf("%d comparators rejected: %v", MaxComparators, err)
 	}

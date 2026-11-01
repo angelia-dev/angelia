@@ -41,12 +41,33 @@ type Release struct {
 	CooldownSatisfiedAt time.Time `json:"cooldown_satisfied_at,omitzero"`
 }
 
-// CooldownFrom is the time a cooldown counts from: PublishedAt when the
-// source gives it and it is not after DetectedAt, otherwise DetectedAt. An
-// upstream date in the future cannot hold a version longer than if it had
-// no date.
-func (r Release) CooldownFrom() time.Time {
-	if !r.PublishedAt.IsZero() && r.PublishedAt.Before(r.DetectedAt) {
+// trustedPublishedAt lists the source kinds whose PublishedAt is assigned
+// by the registry when the version is uploaded, so that a publisher cannot
+// back-date it. Other kinds (github-tag: the commit or tag date, set by
+// whoever creates the commit; oci: the image's own created field; plugins
+// and unknown kinds) can carry any date. Pending maintainer confirmation
+// (ADR 0012 §6).
+var trustedPublishedAt = map[string]bool{
+	"pypi":           true,
+	"npm":            true,
+	"crates":         true,
+	"github-release": true,
+}
+
+// TrustsPublishedAt reports whether a cooldown may count from the
+// PublishedAt that a source of this kind reports (see trustedPublishedAt).
+// It is false for every kind not listed, so a new source kind counts from
+// detection until it is reviewed and added. Callers pass the result as
+// Input.TrustPublishedAt.
+func TrustsPublishedAt(kind string) bool { return trustedPublishedAt[kind] }
+
+// CooldownFrom is the time a cooldown counts from. It is DetectedAt unless
+// trustPublished (TrustsPublishedAt of the target's kind) is true and the
+// source gave a PublishedAt not after DetectedAt: an untrusted date could
+// be back-dated to skip the cooldown, and an upstream date in the future
+// cannot hold a version longer than if it had no date.
+func (r Release) CooldownFrom(trustPublished bool) time.Time {
+	if trustPublished && !r.PublishedAt.IsZero() && r.PublishedAt.Before(r.DetectedAt) {
 		return r.PublishedAt
 	}
 	return r.DetectedAt
@@ -97,6 +118,9 @@ type Engine struct {
 	include, exclude []*regexp.Regexp
 	rng              Range
 	bump             map[version.Bump]bool
+	// trustPublished makes cooldowns count from PublishedAt (see
+	// Release.CooldownFrom).
+	trustPublished bool
 }
 
 // Compile validates p and binds it to the watch's scheme s, which parses
@@ -130,14 +154,20 @@ func Compile(p Policy, s version.Scheme) (*Engine, error) {
 // Policy returns the compiled policy.
 func (e *Engine) Policy() Policy { return e.policy }
 
+// WithPublishedAt returns a copy of e whose cooldowns count from the
+// upstream publish date when trust is true (TrustsPublishedAt of the
+// target's kind). A compiled Engine counts from detection.
+func (e *Engine) WithPublishedAt(trust bool) *Engine {
+	c := *e
+	c.trustPublished = trust
+	return &c
+}
+
 // filter applies the filters, in order, to a version that is neither
 // yanked nor an alias. It returns "" when the version passes.
 func (e *Engine) filter(raw string, v version.Version, prerelease bool, bump version.Bump) Reason {
-	if len(e.include) > 0 && !slices.ContainsFunc(e.include, func(re *regexp.Regexp) bool { return re.MatchString(raw) }) {
-		return ReasonInclude
-	}
-	if slices.ContainsFunc(e.exclude, func(re *regexp.Regexp) bool { return re.MatchString(raw) }) {
-		return ReasonExclude
+	if r := e.filterRaw(raw); r != "" {
+		return r
 	}
 	switch e.policy.Prerelease {
 	case PrereleaseNone:
@@ -158,10 +188,28 @@ func (e *Engine) filter(raw string, v version.Version, prerelease bool, bump ver
 	return ""
 }
 
+// filterRaw applies include and exclude to a raw string. It returns ""
+// when raw passes.
+func (e *Engine) filterRaw(raw string) Reason {
+	if len(e.include) > 0 && !slices.ContainsFunc(e.include, func(re *regexp.Regexp) bool { return re.MatchString(raw) }) {
+		return ReasonInclude
+	}
+	if slices.ContainsFunc(e.exclude, func(re *regexp.Regexp) bool { return re.MatchString(raw) }) {
+		return ReasonExclude
+	}
+	return ""
+}
+
 // isAlias reports whether c has the same precedence as its Previous (diff
-// sets Previous to an equal version when there is one, ADR 0010 §8).
+// sets Previous to an equal version when there is one, ADR 0010 §8) and
+// that Previous passes this watch's include and exclude filters. When the
+// watch filters out the Previous ("1.2.0" with include "^v"), it never
+// announced it, so c ("v1.2.0") is not a duplicate for this watch.
 func (e *Engine) isAlias(c diff.Change) bool {
 	if c.Previous == "" || c.Bump != version.BumpOther || c.Version == nil {
+		return false
+	}
+	if e.filterRaw(c.Previous) != "" {
 		return false
 	}
 	prev, err := e.scheme.Parse(c.Previous)
@@ -170,7 +218,7 @@ func (e *Engine) isAlias(c diff.Change) bool {
 
 // due returns when r's cooldown ends.
 func (e *Engine) due(r Release) time.Time {
-	return r.CooldownFrom().Add(time.Duration(e.policy.Cooldown))
+	return r.CooldownFrom(e.trustPublished).Add(time.Duration(e.policy.Cooldown))
 }
 
 // emit stamps r for emission at now, or reports false while it is cooling down.
