@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/angelia-dev/angelia/internal/version"
+	"github.com/angelia-dev/angelia/internal/version/calver"
 	"github.com/angelia-dev/angelia/internal/version/lexical"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 	"github.com/angelia-dev/angelia/internal/version/semver"
@@ -18,7 +19,7 @@ const maxLoggedRaw = 128
 
 // Names lists the scheme names accepted by Lookup and in a watch's
 // `scheme` override.
-func Names() []string { return []string{semver.Name, pep440.Name, lexical.Name} }
+func Names() []string { return []string{semver.Name, pep440.Name, calver.Name, lexical.Name} }
 
 // Lookup returns the scheme called name, without fallback. "semver" is
 // strict SemVer.
@@ -28,6 +29,8 @@ func Lookup(name string) (version.Scheme, error) {
 		return semver.Scheme{}, nil
 	case pep440.Name:
 		return pep440.Scheme{}, nil
+	case calver.Name:
+		return calver.Scheme{}, nil
 	case lexical.Name:
 		return lexical.Scheme{}, nil
 	}
@@ -41,7 +44,11 @@ func Lookup(name string) (version.Scheme, error) {
 //     loose "v" prefix);
 //   - oci, github-tag, go-proxy: SemVer that coerces short cores, so tags
 //     like "3.12" or "v2" order as 3.12.0 and 2.0.0;
-//   - anything else: lexical. Maven and calver get their own schemes in Phase 1.
+//   - anything else: lexical. Maven gets its own scheme in Phase 1.
+//
+// No source kind defaults to calver and the scheme is never auto-detected
+// from the tags: a watch that wants calendar versions says `scheme: calver`
+// (see Select).
 func ForSourceKind(kind string) version.Scheme {
 	switch kind {
 	case "pypi":
@@ -54,8 +61,9 @@ func ForSourceKind(kind string) version.Scheme {
 	return lexical.Scheme{}
 }
 
-// Select returns the scheme for a watch: the override when it is not
-// empty, otherwise the source kind's default, wrapped with WithFallback.
+// Select returns the scheme for a watch: the override (the watch's
+// `scheme:` value, an exact name from Names) when it is not empty,
+// otherwise the source kind's default, wrapped with WithFallback.
 // An override that names the default scheme keeps the default's settings
 // (an oci watch with `scheme: semver` still coerces short tags).
 func Select(sourceKind, override string, logger *slog.Logger) (version.Scheme, error) {
