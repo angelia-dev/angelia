@@ -31,7 +31,7 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot clean
+.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -72,6 +72,12 @@ bench-ordering: ## Benchmark 6: version ordering vs the committed PyPI/npm snaps
 bench-ordering-snapshot: ## Rebuild the benchmark 6 snapshots from the live registries
 	python3 -I bench/ordering/snapshot/pypi.py bench/ordering/packages/pypi.txt bench/ordering/testdata/pypi.jsonl.gz
 	node bench/ordering/snapshot/npm.mjs bench/ordering/packages/npm.txt bench/ordering/testdata/npm.jsonl.gz
+
+# N watches against the fake registry; Docker by default, BENCH_CONTAINER=0 for
+# a plain process. Other knobs: bench/load/README.md.
+N ?= 10000
+bench-scale: ## Benchmark 1: N watches (default 10000) against the fake registry, report in bin/bench
+	N=$(N) MAKE="$(MAKE)" bench/load/bench-scale.sh
 
 clean: ## Remove build output
 	rm -rf bin
