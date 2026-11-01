@@ -10,6 +10,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0003](0003-sqlite-default-postgres-ha-no-external-queue.md) | SQLite by default, Postgres for HA, no external queue | Proposed | #43 |
 | [0004](0004-cloudevents-purl-event-contract.md) | CloudEvents 1.0 and purl as the event contract; event is not delivery; transactional outbox | Proposed | #43 |
 | [0005](0005-standard-webhooks-signing.md) | Sign webhook deliveries with Standard Webhooks | Proposed | #43 |
+| [0006](0006-version-schemes-in-house-with-lexical-fallback.md) | Version schemes are in-house, with a lexical fallback | Proposed | #54 |
 
 ## Process
 

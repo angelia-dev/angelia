@@ -1,0 +1,27 @@
+packaging_vectors.json
+======================
+
+The version strings in packaging_vectors.json are ported from the test suite
+of the Python "packaging" library (https://github.com/pypa/packaging),
+release 26.3, file tests/test_version.py:
+
+  ordered        <- VERSIONS (the list "must be in the correct sorting order")
+  invalid        <- TestVersion.test_invalid_versions
+  normalized     <- TestVersion.test_normalized_versions
+  str            <- TestVersion.test_version_str_repr
+  is_prerelease  <- TestVersion.test_version_is_prerelease
+
+They were extracted mechanically (Python ast.literal_eval of the parametrize
+arguments) from the packaging-26.3 sdist published on PyPI. Test cases that
+only make sense in Python (non-string arguments, sys.set_int_max_str_digits,
+replace(), pickling, hashing) were not ported.
+
+Licence
+-------
+
+"packaging" is dual-licensed: Apache License 2.0 OR BSD 2-Clause License, at
+the user's choice. Angelia uses these test vectors under the Apache License
+2.0, the same licence as Angelia itself (see LICENSE at the repository root).
+
+  Copyright (c) Donald Stufft and individual contributors.
+  All rights reserved.

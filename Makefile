@@ -15,9 +15,18 @@ DATE    := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --fo
 LDFLAGS := -X $(BUILDINFO).version=$(VERSION) -X $(BUILDINFO).commit=$(COMMIT) -X $(BUILDINFO).date=$(DATE)
 
 GOLANGCI_LINT       ?= golangci-lint
+FUZZTIME            ?= 30s
+# package:FuzzTarget pairs run by `make fuzz`; go test -fuzz takes one target at a time.
+FUZZ_TARGETS := \
+	./internal/version:FuzzNatural \
+	./internal/version/semver:FuzzParse \
+	./internal/version/semver:FuzzCompare \
+	./internal/version/pep440:FuzzParse \
+	./internal/version/pep440:FuzzCompare \
+	./internal/version/schemes:FuzzFallbackParse
 GOVULNCHECK_VERSION := v1.9.0
 
-.PHONY: help build test lint vuln generate clean
+.PHONY: help build test fuzz lint vuln generate clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -27,6 +36,12 @@ build: ## Build bin/angelia (CGO disabled, version info injected)
 
 test: ## Run unit tests with the race detector
 	go test -race ./...
+
+fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
+	@set -e; for t in $(FUZZ_TARGETS); do \
+		echo "fuzz $$t for $(FUZZTIME)"; \
+		go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) "$${t%%:*}"; \
+	done
 
 lint: ## Run golangci-lint and the gofumpt format check
 	$(GOLANGCI_LINT) run
