@@ -372,3 +372,31 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 	_, err := q.db.ExecContext(ctx, releaseLease, arg.Name, arg.Holder)
 	return err
 }
+
+const updateTargetState = `-- name: UpdateTargetState :execrows
+UPDATE target
+SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = ?
+WHERE id = ?
+`
+
+type UpdateTargetStateParams struct {
+	FetchStateJson string
+	LastCheckedAt  sql.NullInt64
+	NextCheckAt    int64
+	ErrorCount     int64
+	ID             string
+}
+
+func (q *Queries) UpdateTargetState(ctx context.Context, arg UpdateTargetStateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateTargetState,
+		arg.FetchStateJson,
+		arg.LastCheckedAt,
+		arg.NextCheckAt,
+		arg.ErrorCount,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

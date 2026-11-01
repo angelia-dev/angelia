@@ -1,6 +1,9 @@
--- Indexes for the scheduler, dispatcher and foreign-key lookups.
+-- Indexes for the scheduler, dispatcher and foreign-key lookups, and target
+-- coalescing: coordinates_json is canonical JSON (keys sorted), so one
+-- upstream object maps to one target row (architecture.md §3.2).
 
 -- +goose Up
+CREATE UNIQUE INDEX target_kind_coordinates ON target (kind, coordinates_json);
 CREATE INDEX target_next_check_at ON target (next_check_at);
 CREATE INDEX watch_target_id ON watch (target_id);
 CREATE INDEX event_watch_id ON event (watch_id);
@@ -15,3 +18,4 @@ DROP INDEX subscription_sink_id;
 DROP INDEX event_watch_id;
 DROP INDEX watch_target_id;
 DROP INDEX target_next_check_at;
+DROP INDEX target_kind_coordinates;

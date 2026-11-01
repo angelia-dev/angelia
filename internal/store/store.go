@@ -12,25 +12,56 @@ var (
 	ErrNotFound = errors.New("store: not found")
 	// ErrConflict is returned when a write violates a uniqueness constraint.
 	ErrConflict = errors.New("store: conflict")
+	// ErrInvalidRef is returned when a write references a row that does not
+	// exist (foreign key violation).
+	ErrInvalidRef = errors.New("store: invalid reference")
+	// ErrInvalid is returned when a value fails validation before any write.
+	ErrInvalid = errors.New("store: invalid value")
 )
 
+// Delivery statuses. The schema rejects any other value.
+const (
+	DeliveryPending   = "pending"
+	DeliveryInFlight  = "in_flight"
+	DeliveryDelivered = "delivered"
+	DeliveryDead      = "dead"
+)
+
+// DefaultEventLimit is used by ListEventsAfter when limit <= 0.
+const DefaultEventLimit = 100
+
+// Tx is the set of writes that must commit together when a check finds new
+// versions: the known set, the events and deliveries (transactional outbox,
+// ADR 0004) and the target's fetch state.
+type Tx interface {
+	// AddVersion records a version in the known set. It reports false, without
+	// error, when (TargetID, Raw) is already known.
+	AddVersion(ctx context.Context, v Version) (bool, error)
+	// AppendEvent writes the event and its deliveries. A delivery with an
+	// empty EventID gets e.ID; a different EventID is ErrInvalid.
+	AppendEvent(ctx context.Context, e Event, ds []Delivery) error
+	// UpdateTarget stores FetchState, LastCheckedAt, NextCheckAt and
+	// ErrorCount of t. Kind and Coordinates are immutable.
+	UpdateTarget(ctx context.Context, t Target) error
+}
+
 // Store is the persistence contract. Every engine must pass the same tests.
+// Its Tx methods each run in their own transaction.
 type Store interface {
+	Tx
+	// InTx runs fn in one transaction: it commits if fn returns nil and rolls
+	// every write back otherwise.
+	InTx(ctx context.Context, fn func(tx Tx) error) error
 	CreateTarget(ctx context.Context, t Target) error
 	GetTarget(ctx context.Context, id string) (Target, error)
 	CreateWatch(ctx context.Context, w Watch) error
 	GetWatch(ctx context.Context, id string) (Watch, error)
-	// AddVersion records a version in the known set. It reports false, without
-	// error, when (TargetID, Raw) is already known.
-	AddVersion(ctx context.Context, v Version) (bool, error)
 	ListVersions(ctx context.Context, targetID string) ([]Version, error)
 	CreateSink(ctx context.Context, s Sink) error
 	CreateSubscription(ctx context.Context, s Subscription) error
-	// AppendEvent writes the event and its deliveries in one transaction
-	// (transactional outbox, ADR 0004): either all rows are written or none.
-	AppendEvent(ctx context.Context, e Event, ds []Delivery) error
 	// ListEventsAfter returns up to limit events with an ID greater than
-	// afterID, in ID order. An empty afterID starts from the beginning.
+	// afterID, in ID order. An empty afterID starts from the beginning;
+	// limit <= 0 means DefaultEventLimit.
 	ListEventsAfter(ctx context.Context, afterID string, limit int) ([]Event, error)
 	ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error)
 	// AcquireLease takes or renews the named lease for holder until the given
@@ -101,7 +132,7 @@ type Delivery struct {
 	ID             string
 	EventID        string
 	SubscriptionID string
-	Status         string
+	Status         string // one of the Delivery* constants
 	Attempts       int64
 	NextAttemptAt  time.Time // zero: not scheduled
 	LastError      string

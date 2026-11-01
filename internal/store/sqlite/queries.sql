@@ -5,6 +5,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 -- name: GetTarget :one
 SELECT * FROM target WHERE id = ?;
 
+-- name: UpdateTargetState :execrows
+UPDATE target
+SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = ?
+WHERE id = ?;
+
 -- name: CreateWatch :exec
 INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done)
 VALUES (?, ?, ?, ?, ?);

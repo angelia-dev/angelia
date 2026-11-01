@@ -6,8 +6,8 @@
 CREATE TABLE target (
     id               TEXT    PRIMARY KEY,
     kind             TEXT    NOT NULL,
-    coordinates_json TEXT    NOT NULL,
-    fetch_state_json TEXT    NOT NULL DEFAULT '{}',
+    coordinates_json TEXT    NOT NULL CHECK (json_valid(coordinates_json)),
+    fetch_state_json TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(fetch_state_json)),
     last_checked_at  INTEGER,
     next_check_at    INTEGER NOT NULL,
     error_count      INTEGER NOT NULL DEFAULT 0
@@ -16,9 +16,9 @@ CREATE TABLE target (
 CREATE TABLE watch (
     id            TEXT    PRIMARY KEY,
     target_id     TEXT    NOT NULL REFERENCES target (id),
-    policy_json   TEXT    NOT NULL DEFAULT '{}',
-    labels_json   TEXT    NOT NULL DEFAULT '{}',
-    baseline_done INTEGER NOT NULL DEFAULT 0
+    policy_json   TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(policy_json)),
+    labels_json   TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(labels_json)),
+    baseline_done INTEGER NOT NULL DEFAULT 0 CHECK (baseline_done IN (0, 1))
 ) STRICT;
 
 CREATE TABLE version (
@@ -26,8 +26,8 @@ CREATE TABLE version (
     raw           TEXT    NOT NULL,
     normalized    TEXT    NOT NULL,
     published_at  INTEGER,
-    prerelease    INTEGER NOT NULL DEFAULT 0,
-    yanked        INTEGER NOT NULL DEFAULT 0,
+    prerelease    INTEGER NOT NULL DEFAULT 0 CHECK (prerelease IN (0, 1)),
+    yanked        INTEGER NOT NULL DEFAULT 0 CHECK (yanked IN (0, 1)),
     first_seen_at INTEGER NOT NULL,
     PRIMARY KEY (target_id, raw)
 ) STRICT;
@@ -36,7 +36,7 @@ CREATE TABLE event (
     id           TEXT    PRIMARY KEY,
     watch_id     TEXT    NOT NULL REFERENCES watch (id),
     type         TEXT    NOT NULL,
-    payload_json TEXT    NOT NULL,
+    payload_json TEXT    NOT NULL CHECK (json_valid(payload_json)),
     created_at   INTEGER NOT NULL
 ) STRICT;
 
@@ -48,7 +48,7 @@ CREATE TABLE sink (
 
 CREATE TABLE subscription (
     id          TEXT PRIMARY KEY,
-    filter_json TEXT NOT NULL DEFAULT '{}',
+    filter_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filter_json)),
     sink_id     TEXT NOT NULL REFERENCES sink (id),
     template    TEXT NOT NULL DEFAULT ''
 ) STRICT;
@@ -57,7 +57,7 @@ CREATE TABLE delivery (
     id              TEXT    PRIMARY KEY,
     event_id        TEXT    NOT NULL REFERENCES event (id),
     subscription_id TEXT    NOT NULL REFERENCES subscription (id),
-    status          TEXT    NOT NULL,
+    status          TEXT    NOT NULL CHECK (status IN ('pending', 'in_flight', 'delivered', 'dead')),
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER,
     last_error      TEXT,

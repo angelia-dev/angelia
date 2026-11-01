@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -14,10 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
-
 	"github.com/angelia-dev/angelia/internal/store"
-	"github.com/angelia-dev/angelia/internal/store/migrations"
 )
 
 var _ store.Store = (*Store)(nil)
@@ -51,10 +47,25 @@ func seed(t *testing.T, s *Store) {
 	must(t, s.CreateSubscription(ctx, store.Subscription{ID: "s2", SinkID: "k1", Filter: json.RawMessage(`{"bump":"major"}`)}))
 }
 
+func event(id string) store.Event {
+	return store.Event{ID: id, WatchID: "w1", Type: "release.published", Payload: json.RawMessage(`{"v":1}`), CreatedAt: t0}
+}
+
+func pending(subID string) store.Delivery {
+	return store.Delivery{ID: "d-" + subID, SubscriptionID: subID, Status: store.DeliveryPending}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func wantErr(t *testing.T, err, target error, what string) {
+	t.Helper()
+	if !errors.Is(err, target) {
+		t.Errorf("%s: got %v, want %v", what, err, target)
 	}
 }
 
@@ -68,11 +79,20 @@ func TestOpenCreatesSchemaWithSettings(t *testing.T) {
 			t.Errorf("table %s missing", table)
 		}
 	}
-	for pragma, want := range map[string]string{"journal_mode": "wal", "foreign_keys": "1", "busy_timeout": "5000"} {
-		var got string
-		must(t, s.db.QueryRowContext(ctx, "PRAGMA "+pragma).Scan(&got))
-		if got != want {
-			t.Errorf("PRAGMA %s = %q, want %q", pragma, got, want)
+	if got := s.db.Stats().MaxOpenConnections; got != maxConns {
+		t.Errorf("pool size = %d, want %d", got, maxConns)
+	}
+	// Hold every pooled connection at once: each must carry the settings.
+	for i := range maxConns {
+		conn, err := s.db.Conn(ctx)
+		must(t, err)
+		defer func() { _ = conn.Close() }()
+		for pragma, want := range map[string]string{"journal_mode": "wal", "foreign_keys": "1", "busy_timeout": "5000", "synchronous": "1"} {
+			var got string
+			must(t, conn.QueryRowContext(ctx, "PRAGMA "+pragma).Scan(&got))
+			if got != want {
+				t.Errorf("conn %d: PRAGMA %s = %q, want %q", i, pragma, got, want)
+			}
 		}
 	}
 }
@@ -82,6 +102,12 @@ func TestDriverIsModernc(t *testing.T) {
 	if got := reflect.TypeOf(s.db.Driver()).Elem().PkgPath(); got != "modernc.org/sqlite" {
 		t.Fatalf("driver package = %s", got)
 	}
+}
+
+func TestOpenNilLogger(t *testing.T) {
+	s, err := Open(t.Context(), filepath.Join(t.TempDir(), "a.db"), nil)
+	must(t, err)
+	must(t, s.Close())
 }
 
 func TestRestartIsNoop(t *testing.T) {
@@ -106,19 +132,43 @@ func TestRestartIsNoop(t *testing.T) {
 	}
 }
 
+func TestMigrationsDownAndUp(t *testing.T) {
+	ctx := t.Context()
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
+	must(t, err)
+	defer func() { _ = db.Close() }()
+	n, err := migrate(ctx, db, discard(), 0)
+	must(t, err)
+	p, err := newProvider(db)
+	must(t, err)
+	down, err := p.DownTo(ctx, 0)
+	must(t, err)
+	if len(down) != n {
+		t.Fatalf("down ran %d migrations, want %d", len(down), n)
+	}
+	var tables int
+	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name <> ? AND name NOT LIKE 'sqlite_%'`, migrationsTable).Scan(&tables))
+	if tables != 0 {
+		t.Fatalf("%d tables left after down", tables)
+	}
+	if again, err := migrate(ctx, db, discard(), 0); err != nil || again != n {
+		t.Fatalf("up after down: %d %v", again, err)
+	}
+}
+
 func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 	ctx := t.Context()
-	path := filepath.Join(t.TempDir(), "angelia.db")
-	db, err := openDB(path)
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
 	must(t, err)
 	defer func() { _ = db.Close() }()
 
-	latest, err := latestVersion()
+	p, err := newProvider(db)
 	must(t, err)
-	if latest < 2 {
-		t.Fatalf("need at least two migrations, have %d", latest)
+	sources := p.ListSources()
+	if len(sources) < 2 {
+		t.Fatalf("need at least two migrations, have %d", len(sources))
 	}
-	if _, err := migrate(ctx, db, discard(), latest-1); err != nil {
+	if _, err := migrate(ctx, db, discard(), sources[len(sources)-2].Version); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{
@@ -156,7 +206,7 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 	must(t, rows.Err())
 }
 
-func TestRoundTrip(t *testing.T) {
+func TestRoundTripAndValidation(t *testing.T) {
 	s, _ := openTest(t)
 	seed(t, s)
 	ctx := t.Context()
@@ -172,21 +222,30 @@ func TestRoundTrip(t *testing.T) {
 	if w.TargetID != "t1" || w.Labels["team"] != "a" || string(w.Policy) != "{}" || w.BaselineDone {
 		t.Errorf("watch = %+v", w)
 	}
-	if _, err := s.GetTarget(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetTarget missing: %v", err)
+	_, err = s.GetTarget(ctx, "nope")
+	wantErr(t, err, store.ErrNotFound, "GetTarget missing")
+	_, err = s.GetWatch(ctx, "nope")
+	wantErr(t, err, store.ErrNotFound, "GetWatch missing")
+
+	dup := store.Target{ID: "t1", Kind: "npm", NextCheckAt: t0}
+	wantErr(t, s.CreateTarget(ctx, dup), store.ErrConflict, "duplicate target id")
+	same := store.Target{ID: "t9", Kind: "pypi", Coordinates: map[string]string{"name": "requests"}, NextCheckAt: t0}
+	wantErr(t, s.CreateTarget(ctx, same), store.ErrConflict, "duplicate (kind, coordinates)")
+	wantErr(t, s.CreateTarget(ctx, store.Target{ID: "t8", Kind: "npm"}), store.ErrInvalid, "zero next_check_at")
+	wantErr(t, s.CreateWatch(ctx, store.Watch{ID: "w2", TargetID: "missing"}), store.ErrInvalidRef, "unknown target")
+	wantErr(t, s.CreateWatch(ctx, store.Watch{ID: "w3", TargetID: "t1", Policy: json.RawMessage(`{bad`)}), store.ErrInvalid, "invalid JSON")
+	wantErr(t, s.CreateSubscription(ctx, store.Subscription{ID: "s9", SinkID: "k1", Filter: json.RawMessage(`[`)}), store.ErrInvalid, "invalid filter")
+	_, err = s.AddVersion(ctx, store.Version{TargetID: "t1", Raw: "1", Normalized: "1"})
+	wantErr(t, err, store.ErrInvalid, "zero first_seen_at")
+
+	tg.FetchState, tg.LastCheckedAt, tg.NextCheckAt, tg.ErrorCount = json.RawMessage(`{"etag":"y"}`), t0, t0.Add(time.Hour), 2
+	must(t, s.UpdateTarget(ctx, tg))
+	got, err := s.GetTarget(ctx, "t1")
+	must(t, err)
+	if string(got.FetchState) != `{"etag":"y"}` || !got.LastCheckedAt.Equal(t0) || !got.NextCheckAt.Equal(t0.Add(time.Hour)) || got.ErrorCount != 2 {
+		t.Errorf("updated target = %+v", got)
 	}
-	if _, err := s.GetWatch(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetWatch missing: %v", err)
-	}
-	if err := s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi"}); !errors.Is(err, store.ErrConflict) {
-		t.Errorf("duplicate target: %v", err)
-	}
-	if err := s.CreateWatch(ctx, store.Watch{ID: "w2", TargetID: "missing"}); err == nil || errors.Is(err, store.ErrConflict) {
-		t.Errorf("foreign key not enforced: %v", err)
-	}
-	if err := s.CreateWatch(ctx, store.Watch{ID: "w3", TargetID: "t1", Policy: json.RawMessage(`{bad`)}); err == nil {
-		t.Error("invalid JSON accepted")
-	}
+	wantErr(t, s.UpdateTarget(ctx, store.Target{ID: "nope", NextCheckAt: t0}), store.ErrNotFound, "update missing target")
 }
 
 func TestVersionUniqueness(t *testing.T) {
@@ -212,33 +271,87 @@ func TestAppendEventAndDeliveryUniqueness(t *testing.T) {
 	s, _ := openTest(t)
 	seed(t, s)
 	ctx := t.Context()
-	e := store.Event{ID: "e1", WatchID: "w1", Type: "release.published", Payload: json.RawMessage(`{"v":1}`), CreatedAt: t0}
-	must(t, s.AppendEvent(ctx, e, []store.Delivery{
-		{ID: "d1", EventID: "e1", SubscriptionID: "s1", Status: "pending", NextAttemptAt: t0},
-		{ID: "d2", EventID: "e1", SubscriptionID: "s2", Status: "pending", LastError: "boom"},
-	}))
+	d2 := pending("s2")
+	d2.LastError, d2.NextAttemptAt = "boom", t0
+	must(t, s.AppendEvent(ctx, event("e1"), []store.Delivery{pending("s1"), d2}))
 	ds, err := s.ListDeliveries(ctx, "e1")
 	must(t, err)
-	if len(ds) != 2 || !ds[0].NextAttemptAt.Equal(t0) || ds[1].LastError != "boom" || !ds[1].NextAttemptAt.IsZero() {
+	if len(ds) != 2 || ds[0].EventID != "e1" || !ds[0].NextAttemptAt.IsZero() || ds[1].LastError != "boom" || !ds[1].NextAttemptAt.Equal(t0) {
 		t.Fatalf("deliveries = %+v", ds)
 	}
 
 	// A second delivery for (e2, s1) violates the unique key: nothing is written.
-	e.ID = "e2"
-	err = s.AppendEvent(ctx, e, []store.Delivery{
-		{ID: "d3", EventID: "e2", SubscriptionID: "s1", Status: "pending"},
-		{ID: "d4", EventID: "e2", SubscriptionID: "s1", Status: "pending"},
-	})
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("duplicate delivery: %v", err)
+	d3, d4 := pending("s1"), pending("s1")
+	d3.ID, d4.ID = "d3", "d4"
+	wantErr(t, s.AppendEvent(ctx, event("e2"), []store.Delivery{d3, d4}), store.ErrConflict, "duplicate delivery")
+
+	d5 := pending("s1")
+	d5.ID, d5.EventID = "d5", "other"
+	wantErr(t, s.AppendEvent(ctx, event("e3"), []store.Delivery{d5}), store.ErrInvalid, "delivery for another event")
+	d6 := pending("s1")
+	d6.ID, d6.Status = "d6", "bogus"
+	if err := s.AppendEvent(ctx, event("e4"), []store.Delivery{d6}); err == nil {
+		t.Error("unknown delivery status accepted")
 	}
-	evs, err := s.ListEventsAfter(ctx, "", 10)
+	for _, p := range []string{"", "null", " null "} {
+		e := event("e5")
+		e.Payload = json.RawMessage(p)
+		wantErr(t, s.AppendEvent(ctx, e, nil), store.ErrInvalid, fmt.Sprintf("payload %q", p))
+	}
+	e := event("e6")
+	e.CreatedAt = time.Time{}
+	wantErr(t, s.AppendEvent(ctx, e, nil), store.ErrInvalid, "zero created_at")
+
+	evs, err := s.ListEventsAfter(ctx, "", 0)
 	must(t, err)
 	if len(evs) != 1 || evs[0].ID != "e1" || string(evs[0].Payload) != `{"v":1}` || !evs[0].CreatedAt.Equal(t0) {
 		t.Fatalf("events = %+v (outbox not atomic?)", evs)
 	}
 	if evs, _ := s.ListEventsAfter(ctx, "e1", 10); len(evs) != 0 {
 		t.Fatalf("events after cursor = %+v", evs)
+	}
+}
+
+func TestInTx(t *testing.T) {
+	s, _ := openTest(t)
+	seed(t, s)
+	ctx := t.Context()
+	tg, err := s.GetTarget(ctx, "t1")
+	must(t, err)
+	tg.FetchState, tg.LastCheckedAt = json.RawMessage(`{"etag":"new"}`), t0
+	check := func(tx store.Tx, eventID string, fail bool) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: "t1", Raw: eventID, Normalized: eventID, FirstSeenAt: t0}); err != nil {
+			return err
+		}
+		if err := tx.AppendEvent(ctx, event(eventID), []store.Delivery{pending("s1")}); err != nil {
+			return err
+		}
+		if err := tx.UpdateTarget(ctx, tg); err != nil {
+			return err
+		}
+		if fail {
+			return errors.New("boom")
+		}
+		return nil
+	}
+
+	// Failure after every write: none of them survives.
+	if err := s.InTx(ctx, func(tx store.Tx) error { return check(tx, "e1", true) }); err == nil || err.Error() != "boom" {
+		t.Fatalf("InTx error = %v", err)
+	}
+	vs, _ := s.ListVersions(ctx, "t1")
+	evs, _ := s.ListEventsAfter(ctx, "", 10)
+	got, _ := s.GetTarget(ctx, "t1")
+	if len(vs) != 0 || len(evs) != 0 || string(got.FetchState) != `{"etag":"x"}` {
+		t.Fatalf("rollback incomplete: versions=%v events=%v target=%+v", vs, evs, got)
+	}
+
+	must(t, s.InTx(ctx, func(tx store.Tx) error { return check(tx, "e2", false) }))
+	vs, _ = s.ListVersions(ctx, "t1")
+	evs, _ = s.ListEventsAfter(ctx, "", 10)
+	got, _ = s.GetTarget(ctx, "t1")
+	if len(vs) != 1 || len(evs) != 1 || string(got.FetchState) != `{"etag":"new"}` {
+		t.Fatalf("commit incomplete: versions=%v events=%v target=%+v", vs, evs, got)
 	}
 }
 
@@ -269,55 +382,44 @@ func TestLease(t *testing.T) {
 	}
 }
 
-// TestConcurrentWriters runs writers from several goroutines; with WAL,
-// busy_timeout and immediate transactions none may fail with SQLITE_BUSY.
+// TestConcurrentWriters runs writers from many goroutines; with a bounded
+// pool, WAL, busy_timeout and immediate transactions none may fail with
+// SQLITE_BUSY.
 func TestConcurrentWriters(t *testing.T) {
-	s, _ := openTest(t)
-	seed(t, s)
-	ctx := context.Background()
-	const workers, perWorker = 16, 25
-	var wg sync.WaitGroup
-	errs := make(chan error, workers*perWorker*3)
-	for w := range workers {
-		wg.Go(func() {
-			for i := range perWorker {
-				id := fmt.Sprintf("e%02d%03d", w, i)
-				ds := []store.Delivery{{ID: "d" + id, EventID: id, SubscriptionID: "s1", Status: "pending"}}
-				errs <- s.AppendEvent(ctx, store.Event{ID: id, WatchID: "w1", Type: "x", Payload: json.RawMessage(`{}`), CreatedAt: t0}, ds)
-				_, err := s.AddVersion(ctx, store.Version{TargetID: "t1", Raw: id, Normalized: id, FirstSeenAt: t0})
-				errs <- err
-				_, err = s.ListEventsAfter(ctx, "", 5)
-				errs <- err
+	for _, workers := range []int{16, 64} {
+		t.Run(fmt.Sprint(workers), func(t *testing.T) {
+			s, _ := openTest(t)
+			seed(t, s)
+			ctx := context.Background()
+			const perWorker = 20
+			var wg sync.WaitGroup
+			errs := make(chan error, workers*perWorker*3)
+			for w := range workers {
+				wg.Go(func() {
+					for i := range perWorker {
+						id := fmt.Sprintf("e%02d%03d", w, i)
+						d := pending("s1")
+						d.ID = "d" + id
+						errs <- s.AppendEvent(ctx, event(id), []store.Delivery{d})
+						_, err := s.AddVersion(ctx, store.Version{TargetID: "t1", Raw: id, Normalized: id, FirstSeenAt: t0})
+						errs <- err
+						_, err = s.ListEventsAfter(ctx, "", 5)
+						errs <- err
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			evs, err := s.ListEventsAfter(ctx, "", workers*perWorker+1)
+			must(t, err)
+			if len(evs) != workers*perWorker {
+				t.Fatalf("events = %d, want %d", len(evs), workers*perWorker)
 			}
 		})
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	evs, err := s.ListEventsAfter(ctx, "", workers*perWorker+1)
-	must(t, err)
-	if len(evs) != workers*perWorker {
-		t.Fatalf("events = %d, want %d", len(evs), workers*perWorker)
-	}
-}
-
-// latestVersion returns the highest embedded migration version.
-func latestVersion() (int64, error) {
-	names, err := fs.Glob(migrations.FS, "*.sql")
-	if err != nil {
-		return 0, fmt.Errorf("store: list migrations: %w", err)
-	}
-	var latest int64
-	for _, n := range names {
-		v, err := goose.NumericComponent(n)
-		if err != nil {
-			return 0, fmt.Errorf("store: migration %s: %w", n, err)
-		}
-		latest = max(latest, v)
-	}
-	return latest, nil
 }
