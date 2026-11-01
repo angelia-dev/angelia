@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
@@ -21,7 +22,7 @@ const (
 	DefaultInterval = time.Hour
 	MinInterval     = 5 * time.Minute
 	MaxInterval     = 720 * time.Hour
-	MaxCooldown     = 8760 * time.Hour
+	MaxCooldown     = policy.MaxCooldown
 
 	DefaultWebhookTimeout = 10 * time.Second
 	MinWebhookTimeout     = time.Second

@@ -62,13 +62,17 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Count(KindSink, Create) != 1 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 3 || plan.Count(KindTarget, Create) != 4 {
+	if plan.Count(KindSink, Create) != 2 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 3 || plan.Count(KindTarget, Create) != 4 {
 		t.Fatalf("plan:\n%s", plan)
 	}
 
 	s := snap(t, st, store.ManagedByFile)
-	if len(s.sinks) != 1 || s.sinks[0].Name != "ci-webhook" || s.sinks[0].Kind != "webhook" ||
-		string(s.sinks[0].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
+	sinkIDs := map[string]string{}
+	for _, k := range s.sinks {
+		sinkIDs[k.Name] = k.ID
+	}
+	if len(s.sinks) != 2 || s.sinks[1].Name != "ci-webhook" || s.sinks[1].Kind != "webhook" ||
+		string(s.sinks[1].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
 		t.Fatalf("sinks: %+v", s.sinks)
 	}
 	if len(s.watches) != 4 || len(s.subs) != 3 {
@@ -114,7 +118,11 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	sub := map[string]store.Subscription{}
 	for _, x := range s.subs {
 		sub[x.Name] = x
-		if x.SinkID != s.sinks[0].ID {
+		want := sinkIDs["ci-webhook"]
+		if x.Name == "platform-to-chat-minors" {
+			want = sinkIDs["chat-webhook"]
+		}
+		if x.SinkID != want {
 			t.Fatalf("subscription %s points at %s", x.Name, x.SinkID)
 		}
 	}

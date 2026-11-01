@@ -110,8 +110,8 @@ func (q *Queries) CountLeasableDueTargets(ctx context.Context, now int64) (int64
 
 const createDelivery = `-- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
-                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateDeliveryParams struct {
@@ -128,6 +128,7 @@ type CreateDeliveryParams struct {
 	HoldPrerelease      sql.NullInt64
 	HoldWatchID         sql.NullString
 	HoldRaw             sql.NullString
+	HoldInput           sql.NullString
 }
 
 func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) error {
@@ -145,6 +146,7 @@ func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) 
 		arg.HoldPrerelease,
 		arg.HoldWatchID,
 		arg.HoldRaw,
+		arg.HoldInput,
 	)
 	return err
 }
@@ -394,17 +396,18 @@ func (q *Queries) DeleteWatch(ctx context.Context, id string) (int64, error) {
 }
 
 const failHeldDelivery = `-- name: FailHeldDelivery :execrows
-UPDATE delivery SET status = 'dead', last_error = ?, next_attempt_at = NULL
-WHERE id = ? AND status = 'pending' AND held_until IS NOT NULL
+UPDATE delivery SET status = 'dead', last_error = ?1, next_attempt_at = NULL, held_until = NULL
+WHERE id = ?2 AND status = 'pending' AND held_until > ?3
 `
 
 type FailHeldDeliveryParams struct {
-	LastError sql.NullString
-	ID        string
+	Reason sql.NullString
+	ID     string
+	Now    sql.NullInt64
 }
 
 func (q *Queries) FailHeldDelivery(ctx context.Context, arg FailHeldDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, failHeldDelivery, arg.LastError, arg.ID)
+	result, err := q.db.ExecContext(ctx, failHeldDelivery, arg.Reason, arg.ID, arg.Now)
 	if err != nil {
 		return 0, err
 	}
@@ -512,7 +515,7 @@ func (q *Queries) HasLeasableDueTargets(ctx context.Context, now int64) (bool, e
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw FROM delivery WHERE event_id = ? ORDER BY id
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery WHERE event_id = ? ORDER BY id
 `
 
 func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error) {
@@ -538,6 +541,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 			&i.HoldPrerelease,
 			&i.HoldWatchID,
 			&i.HoldRaw,
+			&i.HoldInput,
 		); err != nil {
 			return nil, err
 		}
@@ -592,7 +596,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 }
 
 const listHeldDeliveries = `-- name: ListHeldDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw FROM delivery
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery
 WHERE subscription_id = ? AND status = 'pending' AND held_until > ?
 ORDER BY id
 `
@@ -626,6 +630,7 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 			&i.HoldPrerelease,
 			&i.HoldWatchID,
 			&i.HoldRaw,
+			&i.HoldInput,
 		); err != nil {
 			return nil, err
 		}
@@ -1010,17 +1015,18 @@ func (q *Queries) PruneEvents(ctx context.Context, arg PruneEventsParams) (int64
 }
 
 const releaseHeldDelivery = `-- name: ReleaseHeldDelivery :execrows
-UPDATE delivery SET held_until = NULL, next_attempt_at = ?
-WHERE id = ? AND status = 'pending' AND held_until IS NOT NULL
+UPDATE delivery SET held_until = NULL, next_attempt_at = ?1
+WHERE id = ?2 AND status = 'pending' AND held_until > ?1
 `
 
 type ReleaseHeldDeliveryParams struct {
-	NextAttemptAt sql.NullInt64
-	ID            string
+	Now sql.NullInt64
+	ID  string
 }
 
+// The held queries only touch a delivery that is still held at now.
 func (q *Queries) ReleaseHeldDelivery(ctx context.Context, arg ReleaseHeldDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, releaseHeldDelivery, arg.NextAttemptAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, releaseHeldDelivery, arg.Now, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -1043,16 +1049,17 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 
 const rescheduleHeldDelivery = `-- name: RescheduleHeldDelivery :execrows
 UPDATE delivery SET held_until = ?1, next_attempt_at = ?1
-WHERE id = ?2 AND status = 'pending' AND held_until IS NOT NULL
+WHERE id = ?2 AND status = 'pending' AND held_until > ?3
 `
 
 type RescheduleHeldDeliveryParams struct {
 	Until sql.NullInt64
 	ID    string
+	Now   sql.NullInt64
 }
 
 func (q *Queries) RescheduleHeldDelivery(ctx context.Context, arg RescheduleHeldDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, rescheduleHeldDelivery, arg.Until, arg.ID)
+	result, err := q.db.ExecContext(ctx, rescheduleHeldDelivery, arg.Until, arg.ID, arg.Now)
 	if err != nil {
 		return 0, err
 	}

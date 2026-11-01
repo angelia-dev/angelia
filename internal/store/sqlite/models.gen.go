@@ -22,6 +22,7 @@ type Delivery struct {
 	HoldPrerelease      sql.NullInt64
 	HoldWatchID         sql.NullString
 	HoldRaw             sql.NullString
+	HoldInput           sql.NullString
 }
 
 type Event struct {

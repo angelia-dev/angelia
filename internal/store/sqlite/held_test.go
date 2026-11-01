@@ -10,7 +10,7 @@ import (
 func heldDelivery(id, sub string, until time.Time) store.Delivery {
 	return store.Delivery{
 		ID: id, SubscriptionID: sub, Status: store.DeliveryPending,
-		Hold: &store.Hold{Until: until, StartedAt: t0, WatchCooldown: time.Hour, Prerelease: true, WatchID: "w1", Raw: "1.2.0"},
+		Hold: &store.Hold{Until: until, StartedAt: t0, WatchCooldown: time.Hour, Prerelease: true, WatchID: "w1", Raw: "1.2.0", Input: []byte(`{"bump":"patch"}`)},
 	}
 }
 
@@ -36,7 +36,7 @@ func TestHeldDeliverySurvivesRestart(t *testing.T) {
 	h := byID["d1"]
 	if h.Status != store.DeliveryPending || !h.NextAttemptAt.Equal(until) || h.Hold == nil ||
 		!h.Hold.Until.Equal(until) || !h.Hold.StartedAt.Equal(t0) || h.Hold.WatchCooldown != time.Hour ||
-		!h.Hold.Prerelease || h.Hold.WatchID != "w1" || h.Hold.Raw != "1.2.0" {
+		!h.Hold.Prerelease || h.Hold.WatchID != "w1" || h.Hold.Raw != "1.2.0" || string(h.Hold.Input) != `{"bump":"patch"}` {
 		t.Fatalf("held delivery after restart = %+v (hold %+v)", h, h.Hold)
 	}
 	if byID["d-s2"].Hold != nil {
@@ -88,21 +88,25 @@ func TestHeldDeliveryOperations(t *testing.T) {
 	}
 	must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error {
 		must(t, tx.ReleaseHeldDelivery(ctx, "d1", t0))
-		must(t, tx.RescheduleHeldDelivery(ctx, "d2", t0.Add(time.Hour)))
-		must(t, tx.FailHeldDelivery(ctx, "d3", "no longer wanted"))
+		must(t, tx.RescheduleHeldDelivery(ctx, "d2", t0.Add(time.Hour), t0))
+		must(t, tx.FailHeldDelivery(ctx, "d3", "no longer wanted", t0))
 		// Not held any more, or not held at all: ErrNotFound.
 		wantErr(t, tx.ReleaseHeldDelivery(ctx, "d1", t0), store.ErrNotFound, "release twice")
-		wantErr(t, tx.RescheduleHeldDelivery(ctx, "d-s2", t0), store.ErrNotFound, "reschedule a plain delivery")
-		wantErr(t, tx.FailHeldDelivery(ctx, "d3", "x"), store.ErrNotFound, "fail a dead delivery")
+		wantErr(t, tx.RescheduleHeldDelivery(ctx, "d-s2", t0, t0), store.ErrNotFound, "reschedule a plain delivery")
+		wantErr(t, tx.FailHeldDelivery(ctx, "d3", "x", t0), store.ErrNotFound, "fail a dead delivery")
+		// A hold that has ended by the clock is not touched.
+		wantErr(t, tx.ReleaseHeldDelivery(ctx, "d2", until), store.ErrNotFound, "release at the end of the hold")
+		wantErr(t, tx.RescheduleHeldDelivery(ctx, "d2", until, until.Add(time.Hour)), store.ErrNotFound, "reschedule after the end")
+		wantErr(t, tx.FailHeldDelivery(ctx, "d2", "x", until.Add(time.Hour)), store.ErrNotFound, "fail after the end")
 		return nil
 	}))
-	if d := get("e1", "d1"); d.Hold != nil || !d.NextAttemptAt.Equal(t0) || d.Status != store.DeliveryPending {
+	if d := get("e1", "d1"); d.Hold == nil || !d.Hold.Until.IsZero() || !d.NextAttemptAt.Equal(t0) || d.Status != store.DeliveryPending {
 		t.Fatalf("released = %+v", d)
 	}
 	if d := get("e2", "d2"); d.Hold == nil || !d.Hold.Until.Equal(t0.Add(time.Hour)) || !d.NextAttemptAt.Equal(t0.Add(time.Hour)) {
 		t.Fatalf("rescheduled = %+v", d)
 	}
-	if d := get("e2", "d3"); d.Status != store.DeliveryDead || d.LastError != "no longer wanted" || !d.NextAttemptAt.IsZero() {
+	if d := get("e2", "d3"); d.Status != store.DeliveryDead || d.LastError != "no longer wanted" || !d.NextAttemptAt.IsZero() || d.Hold == nil || !d.Hold.Until.IsZero() {
 		t.Fatalf("failed = %+v", d)
 	}
 

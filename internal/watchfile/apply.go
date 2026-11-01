@@ -463,9 +463,12 @@ func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs ma
 				return err
 			}
 			detail := ""
-			if !samePolicy(cur.Policy, d.Policy) {
-				var err error
-				if detail, err = r.reevaluateHeld(cur.ID, d.Policy); err != nil {
+			if !samePolicy(cur.Policy, d.Policy) || !jsonEqual(cur.Filter, filter) {
+				f, err := subscription.FromJSON(filter)
+				if err != nil {
+					return err
+				}
+				if detail, err = r.reevaluateHeld(cur.ID, f, d.Policy); err != nil {
 					return err
 				}
 			}

@@ -334,6 +334,7 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 			p.HoldPrerelease = sql.NullInt64{Int64: boolInt(h.Prerelease), Valid: true}
 			p.HoldWatchID = sql.NullString{String: h.WatchID, Valid: h.WatchID != ""}
 			p.HoldRaw = sql.NullString{String: h.Raw, Valid: h.Raw != ""}
+			p.HoldInput = sql.NullString{String: string(h.Input), Valid: len(h.Input) > 0}
 		}
 		if err := o.q.CreateDelivery(ctx, p); err != nil {
 			return wrap(err, "create delivery", d.ID)
@@ -466,11 +467,14 @@ func deliveriesFromRows(rows []Delivery) []store.Delivery {
 			ID: r.ID, EventID: r.EventID, SubscriptionID: r.SubscriptionID, Status: r.Status, Attempts: r.Attempts,
 			NextAttemptAt: fromNullMillis(r.NextAttemptAt), LastError: r.LastError.String,
 		}
-		if r.HeldUntil.Valid {
+		if r.HoldStartedAt.Valid {
 			out[i].Hold = &store.Hold{
 				Until: fromNullMillis(r.HeldUntil), StartedAt: fromNullMillis(r.HoldStartedAt),
 				WatchCooldown: time.Duration(r.HoldWatchCooldownMs.Int64) * time.Millisecond,
 				Prerelease:    r.HoldPrerelease.Int64 != 0, WatchID: r.HoldWatchID.String, Raw: r.HoldRaw.String,
+			}
+			if r.HoldInput.Valid {
+				out[i].Hold.Input = json.RawMessage(r.HoldInput.String)
 			}
 		}
 	}

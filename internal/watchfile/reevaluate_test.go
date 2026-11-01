@@ -78,7 +78,7 @@ func TestEditingSubscriptionReevaluatesHeldDeliveries(t *testing.T) {
 		}
 		return ds[0]
 	}
-	if d := get("released"); d.Status != store.DeliveryPending || d.Hold != nil || !d.NextAttemptAt.Equal(clock) {
+	if d := get("released"); d.Status != store.DeliveryPending || d.Hold == nil || !d.Hold.Until.IsZero() || !d.NextAttemptAt.Equal(clock) {
 		t.Errorf("released = %+v", d)
 	}
 	if d := get("moved"); d.Hold == nil || !d.Hold.Until.Equal(start.Add(48*time.Hour)) || !d.NextAttemptAt.Equal(start.Add(48*time.Hour)) {
@@ -102,5 +102,81 @@ func TestEditingSubscriptionReevaluatesHeldDeliveries(t *testing.T) {
 	mustApply(t, st, subDoc("{prerelease: none, cooldown: 100h}"))
 	if d := get("moved"); !d.Hold.Until.Equal(start.Add(100 * time.Hour)) {
 		t.Errorf("lengthened = %+v", d)
+	}
+}
+
+// heldFixture applies a subscription with a 72h cooldown and filter bump
+// [minor, patch], and holds one delivery of each bump for it.
+func heldFixture(t *testing.T) (store.Store, string) {
+	t.Helper()
+	st := openStore(t)
+	ctx := t.Context()
+	doc := func(bump, cooldown string) string {
+		return policyDoc + "  - {name: chat, sink: hook, filter: {bump: " + bump + "}, policy: {cooldown: " + cooldown + "}}\n"
+	}
+	mustApply(t, st, doc("[minor, patch]", "72h"))
+	var subID string
+	if err := st.InConfigTx(ctx, func(tx store.ConfigTx) error {
+		subs, err := tx.ListManagedSubscriptions(ctx, store.ManagedByFile)
+		subID = subs[0].ID
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []string{"minor", "patch"} {
+		e, ds := ev(b, "w1", subID)
+		ds[0].Hold = &store.Hold{
+			Until: clock.Add(time.Hour), StartedAt: clock.Add(-71 * time.Hour), WatchID: "w1", Raw: b,
+			Input: []byte(`{"source":"pypi","package":"x","labels":{},"bump":"` + b + `","type":"release.published"}`),
+		}
+		if err := st.AppendEvent(ctx, e, ds); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return st, doc("[minor]", "72h")
+}
+
+// AC: narrowing filter.bump must not let a held delivery through: the filter
+// is matched again against the input recorded on the hold.
+func TestEditingFilterFailsHeldDeliveriesThatNoLongerMatch(t *testing.T) {
+	st, narrowed := heldFixture(t)
+	p := mustApply(t, st, narrowed)
+	if p.Count(KindSubscription, Update) != 1 {
+		t.Fatalf("plan:\n%s", p)
+	}
+	for b, want := range map[string]string{"minor": store.DeliveryPending, "patch": store.DeliveryDead} {
+		ds, err := st.ListDeliveries(t.Context(), b)
+		if err != nil || len(ds) != 1 || ds[0].Status != want {
+			t.Fatalf("%s: %+v %v, want %s", b, ds, err, want)
+		}
+		if want == store.DeliveryDead && ds[0].LastError != DeadOnFilter {
+			t.Errorf("reason = %q", ds[0].LastError)
+		}
+	}
+	// The one that still matches stays held until its time.
+	if ds, _ := st.ListDeliveries(t.Context(), "minor"); ds[0].Hold == nil || !ds[0].Hold.Until.Equal(clock.Add(time.Hour)) {
+		t.Errorf("minor = %+v", ds[0])
+	}
+}
+
+// A dry run reports what re-evaluation would do and writes nothing.
+func TestDryRunReevaluatesWithoutWriting(t *testing.T) {
+	st, narrowed := heldFixture(t)
+	p, err := PlanFile(t.Context(), st, mustParse(t, narrowed), applyOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail string
+	for _, c := range p.Changes {
+		if c.Kind == KindSubscription {
+			detail = c.Detail
+		}
+	}
+	if detail != "1 held dead" {
+		t.Fatalf("detail = %q", detail)
+	}
+	ds, _ := st.ListDeliveries(t.Context(), "patch")
+	if ds[0].Status != store.DeliveryPending || ds[0].Hold == nil || ds[0].Hold.Until.IsZero() {
+		t.Fatalf("dry run wrote: %+v", ds[0])
 	}
 }

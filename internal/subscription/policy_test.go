@@ -74,11 +74,11 @@ func TestEvaluateCooldown(t *testing.T) {
 	if d.Verdict != Hold || !d.Until.Equal(start.Add(MaxCooldown)) {
 		t.Fatalf("over the maximum = %+v", d)
 	}
-	// Unknown start: nothing to count from.
+	// Unknown start fails closed: counted from now.
 	e := ev(pub, false, "none", 0)
 	e.CooldownStart = time.Time{}
-	if d := p.Evaluate(e, start); d.Verdict != Admit {
-		t.Fatalf("unknown start = %+v", d)
+	if d := p.Evaluate(e, start); d.Verdict != Hold || !d.Until.Equal(start.Add(72*hour)) {
+		t.Fatalf("unknown start = %+v, want hold for the full cooldown", d)
 	}
 	// A pre-release that the subscription drops is dropped, not held.
 	if d := (Policy{Prerelease: "none", Cooldown: 72 * hour}).Evaluate(ev(pub, true, "include", 0), start); d.Verdict != Drop {

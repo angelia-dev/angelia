@@ -316,17 +316,17 @@ func (o txOps) ListHeldDeliveries(ctx context.Context, subscriptionID string, no
 }
 
 func (o txOps) ReleaseHeldDelivery(ctx context.Context, id string, now time.Time) error {
-	n, err := o.q.ReleaseHeldDelivery(ctx, ReleaseHeldDeliveryParams{NextAttemptAt: nullMillis(now), ID: id})
+	n, err := o.q.ReleaseHeldDelivery(ctx, ReleaseHeldDeliveryParams{Now: nullMillis(now), ID: id})
 	return deleted(n, err, "release held delivery", id)
 }
 
-func (o txOps) RescheduleHeldDelivery(ctx context.Context, id string, until time.Time) error {
-	n, err := o.q.RescheduleHeldDelivery(ctx, RescheduleHeldDeliveryParams{Until: nullMillis(until), ID: id})
+func (o txOps) RescheduleHeldDelivery(ctx context.Context, id string, until, now time.Time) error {
+	n, err := o.q.RescheduleHeldDelivery(ctx, RescheduleHeldDeliveryParams{Until: nullMillis(until), ID: id, Now: nullMillis(now)})
 	return deleted(n, err, "reschedule held delivery", id)
 }
 
-func (o txOps) FailHeldDelivery(ctx context.Context, id, reason string) error {
-	n, err := o.q.FailHeldDelivery(ctx, FailHeldDeliveryParams{LastError: sql.NullString{String: reason, Valid: true}, ID: id})
+func (o txOps) FailHeldDelivery(ctx context.Context, id, reason string, now time.Time) error {
+	n, err := o.q.FailHeldDelivery(ctx, FailHeldDeliveryParams{Reason: sql.NullString{String: reason, Valid: true}, ID: id, Now: nullMillis(now)})
 	return deleted(n, err, "fail held delivery", id)
 }
 

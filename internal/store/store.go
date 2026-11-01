@@ -191,7 +191,8 @@ type ConfigTx interface {
 	UpdateSink(ctx context.Context, s Sink) error
 	DeleteSink(ctx context.Context, id string) error
 	CreateSubscription(ctx context.Context, s Subscription) error
-	// UpdateSubscription stores Filter, SinkID and Template.
+	// UpdateSubscription stores Filter, Policy, SinkID and Template. An empty
+	// Policy resets the stored policy to "{}".
 	UpdateSubscription(ctx context.Context, s Subscription) error
 	DeleteSubscription(ctx context.Context, id string) error
 	// FailPendingDeliveries sets every pending delivery of a subscription to
@@ -202,15 +203,18 @@ type ConfigTx interface {
 	// ListHeldDeliveries returns the deliveries of a subscription that are
 	// pending and still held at now (Hold.Until after now), ordered by ID.
 	ListHeldDeliveries(ctx context.Context, subscriptionID string, now time.Time) ([]Delivery, error)
-	// ReleaseHeldDelivery clears the hold of a held pending delivery and
-	// makes it due at now. ErrNotFound when it is not a pending held delivery.
+	// ReleaseHeldDelivery clears the end of the hold of a pending delivery
+	// that is still held at now and makes it due at now. ErrNotFound when it
+	// is not one (including a hold that already ended).
 	ReleaseHeldDelivery(ctx context.Context, id string, now time.Time) error
 	// RescheduleHeldDelivery moves the end of the hold (and NextAttemptAt) of
-	// a held pending delivery to until. ErrNotFound when it is not one.
-	RescheduleHeldDelivery(ctx context.Context, id string, until time.Time) error
-	// FailHeldDelivery sets a held pending delivery to dead with LastError
-	// reason. ErrNotFound when it is not one.
-	FailHeldDelivery(ctx context.Context, id, reason string) error
+	// a pending delivery still held at now to until. ErrNotFound when it is
+	// not one.
+	RescheduleHeldDelivery(ctx context.Context, id string, until, now time.Time) error
+	// FailHeldDelivery sets a pending delivery still held at now to dead with
+	// LastError reason and clears the end of its hold. ErrNotFound when it is
+	// not one.
+	FailHeldDelivery(ctx context.Context, id, reason string, now time.Time) error
 }
 
 // TargetLeaseName is the name of the lease a scheduler holds on a target
@@ -324,9 +328,11 @@ type Delivery struct {
 	Attempts       int64
 	NextAttemptAt  time.Time // zero: not scheduled
 	LastError      string
-	// Hold is set while a subscription cooldown holds the delivery (ADR
-	// 0014); nil otherwise. A held delivery is pending with NextAttemptAt
-	// equal to Hold.Until, so the dispatcher needs no special case.
+	// Hold is set when the delivery was ever held by a subscription cooldown
+	// (ADR 0014); nil otherwise. Hold.Until is zero once an edit released the
+	// hold or failed the delivery. Currently held iff Status is pending and
+	// Hold.Until is after now; then NextAttemptAt equals Hold.Until, so the
+	// dispatcher needs no special case.
 	Hold *Hold
 }
 
@@ -344,4 +350,7 @@ type Hold struct {
 	Prerelease bool
 	// WatchID and Raw identify the version, so a yank can cancel the hold.
 	WatchID, Raw string
+	// Input is the filter input (JSON, opaque to the store) the delivery was
+	// matched with, so that an edited filter can be applied to it again.
+	Input json.RawMessage
 }

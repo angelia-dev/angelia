@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/angelia-dev/angelia/internal/policy"
 )
 
 // Pre-release modes, the same words as the watch policy's prerelease key.
@@ -15,8 +17,8 @@ const (
 	PrereleaseInclude = "include" // both
 )
 
-// MaxCooldown is the longest cooldown, the watch's limit (8760h).
-const MaxCooldown = 8760 * time.Hour
+// MaxCooldown is the longest cooldown, the watch's limit.
+const MaxCooldown = policy.MaxCooldown
 
 // eventYanked is the type of events a Policy never delays or drops.
 const eventYanked = "release.yanked"
@@ -121,6 +123,10 @@ type Event struct {
 	// or "include"); empty means unknown and is not checked.
 	WatchPrerelease string
 	// CooldownStart is the instant the watch policy's cooldown counts from.
+	// The #106 match step must fill it from
+	// Release.CooldownFrom(policy.TrustsPublishedAt(kind)). Zero (unknown)
+	// fails closed: Evaluate counts from now, holding for the full
+	// subscription cooldown.
 	CooldownStart time.Time
 	// WatchCooldown is the cooldown the watch policy applied.
 	WatchCooldown time.Duration
@@ -153,10 +159,14 @@ func (p Policy) Evaluate(ev Event, now time.Time) Decision {
 		return Decision{Verdict: Drop}
 	}
 	p = p.Clamp()
-	if p.Cooldown <= ev.WatchCooldown || ev.CooldownStart.IsZero() {
+	if p.Cooldown <= ev.WatchCooldown {
 		return Decision{Verdict: Admit}
 	}
-	if until := ev.CooldownStart.Add(p.Cooldown); until.After(now) {
+	start := ev.CooldownStart
+	if start.IsZero() {
+		start = now
+	}
+	if until := start.Add(p.Cooldown); until.After(now) {
 		return Decision{Verdict: Hold, Until: until}
 	}
 	return Decision{Verdict: Admit}
