@@ -78,9 +78,24 @@ is no package-level state, and a nil cache keeps the old per-call load.
   reads it.
 - **Inside the transaction** `Emit` reads that counter (one row). Equal to the cached generation: the cache is exactly
   the committed set, so no per-id existence re-check is needed (the delivery table has no foreign key to
-  `subscription`, by design). Different: it reloads inside the transaction, once per subscription change.
+  `subscription`, by design). Different: it loads the set for that call only. **Rule: never cache from inside a
+  transaction.** What a transaction sees can be rolled back, and the next commit reuses the rolled-back generation
+  number, so a cached uncommitted set would be taken for a committed one. Only `MatcherCache.Warm`, which reads
+  committed data outside any transaction, fills the cache.
 - **Outside the transaction** `Commit` calls `MatcherCache.Warm` first when its committer also lists subscriptions
-  (the SQLite store does), so the reload normally happens before the write lock is taken.
+  (the SQLite store does), so the load normally happens before the write lock is taken. An `Emit` called without a
+  warm cache pays the full load each time.
+- The update trigger fires only when `id`, `filter_json` or `policy_json` change, the columns the matcher and the
+  policies read; a sink, template or name edit does not invalidate the cache.
+- Invalid subscriptions are now logged (Error) once per load, not once per `Emit`; their dead deliveries are still
+  written for every event.
+- The counter restarts at 0 if migration 00008 is rolled back and re-applied or a backup is restored. The cache
+  compares for equality only, so a restart (which a restore needs anyway) is enough.
+- **Costs.** Every subscription writer now also updates the single `subscription_generation` row, so subscription
+  writers queue on one row (they already serialise on SQLite's write lock; a Postgres port would feel it as row-lock
+  contention, which is acceptable for a configuration table written by file apply and API calls). A Postgres port
+  needs the same triggers (or an explicit bump in the write path) and the same read of the counter in the check's
+  transaction.
 - Measured with 10,000 subscriptions (`BenchmarkEmit10kSubscriptions`, `TestEmitHoldsTheTransactionBriefly`): a
   transaction holding one `Emit` takes about 1 to 2 ms with a warm cache against about 70 ms without.
 

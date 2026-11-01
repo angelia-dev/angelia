@@ -28,10 +28,19 @@ type SubscriptionReader interface {
 // insert, update and delete of a subscription (store.Tx.SubscriptionGeneration),
 // whichever code or process made it, and Emit reads that counter inside its
 // transaction. A matching counter means the cached set is the committed set,
-// so no per-id existence check is needed; a different one makes Emit reload
-// inside the transaction (once per subscription change, not once per check).
-// [MatcherCache.Warm] does that reload ahead of time, outside the
+// so no per-id existence check is needed; a different one makes Emit load the
+// set for that call only, inside the transaction, without caching it: what a
+// transaction sees may be rolled back, and a rolled-back generation number is
+// reused by the next commit. Only [MatcherCache.Warm], which reads committed
+// data outside any transaction, fills the cache; [Commit] calls it before its
 // transaction, so in steady state the transaction pays for a one-row read.
+// Until Warm has run at the current generation, each Emit pays the full load.
+//
+// The counter lives in the database and starts again from 0 if the migration
+// is rolled back and re-applied or a backup is restored. The cache compares
+// for equality, not order, so that is safe for a cache created after the
+// restore; a long-lived cache must be dropped with the process, as a restore
+// requires a restart anyway.
 //
 // A MatcherCache belongs to the component that calls Commit or Emit (the
 // scheduler's check runner): create one with [NewMatcherCache] and pass it in
@@ -119,7 +128,8 @@ func (c *MatcherCache) put(n *compiled) {
 
 // current returns the compiled subscriptions as tx sees the store: the cached
 // ones when the generation tx reads is the cached generation, otherwise it
-// reloads inside tx. A nil cache always loads.
+// loads them from tx for this call alone (never cached, see MatcherCache). A
+// nil cache always loads.
 func (c *MatcherCache) current(ctx context.Context, tx store.Tx, logger *slog.Logger) (*compiled, error) {
 	if c == nil {
 		subs, err := tx.ListSubscriptions(ctx)
@@ -139,7 +149,5 @@ func (c *MatcherCache) current(ctx context.Context, tx store.Tx, logger *slog.Lo
 	if err != nil {
 		return nil, fmt.Errorf("event: %w", err)
 	}
-	n := load(ctx, subs, gen, logger)
-	c.put(n)
-	return n, nil
+	return load(ctx, subs, gen, logger), nil
 }
