@@ -11,13 +11,36 @@
 // yank transitions are detected like new releases.
 //
 // The index carries no timestamps. When (and only when) the index document has
-// changed, List makes one more request, GET {api}/api/v1/crates/{name}
-// (https://crates.io), to read each version's created_at. A 304 on the index
-// therefore costs no API request, which keeps the load on crates.io at one API
-// call per change. If that call fails, List fails and the fetch state is not
-// advanced, so the next poll retries both. A version that the index has but
-// the API does not know yet (the two are not updated atomically) is returned
-// with a zero PublishedAt.
+// changed, and an API is configured, List reads created_at from the paginated
+// GET {api}/api/v1/crates/{name}/versions?per_page=100 (https://crates.io),
+// following meta.next_page for at most maxPages pages. That endpoint is used
+// rather than the crate record because the record of a very large crate is
+// itself above netguard's response cap. A 304 on the index costs no API
+// request. If an API call fails, List fails and the fetch state is not
+// advanced, so the next poll retries both. If the API does not yet list some
+// version that the index has (the two are not updated atomically), List
+// returns the versions it has, those with a zero PublishedAt, but hands back
+// the incoming fetch state unchanged, so the next poll refetches both and
+// fills the times in.
+//
+// The public index uses the public crates.io API. A custom index (a mirror or
+// an alternative registry) has no API by default, since a mirror rarely
+// serves crates.io's API: its versions have a zero PublishedAt unless
+// WithAPIURL names one.
+//
+// # Size cap
+//
+// The index file of a very large crate (swc_core: 16.8 MB) is above
+// netguard's default 10 MiB response cap. Such a crate fails on every poll,
+// with an error wrapping netguard.ErrBodyTooLarge, until the per-host body cap
+// of issue #133 exists. The state is not advanced.
+//
+// # Names
+//
+// crates.io treats names case-insensitively but "-" and "_" as different
+// characters ("serde_json" is not "serde-json"), so Normalize only lower-cases
+// and the coalescing key keeps "-" and "_" apart. Alternative registries may
+// allow a leading "_", which is rejected here.
 //
 // # Crawler policy
 //
@@ -35,8 +58,9 @@
 //
 // A crate that does not exist is a 404 from the index, returned as an error
 // wrapping *netguard.StatusError, never as an empty result. Versions are
-// sorted newest first by PublishedAt; versions without one follow, in
-// reverse index order (the index is append-only, oldest first).
+// sorted newest first by PublishedAt; versions without one, and versions with
+// equal ones, follow in reverse index order (the index is append-only, oldest
+// first).
 //
 // # What a Version carries
 //
@@ -58,6 +82,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,6 +101,9 @@ const (
 	DefaultPageURL = "https://crates.io/crates"
 
 	maxNameLen = 64
+	// maxPages bounds the pages read from the versions endpoint (100 each).
+	maxPages = 50
+	perPage  = 100
 )
 
 // nameRE is crates.io's rule for crate names: ASCII letters, digits, "-" and
@@ -87,7 +115,7 @@ type Option func(*Source)
 
 // WithAPIURL sets the base URL of the crates.io API, used for created_at.
 // The default is DefaultAPIURL when the index is the public one, and
-// otherwise the index URL itself, which suits a mirror serving both.
+// otherwise none: no API request is made and PublishedAt stays zero.
 func WithAPIURL(u string) Option { return func(s *Source) { s.api = strings.TrimRight(u, "/") } }
 
 // WithPageURL sets the prefix of the release page URL, to which
@@ -117,8 +145,6 @@ func New(indexURL string, hc *http.Client, opts ...Option) *Source {
 	s := &Source{index: strings.TrimRight(indexURL, "/"), hc: hc}
 	if s.index == DefaultIndexURL {
 		s.api, s.pageBase = DefaultAPIURL, DefaultPageURL
-	} else {
-		s.api = s.index
 	}
 	for _, o := range opts {
 		o(s)
@@ -139,9 +165,14 @@ func (*Source) Validate(t source.Target) error {
 	return err
 }
 
+// Normalize returns the canonical form of a crate name, the one used in the
+// index path and in the target coalescing key: lower case. "-" and "_" are
+// not folded, they are different characters on crates.io.
+func Normalize(name string) string { return strings.ToLower(name) }
+
 func crateName(t source.Target) (string, error) {
-	// No trimming: the stored coordinate must equal what is validated, or
-	// watches of the same crate would not coalesce.
+	// No trimming: what is validated is what is stored, and the name is
+	// normalized so that watches of "Serde" and "serde" coalesce.
 	name := t.Coordinates["name"]
 	switch {
 	case name == "":
@@ -151,13 +182,13 @@ func crateName(t source.Target) (string, error) {
 	case !nameRE.MatchString(name):
 		return "", fmt.Errorf("%w: invalid crate name %q", source.ErrInvalidTarget, name)
 	}
-	return name, nil
+	return Normalize(name), nil
 }
 
 // indexPath is the path of a crate in the sparse index: 1/{n}, 2/{nn},
 // 3/{n}/{nnn} and {nn}/{nn}/{name}, on the lower-cased name.
 func indexPath(name string) string {
-	n := strings.ToLower(name)
+	n := Normalize(name)
 	switch len(n) {
 	case 1, 2:
 		return fmt.Sprintf("%d/%s", len(n), n)
@@ -177,12 +208,20 @@ type indexLine struct {
 	RustVersion *string `json:"rust_version"`
 }
 
-type apiCrate struct {
+type apiPage struct {
 	Versions []struct {
 		Num       string  `json:"num"`
 		CreatedAt string  `json:"created_at"`
 		License   *string `json:"license"`
 	} `json:"versions"`
+	Meta struct {
+		NextPage *string `json:"next_page"`
+	} `json:"meta"`
+}
+
+type apiVersion struct {
+	created time.Time
+	license string
 }
 
 // List implements source.Source.
@@ -200,7 +239,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	}
 	res, err := netguard.Fetch(ctx, s.hc, req, netguard.Validators{ETag: st.ETag, LastModified: st.LastModified})
 	if err != nil {
-		return source.Result{}, fmt.Errorf("crates: fetch index of %s: %w", name, err)
+		return source.Result{}, indexError(name, err)
 	}
 	state := source.FetchState{ETag: res.Validators.ETag, LastModified: res.Validators.LastModified, Cursor: st.Cursor}
 	if res.NotModified {
@@ -210,11 +249,35 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if err != nil {
 		return source.Result{}, fmt.Errorf("crates: decode index of %s: %w", name, err)
 	}
-	created, licenses, err := s.apiInfo(ctx, name)
-	if err != nil {
-		return source.Result{}, err
+	info := map[string]apiVersion{}
+	if s.api != "" {
+		var complete bool
+		if info, complete, err = s.apiInfo(ctx, name); err != nil {
+			return source.Result{}, err
+		}
+		for _, l := range lines {
+			if !complete {
+				break // truncated listing: do not hold the state back forever
+			}
+			if info[l.Vers].created.IsZero() {
+				// The API lags the index: keep the old validators so that the
+				// next poll refetches the index and asks the API again.
+				return source.Result{Versions: s.versions(name, lines, info), State: st}, nil
+			}
+		}
 	}
-	return source.Result{Versions: s.versions(name, lines, created, licenses), State: state}, nil
+	return source.Result{Versions: s.versions(name, lines, info), State: state}, nil
+}
+
+func indexError(name string, err error) error {
+	var se *netguard.StatusError
+	switch {
+	case errors.As(err, &se) && se.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("crates: fetch index of %s (crates.io names are exact about '-' versus '_'; check the spelling): %w", name, err)
+	case errors.Is(err, netguard.ErrBodyTooLarge):
+		return fmt.Errorf("crates: index of %s is above the response size cap (see issue #133): %w", name, err)
+	}
+	return fmt.Errorf("crates: fetch index of %s: %w", name, err)
 }
 
 // parseIndex reads the newline-delimited JSON of the sparse index, skipping
@@ -243,38 +306,49 @@ func parseIndex(body []byte) ([]indexLine, error) {
 	return out, nil
 }
 
-// apiInfo reads created_at (and the license) of every version from the API.
-func (s *Source) apiInfo(ctx context.Context, name string) (created map[string]time.Time, licenses map[string]string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.api+"/api/v1/crates/"+url.PathEscape(name), nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("crates: build API request for %s: %w", name, err)
-	}
-	req.Header.Set("Accept", "application/json")
-	res, err := netguard.Fetch(ctx, s.hc, req, netguard.Validators{})
-	if err != nil {
-		return nil, nil, fmt.Errorf("crates: fetch API record of %s: %w", name, err)
-	}
-	var doc apiCrate
-	if err := json.Unmarshal(res.Body, &doc); err != nil {
-		return nil, nil, fmt.Errorf("crates: decode API record of %s: %w", name, err)
-	}
-	created = make(map[string]time.Time, len(doc.Versions))
-	licenses = map[string]string{}
-	for _, v := range doc.Versions {
-		if ts, err := time.Parse(time.RFC3339, v.CreatedAt); err == nil {
-			created[v.Num] = ts.UTC()
+// apiInfo reads created_at (and the license) of the versions from the
+// paginated versions endpoint, following meta.next_page.
+func (s *Source) apiInfo(ctx context.Context, name string) (out map[string]apiVersion, complete bool, err error) {
+	out = map[string]apiVersion{}
+	base := s.api + "/api/v1/crates/" + url.PathEscape(name) + "/versions"
+	query := "?per_page=" + strconv.Itoa(perPage)
+	for range maxPages {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+query, nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("crates: build API request for %s: %w", name, err)
 		}
-		if v.License != nil && *v.License != "" {
-			licenses[v.Num] = *v.License
+		req.Header.Set("Accept", "application/json")
+		res, err := netguard.Fetch(ctx, s.hc, req, netguard.Validators{})
+		if err != nil {
+			return nil, false, fmt.Errorf("crates: fetch API versions of %s: %w", name, err)
 		}
+		var page apiPage
+		if err := json.Unmarshal(res.Body, &page); err != nil {
+			return nil, false, fmt.Errorf("crates: decode API versions of %s: %w", name, err)
+		}
+		for _, v := range page.Versions {
+			var av apiVersion
+			if ts, err := time.Parse(time.RFC3339, v.CreatedAt); err == nil {
+				av.created = ts.UTC()
+			}
+			if v.License != nil {
+				av.license = *v.License
+			}
+			out[v.Num] = av
+		}
+		next := page.Meta.NextPage
+		if next == nil || *next == "" || !strings.HasPrefix(*next, "?") || len(page.Versions) == 0 {
+			return out, true, nil
+		}
+		query = *next
 	}
-	return created, licenses, nil
+	return out, false, nil // more than maxPages pages: the oldest versions stay without a time
 }
 
-func (s *Source) versions(name string, lines []indexLine, created map[string]time.Time, licenses map[string]string) []source.Version {
+func (s *Source) versions(name string, lines []indexLine, info map[string]apiVersion) []source.Version {
 	out := make([]source.Version, 0, len(lines))
 	for _, l := range slices.Backward(lines) { // newest first for versions without a time
-		v := source.Version{Raw: l.Vers, Yanked: l.Yanked, PublishedAt: created[l.Vers], Metadata: map[string]any{}}
+		v := source.Version{Raw: l.Vers, Yanked: l.Yanked, PublishedAt: info[l.Vers].created, Metadata: map[string]any{}}
 		if s.pageBase != "" {
 			v.URL = s.pageBase + "/" + name + "/" + url.PathEscape(l.Vers)
 		}
@@ -284,7 +358,7 @@ func (s *Source) versions(name string, lines []indexLine, created map[string]tim
 		if l.RustVersion != nil && *l.RustVersion != "" {
 			v.Metadata["rust_version"] = *l.RustVersion
 		}
-		if lic := licenses[l.Vers]; lic != "" {
+		if lic := info[l.Vers].license; lic != "" {
 			v.Metadata["license"] = lic
 		}
 		out = append(out, v)

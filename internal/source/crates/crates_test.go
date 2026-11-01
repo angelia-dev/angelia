@@ -1,15 +1,18 @@
 package crates_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +24,10 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/sourcetest"
 )
 
-const widgetIndexPath = "/an/ge/angelia-test-widget"
+const (
+	widgetIndexPath = "/an/ge/angelia-test-widget"
+	apiPath         = "/api/v1/crates/angelia-test-widget/versions"
+)
 
 func fixture(t testing.TB, name string) []byte {
 	t.Helper()
@@ -43,7 +49,10 @@ type upstream struct {
 
 func (u *upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
-	body, ok := u.docs[r.URL.Path]
+	body, ok := u.docs[r.URL.Path+"?"+r.URL.RawQuery] // a paginated page
+	if !ok {
+		body, ok = u.docs[r.URL.Path]
+	}
 	u.requests = append(u.requests, r.URL.Path)
 	u.agents = append(u.agents, r.Header.Get("User-Agent"))
 	code := u.apiCode
@@ -91,8 +100,8 @@ func (u *upstream) apiRequests() int {
 
 func newUpstream(t testing.TB) *upstream {
 	return &upstream{docs: map[string][]byte{
-		widgetIndexPath:                      fixture(t, "widget.index"),
-		"/api/v1/crates/angelia-test-widget": fixture(t, "widget.api.json"),
+		widgetIndexPath: fixture(t, "widget.index"),
+		apiPath:         fixture(t, "widget.api.json"),
 	}}
 }
 
@@ -100,12 +109,13 @@ func target(name string) source.Target {
 	return source.Target{Kind: crates.Kind, Coordinates: map[string]string{"name": name}}
 }
 
+// newSource returns a Source on a fake registry whose API is the same server.
 func newSource(t *testing.T, up *upstream, opts ...crates.Option) (*crates.Source, *http.Client) {
 	t.Helper()
 	srv := httptest.NewServer(up)
 	t.Cleanup(srv.Close)
 	c := sourcetest.Client(t, srv)
-	return crates.New(srv.URL, c, opts...), c
+	return crates.New(srv.URL, c, append([]crates.Option{crates.WithAPIURL(srv.URL)}, opts...)...), c
 }
 
 func byRaw(vs []source.Version) map[string]source.Version {
@@ -130,7 +140,7 @@ func TestContract(t *testing.T) {
 	sourcetest.Run(t, nil, sourcetest.Fixtures{
 		Handler: up,
 		New: func(baseURL string, hc *http.Client) source.Source {
-			return crates.New(baseURL, hc)
+			return crates.New(baseURL, hc, crates.WithAPIURL(baseURL))
 		},
 		Valid: target("angelia-test-widget"),
 		Invalid: []source.Target{
@@ -230,8 +240,8 @@ func TestIndexPaths(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			up := &upstream{docs: map[string][]byte{
-				c.path:                     []byte(line),
-				"/api/v1/crates/" + c.name: []byte(`{"versions":[]}`),
+				c.path: []byte(line),
+				"/api/v1/crates/" + strings.ToLower(c.name) + "/versions": []byte(`{"versions":[]}`),
 			}}
 			s, _ := newSource(t, up)
 			if _, err := s.List(context.Background(), target(c.name), source.FetchState{}); err != nil {
@@ -288,27 +298,228 @@ func TestNoPageURLForCustomIndex(t *testing.T) {
 	}
 }
 
+// recorder is a RoundTripper that answers from canned bodies by host and
+// path and records "host path?query" of every request.
+type recorder struct {
+	mu   sync.Mutex
+	got  []string
+	docs map[string][]byte // "host/path" to body
+}
+
+func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.got = append(r.got, req.URL.Host+req.URL.Path+"?"+req.URL.RawQuery)
+	body, ok := r.docs[req.URL.Host+req.URL.Path]
+	r.mu.Unlock()
+	code := http.StatusOK
+	if !ok {
+		code = http.StatusNotFound
+	}
+	return &http.Response{StatusCode: code, Status: http.StatusText(code), Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body)), Request: req}, nil
+}
+
+func (r *recorder) requests() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.got...)
+}
+
 func TestSeparateAPIURL(t *testing.T) {
-	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != widgetIndexPath {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = w.Write(fixture(t, "widget.index"))
-	}))
-	t.Cleanup(idx.Close)
-	api := httptest.NewServer(newUpstream(t))
-	t.Cleanup(api.Close)
-	// sourcetest.Client talks to one server only, so use a plain client for
-	// the two-host case; both are loopback test servers.
-	hc := &http.Client{Transport: http.DefaultTransport}
-	s := crates.New(idx.URL, hc, crates.WithAPIURL(api.URL+"/"))
+	rec := &recorder{docs: map[string][]byte{
+		"idx.example" + widgetIndexPath: fixture(t, "widget.index"),
+		"api.example" + apiPath:         fixture(t, "widget.api.json"),
+	}}
+	s := crates.New("https://idx.example", &http.Client{Transport: rec}, crates.WithAPIURL("https://api.example/"))
 	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Versions[0].PublishedAt.IsZero() {
-		t.Error("created_at not read from the API server")
+		t.Error("created_at not read from the API host")
+	}
+	want := []string{"idx.example" + widgetIndexPath + "?", "api.example" + apiPath + "?per_page=100"}
+	if got := rec.requests(); !slices.Equal(got, want) {
+		t.Errorf("requests = %v, want %v", got, want)
+	}
+}
+
+func TestPublicIndexUsesPublicAPI(t *testing.T) {
+	rec := &recorder{docs: map[string][]byte{
+		"index.crates.io" + widgetIndexPath: fixture(t, "widget.index"),
+		"crates.io" + apiPath:               fixture(t, "widget.api.json"),
+	}}
+	res, err := crates.New("", &http.Client{Transport: rec}).List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"index.crates.io" + widgetIndexPath + "?", "crates.io" + apiPath + "?per_page=100"}
+	if got := rec.requests(); !slices.Equal(got, want) {
+		t.Errorf("requests = %v, want %v", got, want)
+	}
+	if res.Versions[0].PublishedAt.IsZero() || res.Versions[0].URL == "" {
+		t.Errorf("version incomplete: %+v", res.Versions[0])
+	}
+}
+
+func TestCustomIndexWithoutAPI(t *testing.T) {
+	up := newUpstream(t)
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	s := crates.New(srv.URL, sourcetest.Client(t, srv)) // no WithAPIURL
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := up.apiRequests(); n != 0 {
+		t.Errorf("API requests = %d, want none for a custom index without WithAPIURL", n)
+	}
+	if len(res.Versions) != 4 || !res.Versions[0].PublishedAt.IsZero() || res.State.ETag == "" {
+		t.Errorf("res = %+v, want 4 versions with zero PublishedAt and an advanced state", res)
+	}
+	if got := rawOf(res.Versions); got[0] != "1.1.0-rc.1" || got[3] != "0.1.0" {
+		t.Errorf("order = %v, want reverse index order", got)
+	}
+}
+
+func TestAPIPagination(t *testing.T) {
+	up := newUpstream(t)
+	up.set(apiPath+"?per_page=100", []byte(`{"versions":[
+		{"num":"1.1.0-rc.1","created_at":"2024-04-13T12:00:00Z"},
+		{"num":"1.0.0","created_at":"2024-03-12T11:00:00Z","license":"MIT"}],
+		"meta":{"total":4,"next_page":"?page=2&per_page=100"}}`))
+	up.set(apiPath+"?page=2&per_page=100", []byte(`{"versions":[
+		{"num":"0.2.0","created_at":"2024-02-11T10:30:00Z"},
+		{"num":"0.1.0","created_at":"2024-01-10T09:00:00Z"}],
+		"meta":{"total":4,"next_page":null}}`))
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := up.apiRequests(); got != 2 {
+		t.Errorf("API requests = %d, want 2 pages", got)
+	}
+	if want := "1.1.0-rc.1,1.0.0,0.2.0,0.1.0"; strings.Join(rawOf(res.Versions), ",") != want {
+		t.Errorf("order = %v, want %s", rawOf(res.Versions), want)
+	}
+	for _, v := range res.Versions {
+		if v.PublishedAt.IsZero() {
+			t.Errorf("%s has no PublishedAt", v.Raw)
+		}
+	}
+	if res.State.ETag == "" {
+		t.Error("state not advanced")
+	}
+}
+
+func TestPaginationIsBounded(t *testing.T) {
+	up := newUpstream(t)
+	// Every page points at itself: List must stop, and not hold the state
+	// back for versions the capped listing never reaches.
+	up.set(apiPath+"?per_page=100", []byte(`{"versions":[{"num":"1.0.0","created_at":"2024-03-12T11:00:00Z"}],"meta":{"next_page":"?per_page=100"}}`))
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := up.apiRequests(); got < 2 || got > 100 {
+		t.Errorf("API requests = %d, want a bounded number", got)
+	}
+	if res.State.ETag == "" {
+		t.Error("state must advance when the listing was cut by the page cap")
+	}
+}
+
+func TestAPILagKeepsState(t *testing.T) {
+	up := newUpstream(t)
+	// The API does not know the newest version yet.
+	up.set(apiPath, []byte(`{"versions":[
+		{"num":"1.0.0","created_at":"2024-03-12T11:00:00Z"},
+		{"num":"0.2.0","created_at":"2024-02-11T10:30:00Z"},
+		{"num":"0.1.0","created_at":"2024-01-10T09:00:00Z"}],"meta":{"next_page":null}}`))
+	s, _ := newSource(t, up)
+	ctx := context.Background()
+	tgt := target("angelia-test-widget")
+	first, err := s.List(ctx, tgt, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State.ETag != "" || first.NotModified {
+		t.Fatalf("state = %+v, want the incoming (empty) state so that the next poll refetches", first.State)
+	}
+	if !byRaw(first.Versions)["1.1.0-rc.1"].PublishedAt.IsZero() {
+		t.Error("the unknown version must have a zero PublishedAt")
+	}
+
+	// The API catches up.
+	up.set(apiPath, fixture(t, "widget.api.json"))
+	second, err := s.List(ctx, tgt, first.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.NotModified || second.State.ETag == "" {
+		t.Fatalf("second = %+v, want a full fetch with an advanced state", second.State)
+	}
+	if byRaw(second.Versions)["1.1.0-rc.1"].PublishedAt.IsZero() {
+		t.Error("PublishedAt not filled after the API caught up")
+	}
+}
+
+func TestOversizedIndex(t *testing.T) {
+	big := bytes.Repeat([]byte(`{"vers":"1.0.0","cksum":"aa","yanked":false}`+"\n"), 100)
+	up := &upstream{docs: map[string][]byte{widgetIndexPath: big, apiPath: fixture(t, "widget.api.json")}}
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	c, err := netguard.New(netguard.Config{MaxAttempts: 1, MaxBodyBytes: 1024, Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := source.FetchState{ETag: `"old"`}
+	res, err := crates.New(srv.URL, c.HTTPClient(), crates.WithAPIURL(srv.URL)).List(context.Background(), target("angelia-test-widget"), st)
+	if !errors.Is(err, netguard.ErrBodyTooLarge) || !strings.Contains(err.Error(), "size cap") {
+		t.Fatalf("err = %v, want one wrapping ErrBodyTooLarge and mentioning the size cap", err)
+	}
+	if res.State != (source.FetchState{}) {
+		t.Errorf("state = %+v, an error must not advance it", res.State)
+	}
+}
+
+func TestNameNormalization(t *testing.T) {
+	if got := crates.Normalize("Serde_JSON"); got != "serde_json" {
+		t.Errorf("Normalize = %q, want lower case with _ kept", got)
+	}
+	if crates.Normalize("serde-json") == crates.Normalize("serde_json") {
+		t.Error("- and _ must stay distinct")
+	}
+	up := newUpstream(t)
+	s, _ := newSource(t, up)
+	if _, err := s.List(context.Background(), target("Angelia-Test-Widget"), source.FetchState{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMissingCrateHint(t *testing.T) {
+	s, _ := newSource(t, newUpstream(t))
+	_, err := s.List(context.Background(), target("angelia_test_widget"), source.FetchState{})
+	if err == nil || !strings.Contains(err.Error(), "'-' versus '_'") {
+		t.Errorf("err = %v, want a hint about - versus _", err)
+	}
+}
+
+func TestEqualTimesKeepReverseIndexOrder(t *testing.T) {
+	up := newUpstream(t)
+	up.set(apiPath, []byte(`{"versions":[
+		{"num":"1.1.0-rc.1","created_at":"2024-04-13T12:00:00Z"},
+		{"num":"1.0.0","created_at":"2024-04-13T12:00:00Z"},
+		{"num":"0.2.0","created_at":"2024-04-13T12:00:00Z"},
+		{"num":"0.1.0","created_at":"2024-01-10T09:00:00Z"}],"meta":{"next_page":null}}`))
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1.1.0-rc.1,1.0.0,0.2.0,0.1.0"; strings.Join(rawOf(res.Versions), ",") != want {
+		t.Errorf("order = %v, want %s", rawOf(res.Versions), want)
 	}
 }
 
@@ -316,7 +527,7 @@ func TestOrderWithoutTimes(t *testing.T) {
 	// The API knows only 0.1.0: the rest have no PublishedAt and follow it in
 	// reverse index order.
 	up := newUpstream(t)
-	up.set("/api/v1/crates/angelia-test-widget",
+	up.set(apiPath,
 		[]byte(`{"versions":[{"num":"0.1.0","created_at":"2024-01-10T09:00:00+00:00"}]}`))
 	s, _ := newSource(t, up)
 	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
@@ -361,7 +572,7 @@ func TestBadDocuments(t *testing.T) {
 		"API not JSON":       {`{"vers":"1.0.0"}` + "\n", `<html>`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			up := &upstream{docs: map[string][]byte{widgetIndexPath: []byte(c.index), "/api/v1/crates/angelia-test-widget": []byte(c.api)}}
+			up := &upstream{docs: map[string][]byte{widgetIndexPath: []byte(c.index), apiPath: []byte(c.api)}}
 			s, _ := newSource(t, up)
 			if _, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{}); err == nil {
 				t.Error("want an error")
@@ -372,8 +583,8 @@ func TestBadDocuments(t *testing.T) {
 
 func TestBlankLinesIgnored(t *testing.T) {
 	up := &upstream{docs: map[string][]byte{
-		widgetIndexPath:                      []byte("\n" + `{"vers":"1.0.0","cksum":"aa","yanked":false}` + "\n\n"),
-		"/api/v1/crates/angelia-test-widget": []byte(`{"versions":[]}`),
+		widgetIndexPath: []byte("\n" + `{"vers":"1.0.0","cksum":"aa","yanked":false}` + "\n\n"),
+		apiPath:         []byte(`{"versions":[]}`),
 	}}
 	s, _ := newSource(t, up)
 	res, err := s.List(context.Background(), target("angelia-test-widget"), source.FetchState{})
@@ -426,7 +637,7 @@ func TestUserAgentIdentifiesAngelia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := crates.New(srv.URL, c.HTTPClient()).List(context.Background(), target("angelia-test-widget"), source.FetchState{}); err != nil {
+	if _, err := crates.New(srv.URL, c.HTTPClient(), crates.WithAPIURL(srv.URL)).List(context.Background(), target("angelia-test-widget"), source.FetchState{}); err != nil {
 		t.Fatal(err)
 	}
 	up.mu.Lock()
