@@ -97,8 +97,15 @@ func DefaultFallbackLimit() HostLimit {
 // api.github.com allows 5,000 requests per hour with a token and 60 without.
 // Burst + Rate*1h equals those budgets (see Budget), so the buckets never
 // exceed them over any one-hour window.
+//
+// crates.io's crawler policy allows one request per second to its API, so
+// crates.io gets a rate of 1 per second with no burst beyond a single
+// request. The sparse index (index.crates.io) is a CDN meant for bulk reads
+// and keeps the fallback limit.
 func DefaultHostLimits() map[string]HostLimit {
+	crates := Limit{Rate: 1, Burst: 1}
 	return map[string]HostLimit{
+		"crates.io": {Authenticated: crates, Anonymous: crates},
 		"api.github.com": {
 			Authenticated: Limit{Rate: (5000 - 10) / 3600.0, Burst: 10},
 			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},

@@ -196,6 +196,18 @@ func TestDefaultHostLimitsGitHub(t *testing.T) {
 	}
 }
 
+func TestDefaultHostLimitsCrates(t *testing.T) {
+	l, ok := DefaultHostLimits()["crates.io"]
+	if !ok {
+		t.Fatal("crates.io has no default limit")
+	}
+	for name, lim := range map[string]Limit{"authenticated": l.Authenticated, "anonymous": l.Anonymous} {
+		if lim.Rate != 1 || lim.Burst != 1 {
+			t.Errorf("%s limit = %+v, want 1 request per second, burst 1 (crates.io crawler policy)", name, lim)
+		}
+	}
+}
+
 // waitUntil polls cond in real time; the fake clock does not move meanwhile.
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
