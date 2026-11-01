@@ -119,6 +119,7 @@ set (same rule as `token_env` in configuration.md).
 | `name` | string | yes | none | section 2.1 |
 | `sink` | string | yes | none | the `name` of a sink **in the same file** |
 | `filter` | filter | no | `{}` (matches every event) | below |
+| `policy` | subscription policy | no | all inherited | section 2.6 |
 | `template` | string | no | empty (default CloudEvents JSON) | Go `text/template` that must parse; the available fields are defined by the dispatcher story, not here |
 
 `filter` (all given keys must match; PRD F6 lists ecosystem, labels, bump, package glob):
@@ -131,8 +132,43 @@ set (same rule as `token_env` in configuration.md).
 | `package` | string | any | glob (`path.Match` syntax) on the package name |
 | `type` | list of string | `[release.published]` | `release.published`, `release.yanked`, `release.prerelease` |
 
-The filter is stored as `subscription.filter_json`. The matcher itself is a separate story; this one
-only validates and stores the filter.
+The filter is stored as `subscription.filter_json`. `bump` narrows the watch's `bump` (section 2.6).
+
+### 2.6 `subscriptions[].policy`
+
+Story: angelia-dev/angelia#69, [ADR 0014](adr/0014-subscription-policy-overrides.md). Two consumers of
+one watch can want different policies (CI wants every patch, chat only minors after 72 h).
+
+| Key | Type | Default | Validation |
+|---|---|---|---|
+| `prerelease` | string | absent = inherit the watch | `none`, `only` or `include` |
+| `cooldown` | duration | `0` (no extra hold) | Go syntax; clamped to `0` to `8760h` and cut to whole seconds |
+
+With `filter.bump` these are the three keys a subscription can use to narrow the watch policy. `bump`
+stays in `filter`; there is no `policy.bump`.
+
+**A subscription can only narrow.** It receives the events its watch policy already admitted, then
+applies its own rules, so it can only receive less, and later:
+
+| Key | Effective rule |
+|---|---|
+| `bump` | the version passes the watch's `bump` **and** the subscription's. Listing a bump the watch drops matches nothing. |
+| `prerelease` | the subscription's mode is intersected with what the watch admitted. `include` keeps what the watch admitted; `none` and `only` keep the matching part. `include` on a watch with `none` still gets no pre-release, and `only` on a watch with `none` gets nothing. |
+| `cooldown` | counted from the **same start** as the watch's cooldown, not added to it: the effective hold is `max(watch, subscription)`. A value below the watch's changes nothing. A held delivery is released when it ends. |
+
+Because a subscription is not tied to one watch, a value that does nothing for one watch is right for
+another, so such values are **not errors**: syntax mistakes (unknown key, bad mode, unparseable
+duration) fail at load time, but a widening or useless value is clamped (negative or over-long
+cooldown) or intersected away at evaluation (a cooldown below the watch's, a prerelease mode the
+watch already excludes), never rejected. Evaluation is
+`subscription.Policy.Evaluate`; a `release.yanked` event is never delayed or dropped by `policy.*`.
+
+A cooldown hold is a pending delivery with `next_attempt_at` in the future, so it survives restarts.
+Editing a subscription's `filter` or `policy` decides its **held** deliveries again (queued deliveries
+are not touched): one the new filter no longer matches (for example `filter.bump` narrowed), or that
+the new `prerelease` mode excludes, becomes `dead` with a reason; one whose new hold has passed is
+released at once; one whose hold is still ahead is moved to the new time. The filter is matched against
+the input recorded when the delivery was held.
 
 ## 3. How a file maps onto the store
 
@@ -184,10 +220,11 @@ Details:
 - **Deleting a watch**: the `watch` row goes away and no new events or deliveries are created for it.
   History is kept (ADR 0008: `event` and `delivery` rows carry no foreign key). The `target` and its
   `version` rows are deleted when no other watch uses it.
-- **Deleting a subscription** (or its sink): its `pending` deliveries are deleted (they would never be
-  sent); `in_flight` finish; `delivered` and `dead` rows stay as history. This is how "removing a watch
-  removes its future deliveries" is met when the watch's subscription is removed with it; deliveries
-  already queued for a *kept* subscription are sent (D8).
+- **Deleting a subscription** (or its sink): all its `pending` deliveries, held or not, become `dead`
+  with `last_error` `subscription removed` (they would never be sent, and stay visible); `in_flight`
+  finish; `delivered` and `dead` rows stay as history. This is how "removing a watch removes its
+  future deliveries" is met when the watch's subscription is removed with it; deliveries already
+  queued for a *kept* subscription are sent (D8).
 - A subscription whose `sink` names a missing sink is a validation error, not a dangling row.
 - A sink cannot be removed while a kept subscription references it (validation error).
 - Secrets: apply never reads the value of a `*_env` variable into the database.
@@ -217,8 +254,8 @@ Details:
 2. architecture.md section 3.1 describes `angelia apply -f watches.yaml` going through the API; Phase 0
    uses `angelia serve --watches` straight into the store, as the issue says. The file format is meant to
    be the same one.
-3. architecture.md section 3.4 says policy applies "per watch or subscription"; the store has a policy
-   only on `watch`. This format puts policy on the watch only (D6).
+3. architecture.md section 3.4 says policy applies "per watch or subscription"; the watch carries the
+   full policy, a subscription only the narrowing keys of section 2.6 (D6, amended by #69).
 4. The store had no `name`, `managed_by` or `interval` columns; migration 00004 adds them (section 3).
 5. PRD F3 lists Maven as a scheme; #68 added calver and not Maven. The `scheme` enum follows #68.
 6. `schemes.Names()` now lists `calver`, so `scheme: calver` is accepted.
@@ -238,9 +275,9 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D3 | Stable key is a human `name` per object | use ULID `id` in the file; name = id; derive from coordinates | `name`; ULIDs are generated, and a file author needs a key they can type |
 | D4 | `coordinates` (flat string map) as the key for source parameters | `target:` (architecture wording); per-kind typed keys such as `package:`/`repo:`; `purl` strings | `coordinates`: matches the issue, ADR 0006 and `coordinates_json`; the loader stays generic |
 | D5 | Add migration `00004` (`name`, `managed_by` on watch/sink/subscription, `interval_ms` on target) | deterministic ids derived from names (no migration); store name and interval inside `*_json` | Migration: explicit, supports the Phase 1 API coexisting with file-managed rows |
-| D6 | `policy` on the watch only; subscription has `filter` only | policy also on subscriptions (architecture.md 3.4) | Watch only in Phase 0; add later without breaking the format |
+| D6 | `policy` on the watch only; subscription has `filter` only. **Amended by #69 (ADR 0014):** a subscription also has `policy` with `prerelease` and `cooldown`, which only narrow | policy also on subscriptions (architecture.md 3.4) | Watch only in Phase 0; add later without breaking the format |
 | D7 | Changing source/coordinates resets the baseline; other edits keep it | never reset; always reset on any edit | As proposed, to avoid a flood of events for the new target |
-| D8 | Deleted subscription removes its pending deliveries; deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription) |
+| D8 | Deleted subscription sets its pending deliveries to `dead` with a reason (**amended by #69, maintainer, 2026-11-01**; first approved as "removes"); deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription); `dead` instead of deletion keeps them visible; dead rows are pruned with their event like any history |
 | D9 | No per-watch token; credentials come from the instance config `token_env` | `token_env` on a watch or sink | None in Phase 0; add `auth_env` later if needed |
 | D10 | No `${VAR}` interpolation; only `*_env` references | interpolate env into any value | No interpolation: avoids accidental inline secrets and keeps the file reviewable |
 | D11 | Bounds: `interval` 5m to 720h default 1h; `labels` at most 32; name pattern in 2.1 | other limits | Accept; the 5m floor protects upstream rate limits (netguard has per-host limits anyway) |

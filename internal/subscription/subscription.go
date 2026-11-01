@@ -21,19 +21,19 @@ var (
 type Input struct {
 	// Source is the source kind of the watch ("npm", "pypi", ...), the
 	// "ecosystem" of the PRD.
-	Source string
+	Source string `json:"source"`
 	// Package is the package name as the source normalised it ("@angular/core").
-	Package string
+	Package string `json:"package"`
 	// Labels are the labels of the watch that produced the event.
-	Labels map[string]string
+	Labels map[string]string `json:"labels"`
 	// Bump is the classifier's result: "major", "minor", "patch",
 	// "prerelease" or "other", or empty when unclassified. A filter with a
 	// Bump list matches only a value in that list, so "prerelease", "other"
 	// and "" never match it.
-	Bump string
+	Bump string `json:"bump"`
 	// Type is the event type: "release.published", "release.yanked" or
 	// "release.prerelease".
-	Type string
+	Type string `json:"type"`
 }
 
 // Filter selects events. Every non-empty field must match. The zero value
