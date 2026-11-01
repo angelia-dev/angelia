@@ -215,6 +215,42 @@ func (q *Queries) DeleteExpiredLease(ctx context.Context, arg DeleteExpiredLease
 	return err
 }
 
+const deleteSink = `-- name: DeleteSink :execrows
+DELETE FROM sink WHERE id = ?
+`
+
+func (q *Queries) DeleteSink(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSink, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteSubscription = `-- name: DeleteSubscription :execrows
+DELETE FROM subscription WHERE id = ?
+`
+
+func (q *Queries) DeleteSubscription(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSubscription, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteWatch = `-- name: DeleteWatch :execrows
+DELETE FROM watch WHERE id = ?
+`
+
+func (q *Queries) DeleteWatch(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteWatch, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getTarget = `-- name: GetTarget :one
 SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count FROM target WHERE id = ?
 `
@@ -287,16 +323,16 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 }
 
 const listEventsAfter = `-- name: ListEventsAfter :many
-SELECT id, watch_id, type, payload_json, created_at FROM event WHERE id > ? ORDER BY id LIMIT ?
+SELECT seq, id, watch_id, type, payload_json, created_at FROM event WHERE seq > ? ORDER BY seq LIMIT ?
 `
 
 type ListEventsAfterParams struct {
-	ID    string
+	Seq   int64
 	Limit int64
 }
 
 func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error) {
-	rows, err := q.db.QueryContext(ctx, listEventsAfter, arg.ID, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, listEventsAfter, arg.Seq, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +341,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 	for rows.Next() {
 		var i Event
 		if err := rows.Scan(
+			&i.Seq,
 			&i.ID,
 			&i.WatchID,
 			&i.Type,

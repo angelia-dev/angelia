@@ -1,4 +1,4 @@
--- Indexes for the scheduler, dispatcher and foreign-key lookups, and target
+-- Indexes for the scheduler, dispatcher, lookups by parent row, and target
 -- coalescing: coordinates_json is canonical JSON (keys sorted), so one
 -- upstream object maps to one target row (architecture.md §3.2).
 

@@ -13,7 +13,8 @@ var (
 	// ErrConflict is returned when a write violates a uniqueness constraint.
 	ErrConflict = errors.New("store: conflict")
 	// ErrInvalidRef is returned when a write references a row that does not
-	// exist (foreign key violation).
+	// exist, or a delete removes a row that other config rows still reference
+	// (foreign key violation).
 	ErrInvalidRef = errors.New("store: invalid reference")
 	// ErrInvalid is returned when a value fails validation before any write.
 	ErrInvalid = errors.New("store: invalid value")
@@ -56,13 +57,20 @@ type Store interface {
 	GetTarget(ctx context.Context, id string) (Target, error)
 	CreateWatch(ctx context.Context, w Watch) error
 	GetWatch(ctx context.Context, id string) (Watch, error)
+	// DeleteWatch deletes a watch. Its events are kept (immutable log).
+	DeleteWatch(ctx context.Context, id string) error
 	ListVersions(ctx context.Context, targetID string) ([]Version, error)
 	CreateSink(ctx context.Context, s Sink) error
+	// DeleteSink deletes a sink. It is ErrInvalidRef while a subscription
+	// uses it; deliveries do not block it.
+	DeleteSink(ctx context.Context, id string) error
 	CreateSubscription(ctx context.Context, s Subscription) error
-	// ListEventsAfter returns up to limit events with an ID greater than
-	// afterID, in ID order. An empty afterID starts from the beginning;
+	// DeleteSubscription deletes a subscription. Its deliveries are kept.
+	DeleteSubscription(ctx context.Context, id string) error
+	// ListEventsAfter returns up to limit events with a Seq greater than
+	// afterSeq, in Seq (commit) order. afterSeq 0 starts from the beginning;
 	// limit <= 0 means DefaultEventLimit.
-	ListEventsAfter(ctx context.Context, afterID string, limit int) ([]Event, error)
+	ListEventsAfter(ctx context.Context, afterSeq int64, limit int) ([]Event, error)
 	ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error)
 	// AcquireLease takes or renews the named lease for holder until the given
 	// time. It reports false when another holder owns an unexpired lease.
@@ -102,8 +110,12 @@ type Version struct {
 	FirstSeenAt time.Time
 }
 
-// Event is an immutable release event.
+// Event is an immutable release event. WatchID may name a deleted watch.
 type Event struct {
+	// Seq is the pull-API cursor, assigned by the store on append and
+	// increasing in commit order; it is ignored on write. ID (a ULID) stays
+	// the public event id.
+	Seq       int64
 	ID        string
 	WatchID   string
 	Type      string
@@ -128,6 +140,7 @@ type Subscription struct {
 }
 
 // Delivery is the per-subscription delivery state of one event.
+// SubscriptionID may name a deleted subscription.
 type Delivery struct {
 	ID             string
 	EventID        string

@@ -19,6 +19,7 @@ type Delivery struct {
 }
 
 type Event struct {
+	Seq         int64
 	ID          string
 	WatchID     string
 	Type        string

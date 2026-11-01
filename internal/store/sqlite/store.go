@@ -238,6 +238,33 @@ func (s *Store) GetWatch(ctx context.Context, id string) (store.Watch, error) {
 	return w, nil
 }
 
+// DeleteWatch implements [store.Store].
+func (s *Store) DeleteWatch(ctx context.Context, id string) error {
+	n, err := s.q.DeleteWatch(ctx, id)
+	return deleted(n, err, "delete watch", id)
+}
+
+// DeleteSink implements [store.Store].
+func (s *Store) DeleteSink(ctx context.Context, id string) error {
+	n, err := s.q.DeleteSink(ctx, id)
+	return deleted(n, err, "delete sink", id)
+}
+
+// DeleteSubscription implements [store.Store].
+func (s *Store) DeleteSubscription(ctx context.Context, id string) error {
+	n, err := s.q.DeleteSubscription(ctx, id)
+	return deleted(n, err, "delete subscription", id)
+}
+
+// deleted turns the result of a DELETE by id into an error: ErrNotFound when
+// no row matched.
+func deleted(n int64, err error, op, id string) error {
+	if err == nil && n == 0 {
+		err = sql.ErrNoRows
+	}
+	return wrap(err, op, id)
+}
+
 // ListVersions implements [store.Store].
 func (s *Store) ListVersions(ctx context.Context, targetID string) ([]store.Version, error) {
 	rows, err := s.q.ListVersions(ctx, targetID)
@@ -275,17 +302,17 @@ func (s *Store) CreateSubscription(ctx context.Context, sub store.Subscription) 
 }
 
 // ListEventsAfter implements [store.Store].
-func (s *Store) ListEventsAfter(ctx context.Context, afterID string, limit int) ([]store.Event, error) {
+func (s *Store) ListEventsAfter(ctx context.Context, afterSeq int64, limit int) ([]store.Event, error) {
 	if limit <= 0 {
 		limit = store.DefaultEventLimit
 	}
-	rows, err := s.q.ListEventsAfter(ctx, ListEventsAfterParams{ID: afterID, Limit: int64(limit)})
+	rows, err := s.q.ListEventsAfter(ctx, ListEventsAfterParams{Seq: afterSeq, Limit: int64(limit)})
 	if err != nil {
-		return nil, wrap(err, "list events after", afterID)
+		return nil, wrap(err, "list events after", fmt.Sprint(afterSeq))
 	}
 	out := make([]store.Event, len(rows))
 	for i, r := range rows {
-		out[i] = store.Event{ID: r.ID, WatchID: r.WatchID, Type: r.Type, Payload: json.RawMessage(r.PayloadJson), CreatedAt: fromMillis(r.CreatedAt)}
+		out[i] = store.Event{Seq: r.Seq, ID: r.ID, WatchID: r.WatchID, Type: r.Type, Payload: json.RawMessage(r.PayloadJson), CreatedAt: fromMillis(r.CreatedAt)}
 	}
 	return out, nil
 }

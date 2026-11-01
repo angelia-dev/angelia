@@ -302,14 +302,91 @@ func TestAppendEventAndDeliveryUniqueness(t *testing.T) {
 	e.CreatedAt = time.Time{}
 	wantErr(t, s.AppendEvent(ctx, e, nil), store.ErrInvalid, "zero created_at")
 
-	evs, err := s.ListEventsAfter(ctx, "", 0)
+	evs, err := s.ListEventsAfter(ctx, 0, 0)
 	must(t, err)
-	if len(evs) != 1 || evs[0].ID != "e1" || string(evs[0].Payload) != `{"v":1}` || !evs[0].CreatedAt.Equal(t0) {
+	if len(evs) != 1 || evs[0].ID != "e1" || evs[0].Seq <= 0 || string(evs[0].Payload) != `{"v":1}` || !evs[0].CreatedAt.Equal(t0) {
 		t.Fatalf("events = %+v (outbox not atomic?)", evs)
 	}
-	if evs, _ := s.ListEventsAfter(ctx, "e1", 10); len(evs) != 0 {
+	if evs, _ := s.ListEventsAfter(ctx, evs[0].Seq, 10); len(evs) != 0 {
 		t.Fatalf("events after cursor = %+v", evs)
 	}
+}
+
+// TestEventCursorFollowsCommitOrder: a writer can mint a smaller ULID and
+// commit after a reader has paged past a larger one. The Seq cursor follows
+// commit order, so the reader still sees the late event; an ID cursor would
+// skip it (ADR 0008).
+func TestEventCursorFollowsCommitOrder(t *testing.T) {
+	s, _ := openTest(t)
+	seed(t, s)
+	ctx := t.Context()
+	const early, late = "01JBZZZZZZZZZZZZZZZZZZZZZZ", "01JBAAAAAAAAAAAAAAAAAAAAAA" // late < early as IDs
+	must(t, s.AppendEvent(ctx, event(early), nil))
+
+	page1, err := s.ListEventsAfter(ctx, 0, 10)
+	must(t, err)
+	if len(page1) != 1 || page1[0].ID != early {
+		t.Fatalf("page 1 = %+v", page1)
+	}
+	cursor := page1[0].Seq
+
+	must(t, s.AppendEvent(ctx, event(late), nil))
+	page2, err := s.ListEventsAfter(ctx, cursor, 10)
+	must(t, err)
+	if len(page2) != 1 || page2[0].ID != late || page2[0].Seq <= cursor {
+		t.Fatalf("page 2 after cursor %d = %+v, want the later commit %s", cursor, page2, late)
+	}
+
+	all, err := s.ListEventsAfter(ctx, 0, 1)
+	must(t, err)
+	if len(all) != 1 || all[0].ID != early {
+		t.Fatalf("limit 1 = %+v, want the first commit", all)
+	}
+}
+
+// TestDeleteConfigKeepsHistory: watches, subscriptions and sinks can be
+// deleted while events and deliveries that name them are retained.
+func TestDeleteConfigKeepsHistory(t *testing.T) {
+	s, _ := openTest(t)
+	seed(t, s)
+	ctx := t.Context()
+	must(t, s.AppendEvent(ctx, event("e1"), []store.Delivery{pending("s1"), pending("s2")}))
+
+	must(t, s.DeleteWatch(ctx, "w1"))
+	_, err := s.GetWatch(ctx, "w1")
+	wantErr(t, err, store.ErrNotFound, "deleted watch")
+	evs, err := s.ListEventsAfter(ctx, 0, 10)
+	must(t, err)
+	if len(evs) != 1 || evs[0].WatchID != "w1" {
+		t.Fatalf("events after watch delete = %+v", evs)
+	}
+
+	must(t, s.DeleteSubscription(ctx, "s1"))
+	wantErr(t, s.DeleteSink(ctx, "k1"), store.ErrInvalidRef, "sink still used by s2")
+	must(t, s.DeleteSubscription(ctx, "s2"))
+	must(t, s.DeleteSink(ctx, "k1"))
+	ds, err := s.ListDeliveries(ctx, "e1")
+	must(t, err)
+	if len(ds) != 2 || ds[0].SubscriptionID != "s1" || ds[1].SubscriptionID != "s2" {
+		t.Fatalf("deliveries after subscription and sink delete = %+v", ds)
+	}
+
+	wantErr(t, s.DeleteWatch(ctx, "w1"), store.ErrNotFound, "delete missing watch")
+	wantErr(t, s.DeleteSubscription(ctx, "s1"), store.ErrNotFound, "delete missing subscription")
+	wantErr(t, s.DeleteSink(ctx, "k1"), store.ErrNotFound, "delete missing sink")
+
+	// Config foreign keys still hold, and delivery still requires its event.
+	wantErr(t, s.CreateSubscription(ctx, store.Subscription{ID: "s3", SinkID: "k1"}), store.ErrInvalidRef, "subscription to deleted sink")
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO delivery (id, event_id, subscription_id, status) VALUES ('d9','nope','s1','pending')`); err == nil {
+		t.Error("delivery for a missing event accepted")
+	}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	must(t, err)
+	defer func() { _ = rows.Close() }()
+	if rows.Next() {
+		t.Fatal("foreign key violations after deletes")
+	}
+	must(t, rows.Err())
 }
 
 func TestInTx(t *testing.T) {
@@ -340,7 +417,7 @@ func TestInTx(t *testing.T) {
 		t.Fatalf("InTx error = %v", err)
 	}
 	vs, _ := s.ListVersions(ctx, "t1")
-	evs, _ := s.ListEventsAfter(ctx, "", 10)
+	evs, _ := s.ListEventsAfter(ctx, 0, 10)
 	got, _ := s.GetTarget(ctx, "t1")
 	if len(vs) != 0 || len(evs) != 0 || string(got.FetchState) != `{"etag":"x"}` {
 		t.Fatalf("rollback incomplete: versions=%v events=%v target=%+v", vs, evs, got)
@@ -348,7 +425,7 @@ func TestInTx(t *testing.T) {
 
 	must(t, s.InTx(ctx, func(tx store.Tx) error { return check(tx, "e2", false) }))
 	vs, _ = s.ListVersions(ctx, "t1")
-	evs, _ = s.ListEventsAfter(ctx, "", 10)
+	evs, _ = s.ListEventsAfter(ctx, 0, 10)
 	got, _ = s.GetTarget(ctx, "t1")
 	if len(vs) != 1 || len(evs) != 1 || string(got.FetchState) != `{"etag":"new"}` {
 		t.Fatalf("commit incomplete: versions=%v events=%v target=%+v", vs, evs, got)
@@ -403,7 +480,7 @@ func TestConcurrentWriters(t *testing.T) {
 						errs <- s.AppendEvent(ctx, event(id), []store.Delivery{d})
 						_, err := s.AddVersion(ctx, store.Version{TargetID: "t1", Raw: id, Normalized: id, FirstSeenAt: t0})
 						errs <- err
-						_, err = s.ListEventsAfter(ctx, "", 5)
+						_, err = s.ListEventsAfter(ctx, 0, 5)
 						errs <- err
 					}
 				})
@@ -415,10 +492,15 @@ func TestConcurrentWriters(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			evs, err := s.ListEventsAfter(ctx, "", workers*perWorker+1)
+			evs, err := s.ListEventsAfter(ctx, 0, workers*perWorker+1)
 			must(t, err)
 			if len(evs) != workers*perWorker {
 				t.Fatalf("events = %d, want %d", len(evs), workers*perWorker)
+			}
+			for i := 1; i < len(evs); i++ {
+				if evs[i].Seq <= evs[i-1].Seq {
+					t.Fatalf("seq not increasing: %d then %d", evs[i-1].Seq, evs[i].Seq)
+				}
 			}
 		})
 	}

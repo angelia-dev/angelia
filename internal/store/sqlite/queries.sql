@@ -17,6 +17,9 @@ VALUES (?, ?, ?, ?, ?);
 -- name: GetWatch :one
 SELECT * FROM watch WHERE id = ?;
 
+-- name: DeleteWatch :execrows
+DELETE FROM watch WHERE id = ?;
+
 -- name: AddVersion :execrows
 INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -28,14 +31,20 @@ SELECT * FROM version WHERE target_id = ? ORDER BY first_seen_at, raw;
 -- name: CreateSink :exec
 INSERT INTO sink (id, kind, config_json_encrypted) VALUES (?, ?, ?);
 
+-- name: DeleteSink :execrows
+DELETE FROM sink WHERE id = ?;
+
 -- name: CreateSubscription :exec
 INSERT INTO subscription (id, filter_json, sink_id, template) VALUES (?, ?, ?, ?);
+
+-- name: DeleteSubscription :execrows
+DELETE FROM subscription WHERE id = ?;
 
 -- name: CreateEvent :exec
 INSERT INTO event (id, watch_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?);
 
 -- name: ListEventsAfter :many
-SELECT * FROM event WHERE id > ? ORDER BY id LIMIT ?;
+SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?;
 
 -- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
