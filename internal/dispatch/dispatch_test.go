@@ -11,6 +11,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/supervisor"
 )
 
 func TestRetryCeiling(t *testing.T) {
@@ -186,11 +187,6 @@ func TestUnsendableDeliveriesAreDead(t *testing.T) {
 		},
 		{name: "sink deleted", mutate: func(ld *store.LeasedDelivery) { ld.Sink = nil }, want: ReasonSinkDeleted},
 		{
-			name:  "unknown kind",
-			setup: func(context.Context, *testing.T, store.Store) Sinks { return sink.NewRegistry() },
-			want:  `get sink "test": sink: unknown kind`,
-		},
-		{
 			name: "template",
 			setup: func(ctx context.Context, t *testing.T, st store.Store) Sinks {
 				must(t, st.InConfigTx(ctx, func(tx store.ConfigTx) error {
@@ -268,6 +264,7 @@ func TestRequestContent(t *testing.T) {
 	if string(r.Config) != `{"url":"https://example.com/hook"}` || string(r.Event.JSON) != string(payload("E0000")) ||
 		r.Event.Envelope.ID != "E0000" || r.Event.Envelope.Subject != "pypi:requests@2.33.0" ||
 		string(r.Rendered.Body) != string(payload("E0000")) || r.Rendered.ContentType != sink.CloudEventsContentType ||
+		r.Rendered.Templated || sink.CloudEventsContentType != "application/cloudevents+json; charset=utf-8" ||
 		r.IdempotencyKey != "E0000:s1" || r.DeliveryID != "DE0000" || r.SubscriptionID != "s1" || r.Attempt != 1 {
 		t.Errorf("request = %+v", r)
 	}
@@ -549,6 +546,9 @@ func TestNewOptions(t *testing.T) {
 		{RetryBase: -1},
 		{LeaseTTL: -1},
 		{DeliverTimeout: time.Minute, LeaseTTL: time.Minute},
+		{DeliverTimeout: 91 * time.Second},
+		{DeliverTimeout: 91 * time.Minute, LeaseTTL: 2 * time.Hour},
+		{LeaseTTL: 20 * time.Second},
 	} {
 		if _, err := New(st, sinks, o); err == nil {
 			t.Errorf("New(%+v) accepted", o)
@@ -562,8 +562,14 @@ func TestNewOptions(t *testing.T) {
 		o.PollInterval != DefaultPollInterval || o.Holder == "" {
 		t.Errorf("defaults = %+v", o)
 	}
-	if d, _ := New(st, sinks, Options{LeaseTTL: 20 * time.Second}); d.opts.DeliverTimeout != 10*time.Second {
+	if d, _ := New(st, sinks, Options{LeaseTTL: 40 * time.Second}); d.opts.DeliverTimeout != 10*time.Second {
 		t.Errorf("deliver timeout under a short lease = %v", d.opts.DeliverTimeout)
+	}
+	if _, err := New(st, sinks, Options{DeliverTimeout: 90 * time.Second}); err != nil {
+		t.Errorf("deliver timeout at the bound: %v", err)
+	}
+	if DefaultDeliverTimeout+writeTimeout >= supervisor.DefaultDrainTimeout {
+		t.Errorf("deliver %v + write %v not below the drain timeout %v", DefaultDeliverTimeout, writeTimeout, supervisor.DefaultDrainTimeout)
 	}
 }
 

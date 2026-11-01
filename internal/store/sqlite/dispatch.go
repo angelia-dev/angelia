@@ -98,7 +98,7 @@ func (s *Store) HasDueDeliveries(ctx context.Context, now time.Time) (bool, erro
 // FinishDelivery implements [store.Store].
 func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, holder string) (bool, error) {
 	p := FinishLeasedDeliveryParams{
-		Status: f.Status, ID: f.ID, LeaseName: store.DeliveryLeaseName(f.ID), Holder: holder,
+		Status: f.Status, ID: f.ID, Attempt: f.Attempt, LeaseName: store.DeliveryLeaseName(f.ID), Holder: holder,
 		LastError: sql.NullString{String: f.LastError, Valid: f.LastError != ""},
 	}
 	switch f.Status {

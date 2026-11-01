@@ -30,22 +30,32 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    with no unexpired lease**: its holder crashed or stalled, so it is sent again. `HasDueDeliveries` is a
    read run first, so idle polls take no write lock. On Postgres the select becomes
    `FOR UPDATE SKIP LOCKED`, as for targets.
-2. **No lease renewal; the sink call is bounded instead.** Deliveries are short calls, so a dispatcher
-   does not renew its leases (unlike a scheduler check). Each sink call runs under `DeliverTimeout`
-   (default 30 s), which must be below `LeaseTTL` (default 2 min). The holder gives up before its lease can
-   expire, so two dispatchers never send a delivery at the same time, provided the sink honours its context
-   and host clocks differ by less than `LeaseTTL − DeliverTimeout` (90 s by default).
+2. **No lease renewal; the attempt is bounded instead.** Deliveries are short calls, so a dispatcher
+   does not renew its leases (unlike a scheduler check). Rendering and the sink call run under
+   `DeliverTimeout` (default 20 s), which must be at most `LeaseTTL − max(30 s, LeaseTTL/4)` (`LeaseTTL`
+   default 2 min). The holder gives up before its lease can expire, so two dispatchers never send a
+   delivery at the same time, provided the sink honours its context and host clocks differ by less than
+   that margin (at least 30 s; 100 s by default).
 3. **Fenced finish.** `FinishDelivery` writes the outcome (`delivered`, `pending` with a retry time, or
-   `dead`) and deletes the lease in one transaction, only while the delivery is `in_flight` and the
-   holder still owns its lease row. The row may be expired: as long as no one took it over, the
-   result is still right and recording it avoids a duplicate. A holder whose delivery was taken over
-   writes nothing.
-4. **An attempt is counted when it is leased.** An attempt cut short by a crash counts, so a delivery
-   that crashes its dispatcher cannot loop forever without approaching the dead state. A crash during the
-   last attempt still gives one more attempt (the in-flight row is due again), so nothing is lost.
+   `dead`) and deletes the lease in one transaction, only while the delivery is `in_flight`, **still at
+   the attempt number that was leased** (`attempts = DeliveryFinish.Attempt`), and the holder still owns
+   its lease row. The row may be expired: as long as no one took it over, the result is still right and
+   recording it avoids a duplicate. A holder whose delivery was taken over writes nothing; the attempt
+   number also fences the **same** holder's stale attempt, when its sink ignored the context and outlived
+   the lease and the holder leased the delivery again. A dispatcher keeps the set of delivery ids it is
+   attempting and does not start a second attempt of one of them; that new lease simply expires and the
+   delivery is due again (a duplicate is possible, a loss is not).
+4. **An attempt is counted when it is leased, and poison deliveries stop.** An attempt cut short by a
+   crash counts. When a delivery is leased with `attempts > MaxAttempts`, its last attempt never finished
+   (the holder crashed or stalled); the dispatcher sets it dead with `giving up after N attempts (previous
+   attempt did not finish)` without calling the sink, so a delivery that crashes the process cannot
+   crash-loop the binary. A panic in a sink or the renderer is recovered and logged with its stack, and
+   the delivery is dead with `sink panicked: <value>`. Dead deliveries stay visible and replayable.
 5. **Shutdown drains.** Cancelling `Run` stops polling but does not cancel the attempts in progress
-   (cancelling would turn a likely success into a likely duplicate); they end within `DeliverTimeout`. If
-   the process is killed first, rule 1 redelivers after the lease TTL.
+   (cancelling would turn a likely success into a likely duplicate); they end within `DeliverTimeout`,
+   and the final write has 4 s. The defaults (20 s + 4 s) stay below the supervisor's 25 s drain timeout,
+   so an attempt in progress at shutdown is recorded. If the process is killed first, rule 1 redelivers
+   after the lease TTL.
 6. **Retry schedule: full jitter.** After the n-th failed attempt the wait is uniform in
    `[0, min(base·2^(n−1), max))`, base 12 min and max 12 h. The seven wait ceilings are 12 min, 24 min,
    48 min, 1 h 36, 3 h 12, 6 h 24 and 12 h. The eighth attempt is therefore at most 24 h 36 min after the
@@ -54,11 +64,19 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    `last_error` `giving up after 8 attempts: <error>`.
 7. **Permanent errors.** A sink marks an error permanent with `sink.Permanent`. `sink.HTTPStatus(code,
    retryAfter)` classifies a response: 2xx success; **4xx except 408 and 429 permanent** (the request is
-   wrong and resending cannot help); 5xx, 408, 429 and anything else retried. The dispatcher also sets a
+   wrong and resending cannot help); **3xx permanent** (`redirect not followed; update the sink URL`):
+   sinks must not follow redirects (their client's `CheckRedirect` returns `http.ErrUseLastResponse`), a
+   rule that also keeps a redirect from bypassing the SSRF guard (coordinator decision, pending the
+   maintainer); 5xx, 408, 429, 1xx and any other unexpected code are retried. The dispatcher also sets a
    delivery dead without calling a sink when its subscription is deleted (`subscription deleted`), its
-   sink is deleted (`sink deleted`), its sink kind is not registered, its event payload does not decode, or
-   the renderer reports a permanent error. A config decryption error is retried, because the operator can
-   fix a key. `last_error` is capped at 1 KiB.
+   sink is deleted (`sink deleted`), its event payload does not decode, or the renderer reports a
+   permanent error. **An unregistered sink kind is retried** (coordinator decision): during a rolling
+   upgrade an older binary may lease a delivery for a kind only the newer one has. A config decryption
+   error is retried too, because the operator can fix a key.
+   **Secrets in errors.** `last_error` and the logs go through `sink.RedactURL`, which cuts every URL in
+   the message (and the URL of a `*url.Error`) down to scheme and host: chat webhook URLs (Slack, Discord)
+   carry their secret in the path. Sinks must not put other configuration secrets in errors.
+   `last_error` is capped at 1 KiB.
 8. **Sink contract.** The §3.5 sketch `Deliver(ctx, e ReleaseEvent, r Rendered)` has no place for the
    sink's configuration or the idempotency key. The interface is:
 
@@ -78,9 +96,11 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
 9. **Idempotency key** = `<event id>:<subscription id>` (`sink.IdempotencyKey`). The spec says it is a
    delivery header, not a CloudEvents attribute; its header name and the Standard Webhooks `webhook-id`
    belong to the webhook sink.
-10. **Rendering seam.** `dispatch.Renderer.Render(ctx, template, event)`. Until templating (#114) lands,
-    `DefaultRenderer` sends the CloudEvents JSON with `application/cloudevents+json` and rejects a
-    non-empty template as permanent.
+10. **Rendering seam.** `dispatch.Renderer.Render(ctx, template, envelope []byte) (sink.Rendered,
+    error)`, which matches #114's `internal/render` (`Rendered{Body, ContentType, Templated}`). Until it
+    lands, `DefaultRenderer` sends a copy of the stored CloudEvents JSON with
+    `application/cloudevents+json; charset=utf-8` and `Templated` false, and rejects a non-empty
+    template as permanent.
 
 ## Consequences
 
@@ -95,6 +115,7 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
 - Exclusion depends on sinks honouring their context and on bounded clock skew, like every time-based
   lease. Duplicates stay possible (at-least-once); consumers deduplicate on the event id or the key.
 - A dead-because-deleted delivery still counts one attempt.
+- A delivery whose last attempt was interrupted by a crash is dead without one more try.
 - Full jitter can retry almost at once; on average the retry window is about 12 h, not 24 h.
 - `delivery:` lease rows are deleted on finish or replaced on re-lease; a row is left only while its
   delivery stays in flight, so no periodic cleanup is needed.

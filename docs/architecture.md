@@ -96,7 +96,7 @@ type Sink interface {
 }
 ```
 - At-least-once delivery. Each delivery carries `idempotency-key = event.id + subscription.id` (`<event id>:<subscription id>`).
-- Retries with exponential backoff and full jitter (default 8 attempts over ~24h), then **dead-letter** state, visible in the API and replayable. Permanent errors (4xx except 408/429) and deliveries whose subscription or sink was deleted go dead at once. Leases, retry schedule and the sink contract: [ADR 0017](adr/0017-dispatcher-delivery-leases-and-retries.md).
+- Retries with exponential backoff and full jitter (default 8 attempts over ~24h), then **dead-letter** state, visible in the API and replayable. Permanent errors (4xx except 408/429, and 3xx: sinks do not follow redirects) and deliveries whose subscription or sink was deleted go dead at once. Leases, retry schedule and the sink contract: [ADR 0017](adr/0017-dispatcher-delivery-leases-and-retries.md).
 - Webhooks are signed following the **Standard Webhooks** spec (`webhook-id`, `webhook-timestamp`, `webhook-signature` HMAC-SHA256).
 - Templating: Go `text/template` (or CEL) for message bodies. Default payload = CloudEvents JSON.
 - Built-in for v1: `webhook`, `github-dispatch` (`repository_dispatch` / `workflow_dispatch`), `gitlab-pipeline-trigger`, `apprise` (via an `apprise-api` sidecar, which gives 100+ services at once), `shoutrrr` (Go-native: Slack, Discord, Telegram, ntfy, Gotify, SMTP, …), `nats`, `mqtt`, `exec`.

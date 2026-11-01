@@ -23,7 +23,15 @@ import (
 //
 // Implementations that do HTTP receive their *http.Client through their
 // constructor and never use http.DefaultClient, so the netguard client can
-// be substituted.
+// be substituted. They must not follow redirects (the client's
+// CheckRedirect returns http.ErrUseLastResponse): a 3xx is reported with
+// HTTPStatus, which makes it permanent.
+//
+// Errors are stored in delivery.last_error and logged. They must not carry
+// configuration secrets (tokens, passwords, signing keys). The dispatcher
+// strips the path and query of the URLs in them (RedactURL), because chat
+// webhook URLs carry their secret in the path, but it cannot find anything
+// else.
 type Sink interface {
 	// Kind is the registry key: "webhook", "github-dispatch", ...
 	Kind() string
@@ -74,11 +82,14 @@ type ReleaseEvent struct {
 type Rendered struct {
 	Body        []byte
 	ContentType string
+	// Templated is true when Body comes from the subscription's template,
+	// false when it is the CloudEvents JSON of the event.
+	Templated bool
 }
 
 // CloudEventsContentType is the media type of a CloudEvents JSON event in
 // structured mode, the default message.
-const CloudEventsContentType = "application/cloudevents+json"
+const CloudEventsContentType = "application/cloudevents+json; charset=utf-8"
 
 // Result describes a delivered attempt, for logs.
 type Result struct {
@@ -124,21 +135,28 @@ type StatusError struct {
 }
 
 func (e *StatusError) Error() string {
+	if redirect(e.Code) {
+		return fmt.Sprintf("sink: HTTP %d %s: redirect not followed; update the sink URL", e.Code, http.StatusText(e.Code))
+	}
 	return fmt.Sprintf("sink: HTTP %d %s", e.Code, http.StatusText(e.Code))
 }
 
+func redirect(code int) bool { return code >= 300 && code <= 399 }
+
 // HTTPStatus classifies an HTTP response status. A 2xx is a success (nil).
-// A 4xx other than 408 Request Timeout and 429 Too Many Requests is
-// permanent: the request itself is wrong (bad URL, credentials, payload)
-// and sending it again cannot help. Everything else (5xx, 408, 429, and
-// 1xx and 3xx, which a sink should not see since it does not follow
-// redirects) is retried. retryAfter is the parsed Retry-After header, or 0.
+// Permanent: a 4xx other than 408 Request Timeout and 429 Too Many
+// Requests (the request itself is wrong: bad URL, credentials or payload,
+// and sending it again cannot help), and a 3xx (sinks do not follow
+// redirects, so the configured URL must change). Retried: 5xx, 408, 429,
+// and 1xx or any other unexpected code. retryAfter is the parsed
+// Retry-After header, or 0.
 func HTTPStatus(code int, retryAfter time.Duration) error {
 	if code >= 200 && code <= 299 {
 		return nil
 	}
 	err := &StatusError{Code: code, RetryAfter: max(retryAfter, 0)}
-	if code >= 400 && code <= 499 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests {
+	clientError := code >= 400 && code <= 499 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+	if clientError || redirect(code) {
 		return Permanent(err)
 	}
 	return err

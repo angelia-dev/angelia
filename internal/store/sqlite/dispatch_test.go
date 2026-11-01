@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -94,11 +95,11 @@ func TestLeaseDueDeliveriesTakesOverExpired(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Delivery.ID != "d-s1" || got[0].Delivery.Attempts != 2 {
 		t.Fatalf("takeover = %+v, %v; want d-s1 at attempt 2", got, err)
 	}
-	ok, err := s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Status: store.DeliveryDelivered}, "a")
+	ok, err := s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Attempt: 1, Status: store.DeliveryDelivered}, "a")
 	if err != nil || ok {
 		t.Fatalf("late finish by the old holder = %v, %v; want false", ok, err)
 	}
-	ok, err = s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Status: store.DeliveryDelivered}, "b")
+	ok, err = s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Attempt: 2, Status: store.DeliveryDelivered}, "b")
 	if err != nil || !ok {
 		t.Fatalf("finish by the new holder = %v, %v", ok, err)
 	}
@@ -114,8 +115,8 @@ func TestFinishDelivery(t *testing.T) {
 	leaseIDs(t, s, "a", t0.Add(time.Minute), 10)
 	retry := t0.Add(time.Hour)
 	for _, f := range []store.DeliveryFinish{
-		{ID: "d-s1", Status: store.DeliveryPending, NextAttemptAt: retry, LastError: "boom"},
-		{ID: "d-s2", Status: store.DeliveryDead, LastError: "gone"},
+		{ID: "d-s1", Attempt: 1, Status: store.DeliveryPending, NextAttemptAt: retry, LastError: "boom"},
+		{ID: "d-s2", Attempt: 1, Status: store.DeliveryDead, LastError: "gone"},
 	} {
 		if ok, err := s.FinishDelivery(ctx, f, "a"); err != nil || !ok {
 			t.Fatalf("FinishDelivery(%+v) = %v, %v", f, ok, err)
@@ -130,14 +131,14 @@ func TestFinishDelivery(t *testing.T) {
 		t.Errorf("dead delivery = %+v", d)
 	}
 	// Not in flight any more: a second finish writes nothing.
-	if ok, err := s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s2", Status: store.DeliveryDelivered}, "a"); err != nil || ok {
+	if ok, err := s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s2", Attempt: 1, Status: store.DeliveryDelivered}, "a"); err != nil || ok {
 		t.Errorf("finish of a dead delivery = %v, %v", ok, err)
 	}
 	// Retried: due again at its next attempt, and success clears the error.
 	if ids := leaseIDs(t, s, "a", retry, 10); len(ids) != 1 || ids[0] != "d-s1" {
 		t.Fatalf("lease at retry time = %v", ids)
 	}
-	must(t, okErr(s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Status: store.DeliveryDelivered}, "a")))
+	must(t, okErr(s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Attempt: 2, Status: store.DeliveryDelivered}, "a")))
 	ds, _ = s.ListDeliveries(ctx, "e1")
 	if d := ds[0]; d.Status != store.DeliveryDelivered || d.LastError != "" || d.Attempts != 2 {
 		t.Errorf("delivered = %+v", d)
@@ -163,6 +164,56 @@ func TestLeaseDueDeliveriesDeletedSubscription(t *testing.T) {
 	}
 	if got[0].Subscription != nil || got[0].Sink != nil {
 		t.Errorf("deleted subscription leased with %+v / %+v", got[0].Subscription, got[0].Sink)
+	}
+}
+
+// The same holder's stale attempt (its lease expired and it leased the
+// delivery again) cannot finish the new attempt.
+func TestFinishDeliveryFencesStaleAttemptOfSameHolder(t *testing.T) {
+	s, _ := openTest(t)
+	seedDeliveries(t, s)
+	ctx := t.Context()
+	leaseIDs(t, s, "a", t0, 1)
+	later := t0.Add(time.Minute)
+	if ids := leaseIDs(t, s, "a", later, 1); len(ids) != 1 {
+		t.Fatalf("re-lease by the same holder = %v", ids)
+	}
+	ok, err := s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Attempt: 1, Status: store.DeliveryDelivered}, "a")
+	if err != nil || ok {
+		t.Fatalf("stale attempt 1 finish = %v, %v; want false", ok, err)
+	}
+	ok, err = s.FinishDelivery(ctx, store.DeliveryFinish{ID: "d-s1", Attempt: 2, Status: store.DeliveryDelivered}, "a")
+	if err != nil || !ok {
+		t.Fatalf("attempt 2 finish = %v, %v", ok, err)
+	}
+}
+
+// The due-delivery queries must use delivery_status_next_attempt_at for
+// every term, not scan the delivery table.
+func TestDueDeliveryQueriesUseTheIndex(t *testing.T) {
+	s, _ := openTest(t)
+	for name, q := range map[string]string{"list": listLeasableDueDeliveries, "has": hasLeasableDueDeliveries} {
+		args := []any{millis(t0), millis(t0)}
+		if name == "list" {
+			args = append(args, 10)
+		}
+		rows, err := s.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+q, args...)
+		must(t, err)
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			must(t, rows.Scan(&id, &parent, &unused, &detail))
+			plan = append(plan, detail)
+		}
+		must(t, rows.Err())
+		_ = rows.Close()
+		joined := strings.Join(plan, "\n")
+		t.Logf("%s plan:\n%s", name, joined)
+		if strings.Contains(joined, "SCAN d\n") || strings.HasSuffix(joined, "SCAN d") ||
+			!strings.Contains(joined, "delivery_status_next_attempt_at") {
+			t.Errorf("%s does not use the index:\n%s", name, joined)
+		}
 	}
 }
 

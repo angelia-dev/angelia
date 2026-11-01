@@ -170,9 +170,9 @@ type Store interface {
 	// anything, with a read only, so that idle polls take no write lock.
 	HasDueDeliveries(ctx context.Context, now time.Time) (bool, error)
 	// FinishDelivery records the end of an attempt and releases its lease,
-	// fenced by it: it writes only while the delivery is in flight and
-	// holder still owns its lease row (even expired: no one took it over),
-	// and reports false, writing nothing, otherwise. ErrInvalid for a status
+	// fenced by it: it writes only while the delivery is in flight at
+	// attempt f.Attempt and holder still owns its lease row (even expired:
+	// no one took it over), and reports false, writing nothing, otherwise. ErrInvalid for a status
 	// other than pending, delivered or dead, or a pending one without
 	// NextAttemptAt.
 	FinishDelivery(ctx context.Context, f DeliveryFinish, holder string) (bool, error)
@@ -196,6 +196,8 @@ type LeasedDelivery struct {
 // DeliveryFinish is how a leased attempt ended.
 type DeliveryFinish struct {
 	ID string
+	// Attempt is the leased Delivery.Attempts of the attempt that ended.
+	Attempt int64
 	// Status is DeliveryPending (retry at NextAttemptAt), DeliveryDelivered
 	// or DeliveryDead.
 	Status        string

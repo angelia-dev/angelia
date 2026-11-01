@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,7 +31,9 @@ func TestHTTPStatus(t *testing.T) {
 		{500, false, false},
 		{502, false, false},
 		{503, false, false},
-		{301, false, false},
+		{301, false, true},
+		{302, false, true},
+		{308, false, true},
 		{100, false, false},
 	} {
 		err := HTTPStatus(tc.code, time.Minute)
@@ -59,6 +63,47 @@ func TestHTTPStatus(t *testing.T) {
 	}
 	if got := HTTPStatus(404, 0).Error(); got != "sink: HTTP 404 Not Found" {
 		t.Errorf("message = %q", got)
+	}
+}
+
+func TestRedirectMessage(t *testing.T) {
+	err := HTTPStatus(301, 0)
+	if !IsPermanent(err) || err.Error() != "sink: HTTP 301 Moved Permanently: redirect not followed; update the sink URL" {
+		t.Errorf("301: %v permanent=%v", err, IsPermanent(err))
+	}
+	for _, code := range []int{100, 600, 0} {
+		if err := HTTPStatus(code, 0); err == nil || IsPermanent(err) {
+			t.Errorf("unexpected code %d: %v, want retried", code, err)
+		}
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	const slack = "https://hooks.chat.example/services/team/channel/not-a-real-token" //nolint:gosec // G101: synthetic placeholder URL
+	ue := &url.Error{Op: "Post", URL: slack, Err: errors.New("dial tcp: i/o timeout")}
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{ue, `Post "https://hooks.chat.example/[redacted]": dial tcp: i/o timeout`},
+		{fmt.Errorf("webhook: %w", ue), `webhook: Post "https://hooks.chat.example/[redacted]": dial tcp: i/o timeout`},
+		{errors.New("posting to https://user:pw@discord.com/api/webhooks/1/abc?wait=true failed"), "posting to https://discord.com/[redacted] failed"},
+		{errors.New("GET https://example.com/ ok, and http://example.org:8080 too"), "GET https://example.com ok, and http://example.org:8080 too"},
+		{errors.New("bad url unix:///run/x.sock"), "bad url unix://[redacted]"},
+		{errors.New("no url here"), "no url here"},
+		{nil, ""},
+	} {
+		if got := RedactURL(tc.err); got != tc.want {
+			t.Errorf("RedactURL(%v)\n got %q\nwant %q", tc.err, got, tc.want)
+		}
+		if strings.Contains(RedactURL(tc.err), "XXXX") || strings.Contains(RedactURL(tc.err), "abc") {
+			t.Errorf("secret left in %q", RedactURL(tc.err))
+		}
+	}
+	// A url.Error whose URL has a space is still redacted.
+	spaced := &url.Error{Op: "Post", URL: "https://hooks.chat.example/services/a b", Err: errors.New("x")}
+	if got := RedactURL(spaced); strings.Contains(got, "services") {
+		t.Errorf("spaced URL: %q", got)
 	}
 }
 

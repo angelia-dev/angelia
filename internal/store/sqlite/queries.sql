@@ -228,10 +228,12 @@ DELETE FROM pending_release WHERE watch_id = ?;
 -- and its next_attempt_at has passed (NULL counts as due), or when it is in
 -- flight under no unexpired lease: its holder crashed or stalled, so it is
 -- sent again (at-least-once). Oldest due first. Postgres will use
--- FOR UPDATE SKIP LOCKED here instead.
+-- FOR UPDATE SKIP LOCKED here instead. The three OR terms are written apart
+-- so that SQLite can use delivery_status_next_attempt_at for each.
 -- name: ListLeasableDueDeliveries :many
 SELECT d.id FROM delivery d
-WHERE ((d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= sqlc.arg(now)))
+WHERE ((d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now))
+       OR (d.status = 'pending' AND d.next_attempt_at IS NULL)
        OR d.status = 'in_flight')
   AND NOT EXISTS (
     SELECT 1 FROM lease
@@ -243,7 +245,8 @@ LIMIT sqlc.arg(max_rows);
 -- name: HasLeasableDueDeliveries :one
 SELECT EXISTS (
   SELECT 1 FROM delivery d
-  WHERE ((d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= sqlc.arg(now)))
+  WHERE ((d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now))
+         OR (d.status = 'pending' AND d.next_attempt_at IS NULL)
          OR d.status = 'in_flight')
     AND NOT EXISTS (
       SELECT 1 FROM lease
@@ -268,12 +271,14 @@ SELECT * FROM subscription WHERE id = ?;
 SELECT * FROM sink WHERE id = ?;
 
 -- The end of an attempt, fenced by its lease: it applies only while holder
--- still owns the lease row, expired or not. Leasing replaces the row, so a
--- holder whose delivery was taken over writes nothing.
+-- still owns the lease row, expired or not, and the row is still at this
+-- attempt. Leasing replaces the row and counts a new attempt, so a holder
+-- whose delivery was taken over (by another holder or by itself, after its
+-- lease expired) writes nothing.
 -- name: FinishLeasedDelivery :execrows
 UPDATE delivery
 SET status = sqlc.arg(status), next_attempt_at = sqlc.arg(next_attempt_at), last_error = sqlc.arg(last_error)
-WHERE id = sqlc.arg(id) AND status = 'in_flight'
+WHERE id = sqlc.arg(id) AND status = 'in_flight' AND attempts = sqlc.arg(attempt)
   AND EXISTS (
     SELECT 1 FROM lease WHERE lease.name = sqlc.arg(lease_name) AND lease.holder = sqlc.arg(holder)
   );
