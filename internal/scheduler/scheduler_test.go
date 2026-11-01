@@ -1,11 +1,15 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -272,8 +276,9 @@ func TestBackoffSequenceAndReset(t *testing.T) {
 	}
 }
 
-// Jitter spreads both the interval and the backoff by ±10% by default,
-// and the backoff never exceeds its cap.
+// Jitter spreads both the interval and the backoff by ±10% by default.
+// The cap applies before jitter, so targets at the cap are spread around
+// it instead of all landing on exactly BackoffMax.
 func TestJitterApplied(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -285,7 +290,9 @@ func TestJitterApplied(t *testing.T) {
 		{"interval low", 0, 0, nil, 54 * time.Minute},
 		{"interval high", 0.99999, 0, nil, 66 * time.Minute},
 		{"backoff low", 0, 0, errors.New("x"), 54 * time.Second},
-		{"backoff at cap stays capped", 0.99999, 20, errors.New("x"), 24 * time.Hour},
+		{"backoff at cap, low", 0, 20, errors.New("x"), 21*time.Hour + 36*time.Minute},
+		{"backoff at cap, middle", 0.5, 20, errors.New("x"), 24 * time.Hour},
+		{"backoff at cap, high", 0.99999, 20, errors.New("x"), 26*time.Hour + 24*time.Minute},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -517,7 +524,15 @@ func TestNew(t *testing.T) {
 	if _, err := New(st, nil, Options{}); err == nil {
 		t.Error("nil checker accepted")
 	}
-	for _, o := range []Options{{Workers: -1}, {Interval: -1}, {LeaseTTL: -1}, {Jitter: 1}} {
+	for _, o := range []Options{
+		{Workers: -1},
+		{Interval: -1},
+		{LeaseTTL: -1},
+		{Jitter: 1},
+		{CheckTimeout: -1},
+		{CheckTimeout: DefaultLeaseTTL},
+		{LeaseTTL: time.Minute, CheckTimeout: 2 * time.Minute},
+	} {
 		if _, err := New(st, c, o); err == nil {
 			t.Errorf("%+v accepted", o)
 		}
@@ -530,6 +545,7 @@ func TestNew(t *testing.T) {
 	o := s.opts
 	if o.Workers != DefaultWorkers || o.Interval != time.Hour || o.Jitter != 0.1 || o.BackoffBase != time.Minute ||
 		o.BackoffMax != 24*time.Hour || o.LeaseTTL != DefaultLeaseTTL || o.PollInterval != DefaultPollInterval ||
+		o.CheckTimeout != DefaultCheckTimeout ||
 		o.Holder == "" || o.Clock == nil || o.Rand == nil {
 		t.Errorf("defaults not applied: %+v", o)
 	}
@@ -544,6 +560,16 @@ func TestNew(t *testing.T) {
 	if s3, _ := New(st, c, Options{Jitter: -1}); s3.opts.Jitter != 0 {
 		t.Error("negative jitter does not disable it")
 	}
+	// A short lease TTL lowers the default check timeout below it.
+	if s4, _ := New(st, c, Options{LeaseTTL: time.Minute}); s4.opts.CheckTimeout != 30*time.Second {
+		t.Errorf("check timeout with a 1m TTL = %v", s4.opts.CheckTimeout)
+	}
+	// Huge durations are clamped so jitter cannot overflow.
+	s5, err := New(st, c, Options{Interval: math.MaxInt64, BackoffMax: math.MaxInt64})
+	must(t, err)
+	if s5.opts.Interval != MaxInterval || s5.opts.BackoffMax != MaxInterval {
+		t.Errorf("not clamped: interval %v, backoff max %v", s5.opts.Interval, s5.opts.BackoffMax)
+	}
 }
 
 func TestRealClock(t *testing.T) {
@@ -554,4 +580,279 @@ func TestRealClock(t *testing.T) {
 	ch, stop := c.Timer(time.Nanosecond)
 	<-ch
 	stop()
+}
+
+// spyStore wraps a store, counts calls and can inject failures.
+type spyStore struct {
+	Store
+	mu          sync.Mutex
+	leaseCalls  int
+	renewErr    error // returned by AcquireLease (renewals) when set
+	leaseErr    error // returned by HasDueTargets and LeaseDueTargets when set
+	pruned      []int64
+	pruneCalls  int
+	fencedWrite []bool
+}
+
+func (s *spyStore) LeaseDueTargets(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.Target, error) {
+	s.mu.Lock()
+	s.leaseCalls++
+	err := s.leaseErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.LeaseDueTargets(ctx, holder, now, until, limit)
+}
+
+func (s *spyStore) HasDueTargets(ctx context.Context, now time.Time) (bool, error) {
+	s.mu.Lock()
+	err := s.leaseErr
+	s.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return s.Store.HasDueTargets(ctx, now)
+}
+
+func (s *spyStore) AcquireLease(ctx context.Context, name, holder string, now, until time.Time) (bool, error) {
+	s.mu.Lock()
+	err := s.renewErr
+	s.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return s.Store.AcquireLease(ctx, name, holder, now, until)
+}
+
+func (s *spyStore) UpdateTargetLeased(ctx context.Context, t store.Target, lease, holder string, now time.Time) (bool, error) {
+	ok, err := s.Store.UpdateTargetLeased(ctx, t, lease, holder, now)
+	s.mu.Lock()
+	s.fencedWrite = append(s.fencedWrite, ok)
+	s.mu.Unlock()
+	return ok, err
+}
+
+func (s *spyStore) DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error) {
+	n, err := s.Store.DeleteExpiredTargetLeases(ctx, now)
+	s.mu.Lock()
+	s.pruneCalls++
+	s.pruned = append(s.pruned, n)
+	s.mu.Unlock()
+	return n, err
+}
+
+// Renewals that keep failing do not let a check run past its lease: once
+// the last renewed expiry has passed, the check is abandoned.
+func TestRenewalErrorPastExpiryCancelsCheck(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "requests", t0)
+	st := &spyStore{Store: base, renewErr: errors.New("database is locked")}
+	started := make(chan struct{})
+	cause := make(chan error, 1)
+	c := CheckerFunc(func(ctx context.Context, _ store.Target) (Outcome, error) {
+		close(started)
+		<-ctx.Done()
+		cause <- context.Cause(ctx)
+		return Outcome{}, ctx.Err()
+	})
+	const ttl = 3 * time.Minute
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.LeaseTTL = ttl })
+	s.poll(t.Context())
+	<-started
+	// Renewals at +1m and +2m fail while the lease is still valid: the
+	// check goes on.
+	for range 2 {
+		clk.waitTimers(1)
+		clk.Advance(time.Minute)
+	}
+	clk.waitTimers(1)
+	select {
+	case err := <-cause:
+		t.Fatalf("check cancelled before the lease expired: %v", err)
+	default:
+	}
+	// The renewal at +3m fails at the lease's expiry: abandon.
+	clk.Advance(time.Minute)
+	if err := <-cause; !errors.Is(err, errLeaseLost) {
+		t.Fatalf("cause = %v, want errLeaseLost", err)
+	}
+	s.wg.Wait()
+	if tg := getTarget(t, base, "t1"); !tg.NextCheckAt.Equal(t0) || tg.ErrorCount != 0 {
+		t.Fatalf("abandoned check changed the target: %+v", tg)
+	}
+	if len(st.fencedWrite) != 0 {
+		t.Fatalf("abandoned check wrote the target")
+	}
+}
+
+// A second holder that takes the target over (here: its clock runs past
+// the first holder's lease) fences out the first holder's late write.
+func TestTakeoverMakesFencedWriteNoop(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "requests", t0)
+	st := &spyStore{Store: base}
+	const ttl = 3 * time.Minute
+	skewed := t0.Add(10 * time.Minute) // holder b's clock
+	c := CheckerFunc(func(ctx context.Context, _ store.Target) (Outcome, error) {
+		got, err := base.LeaseDueTargets(ctx, "b", skewed, skewed.Add(ttl), 10)
+		if err != nil || len(got) != 1 {
+			t.Errorf("b did not take over: %v %v", got, err)
+		}
+		return Outcome{FetchState: json.RawMessage(`{"etag":"stale"}`)}, nil
+	})
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.LeaseTTL = ttl; o.Holder = "a" })
+	pollAndWait(t.Context(), s)
+	if fmt.Sprint(st.fencedWrite) != "[false]" {
+		t.Fatalf("fenced writes = %v, want [false]", st.fencedWrite)
+	}
+	tg := getTarget(t, base, "t1")
+	if string(tg.FetchState) != `{"etag":"e0"}` || !tg.NextCheckAt.Equal(t0) {
+		t.Fatalf("a overwrote b's target: %+v", tg)
+	}
+	// a's release did not drop b's lease.
+	if ok, err := base.AcquireLease(t.Context(), store.TargetLeaseName("t1"), "c", skewed, skewed.Add(ttl)); err != nil || ok {
+		t.Fatalf("b's lease gone: %v %v", ok, err)
+	}
+}
+
+// A check that runs past CheckTimeout is cancelled and counts as an error.
+func TestCheckTimeout(t *testing.T) {
+	st := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, st, "t1", "requests", t0)
+	cause := make(chan error, 1)
+	c := CheckerFunc(func(ctx context.Context, _ store.Target) (Outcome, error) {
+		<-ctx.Done()
+		cause <- context.Cause(ctx)
+		return Outcome{}, fmt.Errorf("fetch: %w", ctx.Err())
+	})
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.CheckTimeout = 20 * time.Millisecond })
+	pollAndWait(t.Context(), s)
+	if err := <-cause; !errors.Is(err, errCheckTimeout) {
+		t.Fatalf("cause = %v", err)
+	}
+	tg := getTarget(t, st, "t1")
+	if tg.ErrorCount != 1 || !tg.NextCheckAt.Equal(t0.Add(DefaultBackoffBase)) {
+		t.Fatalf("timeout not counted as an error: %+v", tg)
+	}
+}
+
+// Idle polls only read: the leasing write transaction runs only when a
+// target is due.
+func TestIdlePollDoesNotLease(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "requests", t0.Add(time.Hour))
+	for _, withMetrics := range []bool{false, true} {
+		st := &spyStore{Store: base}
+		s := newTestScheduler(t, st, newCounter(), clk, func(o *Options) {
+			if withMetrics {
+				o.Metrics = &fakeMetrics{}
+			}
+		})
+		for range 5 {
+			pollAndWait(t.Context(), s)
+		}
+		if st.leaseCalls != 0 {
+			t.Fatalf("metrics=%v: %d leasing transactions while idle", withMetrics, st.leaseCalls)
+		}
+	}
+	clk.Advance(time.Hour)
+	st := &spyStore{Store: base}
+	s := newTestScheduler(t, st, newCounter(), clk, nil)
+	if n := pollAndWait(t.Context(), s); n != 1 || st.leaseCalls != 1 {
+		t.Fatalf("due target: started %d with %d leasing transactions", n, st.leaseCalls)
+	}
+}
+
+// Huge intervals from a checker are clamped to MaxInterval instead of
+// overflowing through jitter.
+func TestIntervalClamped(t *testing.T) {
+	st := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, st, "t1", "requests", t0)
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) {
+		return Outcome{Interval: math.MaxInt64}, nil
+	})
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.Jitter = 0.1; o.Rand = func() float64 { return 0.99999 } })
+	pollAndWait(t.Context(), s)
+	got := getTarget(t, st, "t1").NextCheckAt.Sub(t0)
+	if got < MaxInterval || got > MaxInterval*11/10 {
+		t.Fatalf("delay = %v, want MaxInterval + jitter", got)
+	}
+}
+
+// Expired target leases of crashed holders are deleted once per
+// leasePruneEvery.
+func TestExpiredLeasesPruned(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	ctx := t.Context()
+	// A crashed holder's lease on a target that is not due.
+	ok, err := base.AcquireLease(ctx, store.TargetLeaseName("gone"), "crashed", t0, t0.Add(time.Minute))
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	st := &spyStore{Store: base}
+	s := newTestScheduler(t, st, newCounter(), clk, nil)
+	pollAndWait(ctx, s) // first poll prunes; the lease is still live
+	clk.Advance(30 * time.Minute)
+	pollAndWait(ctx, s) // too soon to prune again
+	clk.Advance(30 * time.Minute)
+	pollAndWait(ctx, s)
+	if fmt.Sprint(st.pruned) != "[0 1]" {
+		t.Fatalf("pruned = %v, want [0 1]", st.pruned)
+	}
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) count(sub string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Count(b.b.String(), sub)
+}
+
+// A failing store is logged once per minute, not on every poll.
+func TestStoreErrorLogRateLimited(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "requests", t0.Add(time.Hour))
+	st := &spyStore{Store: base, leaseErr: errors.New("disk I/O error")}
+	logs := &syncBuffer{}
+	s := newTestScheduler(t, st, newCounter(), clk, func(o *Options) {
+		o.Logger = slog.New(slog.NewTextHandler(logs, nil))
+	})
+	ctx := t.Context()
+	for range 60 { // one minute of 1s polls
+		pollAndWait(ctx, s)
+		clk.Advance(time.Second)
+	}
+	if n := logs.count("disk I/O error"); n != 1 {
+		t.Fatalf("logged %d times in the first minute, want 1", n)
+	}
+	pollAndWait(ctx, s)
+	if n := logs.count("disk I/O error"); n != 2 {
+		t.Fatalf("logged %d times after a minute, want 2", n)
+	}
+	st.mu.Lock()
+	st.leaseErr = nil
+	st.mu.Unlock()
+	pollAndWait(ctx, s)
+	if logs.count("store reachable again") != 1 {
+		t.Fatal("recovery not logged")
+	}
 }

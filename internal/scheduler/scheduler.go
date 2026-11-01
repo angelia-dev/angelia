@@ -24,14 +24,27 @@ const (
 	DefaultBackoffMax   = 24 * time.Hour
 	DefaultLeaseTTL     = 5 * time.Minute
 	DefaultPollInterval = time.Second
+	// DefaultCheckTimeout bounds one check. It stays below DefaultLeaseTTL.
+	DefaultCheckTimeout = 3 * time.Minute
+	// MaxInterval caps every delay (interval, backoff), so that jitter
+	// arithmetic cannot overflow time.Duration. Larger values are clamped.
+	MaxInterval = 30 * 24 * time.Hour
 	// writeTimeout bounds the final store writes of a check (target state,
 	// lease release), which still run after shutdown has started.
 	writeTimeout = 5 * time.Second
+	// leasePruneEvery is how often expired target leases are deleted.
+	leasePruneEvery = time.Hour
+	// errorLogEvery limits how often a failing store is logged by Run.
+	errorLogEvery = time.Minute
 )
 
 // errLeaseLost is the cancellation cause of a check whose lease could not be
 // renewed: another holder may now own the target.
 var errLeaseLost = errors.New("scheduler: target lease lost")
+
+// errCheckTimeout is the cancellation cause of a check that ran longer than
+// Options.CheckTimeout. It counts as a failed check.
+var errCheckTimeout = errors.New("scheduler: check timed out")
 
 // Checker checks one target. It is the seam between the scheduler and the
 // detect pipeline (source registry, diff engine, policy), which plug in
@@ -45,7 +58,15 @@ type Checker interface {
 	//
 	// ctx is cancelled on shutdown and when the target's lease is lost; Check
 	// must then return promptly with an error wrapping ctx.Err(), and the
-	// scheduler leaves the target due without counting an error.
+	// scheduler leaves the target due without counting an error. ctx also
+	// expires after Options.CheckTimeout, which counts as an error.
+	//
+	// The commit must be idempotent. A time-based lease cannot fully rule
+	// out that two holders check one target at once (a stalled process, a
+	// clock jump), and a crash between the commit and the scheduler's write
+	// repeats the check. So Check inserts versions with ON CONFLICT DO
+	// NOTHING, emits events only for the rows it actually inserted, and
+	// does both in one transaction (ADR 0009 §5).
 	Check(ctx context.Context, t store.Target) (Outcome, error)
 }
 
@@ -61,7 +82,8 @@ type Outcome struct {
 	// cursor). Nil keeps the current state.
 	FetchState json.RawMessage
 	// Interval overrides Options.Interval for this target's next check, for
-	// example the shortest interval of the watches on it. Zero keeps it.
+	// example the shortest interval of the watches on it. Zero keeps it;
+	// values above MaxInterval are clamped.
 	Interval time.Duration
 }
 
@@ -79,27 +101,35 @@ type Metrics interface {
 type Store interface {
 	LeaseDueTargets(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.Target, error)
 	CountDueTargets(ctx context.Context, now time.Time) (int64, error)
+	HasDueTargets(ctx context.Context, now time.Time) (bool, error)
 	AcquireLease(ctx context.Context, name, holder string, now, until time.Time) (bool, error)
 	ReleaseLease(ctx context.Context, name, holder string) error
-	UpdateTarget(ctx context.Context, t store.Target) error
+	UpdateTargetLeased(ctx context.Context, t store.Target, leaseName, holder string, now time.Time) (bool, error)
+	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
 }
 
 // Options configures a Scheduler. Zero fields take the Default* values.
 type Options struct {
 	// Workers is the number of targets checked at the same time.
 	Workers int
-	// Interval is the time between two checks of a target.
+	// Interval is the time between two checks of a target. Values above
+	// MaxInterval are clamped.
 	Interval time.Duration
 	// Jitter is the fraction by which every delay is spread, up and down.
 	// Zero means DefaultJitter; a negative value disables jitter.
 	Jitter float64
 	// BackoffBase is the delay after the first consecutive error; it doubles
-	// with every further error up to BackoffMax. A success resets it.
+	// with every further error up to BackoffMax (clamped to MaxInterval),
+	// then jitter applies. A success resets it.
 	BackoffBase time.Duration
 	BackoffMax  time.Duration
 	// LeaseTTL is how long a target lease lasts. A running check renews it
 	// every LeaseTTL/3; a crashed holder's leases are taken over after it.
 	LeaseTTL time.Duration
+	// CheckTimeout bounds one check; a check that runs longer is cancelled
+	// and counts as an error. It must be below LeaseTTL. Zero means
+	// DefaultCheckTimeout, or LeaseTTL/2 when LeaseTTL is not above it.
+	CheckTimeout time.Duration
 	// PollInterval is how often the store is asked for due targets.
 	PollInterval time.Duration
 	// Holder identifies this scheduler in the lease table. Empty means the
@@ -130,6 +160,10 @@ type Scheduler struct {
 	wg       sync.WaitGroup
 	freed    chan struct{} // a worker finished while every slot was busy
 
+	// Owned by the poll loop (Run, or a test calling poll directly).
+	lastPrune                time.Time // zero: prune on the first poll
+	failingSince, lastErrLog time.Time // zero: the store is not failing
+
 	// testHookIdle, if set, runs each time Run is about to wait.
 	testHookIdle func()
 }
@@ -140,7 +174,7 @@ func New(st Store, c Checker, opts Options) (*Scheduler, error) {
 		return nil, errors.New("scheduler: nil store or checker")
 	}
 	if opts.Workers < 0 || opts.Interval < 0 || opts.BackoffBase < 0 || opts.BackoffMax < 0 ||
-		opts.LeaseTTL < 0 || opts.PollInterval < 0 || opts.Jitter >= 1 {
+		opts.LeaseTTL < 0 || opts.PollInterval < 0 || opts.CheckTimeout < 0 || opts.Jitter >= 1 {
 		return nil, fmt.Errorf("scheduler: invalid options: negative duration or worker count, or jitter >= 1")
 	}
 	def := func(d *time.Duration, v time.Duration) {
@@ -156,6 +190,17 @@ func New(st Store, c Checker, opts Options) (*Scheduler, error) {
 	def(&opts.BackoffMax, DefaultBackoffMax)
 	def(&opts.LeaseTTL, DefaultLeaseTTL)
 	def(&opts.PollInterval, DefaultPollInterval)
+	if opts.CheckTimeout == 0 {
+		opts.CheckTimeout = DefaultCheckTimeout
+		if opts.CheckTimeout >= opts.LeaseTTL {
+			opts.CheckTimeout = opts.LeaseTTL / 2
+		}
+	}
+	if opts.CheckTimeout >= opts.LeaseTTL {
+		return nil, fmt.Errorf("scheduler: invalid options: check timeout %v must be below lease TTL %v", opts.CheckTimeout, opts.LeaseTTL)
+	}
+	opts.Interval = min(opts.Interval, MaxInterval)
+	opts.BackoffMax = min(opts.BackoffMax, MaxInterval)
 	switch {
 	case opts.Jitter == 0:
 		opts.Jitter = DefaultJitter
@@ -215,11 +260,16 @@ func (s *Scheduler) poll(ctx context.Context) int {
 		return 0
 	}
 	now := s.opts.Clock.Now()
+	s.pruneLeases(ctx, now)
+	// A cheap read decides whether the leasing write transaction is worth
+	// running, so idle polls take no write lock (SQLite has only one).
+	due := int64(-1) // unknown
 	if s.opts.Metrics != nil {
 		if n, err := s.store.CountDueTargets(ctx, now); err != nil {
 			s.log.WarnContext(ctx, "count due targets", "error", err)
 		} else {
 			s.opts.Metrics.DueBacklog(n)
+			due = n
 		}
 	}
 	s.mu.Lock()
@@ -228,13 +278,27 @@ func (s *Scheduler) poll(ctx context.Context) int {
 	if free <= 0 {
 		return 0
 	}
-	targets, err := s.store.LeaseDueTargets(ctx, s.opts.Holder, now, now.Add(s.opts.LeaseTTL), free)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.log.ErrorContext(ctx, "lease due targets", "error", err)
+	if due < 0 {
+		ok, err := s.store.HasDueTargets(ctx, now)
+		if err != nil {
+			s.storeFailed(ctx, now, "check for due targets", err)
+			return 0
 		}
+		due = 0
+		if ok {
+			due = 1
+		}
+	}
+	if due == 0 {
+		s.storeOK(ctx)
 		return 0
 	}
+	targets, err := s.store.LeaseDueTargets(ctx, s.opts.Holder, now, now.Add(s.opts.LeaseTTL), free)
+	if err != nil {
+		s.storeFailed(ctx, now, "lease due targets", err)
+		return 0
+	}
+	s.storeOK(ctx)
 	s.mu.Lock()
 	s.inflight += len(targets)
 	s.mu.Unlock()
@@ -242,8 +306,9 @@ func (s *Scheduler) poll(ctx context.Context) int {
 		if s.opts.Metrics != nil {
 			s.opts.Metrics.CheckLag(now.Sub(t.NextCheckAt))
 		}
+		leasedUntil := now.Add(s.opts.LeaseTTL)
 		s.wg.Go(func() {
-			s.check(ctx, t)
+			s.check(ctx, t, leasedUntil)
 			s.mu.Lock()
 			full := s.inflight == s.opts.Workers
 			s.inflight--
@@ -259,9 +324,53 @@ func (s *Scheduler) poll(ctx context.Context) int {
 	return len(targets)
 }
 
+// storeFailed logs a failed poll at most once per errorLogEvery while the
+// store keeps failing, so an outage does not log every PollInterval.
+func (s *Scheduler) storeFailed(ctx context.Context, now time.Time, op string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if s.failingSince.IsZero() {
+		s.failingSince = now
+	}
+	if !s.lastErrLog.IsZero() && now.Sub(s.lastErrLog) < errorLogEvery {
+		return
+	}
+	s.lastErrLog = now
+	s.log.ErrorContext(ctx, op, "error", err, "failing_for", now.Sub(s.failingSince))
+}
+
+// storeOK records that a poll reached the store again after failures.
+func (s *Scheduler) storeOK(ctx context.Context) {
+	if s.failingSince.IsZero() {
+		return
+	}
+	s.log.InfoContext(ctx, "store reachable again", "failing_for", s.opts.Clock.Now().Sub(s.failingSince))
+	s.failingSince, s.lastErrLog = time.Time{}, time.Time{}
+}
+
+// pruneLeases deletes expired target leases, left by crashed holders, once
+// every leasePruneEvery. Leasing ignores expired rows anyway; this only
+// keeps the lease table from growing.
+func (s *Scheduler) pruneLeases(ctx context.Context, now time.Time) {
+	if !s.lastPrune.IsZero() && now.Sub(s.lastPrune) < leasePruneEvery {
+		return
+	}
+	s.lastPrune = now
+	n, err := s.store.DeleteExpiredTargetLeases(ctx, now)
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			s.log.WarnContext(ctx, "delete expired target leases", "error", err)
+		}
+	case n > 0:
+		s.log.InfoContext(ctx, "deleted expired target leases", "count", n)
+	}
+}
+
 // check runs one leased check, records the next check time and releases
-// the lease.
-func (s *Scheduler) check(ctx context.Context, t store.Target) {
+// the lease. leasedUntil is when the lease taken by poll expires.
+func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.Time) {
 	lease := store.TargetLeaseName(t.ID)
 	log := s.log.With("target", t.ID, "kind", t.Kind)
 	defer func() {
@@ -277,9 +386,12 @@ func (s *Scheduler) check(ctx context.Context, t store.Target) {
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
-		s.keepLease(cctx, cancel, lease, log)
+		s.keepLease(cctx, cancel, lease, leasedUntil, log)
 	}()
-	out, err := s.checker.Check(cctx, t)
+	tctx, tcancel := context.WithTimeoutCause(cctx, s.opts.CheckTimeout, errCheckTimeout)
+	out, err := s.checker.Check(tctx, t)
+	timedOut := err != nil && errors.Is(context.Cause(tctx), errCheckTimeout)
+	tcancel()
 	cancel(nil)
 	<-renewDone
 
@@ -294,14 +406,18 @@ func (s *Scheduler) check(ctx context.Context, t store.Target) {
 	now := s.opts.Clock.Now()
 	next := t
 	if err != nil {
+		if timedOut {
+			err = fmt.Errorf("%w after %v: %w", errCheckTimeout, s.opts.CheckTimeout, err)
+		}
 		next.ErrorCount++
-		delay := s.jitter(Backoff(next.ErrorCount, s.opts.BackoffBase, s.opts.BackoffMax))
-		next.NextCheckAt = now.Add(min(delay, s.opts.BackoffMax))
+		// Cap first, then jitter, so targets at the cap do not all land on
+		// exactly BackoffMax.
+		next.NextCheckAt = now.Add(s.jitter(Backoff(next.ErrorCount, s.opts.BackoffBase, s.opts.BackoffMax)))
 		log.WarnContext(ctx, "check failed", "error", err, "errors", next.ErrorCount, "next_check_at", next.NextCheckAt)
 	} else {
 		interval := s.opts.Interval
 		if out.Interval > 0 {
-			interval = out.Interval
+			interval = min(out.Interval, MaxInterval)
 		}
 		if out.FetchState != nil {
 			next.FetchState = out.FetchState
@@ -312,14 +428,22 @@ func (s *Scheduler) check(ctx context.Context, t store.Target) {
 	}
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer wcancel()
-	if err := s.store.UpdateTarget(wctx, next); err != nil {
+	// The write is fenced by the lease: if another holder took the target
+	// over meanwhile, its schedule wins and this result is dropped.
+	held, err := s.store.UpdateTargetLeased(wctx, next, lease, s.opts.Holder, now)
+	switch {
+	case err != nil:
 		log.ErrorContext(wctx, "record check", "error", err)
+	case !held:
+		log.WarnContext(wctx, "lease lost before the check was recorded; leaving the target to its new holder")
 	}
 }
 
-// keepLease renews the lease every LeaseTTL/3 until ctx is done, and
-// cancels the check with errLeaseLost if the lease was taken over.
-func (s *Scheduler) keepLease(ctx context.Context, cancel context.CancelCauseFunc, lease string, log *slog.Logger) {
+// keepLease renews the lease every LeaseTTL/3 until ctx is done. It cancels
+// the check with errLeaseLost if the lease was taken over, or if renewals
+// kept failing until the last renewed expiry passed: from then on another
+// holder may own the target.
+func (s *Scheduler) keepLease(ctx context.Context, cancel context.CancelCauseFunc, lease string, expires time.Time, log *slog.Logger) {
 	every := s.opts.LeaseTTL / 3
 	for {
 		timer, stop := s.opts.Clock.Timer(every)
@@ -330,16 +454,25 @@ func (s *Scheduler) keepLease(ctx context.Context, cancel context.CancelCauseFun
 		case <-timer:
 		}
 		now := s.opts.Clock.Now()
-		ok, err := s.store.AcquireLease(ctx, lease, s.opts.Holder, now, now.Add(s.opts.LeaseTTL))
+		until := now.Add(s.opts.LeaseTTL)
+		ok, err := s.store.AcquireLease(ctx, lease, s.opts.Holder, now, until)
 		switch {
 		case err != nil:
-			if ctx.Err() == nil {
-				log.WarnContext(ctx, "renew lease", "error", err)
+			if ctx.Err() != nil {
+				return
 			}
+			if !now.Before(expires) {
+				log.WarnContext(ctx, "lease expired while renewals failed, abandoning check", "error", err)
+				cancel(errLeaseLost)
+				return
+			}
+			log.WarnContext(ctx, "renew lease", "error", err, "expires_at", expires)
 		case !ok:
 			log.WarnContext(ctx, "lease lost, abandoning check")
 			cancel(errLeaseLost)
 			return
+		default:
+			expires = until
 		}
 	}
 }
