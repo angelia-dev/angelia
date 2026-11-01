@@ -1,0 +1,28 @@
+# Fake registry behaviour for the scale benchmark (bench/fakereg/README.md).
+# Every key is optional; omitted keys take the defaults shown in README.md.
+# bench/load overrides `packages` so that each ecosystem has enough packages
+# for its share of the N watches.
+
+seed: 1
+
+# Applied to every ecosystem.
+defaults:
+  history: 20               # versions per package at start
+  releases_per_hour: 200    # new releases per hour over the whole ecosystem
+  latency: 30ms             # fixed part of every response time
+  latency_jitter: 70ms      # plus uniform random [0, latency_jitter)
+  etag: strong              # strong | weak | none | ignore
+  last_modified: true
+  random_429: 0             # probability of a spurious 429
+  body_padding: 0           # extra bytes per 200 body
+
+# Per-ecosystem keys, applied on top of `defaults`.
+ecosystems:
+  npm:
+    body_padding: 20000     # packuments are large
+  github:
+    latency: 80ms
+    # GitHub's secondary limits, roughly: requests beyond this get 429.
+    rate_limit: {rps: 80, burst: 200, retry_after: 60s}
+  oci:
+    etag: weak
