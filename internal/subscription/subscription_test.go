@@ -34,6 +34,8 @@ func TestFilterMatch(t *testing.T) {
 
 		{"bump hit", subscription.Filter{Bump: []string{"major", "minor"}}, nil, true},
 		{"bump miss", subscription.Filter{Bump: []string{"major"}}, nil, false},
+		{"bump filter vs prerelease", subscription.Filter{Bump: []string{"major", "minor", "patch"}}, func(i *subscription.Input) { i.Bump = "prerelease" }, false},
+		{"bump filter vs other", subscription.Filter{Bump: []string{"major", "minor", "patch"}}, func(i *subscription.Input) { i.Bump = "other" }, false},
 		{"bump filter vs unclassified bump", subscription.Filter{Bump: []string{"major", "minor", "patch"}}, func(i *subscription.Input) { i.Bump = "" }, false},
 
 		{"labels subset hit", subscription.Filter{Labels: map[string]string{"team": "web"}}, nil, true},
@@ -90,12 +92,24 @@ func TestFromJSON(t *testing.T) {
 			t.Fatalf("FromJSON(%q) = %+v, %v; want match-all", empty, f, err)
 		}
 	}
-	// The exact form the watch-file loader stores.
-	f, err := subscription.FromJSON([]byte(`{"source":["npm"],"labels":{"team":"web"},"bump":["minor"],"package":"@angular/*","type":["release.published"]}`))
+	// The real output of the watch-file loader's FilterJSON.
+	full := watchfile.Subscription{Filter: watchfile.Filter{
+		Source: []string{"npm"}, Labels: map[string]string{"team": "web"}, Bump: []string{"minor"},
+		Package: "@angular/*", Type: []string{"release.published"},
+	}}
+	f, err := subscription.FromJSON(full.FilterJSON())
 	if err != nil || !f.Match(base) {
 		t.Fatalf("stored filter: %+v, %v", f, err)
 	}
-	for _, bad := range []string{`{"ecosystem":["npm"]}`, `{"package":"[a"}`, `{"bump":"major"}`, `[`} {
+	none := watchfile.Subscription{} // package omitted, lists are []
+	f, err = subscription.FromJSON(none.FilterJSON())
+	if err != nil || !f.Match(base) {
+		t.Fatalf("no-filter JSON %s: %+v, %v", none.FilterJSON(), f, err)
+	}
+	for _, bad := range []string{
+		`{"ecosystem":["npm"]}`, `{"package":"[a"}`, `{"bump":"major"}`, `[`,
+		`{} {}`, `{}x`, `{"bump":["prerelease"]}`, `{"type":["release.deleted"]}`,
+	} {
 		if _, err := subscription.FromJSON([]byte(bad)); err == nil {
 			t.Errorf("FromJSON(%s): want error", bad)
 		}
@@ -128,7 +142,7 @@ subscriptions:
 	}
 	var subs []subscription.Subscription
 	for _, s := range file.Subscriptions {
-		subs = append(subs, subscription.Subscription{ID: s.Name, Filter: subscription.FromWatchFile(s.Filter)})
+		subs = append(subs, subscription.Subscription{ID: s.Name, Filter: mustFilter(t, s)})
 	}
 	m := subscription.NewMatcher(subs)
 	// "all" has no filter in the file; the loader defaults type to release.published.
@@ -139,6 +153,25 @@ subscriptions:
 	yanked.Type = "release.yanked"
 	if got := m.Match(yanked, nil); len(got) != 0 {
 		t.Fatalf("yanked matches = %v, want none (default type is release.published)", got)
+	}
+}
+
+func mustFilter(t *testing.T, s watchfile.Subscription) subscription.Filter {
+	t.Helper()
+	f, err := subscription.FromJSON(s.FilterJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestMatcherCopiesFilters(t *testing.T) {
+	f := subscription.Filter{Source: []string{"npm"}, Labels: map[string]string{"team": "web"}}
+	m := subscription.NewMatcher([]subscription.Subscription{{ID: "a", Filter: f}})
+	f.Source[0] = "pypi"
+	f.Labels["team"] = "x"
+	if got := m.Match(base, nil); len(got) != 1 {
+		t.Fatalf("mutating the caller's filter changed the matcher: %v", got)
 	}
 }
 
@@ -180,7 +213,9 @@ func BenchmarkMatcher10k(b *testing.B) {
 	for b.Loop() {
 		dst = m.Match(base, dst[:0])
 	}
-	if len(dst) == 0 {
-		b.Fatal("no matches")
+	// Of 10,000: 2,000 match-all, 2,000 source+bump, 2,000 angular
+	// (source+labels+glob); the labels-only and scope-glob groups never match.
+	if len(dst) != 6000 {
+		b.Fatalf("matches = %d, want 6000", len(dst))
 	}
 }

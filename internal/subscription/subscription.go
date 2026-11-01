@@ -3,11 +3,17 @@ package subscription
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"path"
 	"slices"
+)
 
-	"github.com/angelia-dev/angelia/internal/watchfile"
+var (
+	validBumps = []string{"major", "minor", "patch"}
+	validTypes = []string{"release.published", "release.yanked", "release.prerelease"}
 )
 
 // Input is what a filter looks at. It is the minimal shape the future release
@@ -20,9 +26,10 @@ type Input struct {
 	Package string
 	// Labels are the labels of the watch that produced the event.
 	Labels map[string]string
-	// Bump is "major", "minor" or "patch"; empty when the change has no
-	// classification (first version, scheme change). A filter with a Bump
-	// list never matches an empty bump.
+	// Bump is the classifier's result: "major", "minor", "patch",
+	// "prerelease" or "other", or empty when unclassified. A filter with a
+	// Bump list matches only a value in that list, so "prerelease", "other"
+	// and "" never match it.
 	Bump string
 	// Type is the event type: "release.published", "release.yanked" or
 	// "release.prerelease".
@@ -73,8 +80,19 @@ func (f Filter) Match(in Input) bool {
 	return true
 }
 
-// Validate reports a filter that cannot match as intended (a bad glob).
+// Validate reports a filter that cannot match as intended: a bad glob, or a
+// bump or type outside the values the watch file accepts.
 func (f Filter) Validate() error {
+	for _, b := range f.Bump {
+		if !slices.Contains(validBumps, b) {
+			return fmt.Errorf("subscription: unknown bump %q", b)
+		}
+	}
+	for _, t := range f.Type {
+		if !slices.Contains(validTypes, t) {
+			return fmt.Errorf("subscription: unknown event type %q", t)
+		}
+	}
 	if _, err := path.Match(f.Package, ""); err != nil {
 		return fmt.Errorf("subscription: package glob %q: %w", f.Package, err)
 	}
@@ -94,15 +112,13 @@ func FromJSON(b []byte) (Filter, error) {
 	if err := dec.Decode(&f); err != nil {
 		return Filter{}, fmt.Errorf("subscription: decode filter: %w", err)
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return Filter{}, errors.New("subscription: trailing data after filter")
+	}
 	if err := f.Validate(); err != nil {
 		return Filter{}, err
 	}
 	return f, nil
-}
-
-// FromWatchFile converts a parsed watch-file filter.
-func FromWatchFile(w watchfile.Filter) Filter {
-	return Filter{Source: w.Source, Labels: w.Labels, Bump: w.Bump, Package: w.Package, Type: w.Type}
 }
 
 // Subscription is a filter with the id of the subscription it belongs to.
@@ -117,9 +133,18 @@ type Matcher struct {
 	subs []Subscription
 }
 
-// NewMatcher builds a matcher over subs (the slice is copied).
+// NewMatcher builds a matcher over subs. Filters are deep-copied, so callers
+// may reuse their slices and maps afterwards.
 func NewMatcher(subs []Subscription) *Matcher {
-	return &Matcher{subs: slices.Clone(subs)}
+	c := make([]Subscription, len(subs))
+	for i, s := range subs {
+		s.Filter.Source = slices.Clone(s.Filter.Source)
+		s.Filter.Bump = slices.Clone(s.Filter.Bump)
+		s.Filter.Type = slices.Clone(s.Filter.Type)
+		s.Filter.Labels = maps.Clone(s.Filter.Labels)
+		c[i] = s
+	}
+	return &Matcher{subs: c}
 }
 
 // Len returns the number of subscriptions.
