@@ -330,6 +330,42 @@ func TestOutcomeInterval(t *testing.T) {
 	}
 }
 
+// A target's own interval (set by a watch file) replaces Options.Interval;
+// Outcome.Interval still wins over it.
+func TestTargetInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  time.Duration
+		want time.Duration
+	}{
+		{"target interval", 0, 15 * time.Minute},
+		{"outcome wins", 5 * time.Minute, 5 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			clk := newFakeClock(t0)
+			addTarget(t, st, "t1", "requests", t0)
+			tg := getTarget(t, st, "t1")
+			if err := st.InConfigTx(t.Context(), func(tx store.ConfigTx) error {
+				return tx.SetTargetInterval(t.Context(), "t1", 15*time.Minute, tg.NextCheckAt)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			c := CheckerFunc(func(_ context.Context, got store.Target) (Outcome, error) {
+				if got.Interval != 15*time.Minute {
+					t.Errorf("leased target interval = %v", got.Interval)
+				}
+				return Outcome{Interval: tc.out}, nil
+			})
+			s := newTestScheduler(t, st, c, clk, nil)
+			pollAndWait(t.Context(), s)
+			if d := getTarget(t, st, "t1").NextCheckAt.Sub(t0); d != tc.want {
+				t.Fatalf("delay = %v, want %v", d, tc.want)
+			}
+		})
+	}
+}
+
 type fakeMetrics struct {
 	mu      sync.Mutex
 	backlog []int64
