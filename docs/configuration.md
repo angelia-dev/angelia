@@ -1,6 +1,7 @@
 # Instance configuration
 
-Settings of one Angelia process. Watches and subscriptions are separate (`angelia apply`).
+Settings of one Angelia process. Watches and subscriptions are separate (`angelia apply`); a watch's
+`policy` keys are described in [policy.md](policy.md).
 Precedence, lowest to highest: built-in default, YAML file, `ANGELIA_*` environment variable.
 Check a configuration with `angelia config check [--config FILE]`.
 

@@ -84,7 +84,7 @@ Built-in for v1: `pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitla
 ### 3.4 Normalizer and policy engine
 - Version parsing per scheme: SemVer 2, PEP 440, Maven, calver, and a "string order" fallback. The scheme is chosen by source kind and can be overridden per watch.
 - Diff: known-version set vs fetched set gives the **new versions** (not just "latest changed"). This catches backports such as `1.9.4` released after `2.0.0`.
-- Policy per watch or subscription: `include` / `exclude` regex, `prerelease: none|only|include`, `constraint: ">=2 <3"`, `bump: [major, minor]`, **`cooldown: 72h`** (emit only once the version is older than N, and drop it if yanked in between), first-run behaviour (`baseline` = record without emitting).
+- Policy per watch or subscription: `include` / `exclude` regex, `prerelease: none|only|include`, `constraint: ">=2 <3"`, `bump: [major, minor]`, **`cooldown: 72h`** (emit only once the version is older than N, and drop it if yanked in between), first-run behaviour (`baseline` = record without emitting). Evaluation order and semantics: [policy.md](policy.md), [ADR 0012](adr/0012-policy-evaluation-order-and-cooldown.md).
 - Output: `ReleaseEvent` (see §4) and one `Delivery` per matching subscription, in a single DB transaction.
 
 ### 3.5 Dispatcher and sink plugins (deliver)
@@ -157,6 +157,7 @@ event(seq, id ULID, watch_id, type, payload_json, created_at)                   
 subscription(id, filter_json, sink_id, template)
 sink(id, kind, config_json_encrypted)
 delivery(id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
+pending_release(watch_id, target_id, raw, held_at, release_json)                       -- versions held for cooldown (ADR 0012)
 ```
 Retention: `event` and `delivery` rows are pruned after N days (default 90). `version` is kept.
 
