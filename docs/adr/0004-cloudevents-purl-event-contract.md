@@ -16,17 +16,16 @@ requirement ([prd.md §7](../prd.md#7-non-functional-requirements)); see also G3
 ## Decision
 
 1. **Format.** Events are **CloudEvents 1.0**, JSON format. The schema lives in its own repo (`spec`) and is
-   versioned with SemVer. Types look like `dev.angelia.release.published.v1`; the payload is in `data`
-   (architecture.md §4 shows the draft example).
-2. **Package identity.** Packages are identified with **purl** (`data.purl`, for example
-   `pkg:pypi/requests@2.33.0`) so consumers can join with SBOMs, OSV and Renovate.
+   versioned with SemVer. Type names follow the draft example in architecture.md §4 (`dev.angelia.release.published.v1`) and are
+   final only at the spec freeze and maintainer naming. The payload is in `data`.
+2. **Package identity.** Packages are identified with **purl** (e.g. `pkg:pypi/requests@2.33.0`) so consumers can join with SBOMs, OSV and Renovate.
 3. **Event is not delivery.** One immutable `ReleaseEvent` row; N `Delivery` rows, one per matching
    subscription, each with its own retry state (architecture.md §2, §5).
 4. **Transactional outbox.** The event and its deliveries are written in the **same database transaction**
    as the state change. Dispatch reads deliveries from the database
    ([ADR 0003](0003-sqlite-default-postgres-ha-no-external-queue.md)).
 5. **Delivery semantics.** At-least-once. Each delivery carries `idempotency-key = event.id + subscription.id`.
-   Retries, dead-letter and replay are per delivery (architecture.md §3.5).
+   Retries and dead-letter are per delivery (architecture.md §3.5); replay is by event or time range (prd.md F9).
 6. **Event types** for v1: `release.published`, `release.yanked`, `release.prerelease`; `release.advisory` later.
    Event ids are ULIDs, monotonic, and serve as cursors in the pull API (§3.1, §5).
 
@@ -47,7 +46,7 @@ requirement ([prd.md §7](../prd.md#7-non-functional-requirements)); see also G3
 
 ### Open questions
 
-- **Public field names** of `data` (for example `ecosystem`, `bump`, `cooldown_satisfied_at`) appear in the draft example only. AGENTS.md requires the maintainer to name public schema fields; the example is not frozen by this ADR.
+- **Public field names** of `data` (for example `ecosystem`, `bump`, `cooldown_satisfied_at`, `purl`) appear in the draft example only. AGENTS.md requires the maintainer to name public schema fields; the example is not frozen by this ADR.
 - Which `data` fields are required versus optional is not stated.
 - Whether the `source` URI form `angelia://<instance>/watches/<ecosystem>/<name>` is final.
 - Versioning rules for the `v1` type suffix and the `spec` repo SemVer are not defined; the spec freeze is a Phase 3 exit criterion ([prd.md §9](../prd.md#9-roadmap)).
@@ -68,5 +67,5 @@ requirement ([prd.md §7](../prd.md#7-non-functional-requirements)); see also G3
 ## References
 
 - [architecture.md §2](../architecture.md#2-review-of-the-proposed-split), [§3.4](../architecture.md#34-normalizer-and-policy-engine), [§3.5](../architecture.md#35-dispatcher-and-sink-plugins-deliver), [§4](../architecture.md#4-the-event-contract-the-product), [§5](../architecture.md#5-data-model-simplified)
-- [prd.md §5](../prd.md#5-goals-and-non-goals) (G3, G4), [§7](../prd.md#7-non-functional-requirements)
+- [prd.md §5](../prd.md#5-goals-and-non-goals) (G3, G4), [§6](../prd.md#6-functional-requirements) (F9), [§7](../prd.md#7-non-functional-requirements)
 - CloudEvents 1.0 specification; Package URL (purl) specification

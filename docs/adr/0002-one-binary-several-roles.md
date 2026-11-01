@@ -35,6 +35,7 @@ angelia serve --roles=api,scheduler,worker,dispatcher    # default: all
 ### Negative
 
 - All roles share one release cadence and one dependency set; a role cannot be upgraded alone.
+- SQLite is a single-node store with a single-process lease, so scale-out across processes needs Postgres ([ADR 0003](0003-sqlite-default-postgres-ha-no-external-queue.md); architecture.md §3.2).
 - Package boundaries are enforced by code review and interfaces only, not by process isolation.
 
 ### Open questions
@@ -42,7 +43,6 @@ angelia serve --roles=api,scheduler,worker,dispatcher    # default: all
 - Is the role list final? architecture.md names four; whether SSE and MCP serve from `api` or need their own role is not stated.
 - Do `/healthz` and `/readyz` ([prd.md §7](../prd.md#7-non-functional-requirements)) report per role? Not specified.
 - Can several `scheduler` instances run at once? The docs only say "a single-process lease on SQLite" and `SKIP LOCKED` on Postgres.
-- Does multi-process scale-out apply to SQLite, or only to Postgres? See ADR 0003.
 
 ## Alternatives considered
 

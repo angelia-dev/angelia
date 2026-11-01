@@ -28,7 +28,7 @@ The `webhook` sink signs every delivery following the **Standard Webhooks** spec
 
 - Consumers can use existing Standard Webhooks verification libraries instead of custom code.
 - The timestamp header lets receivers reject stale messages.
-- The id header gives receivers a stable value for de-duplication under at-least-once delivery.
+- If `webhook-id` carries the idempotency key (an open question below), receivers get a stable value for de-duplication under at-least-once delivery.
 
 ### Negative
 
