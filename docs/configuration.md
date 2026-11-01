@@ -1,6 +1,7 @@
 # Instance configuration
 
-Settings of one Angelia process. Watches and subscriptions are separate (`angelia apply`).
+Settings of one Angelia process. Watches, sinks and subscriptions are separate: they live in the [watch file](watch-file.md) (Phase 0 format: approved, but may still change before 1.0)
+(`angelia serve --watches`, later `angelia apply`).
 Precedence, lowest to highest: built-in default, YAML file, `ANGELIA_*` environment variable.
 Check a configuration with `angelia config check [--config FILE]`.
 

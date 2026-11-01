@@ -100,6 +100,9 @@ type Store interface {
 	// finished (see the sqlite engine's PruneHistory). Config rows are never
 	// touched. Callers pass before = now - retention.
 	PruneHistory(ctx context.Context, before time.Time, batch int) (PruneResult, error)
+	// InConfigTx runs fn in one transaction like InTx, with the operations a
+	// declarative file apply needs.
+	InConfigTx(ctx context.Context, fn func(tx ConfigTx) error) error
 	// AcquireLease takes or renews the named lease for holder until the given
 	// time. It reports false when another holder owns an unexpired lease.
 	AcquireLease(ctx context.Context, name, holder string, now, until time.Time) (bool, error)
@@ -130,6 +133,52 @@ type Store interface {
 	Close() error
 }
 
+// Owners of config rows. A file apply reads and changes only rows it owns.
+const (
+	ManagedByAPI  = "api"
+	ManagedByFile = "file"
+)
+
+// ConfigTx is the unit of work of a declarative file apply (docs/watch-file.md
+// section 4). Every write belongs to one transaction.
+type ConfigTx interface {
+	Tx
+	// ListManagedWatches, ListManagedSinks and ListManagedSubscriptions return
+	// the rows owned by managedBy, ordered by name.
+	ListManagedWatches(ctx context.Context, managedBy string) ([]Watch, error)
+	ListManagedSinks(ctx context.Context, managedBy string) ([]Sink, error)
+	ListManagedSubscriptions(ctx context.Context, managedBy string) ([]Subscription, error)
+	// GetTarget returns ErrNotFound for an unknown id.
+	GetTarget(ctx context.Context, id string) (Target, error)
+	// FindTarget returns the target with this kind and coordinates, or
+	// ErrNotFound.
+	FindTarget(ctx context.Context, kind string, coordinates map[string]string) (Target, error)
+	CreateTarget(ctx context.Context, t Target) error
+	// SetTargetInterval stores the interval and the next check time of a target.
+	SetTargetInterval(ctx context.Context, id string, interval time.Duration, nextCheckAt time.Time) error
+	// DeleteTargetIfUnused deletes the target and its known versions when no
+	// watch uses it, and reports whether it did.
+	DeleteTargetIfUnused(ctx context.Context, id string) (bool, error)
+	CreateWatch(ctx context.Context, w Watch) error
+	// UpdateWatch stores TargetID, Policy and Labels. It leaves BaselineDone
+	// alone, so that an apply cannot undo a worker's baseline.
+	UpdateWatch(ctx context.Context, w Watch) error
+	// ResetWatchBaseline sets BaselineDone to false.
+	ResetWatchBaseline(ctx context.Context, id string) error
+	DeleteWatch(ctx context.Context, id string) error
+	CreateSink(ctx context.Context, s Sink) error
+	// UpdateSink stores Kind and ConfigEncrypted.
+	UpdateSink(ctx context.Context, s Sink) error
+	DeleteSink(ctx context.Context, id string) error
+	CreateSubscription(ctx context.Context, s Subscription) error
+	// UpdateSubscription stores Filter, SinkID and Template.
+	UpdateSubscription(ctx context.Context, s Subscription) error
+	DeleteSubscription(ctx context.Context, id string) error
+	// DeletePendingDeliveries deletes the pending deliveries of a
+	// subscription and returns how many. In-flight, delivered and dead rows stay.
+	DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error)
+}
+
 // TargetLeaseName is the name of the lease a scheduler holds on a target
 // while it checks it. The SQLite due-target query relies on this format.
 func TargetLeaseName(targetID string) string { return "target:" + targetID }
@@ -149,6 +198,9 @@ type Target struct {
 	LastCheckedAt time.Time       // zero: never checked
 	NextCheckAt   time.Time
 	ErrorCount    int64
+	// Interval is the check interval, the smallest interval among the watches
+	// that use the target. Zero means not set.
+	Interval time.Duration
 }
 
 // Watch is a user's interest in a target.
@@ -158,6 +210,11 @@ type Watch struct {
 	Policy       json.RawMessage
 	Labels       map[string]string
 	BaselineDone bool
+	// Name and ManagedBy identify a row owned by a declarative file (see
+	// ConfigTx). Name is empty for rows without one; ManagedBy "" means
+	// ManagedByAPI.
+	Name      string
+	ManagedBy string
 }
 
 // Version is one entry of a target's known version set.
@@ -191,14 +248,18 @@ type Sink struct {
 	ID              string
 	Kind            string
 	ConfigEncrypted []byte
+	Name            string // see Watch.Name
+	ManagedBy       string
 }
 
 // Subscription routes matching events to a sink.
 type Subscription struct {
-	ID       string
-	Filter   json.RawMessage
-	SinkID   string
-	Template string
+	ID        string
+	Filter    json.RawMessage
+	SinkID    string
+	Template  string
+	Name      string // see Watch.Name
+	ManagedBy string
 }
 
 // Delivery is the per-subscription delivery state of one event.
