@@ -14,9 +14,9 @@ import (
 
 // Sample is one resource measurement of the angelia process.
 type Sample struct {
-	At         time.Time `json:"at"`
-	RSSBytes   int64     `json:"rss_bytes"`
-	CPUPercent float64   `json:"cpu_percent"` // of one CPU, since the previous sample
+	At          time.Time `json:"at"`
+	MemoryBytes int64     `json:"memory_bytes"`
+	CPUPercent  float64   `json:"cpu_percent"` // of one CPU, since the previous sample
 }
 
 // Target runs `angelia serve` and measures it.
@@ -95,7 +95,7 @@ func (p *processTarget) sample(pid int, now time.Time) (Sample, error) {
 			if err != nil {
 				return Sample{}, fmt.Errorf("parse VmRSS %q: %w", v, err)
 			}
-			s.RSSBytes = kb * 1024
+			s.MemoryBytes = kb * 1024
 		}
 	}
 	stat, err := p.readFile(fmt.Sprintf("/proc/%d/stat", pid))
@@ -165,9 +165,9 @@ type dockerTarget struct {
 }
 
 func (d *dockerTarget) Start(ctx context.Context, cfgPath string, args []string) error {
-	_, _ = d.run(ctx, "docker", "rm", "-f", d.name) // leftover of an aborted run
+	removeLabelled(ctx, d.run) // leftovers of aborted runs
 	a := []string{
-		"run", "-d", "--name", d.name,
+		"run", "-d", "--name", d.name, "--label", benchLabel + "=1",
 		"--memory", d.memory, "--memory-swap", d.memory, "--cpus", d.cpus,
 		"--add-host", "host.docker.internal:host-gateway",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
@@ -206,7 +206,7 @@ func (d *dockerTarget) Sample(ctx context.Context) (Sample, error) {
 	if err != nil {
 		return Sample{}, fmt.Errorf("docker stats CPU %q: %w", cpu, err)
 	}
-	return Sample{At: time.Now(), RSSBytes: rss, CPUPercent: pct}, nil
+	return Sample{At: time.Now(), MemoryBytes: rss, CPUPercent: pct}, nil
 }
 
 func (d *dockerTarget) Stop(ctx context.Context) error {
@@ -214,7 +214,22 @@ func (d *dockerTarget) Stop(ctx context.Context) error {
 		_ = os.WriteFile(d.logPath, logs, 0o600)
 	}
 	_, err := d.run(ctx, "docker", "rm", "-f", d.name)
+	removeLabelled(ctx, d.run)
 	return err
+}
+
+// benchLabel marks the harness's containers, and prefixes their names.
+const benchLabel = "angelia-bench"
+
+// removeLabelled removes every container carrying benchLabel.
+func removeLabelled(ctx context.Context, run runFunc) {
+	out, err := run(ctx, "docker", "ps", "-aq", "--filter", "label="+benchLabel)
+	if err != nil {
+		return
+	}
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		_, _ = run(ctx, "docker", append([]string{"rm", "-f"}, ids...)...)
+	}
 }
 
 func (d *dockerTarget) Limits() (string, string) {

@@ -1,20 +1,22 @@
 #!/bin/sh
 # Phase 0 benchmark 1 (scale). Called by `make bench-scale`; see
 # bench/load/README.md. Environment:
-#   N                 watches (default 10000)
+#   BENCH_N           watches (default 10000)
 #   BENCH_CONTAINER   1 (default): angelia in Docker with --memory/--cpus;
 #                     0: angelia as a plain process (Linux, no limits)
-#   BENCH_DURATION    measuring time (default 15m)
+#   BENCH_DURATION    measuring time after angelia is ready (default 15m)
+#   BENCH_CHECK_INTERVAL  per-watch check interval (default 1m)
 #   BENCH_MEMORY      container memory limit (default 256m)
 #   BENCH_CPUS        container CPU limit (default 1)
-#   BENCH_OUT         output directory (default bin/bench/scale-$N)
+#   BENCH_OUT         output directory (default bin/bench/scale-$BENCH_N)
 #   BENCH_FAKEREG     fake registry behaviour (default bench/fakereg/fakereg.yaml)
 set -eu
 
-N=${N:-10000}
+BENCH_N=${BENCH_N:-10000}
 BENCH_CONTAINER=${BENCH_CONTAINER:-1}
 BENCH_DURATION=${BENCH_DURATION:-15m}
-BENCH_OUT=${BENCH_OUT:-bin/bench/scale-$N}
+BENCH_CHECK_INTERVAL=${BENCH_CHECK_INTERVAL:-1m}
+BENCH_OUT=${BENCH_OUT:-bin/bench/scale-$BENCH_N}
 BENCH_FAKEREG=${BENCH_FAKEREG:-bench/fakereg/fakereg.yaml}
 MAKE=${MAKE:-make}
 
@@ -31,5 +33,5 @@ else
 	set -- -container=false
 fi
 
-exec go run ./bench/load -n "$N" -duration "$BENCH_DURATION" -angelia "$bin" \
-	-out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" "$@"
+exec go run ./bench/load -n "$BENCH_N" -duration "$BENCH_DURATION" -check-interval "$BENCH_CHECK_INTERVAL" \
+	-angelia "$bin" -out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" "$@"

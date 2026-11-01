@@ -1,6 +1,6 @@
 # fakereg: fake registries for benchmarks
 
-One HTTP server that answers like five registries, so the scale benchmark (story
+One HTTP server that answers like five registries, so the scale benchmark ([bench/load](../load/README.md), story
 angelia-dev/angelia#62) never touches a real registry.
 Packages are synthetic and their versions follow from the configuration and the time since the
 server started, so a run is reproducible and the server knows when every release was published.

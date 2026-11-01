@@ -73,11 +73,12 @@ bench-ordering-snapshot: ## Rebuild the benchmark 6 snapshots from the live regi
 	python3 -I bench/ordering/snapshot/pypi.py bench/ordering/packages/pypi.txt bench/ordering/testdata/pypi.jsonl.gz
 	node bench/ordering/snapshot/npm.mjs bench/ordering/packages/npm.txt bench/ordering/testdata/npm.jsonl.gz
 
-# N watches against the fake registry; Docker by default, BENCH_CONTAINER=0 for
-# a plain process. Other knobs: bench/load/README.md.
-N ?= 10000
-bench-scale: ## Benchmark 1: N watches (default 10000) against the fake registry, report in bin/bench
-	N=$(N) MAKE="$(MAKE)" bench/load/bench-scale.sh
+# BENCH_N watches against the fake registry; Docker by default, BENCH_CONTAINER=0
+# for a plain process. `make bench-scale N=100` works too. Other knobs:
+# bench/load/README.md. Exit status 3 means incomplete (deliberately an error).
+BENCH_N ?= $(or $(N),10000)
+bench-scale: ## Benchmark 1: BENCH_N watches (default 10000) against the fake registry, report in bin/bench
+	BENCH_N=$(BENCH_N) MAKE="$(MAKE)" bench/load/bench-scale.sh
 
 clean: ## Remove build output
 	rm -rf bin

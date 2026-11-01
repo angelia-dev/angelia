@@ -15,18 +15,19 @@ import (
 
 // sourceKinds maps each fake registry ecosystem to the angelia source kind
 // that reads it.
-var sourceKinds = map[string]string{
-	"pypi": "pypi", "npm": "npm", "crates": "crates", "github": "github-release", "oci": "oci",
+func sourceKinds() map[string]string {
+	return map[string]string{"pypi": "pypi", "npm": "npm", "crates": "crates", "github": "github-release", "oci": "oci"}
 }
 
 // GenerateWatches returns n targets spread round robin over the five
-// ecosystems, and the number of packages each ecosystem needs.
-func GenerateWatches(n int) ([]source.Target, int) {
-	eco := fakereg.Ecosystems
-	per := (n + len(eco) - 1) / len(eco)
+// ecosystems, and the number of watches (one package each) per ecosystem.
+func GenerateWatches(n int) ([]source.Target, map[string]int) {
+	eco, kinds := fakereg.Ecosystems(), sourceKinds()
+	per := map[string]int{}
 	out := make([]source.Target, 0, n)
 	for i := range n {
 		e, name := eco[i%len(eco)], fakereg.PackageName(i/len(eco))
+		per[e]++
 		var coords map[string]string
 		switch e {
 		case "github":
@@ -37,15 +38,21 @@ func GenerateWatches(n int) ([]source.Target, int) {
 		default:
 			coords = map[string]string{"name": name}
 		}
-		out = append(out, source.Target{Kind: sourceKinds[e], Coordinates: coords})
+		out = append(out, source.Target{Kind: kinds[e], Coordinates: coords})
 	}
-	return out, max(per, 1)
+	return out, per
 }
 
-// SizeRegistry sets every ecosystem's package count to packages.
-func SizeRegistry(c *fakereg.Config, packages int) {
+// SizeRegistry gives each ecosystem exactly one package per watch, so that
+// every published release belongs to a watched package and counts for lag.
+// An ecosystem without watches keeps one package (the minimum) that never
+// releases.
+func SizeRegistry(c *fakereg.Config, perEco map[string]int) {
 	for name, b := range c.Ecosystems {
-		b.Packages = packages
+		b.Packages = max(perEco[name], 1)
+		if perEco[name] == 0 {
+			b.ReleasesPerHour = 0
+		}
 		c.Ecosystems[name] = b
 	}
 }
@@ -98,7 +105,7 @@ func WriteAngeliaConfig(path, listen, registry, dataDir string) error {
 		Log:      map[string]string{"level": "info", "format": "json"},
 		Sources:  map[string]map[string]string{},
 	}
-	for eco, kind := range sourceKinds {
+	for eco, kind := range sourceKinds() {
 		c.Sources[kind] = map[string]string{"base_url": registry + "/" + eco}
 	}
 	data, err := yaml.Marshal(c)

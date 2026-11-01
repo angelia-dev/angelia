@@ -20,8 +20,8 @@ import (
 
 func TestGenerateWatches(t *testing.T) {
 	w, per := GenerateWatches(7)
-	if len(w) != 7 || per != 2 {
-		t.Fatalf("got %d watches, %d per ecosystem; want 7 and 2", len(w), per)
+	if len(w) != 7 || per["pypi"] != 2 || per["oci"] != 1 {
+		t.Fatalf("got %d watches, per ecosystem %v; want 7, pypi 2, oci 1", len(w), per)
 	}
 	kinds := map[string]int{}
 	for _, x := range w {
@@ -38,8 +38,16 @@ func TestGenerateWatches(t *testing.T) {
 	}
 	c := fakereg.DefaultConfig()
 	SizeRegistry(c, per)
-	if c.Ecosystems["oci"].Packages != 2 {
-		t.Error("SizeRegistry did not apply")
+	if c.Ecosystems["oci"].Packages != 1 || c.Ecosystems["npm"].Packages != 2 {
+		t.Error("SizeRegistry did not size each ecosystem to its watches")
+	}
+	_, per = GenerateWatches(2)
+	SizeRegistry(c, per)
+	if b := c.Ecosystems["oci"]; b.Packages != 1 || b.ReleasesPerHour != 0 {
+		t.Errorf("unwatched ecosystem = %+v, want 1 package without releases", b)
+	}
+	if c.Ecosystems["pypi"].ReleasesPerHour == 0 {
+		t.Error("watched ecosystem lost its releases")
 	}
 }
 
@@ -86,7 +94,7 @@ func TestProcessSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.RSSBytes != 20<<20 || s.CPUPercent != 0 {
+	if s.MemoryBytes != 20<<20 || s.CPUPercent != 0 {
 		t.Errorf("first sample = %+v", s)
 	}
 	// 30 more ticks (0.3 s of CPU) in 2 s of wall time: 15%.
@@ -128,6 +136,8 @@ func TestDockerTarget(t *testing.T) {
 				return []byte("127.0.0.1:49153\n[::1]:49153\n"), nil
 			case "logs":
 				return []byte("log line\n"), nil
+			case "ps":
+				return []byte("c1\nc2\n"), nil
 			}
 			return nil, nil
 		},
@@ -136,8 +146,8 @@ func TestDockerTarget(t *testing.T) {
 	if err := d.Start(ctx, "/work/angelia.yaml", []string{"--extra"}); err != nil {
 		t.Fatal(err)
 	}
-	run := strings.Join(calls[1], " ")
-	for _, want := range []string{"--memory 256m", "--memory-swap 256m", "--cpus 1", "/abs/angelia:/angelia:ro", "img /angelia serve --config /work/angelia.yaml --extra"} {
+	run := strings.Join(calls[2], " ") // after the labelled cleanup: ps, rm
+	for _, want := range []string{"--label angelia-bench=1", "--memory 256m", "--memory-swap 256m", "--cpus 1", "/abs/angelia:/angelia:ro", "img /angelia serve --config /work/angelia.yaml --extra"} {
 		if !strings.Contains(run, want) {
 			t.Errorf("docker run %q lacks %q", run, want)
 		}
@@ -146,11 +156,14 @@ func TestDockerTarget(t *testing.T) {
 		t.Errorf("health URL = %q", u)
 	}
 	s, err := d.Sample(ctx)
-	if err != nil || s.RSSBytes != 37.5*(1<<20) || s.CPUPercent != 12.25 {
+	if err != nil || s.MemoryBytes != 37.5*(1<<20) || s.CPUPercent != 12.25 {
 		t.Errorf("sample = %+v, %v", s, err)
 	}
 	if err := d.Stop(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if last := strings.Join(calls[len(calls)-1], " "); last != "docker rm -f c1 c2" {
+		t.Errorf("labelled cleanup = %q", last)
 	}
 	if b, _ := os.ReadFile(d.logPath); string(b) != "log line\n" {
 		t.Errorf("logs = %q", b)
@@ -161,7 +174,7 @@ func TestDockerTarget(t *testing.T) {
 }
 
 func TestEvaluate(t *testing.T) {
-	samples := []Sample{{RSSBytes: 30 << 20}, {RSSBytes: 40 << 20, CPUPercent: 10}}
+	samples := []Sample{{MemoryBytes: 30 << 20}, {MemoryBytes: 40 << 20, CPUPercent: 10}}
 	reg := fakereg.Stats{Total: fakereg.EcoStats{Published: 10, Lag: fakereg.LagStats{Samples: 10, P95Seconds: 30}}}
 	for name, tc := range map[string]struct {
 		loaderErr error
@@ -176,7 +189,7 @@ func TestEvaluate(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := append([]Sample(nil), samples...)
-			s[1].RSSBytes = tc.rss
+			s[1].MemoryBytes = tc.rss
 			r := &Report{Samples: s, Registry: reg}
 			r.Registry.Total.Lag.P95Seconds = tc.lag
 			r.Resources = summarizeSamples(s)
@@ -216,12 +229,12 @@ func TestEnvironment(t *testing.T) {
 		"/proc/cpuinfo":              "processor\t: 0\nmodel name\t: Test CPU @ 3GHz\n",
 		"/proc/meminfo":              "MemTotal:       16777216 kB\n",
 		"/proc/sys/kernel/osrelease": "6.1.0\n",
-	}, map[string]string{"git rev-parse": "abc123\n", "git status": " M x.go\n", "docker version": "27.0 (linux/amd64)\n"})
+	}, map[string]string{"git rev-parse": "abc123\n", "git status": " M x.go\n", "docker version": "27.0 (linux/amd64)\n", "docker info": "8 8589934592\n"})
 	d := &dockerTarget{memory: "256m", cpus: "1"}
 	e := pr.environment(context.Background(), "/does/not/exist", d, true)
 	for got, want := range map[string]string{
 		e.CPUModel: "Test CPU @ 3GHz", e.HostMemory: "16.0 GiB", e.Kernel: "6.1.0", e.Commit: "abc123",
-		e.Mode: "container", e.Docker: "27.0 (linux/amd64)", e.MemoryLimit: "256m (docker --memory, no swap)",
+		e.Mode: "container", e.Docker: "27.0 (linux/amd64)", e.DockerCPUs: "8", e.DockerMemory: "8.0 GiB", e.MemoryLimit: "256m (docker --memory, no swap)",
 	} {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -250,7 +263,7 @@ func (f *fakeTarget) Start(_ context.Context, cfg string, _ []string) error {
 }
 func (f *fakeTarget) HealthURL(context.Context) (string, error) { return f.srv.URL, nil }
 func (f *fakeTarget) Sample(context.Context) (Sample, error) {
-	return Sample{At: time.Now(), RSSBytes: 25 << 20, CPUPercent: 1}, nil
+	return Sample{At: time.Now(), MemoryBytes: 25 << 20, CPUPercent: 1}, nil
 }
 func (f *fakeTarget) Stop(context.Context) error { return nil }
 func (f *fakeTarget) Limits() (string, string)   { return "1 CPU", "256m" }
@@ -268,6 +281,7 @@ func TestRunWritesReport(t *testing.T) {
 	o := options{
 		n: 50, duration: 30 * time.Millisecond, interval: 10 * time.Millisecond, fakeregConfig: cfgPath,
 		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: missingLoader{},
+		checkInterval: 5 * time.Millisecond, censor: 10 * time.Millisecond,
 		newTarget: func(options, string) Target { return ft },
 		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef"}),
 	}
@@ -275,7 +289,7 @@ func TestRunWritesReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Verdict != "incomplete" || len(rep.Samples) < 2 || rep.Params.PerEcosystem != 10 {
+	if rep.Verdict != "incomplete" || len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 10 {
 		t.Errorf("report = %+v", rep)
 	}
 	if len(ft.started) != 1 || ft.started[0] != filepath.Join(out, "angelia.yaml") {
@@ -287,7 +301,13 @@ func TestRunWritesReport(t *testing.T) {
 		t.Errorf("report.json: %v %s", err, data)
 	}
 	md, _ := os.ReadFile(filepath.Join(out, "report.md")) //nolint:gosec // test temp dir
-	for _, want := range []string{"Verdict: incomplete", "| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "no watch loader"} {
+	if w := rep.Registry.Window; !w.From.After(rep.Params.ReadyAt) || !w.To.After(w.From) {
+		t.Errorf("lag window %+v, ready at %v", w, rep.Params.ReadyAt)
+	}
+	for _, want := range []string{
+		"Verdict: incomplete", "| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "no watch loader",
+		"RSS (VmRSS) max", "Lag counts releases published from",
+	} {
 		if !bytes.Contains(md, []byte(want)) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
 		}
@@ -299,10 +319,40 @@ func TestRunFlags(t *testing.T) {
 	if code := run(context.Background(), []string{"-n", "0"}, &bytes.Buffer{}, &stderr); code != 2 {
 		t.Errorf("-n 0: exit %d", code)
 	}
+	if code := run(context.Background(), []string{"-duration", "2m"}, &bytes.Buffer{}, &stderr); code != 2 ||
+		!strings.Contains(stderr.String(), "warm-up") {
+		t.Errorf("-duration shorter than warm-up + censoring: exit %d, %s", code, stderr.String())
+	}
 	if code := run(context.Background(), []string{"-bogus"}, &bytes.Buffer{}, &stderr); code != 2 {
 		t.Errorf("unknown flag: exit %d", code)
 	}
-	if code := run(context.Background(), []string{"-n", "5", "-fakereg-config", "missing.yaml", "-out", t.TempDir()}, &bytes.Buffer{}, &stderr); code != 2 {
+	if code := run(context.Background(), []string{"-n", "5", "-container=false", "-fakereg-config", "missing.yaml", "-out", t.TempDir()}, &bytes.Buffer{}, &stderr); code != 2 {
 		t.Errorf("missing config: exit %d", code)
+	}
+}
+
+func TestBindHost(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	ctx := context.Background()
+	runner := func(outputs map[string]string) runFunc {
+		return fakeProbe(nil, outputs).run
+	}
+	if got := bindHost(ctx, runner(nil), "darwin", log); got != "127.0.0.1" {
+		t.Errorf("Docker Desktop on macOS: %s", got)
+	}
+	if got := bindHost(ctx, runner(map[string]string{"docker info": "Docker Desktop\n"}), "linux", log); got != "127.0.0.1" {
+		t.Errorf("Docker Desktop on Linux: %s", got)
+	}
+	if got := bindHost(ctx, runner(map[string]string{"docker network": "fd00::1 172.17.0.1 \n"}), "linux", log); got != "172.17.0.1" {
+		t.Errorf("Linux bridge: %s", got)
+	}
+	if got := bindHost(ctx, runner(nil), "linux", log); got != "0.0.0.0" {
+		t.Errorf("fallback: %s", got)
+	}
+}
+
+func TestCheckMode(t *testing.T) {
+	if checkMode(false, "darwin") == nil || checkMode(false, "linux") != nil || checkMode(true, "darwin") != nil {
+		t.Error("process mode must need Linux, container mode must not")
 	}
 }

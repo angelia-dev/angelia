@@ -20,7 +20,7 @@ import (
 // Targets of benchmark 1, architecture.md section 6.
 const (
 	targetLagP95 = 2 * time.Minute
-	targetRSSMiB = 100.0
+	targetMemMiB = 100e6 / (1 << 20) // 100 MB = 95.4 MiB
 	targetCPUPct = 20.0
 )
 
@@ -48,6 +48,8 @@ type Environment struct {
 	OS             string `json:"os"`
 	Kernel         string `json:"kernel,omitempty"`
 	Docker         string `json:"docker,omitempty"`
+	DockerCPUs     string `json:"docker_cpus,omitempty"`   // docker info NCPU: what the daemon's VM has
+	DockerMemory   string `json:"docker_memory,omitempty"` // docker info MemTotal
 	AngeliaGo      string `json:"angelia_go_version"`
 	HarnessGo      string `json:"harness_go_version"`
 	Commit         string `json:"commit"`
@@ -56,21 +58,27 @@ type Environment struct {
 
 // Params are the inputs of the run.
 type Params struct {
-	Watches        int       `json:"watches"`
-	PerEcosystem   int       `json:"packages_per_ecosystem"`
-	Loader         string    `json:"watch_loader"`
-	Duration       string    `json:"duration"`
-	SampleInterval string    `json:"sample_interval"`
-	FakeregConfig  string    `json:"fakereg_config"`
-	StartedAt      time.Time `json:"started_at"`
+	Watches        int            `json:"watches"`
+	PerEcosystem   map[string]int `json:"watches_per_ecosystem"`
+	Loader         string         `json:"watch_loader"`
+	Duration       string         `json:"duration"`
+	SampleInterval string         `json:"sample_interval"`
+	CheckInterval  string         `json:"check_interval"`
+	FakeregConfig  string         `json:"fakereg_config"`
+	StartedAt      time.Time      `json:"started_at"`
+	ReadyAt        time.Time      `json:"ready_at"`
 }
 
-// Resources summarizes the samples.
+// Resources summarizes the samples. Memory is the process RSS (VmRSS) in
+// process mode and the container memory reported by docker stats (cgroup
+// usage minus inactive page cache) in container mode; MemorySource says
+// which.
 type Resources struct {
-	RSSMaxMiB  float64 `json:"rss_max_mib"`
-	RSSP95MiB  float64 `json:"rss_p95_mib"`
-	CPUMeanPct float64 `json:"cpu_mean_percent"`
-	CPUP95Pct  float64 `json:"cpu_p95_percent"`
+	MemorySource string  `json:"memory_source"`
+	MemMaxMiB    float64 `json:"memory_max_mib"`
+	MemP95MiB    float64 `json:"memory_p95_mib"`
+	CPUMeanPct   float64 `json:"cpu_mean_percent"`
+	CPUP95Pct    float64 `json:"cpu_p95_percent"`
 }
 
 // Check is one pass/fail target.
@@ -88,13 +96,13 @@ func summarizeSamples(s []Sample) Resources {
 	rss, cpu := make([]float64, len(s)), make([]float64, 0, len(s))
 	var sum float64
 	for i, x := range s {
-		rss[i] = float64(x.RSSBytes) / (1 << 20)
+		rss[i] = float64(x.MemoryBytes) / (1 << 20)
 		if i > 0 { // the first sample has no CPU interval
 			cpu = append(cpu, x.CPUPercent)
 			sum += x.CPUPercent
 		}
 	}
-	r := Resources{RSSMaxMiB: slices.Max(rss), RSSP95MiB: p95(rss)}
+	r := Resources{MemMaxMiB: slices.Max(rss), MemP95MiB: p95(rss)}
 	if len(cpu) > 0 {
 		r.CPUMeanPct, r.CPUP95Pct = sum/float64(len(cpu)), p95(cpu)
 	}
@@ -116,15 +124,15 @@ func (r *Report) evaluate(loaderErr error) {
 	r.Checks = []Check{
 		check("check lag P95", "< 2m0s", fmt.Sprintf("%.1fs over %d releases", lag.P95Seconds, lag.Samples),
 			lagMeasured, lag.P95Seconds < targetLagP95.Seconds()),
-		check("RSS max", fmt.Sprintf("< %.0f MiB", targetRSSMiB), fmt.Sprintf("%.1f MiB", r.Resources.RSSMaxMiB),
-			len(r.Samples) > 0, r.Resources.RSSMaxMiB < targetRSSMiB),
+		check(r.Resources.MemorySource+" max", fmt.Sprintf("< %.1f MiB (100 MB)", targetMemMiB), fmt.Sprintf("%.1f MiB", r.Resources.MemMaxMiB),
+			len(r.Samples) > 0, r.Resources.MemMaxMiB < targetMemMiB),
 		check("CPU mean", fmt.Sprintf("< %.0f%%", targetCPUPct), fmt.Sprintf("%.1f%%", r.Resources.CPUMeanPct),
 			len(r.Samples) > 1, r.Resources.CPUMeanPct < targetCPUPct),
 	}
 	if loaderErr != nil {
 		r.Notes = append(r.Notes, loaderErr.Error()+". Resources below are of an idle instance.")
 	} else if r.Registry.Total.Published == 0 {
-		r.Notes = append(r.Notes, "no release was published during the run: raise -duration or releases_per_hour")
+		r.Notes = append(r.Notes, "no release was published in the lag window: raise -duration or releases_per_hour")
 	}
 	r.Verdict = "pass"
 	for _, c := range r.Checks {
@@ -197,6 +205,8 @@ func (r *Report) Markdown(w io.Writer) error {
 		{"OS", e.OS},
 		{"Kernel", e.Kernel},
 		{"Docker", e.Docker},
+		{"Docker VM CPUs", e.DockerCPUs},
+		{"Docker VM memory", e.DockerMemory},
 		{"Go (angelia)", e.AngeliaGo},
 		{"Go (harness)", e.HarnessGo},
 		{"Commit", e.Commit + map[bool]string{true: " (modified)"}[e.CommitModified]},
@@ -206,17 +216,26 @@ func (r *Report) Markdown(w io.Writer) error {
 		}
 	}
 	pr := r.Params
-	p("\n## Run\n\n%d watches (%d packages per ecosystem), watch loader `%s`, %s, sampled every %s, fake registry config `%s`, started %s.",
-		pr.Watches, pr.PerEcosystem, pr.Loader, pr.Duration, pr.SampleInterval, pr.FakeregConfig, pr.StartedAt.Format(time.RFC3339))
-	rs := r.Resources
-	p("\nRSS max %.1f MiB, P95 %.1f MiB; CPU mean %.1f%%, P95 %.1f%% (%d samples).",
-		rs.RSSMaxMiB, rs.RSSP95MiB, rs.CPUMeanPct, rs.CPUP95Pct, len(r.Samples))
-	p("\n## Fake registry\n\n| Ecosystem | Requests | 200 | 304 | 429 | 404 | Published | Seen | Lag P50 | Lag P95 | Lag max |\n|---|---|---|---|---|---|---|---|---|---|---|")
-	row := func(name string, s fakereg.EcoStats) {
-		p("| %s | %d | %d | %d | %d | %d | %d | %d | %.1fs | %.1fs | %.1fs |", name, s.Requests, s.OK, s.NotModified,
-			s.Throttled, s.NotFound, s.Published, s.Seen, s.Lag.P50Seconds, s.Lag.P95Seconds, s.Lag.MaxSeconds)
+	var per []string
+	for _, e := range fakereg.Ecosystems() {
+		per = append(per, fmt.Sprintf("%s %d", e, pr.PerEcosystem[e]))
 	}
-	for _, name := range fakereg.Ecosystems {
+	p("\n## Run\n\n%d watches (%s), watch loader `%s`, check interval %s, measured for %s after ready (%s), sampled every %s, fake registry config `%s`.",
+		pr.Watches, strings.Join(per, ", "), pr.Loader, pr.CheckInterval, pr.Duration, pr.ReadyAt.Format(time.RFC3339),
+		pr.SampleInterval, pr.FakeregConfig)
+	if w := r.Registry.Window; !w.From.IsZero() {
+		p("\nLag counts releases published from %s (ready + warm-up) to %s (end - %v); an unseen one counts with its age.",
+			w.From.Format(time.RFC3339), w.To.Format(time.RFC3339), targetLagP95)
+	}
+	rs := r.Resources
+	p("\n%s max %.1f MiB, P95 %.1f MiB; CPU mean %.1f%%, P95 %.1f%% of one CPU (%d samples).",
+		rs.MemorySource, rs.MemMaxMiB, rs.MemP95MiB, rs.CPUMeanPct, rs.CPUP95Pct, len(r.Samples))
+	p("\n## Fake registry\n\n| Ecosystem | Requests | 200 | 304 | 429 | 403 | 404 | Cancelled | Published | Seen | Lag P50 | Lag P95 | Lag max |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+	row := func(name string, s fakereg.EcoStats) {
+		p("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.1fs | %.1fs | %.1fs |", name, s.Requests, s.OK, s.NotModified,
+			s.Throttled, s.Forbidden, s.NotFound, s.Cancelled, s.Published, s.Seen, s.Lag.P50Seconds, s.Lag.P95Seconds, s.Lag.MaxSeconds)
+	}
+	for _, name := range fakereg.Ecosystems() {
 		row(name, r.Registry.Ecosystems[name])
 	}
 	row("**total**", r.Registry.Total)
@@ -236,6 +255,12 @@ func (pr probe) environment(ctx context.Context, bin string, t Target, container
 	if container {
 		e.Mode = "container"
 		e.Docker = pr.out(ctx, "docker", "version", "--format", "{{.Server.Version}} ({{.Server.Os}}/{{.Server.Arch}})")
+		if cpus, mem, ok := strings.Cut(pr.out(ctx, "docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"), " "); ok {
+			e.DockerCPUs = cpus
+			if n, err := strconv.ParseInt(mem, 10, 64); err == nil {
+				e.DockerMemory = fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+			}
+		}
 	}
 	e.CPULimit, e.MemoryLimit = t.Limits()
 	switch pr.goos {
