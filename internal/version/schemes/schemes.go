@@ -62,7 +62,8 @@ func ForSourceKind(kind string) version.Scheme {
 }
 
 // Select returns the scheme for a watch: the override (the watch's
-// `scheme:` value, an exact name from Names) when it is not empty, otherwise the source kind's default, wrapped with WithFallback.
+// `scheme:` value, an exact name from Names) when it is not empty,
+// otherwise the source kind's default, wrapped with WithFallback.
 // An override that names the default scheme keeps the default's settings
 // (an oci watch with `scheme: semver` still coerces short tags).
 func Select(sourceKind, override string, logger *slog.Logger) (version.Scheme, error) {

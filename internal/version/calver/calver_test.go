@@ -2,6 +2,7 @@ package calver
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/version"
@@ -27,6 +28,10 @@ func TestParse(t *testing.T) {
 		{"2026.10.1-hotfix", "2026.10.1-hotfix", "-hotfix", 3, false},
 		{"2026.10.1+build5", "2026.10.1+build5", "+build5", 3, false},
 		{"24.04-alpine", "24.04-alpine", "-alpine", 2, false},
+		{"2026.10b", "2026.10b", "b", 2, true},
+		{"24.04a", "24.04a", "a", 2, true},
+		{"2026.10.1+rc1", "2026.10.1+rc1", "+rc1", 3, false},
+		{"2026.10.1-rc1+build", "2026.10.1-rc1+build", "-rc1+build", 3, true},
 	}
 	for _, tc := range tests {
 		v, err := Parse(tc.in)
@@ -45,7 +50,7 @@ func TestParseInvalid(t *testing.T) {
 	for _, in := range []string{
 		"", " ", "v", "2026", "24", "1.2.3", "1.2", "123.4", "12345.1", "2026.", "2026.10.", "2026.10-",
 		"2026.10.1.2.3", "2026..10", "2026.10 .1", "2026.10/1", "latest", "v-2026.10", "2026.10-é",
-		"2026.10-rc 1", "20.", ".2026.10",
+		"2026.10-rc 1", "20.", ".2026.10", "2026.10-.", "2026.10..", "2026.10+", "2026.10-+-", "2026.1.2.3.4",
 	} {
 		_, err := Parse(in)
 		if err == nil {
@@ -63,6 +68,13 @@ func mustParse(t *testing.T, s string) Version {
 		t.Fatalf("Parse(%q): %v", s, err)
 	}
 	return v
+}
+
+func TestParseTooManyComponents(t *testing.T) {
+	_, err := Parse("2026.1.2.3.4")
+	if err == nil || !strings.Contains(err.Error(), "too many") {
+		t.Errorf("error = %v", err)
+	}
 }
 
 func TestCompare(t *testing.T) {
@@ -99,8 +111,15 @@ func TestCompare(t *testing.T) {
 		{"2026.10.1-hotfix1", "2026.10.1-hotfix2"},
 		{"2026.10.1-dev", "2026.10.1-rc1"},
 		{"2026.10b1", "2026.10"},
-		{"2026.10.1+build5", "2026.10.1+build10"},
 		{"24.04-RC1", "24.04-rc2"},
+		// marker rank: dev < alpha < beta < rc
+		{"24.04-dev9", "24.04-a1"},
+		{"24.04-alpha9", "24.04-b1"},
+		{"24.04-beta9", "24.04-rc1"},
+		{"24.04-rc1", "24.04-rc1.1"},
+		{"24.04a1", "24.04b1"},
+		{"24.04b", "24.04"},
+		{"24.04+build", "24.04-hotfix"},
 	}
 	for _, tc := range less {
 		a, b := mustParse(t, tc[0]), mustParse(t, tc[1])
@@ -117,6 +136,9 @@ func TestCompare(t *testing.T) {
 		{"v2026.10.1", "2026.10.1"},
 		{"2026.010.001", "2026.10.1"},
 		{"24.04-RC1", "24.04-rc1"},
+		{"2026.10.1+build5", "2026.10.1+build10"},
+		{"2026.10.1+a", "2026.10.1+b"},
+		{"2026.10.1-rc1+a", "2026.10.1-rc1"},
 	}
 	for _, tc := range equal {
 		if got := Compare(mustParse(t, tc[0]), mustParse(t, tc[1])); got != 0 {
@@ -138,7 +160,12 @@ func TestDiff(t *testing.T) {
 		{"24.04", "24.04.1", version.BumpPatch},
 		{"2026.10.1.1", "2026.10.1.2", version.BumpPatch},
 		{"24.04-rc1", "24.04-rc2", version.BumpPrerelease},
-		{"24.04-rc2", "24.04", version.BumpPrerelease},
+		{"24.04-rc2", "24.04", version.BumpMinor},
+		{"2026.10.1-rc1", "2026.10.1", version.BumpPatch},
+		{"2026.0-rc1", "2026.0", version.BumpMajor},
+		{"24.04-rc1", "24.04-hotfix", version.BumpMinor},
+		{"24.04", "24.05-rc1", version.BumpMinor},
+		{"24.04", "24.04+b5", version.BumpOther},
 		{"24.04", "24.04-hotfix", version.BumpPatch},
 		{"24.04.1", "24.04", version.BumpOther},
 		{"24.04", "24.04", version.BumpOther},
