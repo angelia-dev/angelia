@@ -31,7 +31,7 @@ Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/pro
 
 ## Development
 
-Requires Go 1.27 or newer (the toolchain pinned in [go.mod](go.mod); Go downloads it automatically) and golangci-lint v2.15.0 or newer, built with Go 1.27 or newer. Run these from the repository root:
+Requires Go 1.27 or newer (the toolchain pinned in [go.mod](go.mod); Go downloads it automatically) and golangci-lint v2.15.0 or newer, built with Go 1.27 or newer. Run these from the repository root (`make help` lists them):
 
 | Command | What it does |
 |---|---|
