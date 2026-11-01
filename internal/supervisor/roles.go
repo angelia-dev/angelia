@@ -15,8 +15,10 @@ type Role interface {
 	Run(ctx context.Context) error
 }
 
-// AllRoles lists every role name in start order.
-var AllRoles = []string{"api", "scheduler", "worker", "dispatcher"}
+var allRoles = []string{"api", "scheduler", "worker", "dispatcher"}
+
+// RoleNames returns every role name in start order.
+func RoleNames() []string { return slices.Clone(allRoles) }
 
 // Factory builds the Role for a name. Real roles replace the stubs as their
 // stories land.
@@ -25,15 +27,18 @@ type Factory func(name string) Role
 // Select expands names ("all" means every role) into roles built by f,
 // deduplicated and in canonical order. Unknown names are an error.
 func Select(names []string, f Factory) ([]Role, error) {
+	if len(names) > 1 && slices.Contains(names, "all") {
+		return nil, errors.New(`"all" cannot be combined with other roles`)
+	}
 	want := map[string]bool{}
 	for _, n := range names {
 		if n == "all" {
-			for _, r := range AllRoles {
+			for _, r := range allRoles {
 				want[r] = true
 			}
 			continue
 		}
-		if !slices.Contains(AllRoles, n) {
+		if !slices.Contains(allRoles, n) {
 			return nil, fmt.Errorf("unknown role %q (want api, scheduler, worker, dispatcher or all)", n)
 		}
 		want[n] = true
@@ -42,7 +47,7 @@ func Select(names []string, f Factory) ([]Role, error) {
 		return nil, errors.New("no roles selected")
 	}
 	var out []Role
-	for _, n := range AllRoles {
+	for _, n := range allRoles {
 		if want[n] {
 			out = append(out, f(n))
 		}

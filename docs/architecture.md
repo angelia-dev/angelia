@@ -178,6 +178,7 @@ The workload is **I/O-bound** (thousands of small HTTPS calls per hour, JSON par
 
 Proposed stack [P0]:
 - HTTP: `net/http` + `chi`, OpenAPI via `oapi-codegen` (spec-first).
+- Process supervision: `golang.org/x/sync/errgroup` (BSD-3), named by the `serve --roles` story (#45).
 - DB: `sqlc` + migrations (`goose`); SQLite through `modernc.org/sqlite` (no CGO) by default, Postgres (`pgx`) for HA. Job leasing on Postgres via `River`, or a small in-house lease table usable on both.
 - Versions: `Masterminds/semver` + in-house PEP 440 and Maven comparators (test them against each registry's own ordering). See [ADR 0007](adr/0007-version-schemes-in-house-with-lexical-fallback.md): SemVer is in-house too for now.
 - Events: `cloudevents/sdk-go`. MCP: `modelcontextprotocol/go-sdk`.

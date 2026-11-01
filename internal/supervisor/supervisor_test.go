@@ -60,6 +60,7 @@ func TestSelect(t *testing.T) {
 		{[]string{"worker", "dispatcher"}, "worker,dispatcher", false},
 		{[]string{"dispatcher", "api", "api"}, "api,dispatcher", false},
 		{[]string{"bogus"}, "", true},
+		{[]string{"all", "api"}, "", true},
 		{nil, "", true},
 	}
 	for _, tc := range tests {
@@ -72,6 +73,8 @@ func TestSelect(t *testing.T) {
 		}
 	}
 }
+
+var client = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 5 * time.Second}
 
 type harness struct {
 	s      *Supervisor
@@ -103,7 +106,7 @@ func (h *harness) get(t *testing.T, path string) int {
 	t.Helper()
 	var last error
 	for range 100 {
-		resp, err := http.Get(h.url + path)
+		resp, err := client.Get(h.url + path)
 		if err == nil {
 			_ = resp.Body.Close()
 			return resp.StatusCode
@@ -183,25 +186,72 @@ func TestGracefulShutdownFinishesInFlightWork(t *testing.T) {
 	}
 }
 
+// AC: SIGTERM stops accepting new work: /readyz is 503 while roles drain.
 func TestShutdownReportsNotReadyWhileDraining(t *testing.T) {
 	release := make(chan struct{})
 	r := fakeRole{"worker", func(ctx context.Context) error { <-ctx.Done(); <-release; return nil }}
-	h := start(t, []Role{r}, nil, 3*time.Second)
+	h := start(t, []Role{r}, nil, 5*time.Second)
 	if c := h.get(t, "/readyz"); c != http.StatusOK {
 		t.Fatalf("readyz before shutdown = %d", c)
 	}
 	h.cancel()
-	// The server shuts down quickly, so check the handler directly.
-	var draining atomic.Bool
-	draining.Store(true)
-	rec := &recorder{}
-	h.s.handler(&draining, newTestLogger(&safeBuf{})).ServeHTTP(rec, mustReq(t, "/readyz"))
-	if rec.code != http.StatusServiceUnavailable {
-		t.Errorf("draining readyz = %d", rec.code)
+	deadline := time.Now().Add(2 * time.Second)
+	for h.get(t, "/readyz") != http.StatusServiceUnavailable {
+		if time.Now().After(deadline) {
+			t.Fatal("readyz never became 503 during drain")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c := h.get(t, "/healthz"); c != http.StatusOK {
+		t.Errorf("healthz during drain = %d", c)
 	}
 	close(release)
 	if err := h.wait(t, 3*time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A role that returns while the supervisor is running is a failure.
+func TestRoleExitingEarlyIsFailure(t *testing.T) {
+	early := fakeRole{"scheduler", func(context.Context) error { return nil }}
+	h := start(t, []Role{early, blockRole("worker")}, nil, time.Second)
+	err := h.wait(t, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exited unexpectedly") {
+		t.Fatalf("want unexpected exit error, got %v", err)
+	}
+}
+
+type httpRole struct{ Role }
+
+func (httpRole) Mount(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+}
+
+func TestHTTPRoleMountsOnSharedMux(t *testing.T) {
+	h := start(t, []Role{httpRole{blockRole("api")}}, nil, time.Second)
+	if c := h.get(t, "/v1/ping"); c != http.StatusTeapot {
+		t.Errorf("mounted route = %d", c)
+	}
+	if c := h.get(t, "/healthz"); c != http.StatusOK {
+		t.Errorf("healthz = %d", c)
+	}
+	h.cancel()
+	if err := h.wait(t, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNoRoles(t *testing.T) {
+	if err := (&Supervisor{Listen: "127.0.0.1:0"}).Run(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRoleNamesReturnsCopy(t *testing.T) {
+	n := RoleNames()
+	n[0] = "x"
+	if RoleNames()[0] != "api" {
+		t.Fatal("RoleNames exposes internal state")
 	}
 }
 
@@ -224,7 +274,7 @@ func TestDrainTimeoutExceeded(t *testing.T) {
 func TestRoleErrorStopsEverything(t *testing.T) {
 	boom := errors.New("boom")
 	var otherStopped atomic.Bool
-	bad := fakeRole{"scheduler", func(ctx context.Context) error {
+	bad := fakeRole{"scheduler", func(context.Context) error {
 		time.Sleep(50 * time.Millisecond)
 		return boom
 	}}
@@ -245,7 +295,7 @@ func TestListenError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	s := &Supervisor{Listen: ln.Addr().String(), Logger: newTestLogger(&safeBuf{})}
+	s := &Supervisor{Roles: []Role{blockRole("api")}, Listen: ln.Addr().String(), Logger: newTestLogger(&safeBuf{})}
 	if err := s.Run(context.Background()); err == nil {
 		t.Fatal("expected listen error")
 	}
