@@ -14,10 +14,11 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null || echo unknown)
 LDFLAGS := -X $(BUILDINFO).version=$(VERSION) -X $(BUILDINFO).commit=$(COMMIT) -X $(BUILDINFO).date=$(DATE)
 
-GOLANGCI_LINT       ?= golangci-lint
-GOVULNCHECK_VERSION := v1.9.0
+GOLANGCI_LINT         ?= golangci-lint
+GOLANGCI_LINT_VERSION := v2.15.0
+GOVULNCHECK_VERSION   := v1.9.0
 
-.PHONY: help build test lint vuln generate clean
+.PHONY: help build test lint lint-tools vuln generate clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -27,6 +28,10 @@ build: ## Build bin/angelia (CGO disabled, version info injected)
 
 test: ## Run unit tests with the race detector
 	go test -race ./...
+
+# Same toolchain pin as vuln: a go1.26 build cannot lint go1.27 code.
+lint-tools: ## Install the pinned golangci-lint version into GOBIN
+	GOTOOLCHAIN=$$(go env GOVERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 lint: ## Run golangci-lint and the gofumpt format check
 	$(GOLANGCI_LINT) run

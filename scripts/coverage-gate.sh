@@ -20,23 +20,35 @@ if [[ ! -s "$profile" ]]; then
 fi
 
 # Profile lines look like "<import path>/<file>.go:<range> <statements> <count>".
-# Sum statements and covered statements per package directory under internal/.
+# With -coverpkg, one block can appear once per test binary, so blocks are
+# deduplicated by their full key ($1), keeping the highest count. Then the
+# statements and covered statements are summed per package directory under
+# internal/. Packages with no statements are skipped.
 report="$(awk '
 	NR == 1 && /^mode:/ { next }
 	{
-		split($0, f, " ")
-		file = f[1]
-		sub(/:.*/, "", file)
-		dir = file
-		sub(/\/[^\/]*$/, "", dir)
-		if (index(dir, "/internal/") == 0) next
-		stmts[dir] += f[2]
-		if (f[3] > 0) covered[dir] += f[2]
-		total += f[2]
-		hit += (f[3] > 0 ? f[2] : 0)
+		key = $1
+		nst[key] = $2
+		if (!(key in cnt) || $3 + 0 > cnt[key] + 0) cnt[key] = $3
 	}
 	END {
-		for (d in stmts) printf "%s\t%d\t%d\n", d, stmts[d], covered[d]
+		for (k in nst) {
+			file = k
+			sub(/:.*/, "", file)
+			dir = file
+			sub(/\/[^\/]*$/, "", dir)
+			if (index(dir, "/internal/") == 0) continue
+			stmts[dir] += nst[k]
+			if (cnt[k] + 0 > 0) covered[dir] += nst[k]
+		}
+		total = 0
+		hit = 0
+		for (d in stmts) {
+			if (stmts[d] == 0) continue
+			printf "%s\t%d\t%d\n", d, stmts[d], covered[d]
+			total += stmts[d]
+			hit += covered[d]
+		}
 		printf "TOTAL\t%d\t%d\n", total, hit
 	}
 ' "$profile" | sort)"
