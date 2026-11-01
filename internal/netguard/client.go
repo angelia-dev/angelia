@@ -37,10 +37,12 @@ type Config struct {
 	// UserAgent defaults to "angelia/<version> (+https://github.com/angelia-dev/angelia)".
 	UserAgent string
 	// Timeout bounds one attempt, including reading the body. Default 30s.
+	// A non-zero HostLimit.Timeout, or the built-in 2 minutes of the large
+	// registry hosts (see HostLimit), overrides it for that host.
 	Timeout time.Duration
 	// MaxBodyBytes caps response bodies (after transparent gzip decoding). Default
 	// 10 MiB. A non-zero HostLimit.MaxBodyBytes, or a built-in cap for the
-	// host (registry.npmjs.org, index.crates.io: 64 MiB), overrides it.
+	// host (registry.npmjs.org, pypi.org, index.crates.io: 64 MiB), overrides it.
 	MaxBodyBytes int64
 	// MaxAttempts is the total number of attempts for a retryable request,
 	// including the first. Default 4; 1 disables retries.
@@ -206,7 +208,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 			closeRequestBody(req)
 			return nil, err
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))
 		retry, serverWait := c.inspect(ctx, attemptCtx, host, authed, resp, err)
 		wait := serverWait

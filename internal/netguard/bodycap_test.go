@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 )
 
 var anyLimit = Limit{Rate: 1000, Burst: 1000}
@@ -161,9 +162,9 @@ func TestHostBodyCapFollowsServingHostAcrossRedirect(t *testing.T) {
 
 func TestDefaultHostBodyCaps(t *testing.T) {
 	limits := DefaultHostLimits()
-	for _, h := range []string{"registry.npmjs.org", "index.crates.io"} {
-		if got := defaultHostBodyCaps[h]; got != 64<<20 {
-			t.Errorf("%s default cap = %d, want 64 MiB", h, got)
+	for _, h := range []string{"registry.npmjs.org", "pypi.org", "index.crates.io"} {
+		if got := defaultHostAllowances[h]; got.maxBodyBytes != 64<<20 || got.timeout != 2*time.Minute {
+			t.Errorf("%s default allowance = %+v, want 64 MiB and 2m", h, got)
 		}
 		if _, ok := limits[h]; ok {
 			t.Errorf("%s has a default rate entry; rates must come from the fallback", h)
@@ -176,8 +177,8 @@ func TestDefaultHostBodyCaps(t *testing.T) {
 	if got := c.limiter.maxBodyBytes("REGISTRY.npmjs.org.", c.cfg.MaxBodyBytes); got != 64<<20 {
 		t.Errorf("npm cap in a default client = %d, want 64 MiB", got)
 	}
-	if got := c.limiter.maxBodyBytes("pypi.org", c.cfg.MaxBodyBytes); got != 10<<20 {
-		t.Errorf("pypi cap in a default client = %d, want the 10 MiB global", got)
+	if got := c.limiter.maxBodyBytes("gitlab.com", c.cfg.MaxBodyBytes); got != 10<<20 {
+		t.Errorf("gitlab cap in a default client = %d, want the 10 MiB global", got)
 	}
 }
 
@@ -227,5 +228,69 @@ func TestBodyCapResolutionOrder(t *testing.T) {
 func TestFallbackBodyCapRejected(t *testing.T) {
 	if _, err := New(Config{FallbackLimit: hostLimit(1 << 20)}); err == nil {
 		t.Fatal("New accepted MaxBodyBytes in FallbackLimit")
+	}
+}
+
+func TestTimeoutResolutionOrder(t *testing.T) {
+	c, _ := newTestClient(t, func(c *Config) {
+		c.Timeout = 30 * time.Second
+		c.HostLimits = map[string]HostLimit{
+			"registry.npmjs.org": {Authenticated: anyLimit, Anonymous: anyLimit},                     // rates only
+			"pypi.org":           {Authenticated: anyLimit, Anonymous: anyLimit, Timeout: time.Hour}, // operator wins
+			"mine.test":          {Authenticated: anyLimit, Anonymous: anyLimit, Timeout: time.Minute},
+		}
+	})
+	for host, want := range map[string]time.Duration{
+		"registry.npmjs.org": 2 * time.Minute,
+		"index.crates.io":    2 * time.Minute,
+		"pypi.org":           time.Hour,
+		"mine.test":          time.Minute,
+		"other.test":         30 * time.Second,
+	} {
+		if got := c.limiter.timeout(host, c.cfg.Timeout); got != want {
+			t.Errorf("timeout(%s) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+func TestNegativeHostTimeoutRejected(t *testing.T) {
+	l := hostLimit(0)
+	l.Timeout = -time.Second
+	if _, err := New(Config{HostLimits: map[string]HostLimit{"x.test": l}}); err == nil {
+		t.Fatal("New accepted a negative host timeout")
+	}
+}
+
+// AC: a body that takes longer than the global timeout fails on a normal
+// host and succeeds on a host with a longer timeout. Durations are scaled
+// down: global 100ms, slow body 250ms, host timeout 2s.
+func TestHostTimeoutLetsSlowBodyFinish(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "first")
+		w.(http.Flusher).Flush()
+		time.Sleep(250 * time.Millisecond)
+		_, _ = io.WriteString(w, "second")
+	}))
+	defer srv.Close()
+	host := mustHost(t, srv.URL)
+
+	normal, _ := newTestClient(t, func(c *Config) {
+		c.Timeout = 100 * time.Millisecond
+		c.MaxAttempts = 1
+	})
+	if _, err := readAll(t, normal, srv.URL); err == nil {
+		t.Fatal("slow body finished on a host with the global timeout, want a timeout error")
+	}
+
+	large, _ := newTestClient(t, func(c *Config) {
+		c.Timeout = 100 * time.Millisecond
+		c.MaxAttempts = 1
+		l := hostLimit(0)
+		l.Timeout = 2 * time.Second
+		c.HostLimits = map[string]HostLimit{host: l}
+	})
+	body, err := readAll(t, large, srv.URL)
+	if err != nil || string(body) != "firstsecond" {
+		t.Fatalf("host with longer timeout: got %q, err %v", body, err)
 	}
 }
