@@ -32,8 +32,11 @@ lint: ## Run golangci-lint and the gofumpt format check
 	$(GOLANGCI_LINT) run
 	$(GOLANGCI_LINT) fmt --diff
 
+# govulncheck's go.mod asks for Go 1.26, so `go run` would build it with go1.26
+# and it could not load this module (go 1.27). Build it with the toolchain this
+# module uses instead.
 vuln: ## Check for known vulnerabilities (needs access to vuln.go.dev)
-	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	GOTOOLCHAIN=$$(go env GOVERSION) go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 generate: ## Run go generate (sqlc, oapi-codegen); commit the output
 	go generate ./...
