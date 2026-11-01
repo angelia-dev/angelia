@@ -33,6 +33,10 @@ const (
 	KindTarget       = "target"
 )
 
+// DeadOnDelete is the LastError of the pending deliveries of a subscription the
+// file stopped declaring (docs/watch-file.md D8).
+const DeadOnDelete = "subscription removed"
+
 // Change is one line of a Plan.
 type Change struct {
 	Kind   string
@@ -175,7 +179,7 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 		var pending int64
 		if !r.dry {
-			if pending, err = r.tx.DeletePendingDeliveries(r.ctx, s.ID); err != nil {
+			if pending, err = r.tx.FailPendingDeliveries(r.ctx, s.ID, DeadOnDelete); err != nil {
 				return err
 			}
 		}
@@ -184,7 +188,7 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 		detail := ""
 		if pending > 0 {
-			detail = fmt.Sprintf("%d pending deliveries removed", pending)
+			detail = fmt.Sprintf("%d pending deliveries set to dead", pending)
 		}
 		r.add(KindSubscription, s.Name, Delete, detail)
 	}

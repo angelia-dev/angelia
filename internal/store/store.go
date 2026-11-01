@@ -194,9 +194,23 @@ type ConfigTx interface {
 	// UpdateSubscription stores Filter, SinkID and Template.
 	UpdateSubscription(ctx context.Context, s Subscription) error
 	DeleteSubscription(ctx context.Context, id string) error
-	// DeletePendingDeliveries deletes the pending deliveries of a
-	// subscription and returns how many. In-flight, delivered and dead rows stay.
-	DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error)
+	// FailPendingDeliveries sets every pending delivery of a subscription to
+	// dead with LastError reason and returns how many (watch-file.md D8: a
+	// removed subscription's queue is kept visible, not deleted). In-flight,
+	// delivered and dead rows are left alone.
+	FailPendingDeliveries(ctx context.Context, subscriptionID, reason string) (int64, error)
+	// ListHeldDeliveries returns the deliveries of a subscription that are
+	// pending and still held at now (Hold.Until after now), ordered by ID.
+	ListHeldDeliveries(ctx context.Context, subscriptionID string, now time.Time) ([]Delivery, error)
+	// ReleaseHeldDelivery clears the hold of a held pending delivery and
+	// makes it due at now. ErrNotFound when it is not a pending held delivery.
+	ReleaseHeldDelivery(ctx context.Context, id string, now time.Time) error
+	// RescheduleHeldDelivery moves the end of the hold (and NextAttemptAt) of
+	// a held pending delivery to until. ErrNotFound when it is not one.
+	RescheduleHeldDelivery(ctx context.Context, id string, until time.Time) error
+	// FailHeldDelivery sets a held pending delivery to dead with LastError
+	// reason. ErrNotFound when it is not one.
+	FailHeldDelivery(ctx context.Context, id, reason string) error
 }
 
 // TargetLeaseName is the name of the lease a scheduler holds on a target
@@ -289,10 +303,13 @@ type Sink struct {
 
 // Subscription routes matching events to a sink.
 type Subscription struct {
-	ID        string
-	Filter    json.RawMessage
-	SinkID    string
-	Template  string
+	ID       string
+	Filter   json.RawMessage
+	SinkID   string
+	Template string
+	// Policy is the narrowing policy (prerelease, cooldown) of the
+	// subscription, opaque to the store; empty means "{}" (ADR 0014).
+	Policy    json.RawMessage
 	Name      string // see Watch.Name
 	ManagedBy string
 }
@@ -307,4 +324,24 @@ type Delivery struct {
 	Attempts       int64
 	NextAttemptAt  time.Time // zero: not scheduled
 	LastError      string
+	// Hold is set while a subscription cooldown holds the delivery (ADR
+	// 0014); nil otherwise. A held delivery is pending with NextAttemptAt
+	// equal to Hold.Until, so the dispatcher needs no special case.
+	Hold *Hold
+}
+
+// Hold records why and until when a delivery waits, and what is needed to
+// decide again when its subscription is edited.
+type Hold struct {
+	// Until is when the hold ends; AppendEvent copies it to NextAttemptAt.
+	Until time.Time
+	// StartedAt is the instant the cooldowns count from (the watch policy's
+	// cooldown start).
+	StartedAt time.Time
+	// WatchCooldown is the watch cooldown the version already waited.
+	WatchCooldown time.Duration
+	// Prerelease tells whether the version is a pre-release.
+	Prerelease bool
+	// WatchID and Raw identify the version, so a yank can cancel the hold.
+	WatchID, Raw string
 }

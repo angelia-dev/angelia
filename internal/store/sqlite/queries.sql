@@ -71,16 +71,35 @@ SELECT * FROM sink WHERE managed_by = ? ORDER BY name;
 DELETE FROM sink WHERE id = ?;
 
 -- name: CreateSubscription :exec
-INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by) VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by, policy_json) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateSubscription :execrows
-UPDATE subscription SET filter_json = ?, sink_id = ?, template = ? WHERE id = ?;
+UPDATE subscription SET filter_json = ?, sink_id = ?, template = ?, policy_json = ? WHERE id = ?;
 
 -- name: ListSubscriptionsManagedBy :many
 SELECT * FROM subscription WHERE managed_by = ? ORDER BY name;
 
--- name: DeletePendingDeliveries :execrows
-DELETE FROM delivery WHERE subscription_id = ? AND status = 'pending';
+-- name: FailPendingDeliveries :execrows
+UPDATE delivery SET status = 'dead', last_error = ?, next_attempt_at = NULL
+WHERE subscription_id = ? AND status = 'pending';
+
+-- A held delivery is pending and held_until is still ahead.
+-- name: ListHeldDeliveries :many
+SELECT * FROM delivery
+WHERE subscription_id = ? AND status = 'pending' AND held_until > ?
+ORDER BY id;
+
+-- name: ReleaseHeldDelivery :execrows
+UPDATE delivery SET held_until = NULL, next_attempt_at = ?
+WHERE id = ? AND status = 'pending' AND held_until IS NOT NULL;
+
+-- name: RescheduleHeldDelivery :execrows
+UPDATE delivery SET held_until = sqlc.arg(until), next_attempt_at = sqlc.arg(until)
+WHERE id = sqlc.arg(id) AND status = 'pending' AND held_until IS NOT NULL;
+
+-- name: FailHeldDelivery :execrows
+UPDATE delivery SET status = 'dead', last_error = ?, next_attempt_at = NULL
+WHERE id = ? AND status = 'pending' AND held_until IS NOT NULL;
 
 -- name: DeleteSubscription :execrows
 DELETE FROM subscription WHERE id = ?;
@@ -92,8 +111,9 @@ INSERT INTO event (id, watch_id, type, payload_json, created_at) VALUES (?, ?, ?
 SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?;
 
 -- name: CreateDelivery :exec
-INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
+                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListDeliveries :many
 SELECT * FROM delivery WHERE event_id = ? ORDER BY id;

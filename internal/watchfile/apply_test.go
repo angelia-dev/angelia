@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -209,8 +210,9 @@ func TestRemovingFromTheFile(t *testing.T) {
 	if _, err := target(t, st, "pypi", map[string]string{"name": "django"}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("django target should be gone: %v", err)
 	}
-	// Pending deliveries of the removed subscription are gone; in-flight and
-	// delivered stay; the kept subscription's pending delivery is still queued.
+	// Pending deliveries of the removed subscription become dead with a reason
+	// (D8); in-flight and delivered stay; the kept subscription's pending
+	// delivery is still queued.
 	status := func(eventID string) []string {
 		ds, err := st.ListDeliveries(ctx, eventID)
 		if err != nil {
@@ -222,8 +224,14 @@ func TestRemovingFromTheFile(t *testing.T) {
 		}
 		return out
 	}
-	if got := status("e1"); len(got) != 1 || got[0] != subs["all"]+":pending" {
+	if got := status("e1"); len(got) != 2 || got[0] != subs["all"]+":pending" && got[1] != subs["all"]+":pending" ||
+		!slices.Contains(got, subs["teamb"]+":dead") {
 		t.Fatalf("e1 deliveries: %v", got)
+	}
+	if ds, _ := st.ListDeliveries(ctx, "e1"); !slices.ContainsFunc(ds, func(d store.Delivery) bool {
+		return d.SubscriptionID == subs["teamb"] && d.LastError == DeadOnDelete && d.NextAttemptAt.IsZero()
+	}) {
+		t.Fatalf("dead delivery lacks its reason: %+v", ds)
 	}
 	if got := status("e2"); len(got) != 1 || !strings.HasSuffix(got[0], ":delivered") {
 		t.Fatalf("e2 deliveries: %v", got)

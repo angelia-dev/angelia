@@ -319,10 +319,23 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 		return wrap(err, "create event", e.ID)
 	}
 	for _, d := range ds {
-		if err := o.q.CreateDelivery(ctx, CreateDeliveryParams{
+		p := CreateDeliveryParams{
 			ID: d.ID, EventID: e.ID, SubscriptionID: d.SubscriptionID, Status: d.Status, Attempts: d.Attempts,
 			NextAttemptAt: nullMillis(d.NextAttemptAt), LastError: sql.NullString{String: d.LastError, Valid: d.LastError != ""},
-		}); err != nil {
+		}
+		if h := d.Hold; h != nil {
+			if h.Until.IsZero() || h.StartedAt.IsZero() || d.Status != store.DeliveryPending {
+				return fmt.Errorf("store: delivery %s: a hold needs Until, StartedAt and status pending: %w", d.ID, store.ErrInvalid)
+			}
+			p.NextAttemptAt = nullMillis(h.Until)
+			p.HeldUntil = nullMillis(h.Until)
+			p.HoldStartedAt = nullMillis(h.StartedAt)
+			p.HoldWatchCooldownMs = sql.NullInt64{Int64: h.WatchCooldown.Milliseconds(), Valid: true}
+			p.HoldPrerelease = sql.NullInt64{Int64: boolInt(h.Prerelease), Valid: true}
+			p.HoldWatchID = sql.NullString{String: h.WatchID, Valid: h.WatchID != ""}
+			p.HoldRaw = sql.NullString{String: h.Raw, Valid: h.Raw != ""}
+		}
+		if err := o.q.CreateDelivery(ctx, p); err != nil {
 			return wrap(err, "create delivery", d.ID)
 		}
 	}
@@ -443,14 +456,25 @@ func (s *Store) ListDeliveries(ctx context.Context, eventID string) ([]store.Del
 	if err != nil {
 		return nil, wrap(err, "list deliveries", eventID)
 	}
+	return deliveriesFromRows(rows), nil
+}
+
+func deliveriesFromRows(rows []Delivery) []store.Delivery {
 	out := make([]store.Delivery, len(rows))
 	for i, r := range rows {
 		out[i] = store.Delivery{
 			ID: r.ID, EventID: r.EventID, SubscriptionID: r.SubscriptionID, Status: r.Status, Attempts: r.Attempts,
 			NextAttemptAt: fromNullMillis(r.NextAttemptAt), LastError: r.LastError.String,
 		}
+		if r.HeldUntil.Valid {
+			out[i].Hold = &store.Hold{
+				Until: fromNullMillis(r.HeldUntil), StartedAt: fromNullMillis(r.HoldStartedAt),
+				WatchCooldown: time.Duration(r.HoldWatchCooldownMs.Int64) * time.Millisecond,
+				Prerelease:    r.HoldPrerelease.Int64 != 0, WatchID: r.HoldWatchID.String, Raw: r.HoldRaw.String,
+			}
+		}
 	}
-	return out, nil
+	return out
 }
 
 // AcquireLease implements [store.Store].
