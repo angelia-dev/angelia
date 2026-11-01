@@ -97,7 +97,7 @@ matcher (`internal/subscription`), before the delivery rows are written:
 
 1. `Filter.Match` as today, with `bump` now documented as narrowing.
 2. `policy.prerelease`: drop if the subscription's mode (or the watch's) excludes this version.
-3. Cooldown: `releaseAt = start + max(watch cooldown, policy.cooldown)`, where `start` is the watch
+3. Cooldown: an unknown start fails closed (it counts from now). `releaseAt = start + max(watch cooldown, policy.cooldown)`, where `start` is the watch
    policy's cooldown start. If `releaseAt` is not after the event's creation time, the delivery is
    created as today. Otherwise the delivery is created **held**.
 
@@ -115,10 +115,13 @@ release as the event.
 Editing a subscription **does not touch deliveries that are already queued** (watch-file.md §4, D8:
 queued deliveries of a kept subscription are sent). It **does** decide again the **held** ones, that is
 the pending deliveries whose `held_until` is still ahead (maintainer decision 6). On a watch-file apply
-that changes a subscription's `policy`, every such delivery is recomputed with the new policy from what
-its hold recorded:
+that changes a subscription's `filter` or `policy`, every such delivery is decided again from what its
+hold recorded:
 
-- the new release time is `start + max(watch cooldown, new subscription cooldown)`; if it has passed,
+- it is matched again against the new filter, using the filter input stored on the hold
+  (`hold_input`, JSON); if it no longer matches (for example `filter.bump` was narrowed) it becomes
+  `dead` with a reason, so narrowing a filter cannot let a held patch through;
+- otherwise the new release time is `start + max(watch cooldown, new subscription cooldown)`; if it has passed,
   the hold is cleared and `next_attempt_at` is now; if it is ahead, `held_until` and `next_attempt_at`
   move to it (earlier or later);
 - if the new `policy.prerelease` excludes the version, the delivery becomes `dead` with a reason.
@@ -148,15 +151,16 @@ ALTER TABLE delivery ADD COLUMN hold_watch_cooldown_ms INTEGER;  -- the watch co
 ALTER TABLE delivery ADD COLUMN hold_prerelease        INTEGER;  -- 1 when the version is a pre-release
 ALTER TABLE delivery ADD COLUMN hold_watch_id          TEXT;     -- no FK, like the rest of delivery
 ALTER TABLE delivery ADD COLUMN hold_raw               TEXT;     -- raw upstream version
+ALTER TABLE delivery ADD COLUMN hold_input             TEXT;     -- filter input (JSON), to match again after an edit
 CREATE INDEX delivery_held ON delivery (subscription_id) WHERE held_until IS NOT NULL;
 CREATE INDEX delivery_hold_version ON delivery (hold_watch_id, hold_raw) WHERE held_until IS NOT NULL;
 ```
 
 Nothing is dropped or rewritten; existing rows get `'{}'` and `NULL`. For a held delivery,
 `status = 'pending'`, `next_attempt_at = held_until`. `hold_started_at`, `hold_watch_cooldown_ms` and
-`hold_prerelease` are what re-evaluation on a subscription edit needs; `hold_watch_id` and `hold_raw`
+`hold_prerelease`, `hold_input` are what re-evaluation on a subscription edit needs; `hold_watch_id` and `hold_raw`
 identify the version for cancellation. `status` is not extended (the public status list stays four values).
-A hold ended by the clock keeps `held_until`; a hold ended by an edit is cleared. "Currently held"
+A hold ended by the clock keeps `held_until`; a hold ended by an edit (release or dead) clears it, so dead rows leave the partial index. "Currently held"
 means `status = 'pending' AND held_until > now`.
 
 Survival: held deliveries are rows, so a restart, a lease moving to another node or a crash between

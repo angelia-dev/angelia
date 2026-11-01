@@ -159,13 +159,16 @@ applies its own rules, so it can only receive less, and later:
 Because a subscription is not tied to one watch, a value that does nothing for one watch is right for
 another, so such values are **not errors**: syntax mistakes (unknown key, bad mode, unparseable
 duration) fail at load time, but a widening or useless value is clamped (negative or over-long
-cooldown, below-watch cooldown) or intersected away at evaluation, never rejected. Evaluation is
+cooldown) or intersected away at evaluation (a cooldown below the watch's, a prerelease mode the
+watch already excludes), never rejected. Evaluation is
 `subscription.Policy.Evaluate`; a `release.yanked` event is never delayed or dropped by `policy.*`.
 
 A cooldown hold is a pending delivery with `next_attempt_at` in the future, so it survives restarts.
-Editing a subscription's `policy` decides its **held** deliveries again (queued deliveries are not
-touched): one whose new hold has passed is released at once, one whose hold is still ahead is moved to
-the new time, and one the new `prerelease` mode excludes becomes `dead` with a reason.
+Editing a subscription's `filter` or `policy` decides its **held** deliveries again (queued deliveries
+are not touched): one the new filter no longer matches (for example `filter.bump` narrowed), or that
+the new `prerelease` mode excludes, becomes `dead` with a reason; one whose new hold has passed is
+released at once; one whose hold is still ahead is moved to the new time. The filter is matched against
+the input recorded when the delivery was held.
 
 ## 3. How a file maps onto the store
 
@@ -274,7 +277,7 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D5 | Add migration `00004` (`name`, `managed_by` on watch/sink/subscription, `interval_ms` on target) | deterministic ids derived from names (no migration); store name and interval inside `*_json` | Migration: explicit, supports the Phase 1 API coexisting with file-managed rows |
 | D6 | `policy` on the watch only; subscription has `filter` only. **Amended by #69 (ADR 0014):** a subscription also has `policy` with `prerelease` and `cooldown`, which only narrow | policy also on subscriptions (architecture.md 3.4) | Watch only in Phase 0; add later without breaking the format |
 | D7 | Changing source/coordinates resets the baseline; other edits keep it | never reset; always reset on any edit | As proposed, to avoid a flood of events for the new target |
-| D8 | Deleted subscription sets its pending deliveries to `dead` with a reason (**amended by #69, maintainer, 2026-11-01**; first approved as "removes"); deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription); `dead` instead of deletion keeps them visible |
+| D8 | Deleted subscription sets its pending deliveries to `dead` with a reason (**amended by #69, maintainer, 2026-11-01**; first approved as "removes"); deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription); `dead` instead of deletion keeps them visible; dead rows are pruned with their event like any history |
 | D9 | No per-watch token; credentials come from the instance config `token_env` | `token_env` on a watch or sink | None in Phase 0; add `auth_env` later if needed |
 | D10 | No `${VAR}` interpolation; only `*_env` references | interpolate env into any value | No interpolation: avoids accidental inline secrets and keeps the file reviewable |
 | D11 | Bounds: `interval` 5m to 720h default 1h; `labels` at most 32; name pattern in 2.1 | other limits | Accept; the 5m floor protects upstream rate limits (netguard has per-host limits anyway) |
