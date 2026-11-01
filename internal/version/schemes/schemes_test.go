@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/version"
+	"github.com/angelia-dev/angelia/internal/version/calver"
 	"github.com/angelia-dev/angelia/internal/version/lexical"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 	"github.com/angelia-dev/angelia/internal/version/semver"
@@ -104,7 +105,11 @@ func TestSelect(t *testing.T) {
 		{"github-release", "pep440", pep440.Name, false}, // per-watch override
 		{"pypi", "lexical", lexical.Name, false},
 		{"http-json", "semver", semver.Name, false},
-		{"npm", "calver", "", true},
+		{"github-release", "calver", calver.Name, false},
+		{"", "calver", calver.Name, false},
+		{"npm", "maven", "", true},
+		{"npm", "CalVer", "", true},
+		{"npm", " calver", "", true},
 	}
 	for _, tt := range tests {
 		s, err := Select(tt.kind, tt.override, nil)
@@ -117,6 +122,59 @@ func TestSelect(t *testing.T) {
 		if err != nil || s.Name() != tt.want {
 			t.Errorf("Select(%q, %q) = %v, %v; want %s", tt.kind, tt.override, s, err, tt.want)
 		}
+	}
+}
+
+// The scheme is explicit only: calendar-looking tags on a source without
+// `scheme: calver` are not detected and use the kind's default.
+func TestCalverIsExplicitOnly(t *testing.T) {
+	for _, kind := range []string{"pypi", "npm", "crates", "github-release", "github-tag", "oci", "go-proxy", "http-json", ""} {
+		if got := ForSourceKind(kind).Name(); got == calver.Name {
+			t.Errorf("ForSourceKind(%q) = calver; calver must be explicit", kind)
+		}
+		s, err := Select(kind, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, err := s.Parse("2026.10.1"); err != nil || v.Scheme() == calver.Name {
+			t.Errorf("Select(%q, \"\").Parse(2026.10.1) = %v, %v; want a non-calver version", kind, v, err)
+		}
+	}
+}
+
+// `scheme: calver` on a watch overrides the source default, with the
+// lexical fallback for tags that are not calendar versions.
+func TestSelectCalverOverride(t *testing.T) {
+	s, err := Select("github-release", "calver", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []string{"2026.10.1", "24.04", "latest", "2026.9.30", "2026.10.1-rc1", "23.10", "1.2.3"}
+	want := []string{"1.2.3", "latest", "23.10", "24.04", "2026.9.30", "2026.10.1-rc1", "2026.10.1"}
+	vs := make([]version.Version, 0, len(raw))
+	for _, r := range raw {
+		v, err := s.Parse(r)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", r, err)
+		}
+		vs = append(vs, v)
+	}
+	slices.SortStableFunc(vs, s.Compare)
+	got := make([]string, len(vs))
+	for i, v := range vs {
+		got[i] = v.String()
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("sorted = %v, want %v", got, want)
+	}
+	if v, _ := s.Parse("latest"); v.Scheme() != lexical.Name {
+		t.Errorf("latest should fall back to lexical, got %s", v.Scheme())
+	}
+	if v, _ := s.Parse("24.04"); v.Scheme() != calver.Name {
+		t.Errorf("24.04 scheme = %s", v.Scheme())
+	}
+	if _, err := Select("github-release", "calendar", nil); err == nil || !strings.Contains(err.Error(), "calendar") {
+		t.Errorf("unknown override error = %v", err)
 	}
 }
 
@@ -224,7 +282,7 @@ func FuzzFallbackParse(f *testing.F) {
 	for _, s := range []string{"1.2.3", "v1.0.0-rc.1", "1.0.post1", "latest", "1!2.0", "", "\xff"} {
 		f.Add(s)
 	}
-	schemes := []version.Scheme{WithFallback(semver.Scheme{}, nil), WithFallback(pep440.Scheme{}, nil)}
+	schemes := []version.Scheme{WithFallback(semver.Scheme{}, nil), WithFallback(pep440.Scheme{}, nil), WithFallback(calver.Scheme{}, nil)}
 	f.Fuzz(func(t *testing.T, raw string) {
 		for _, s := range schemes {
 			v, err := s.Parse(raw)
@@ -251,10 +309,12 @@ func FuzzFallbackTransitive(f *testing.F) {
 	f.Add("1.0.0-rc.1", "1.0.0", "1.0.0+b")
 	f.Add("1.0", "1.0.post1", "french toast")
 	f.Add("3.12", "3.12-alpine", "3.12.0")
+	f.Add("24.04", "2026.10.1-rc1", "latest")
 	schemes := []version.Scheme{
 		WithFallback(semver.Scheme{}, nil),
 		WithFallback(semver.Scheme{Coerce: true}, nil),
 		WithFallback(pep440.Scheme{}, nil),
+		WithFallback(calver.Scheme{}, nil),
 	}
 	f.Fuzz(func(t *testing.T, a, b, c string) {
 		for _, s := range schemes {
