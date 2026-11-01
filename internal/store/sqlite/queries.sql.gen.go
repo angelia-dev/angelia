@@ -819,6 +819,18 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 	return err
 }
 
+const resetWatchBaseline = `-- name: ResetWatchBaseline :execrows
+UPDATE watch SET baseline_done = 0 WHERE id = ?
+`
+
+func (q *Queries) ResetWatchBaseline(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, resetWatchBaseline, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setTargetInterval = `-- name: SetTargetInterval :execrows
 UPDATE target SET interval_ms = ?, next_check_at = ? WHERE id = ?
 `
@@ -985,15 +997,14 @@ func (q *Queries) UpdateVersionState(ctx context.Context, arg UpdateVersionState
 }
 
 const updateWatchConfig = `-- name: UpdateWatchConfig :execrows
-UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ?, baseline_done = ? WHERE id = ?
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ? WHERE id = ?
 `
 
 type UpdateWatchConfigParams struct {
-	TargetID     string
-	PolicyJson   string
-	LabelsJson   string
-	BaselineDone int64
-	ID           string
+	TargetID   string
+	PolicyJson string
+	LabelsJson string
+	ID         string
 }
 
 func (q *Queries) UpdateWatchConfig(ctx context.Context, arg UpdateWatchConfigParams) (int64, error) {
@@ -1001,7 +1012,6 @@ func (q *Queries) UpdateWatchConfig(ctx context.Context, arg UpdateWatchConfigPa
 		arg.TargetID,
 		arg.PolicyJson,
 		arg.LabelsJson,
-		arg.BaselineDone,
 		arg.ID,
 	)
 	if err != nil {

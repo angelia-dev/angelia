@@ -94,3 +94,25 @@ func TestConfigTxOwnershipAndUniqueNames(t *testing.T) {
 		t.Fatalf("zero interval: %v", err)
 	}
 }
+
+// UpdateWatch leaves baseline_done to the worker; ResetWatchBaseline clears it.
+func TestUpdateWatchKeepsBaseline(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	must(t, s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "a"}, NextCheckAt: t0}))
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w1", TargetID: "t1", Name: "a", ManagedBy: store.ManagedByFile}))
+	must(t, s.MarkBaselineDone(ctx, "w1"))
+	must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error {
+		return tx.UpdateWatch(ctx, store.Watch{ID: "w1", TargetID: "t1", Labels: map[string]string{"k": "v"}})
+	}))
+	w, err := s.GetWatch(ctx, "w1")
+	must(t, err)
+	if !w.BaselineDone || w.Labels["k"] != "v" {
+		t.Fatalf("watch: %+v", w)
+	}
+	must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error { return tx.ResetWatchBaseline(ctx, "w1") }))
+	if w, _ = s.GetWatch(ctx, "w1"); w.BaselineDone {
+		t.Fatal("baseline not reset")
+	}
+	wantErr(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error { return tx.ResetWatchBaseline(ctx, "nope") }), store.ErrNotFound, "reset missing")
+}

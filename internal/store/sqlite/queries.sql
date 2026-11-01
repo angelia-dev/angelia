@@ -27,7 +27,10 @@ INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name,
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateWatchConfig :execrows
-UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ?, baseline_done = ? WHERE id = ?;
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ? WHERE id = ?;
+
+-- name: ResetWatchBaseline :execrows
+UPDATE watch SET baseline_done = 0 WHERE id = ?;
 
 -- name: ListWatchesManagedBy :many
 SELECT * FROM watch WHERE managed_by = ? ORDER BY name;

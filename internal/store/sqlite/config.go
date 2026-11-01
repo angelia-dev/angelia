@@ -186,9 +186,14 @@ func (o txOps) UpdateWatch(ctx context.Context, w store.Watch) error {
 		return fmt.Errorf("store: watch %s policy: %w", w.ID, err)
 	}
 	n, err := o.q.UpdateWatchConfig(ctx, UpdateWatchConfigParams{
-		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), BaselineDone: boolInt(w.BaselineDone), ID: w.ID,
+		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), ID: w.ID,
 	})
 	return deleted(n, err, "update watch", w.ID)
+}
+
+func (o txOps) ResetWatchBaseline(ctx context.Context, id string) error {
+	n, err := o.q.ResetWatchBaseline(ctx, id)
+	return deleted(n, err, "reset watch baseline", id)
 }
 
 func (o txOps) DeleteWatch(ctx context.Context, id string) error {

@@ -364,8 +364,16 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 				idx = r.add(KindWatch, d.Name, Unchanged, "")
 				break
 			}
-			nw := store.Watch{ID: cur.ID, TargetID: t.id, Policy: policy, Labels: d.Labels, BaselineDone: cur.BaselineDone && !moved}
-			if err := r.write(func() error { return r.tx.UpdateWatch(r.ctx, nw) }); err != nil {
+			nw := store.Watch{ID: cur.ID, TargetID: t.id, Policy: policy, Labels: d.Labels}
+			if err := r.write(func() error {
+				if err := r.tx.UpdateWatch(r.ctx, nw); err != nil {
+					return err
+				}
+				if moved {
+					return r.tx.ResetWatchBaseline(r.ctx, cur.ID)
+				}
+				return nil
+			}); err != nil {
 				return nil, nil, err
 			}
 			idx = r.add(KindWatch, d.Name, Update, strings.Join(diffs, ", "))

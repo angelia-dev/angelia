@@ -160,8 +160,11 @@ type ConfigTx interface {
 	// watch uses it, and reports whether it did.
 	DeleteTargetIfUnused(ctx context.Context, id string) (bool, error)
 	CreateWatch(ctx context.Context, w Watch) error
-	// UpdateWatch stores TargetID, Policy, Labels and BaselineDone.
+	// UpdateWatch stores TargetID, Policy and Labels. It leaves BaselineDone
+	// alone, so that an apply cannot undo a worker's baseline.
 	UpdateWatch(ctx context.Context, w Watch) error
+	// ResetWatchBaseline sets BaselineDone to false.
+	ResetWatchBaseline(ctx context.Context, id string) error
 	DeleteWatch(ctx context.Context, id string) error
 	CreateSink(ctx context.Context, s Sink) error
 	// UpdateSink stores Kind and ConfigEncrypted.
