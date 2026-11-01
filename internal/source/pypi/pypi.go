@@ -77,6 +77,11 @@ func WithLogger(l *slog.Logger) Option {
 // is the release page and Metadata["project_url"] the project page. For any
 // other base both are left out, because mirrors do not serve Warehouse
 // project pages.
+//
+// Metadata["project"] is the PEP 503 name the source requested, and
+// Metadata["project_name"] the project name as PyPI reports it (info.name,
+// for example "Django"), from which the event's purl is built. It is left
+// out when the response has no info.name.
 func New(baseURL string, c *http.Client, opts ...Option) *Source {
 	s := &Source{client: c, log: slog.Default()}
 	for _, o := range opts {
@@ -173,6 +178,9 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		return source.Result{State: state, NotModified: true}, nil
 	}
 	var doc struct {
+		Info struct {
+			Name string `json:"name"`
+		} `json:"info"`
 		Releases map[string][]file `json:"releases"`
 	}
 	if err := json.Unmarshal(res.Body, &doc); err != nil {
@@ -187,7 +195,11 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 			s.log.DebugContext(ctx, "pypi: skipping release without files", "project", name, "version", raw)
 			continue
 		}
-		versions = append(versions, s.version(ctx, name, raw, files))
+		v := s.version(ctx, name, raw, files)
+		if doc.Info.Name != "" {
+			v.Metadata["project_name"] = doc.Info.Name
+		}
+		versions = append(versions, v)
 	}
 	sortNewestFirst(versions)
 	return source.Result{Versions: versions, State: state}, nil

@@ -1,0 +1,27 @@
+{
+  "source": "npm",
+  "package": "left-pad",
+  "version": "1.3.0",
+  "normalized_version": "1.3.0",
+  "previous_version": "1.2.0",
+  "scheme": "semver",
+  "bump": "minor",
+  "backport": false,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": "2026-10-28T09:30:45.120Z",
+  "detected_at": "2026-10-28T09:45:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": "https://www.npmjs.com/package/left-pad/v/1.3.0",
+    "changelog": null,
+    "artifact": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX3B4C5D6E7F8G9H0J1K2M3",
+    "name": null,
+    "labels": {}
+  },
+  "purl": "pkg:npm/left-pad@1.3.0"
+}

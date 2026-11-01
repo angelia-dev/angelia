@@ -59,8 +59,14 @@ type Tx interface {
 	// MarkBaselineDone sets the watch's BaselineDone. Marking a watch twice
 	// is not an error; ErrNotFound when the watch does not exist.
 	MarkBaselineDone(ctx context.Context, watchID string) error
+	// ListSubscriptions returns every subscription, ordered by ID, for the
+	// match step of a check (internal/event).
+	ListSubscriptions(ctx context.Context) ([]Subscription, error)
 	// AppendEvent writes the event and its deliveries. A delivery with an
-	// empty EventID gets e.ID; a different EventID is ErrInvalid.
+	// empty EventID gets e.ID; a different EventID is ErrInvalid. An event is
+	// immutable: there is no update, an ID already written is ErrConflict and
+	// the stored row is left as it was, and the SQL schema rejects an UPDATE
+	// of an event row. Only PruneHistory deletes events.
 	AppendEvent(ctx context.Context, e Event, ds []Delivery) error
 	// UpdateTarget stores FetchState, LastCheckedAt, NextCheckAt and
 	// ErrorCount of t. Kind and Coordinates are immutable.

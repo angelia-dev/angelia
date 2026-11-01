@@ -134,6 +134,11 @@ func (s *Store) AppendEvent(ctx context.Context, e store.Event, ds []store.Deliv
 	return s.InTx(ctx, func(tx store.Tx) error { return tx.AppendEvent(ctx, e, ds) })
 }
 
+// ListSubscriptions implements [store.Tx] outside a transaction.
+func (s *Store) ListSubscriptions(ctx context.Context) ([]store.Subscription, error) {
+	return txOps{q: s.q}.ListSubscriptions(ctx)
+}
+
 // ListPendingReleases implements [store.Tx] outside a transaction.
 func (s *Store) ListPendingReleases(ctx context.Context, targetID string) ([]store.PendingRelease, error) {
 	return txOps{q: s.q}.ListPendingReleases(ctx, targetID)

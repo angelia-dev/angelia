@@ -1,0 +1,39 @@
+{
+  "specversion": "1.0",
+  "type": "dev.angelia.release.prerelease.v1",
+  "source": "angelia://angelia/watches/01JBX6E7F8G9H0J1K2M3N4P5Q6",
+  "id": "01JBXB2C3D4E5F6G7H8J9K0M1N",
+  "subject": "npm:@angular/core@18.0.0-rc.1",
+  "time": "2026-10-30T10:15:03Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://github.com/angelia-dev/spec/schemas/release/v1.json",
+  "data": {
+    "source": "npm",
+    "package": "@angular/core",
+    "version": "18.0.0-rc.1",
+    "normalized_version": "18.0.0-rc.1",
+    "previous_version": "18.0.0-rc.0",
+    "scheme": "semver",
+    "bump": "prerelease",
+    "backport": false,
+    "prerelease": true,
+    "yanked": false,
+    "published_at": "2026-10-30T10:00:00Z",
+    "detected_at": "2026-10-30T10:15:00Z",
+    "cooldown_satisfied_at": null,
+    "urls": {
+      "release": "https://www.npmjs.com/package/@angular/core/v/18.0.0-rc.1",
+      "changelog": null,
+      "artifact": "https://registry.npmjs.org/@angular/core/-/core-18.0.0-rc.1.tgz"
+    },
+    "notes": null,
+    "watch": {
+      "id": "01JBX6E7F8G9H0J1K2M3N4P5Q6",
+      "name": "angular-core",
+      "labels": {
+        "team": "web"
+      }
+    },
+    "purl": "pkg:npm/%40angular/core@18.0.0-rc.1"
+  }
+}

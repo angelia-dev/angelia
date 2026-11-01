@@ -79,6 +79,9 @@ UPDATE subscription SET filter_json = ?, sink_id = ?, template = ?, policy_json 
 -- name: ListSubscriptionsManagedBy :many
 SELECT * FROM subscription WHERE managed_by = ? ORDER BY name;
 
+-- name: ListSubscriptions :many
+SELECT * FROM subscription ORDER BY id;
+
 -- name: FailPendingDeliveries :execrows
 UPDATE delivery SET status = 'dead', last_error = ?, next_attempt_at = NULL
 WHERE subscription_id = ? AND status = 'pending';

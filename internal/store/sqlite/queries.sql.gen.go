@@ -780,6 +780,41 @@ func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]S
 	return items, nil
 }
 
+const listSubscriptions = `-- name: ListSubscriptions :many
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription ORDER BY id
+`
+
+func (q *Queries) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+			&i.PolicyJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSubscriptionsManagedBy = `-- name: ListSubscriptionsManagedBy :many
 SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE managed_by = ? ORDER BY name
 `
