@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,8 @@ var invalid = []source.Target{
 	{Kind: npm.Kind, Coordinates: map[string]string{"name": ".dot"}},
 	{Kind: npm.Kind, Coordinates: map[string]string{"name": "x?y=1"}},
 	{Kind: npm.Kind, Coordinates: map[string]string{"name": strings.Repeat("a", 215)}},
+	{Kind: npm.Kind, Coordinates: map[string]string{"name": " react "}},
+	{Kind: npm.Kind, Coordinates: map[string]string{"name": "react\n"}},
 	{Kind: "pypi", Coordinates: map[string]string{"name": "requests"}},
 }
 
@@ -272,16 +275,72 @@ func TestUnpublishedIsYanked(t *testing.T) {
 }
 
 func TestFullyUnpublishedPackage(t *testing.T) {
-	up := &upstream{docs: map[string][]byte{"/gone": []byte(
-		`{"name":"gone","time":{"created":"2020-01-01T00:00:00.000Z","modified":"2020-01-02T00:00:00.000Z","unpublished":{"time":"2020-01-02T00:00:00.000Z","versions":["1.0.0"]}}}`)}}
+	// Real shape: time.unpublished is an object; 1.0.0 keeps its time, 1.0.1
+	// has none.
+	up := &upstream{docs: map[string][]byte{"/gone": []byte(`{"name":"gone",
+	  "time":{"created":"2020-01-01T00:00:00.000Z","modified":"2020-01-03T00:00:00.000Z",
+	    "1.0.0":"2020-01-01T00:00:00.000Z",
+	    "unpublished":{"name":"gone","time":"2020-01-03T00:00:00.000Z","versions":["1.0.0","1.0.1"],"maintainers":[{"name":"x"}]}}}`)}}
 	srv := httptest.NewServer(up)
 	t.Cleanup(srv.Close)
 	res, err := npm.New(srv.URL, sourcetest.Client(t, srv)).List(context.Background(), target("gone"), source.FetchState{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Versions) != 0 {
-		t.Errorf("versions = %v, want none", res.Versions)
+	vs := byRaw(res.Versions)
+	if len(res.Versions) != 2 {
+		t.Fatalf("versions = %v, want 1.0.0 and 1.0.1", res.Versions)
+	}
+	for raw, v := range vs {
+		if !v.Yanked || v.Metadata["unpublished"] != true {
+			t.Errorf("%s: Yanked=%v Metadata=%v, want yanked and unpublished", raw, v.Yanked, v.Metadata)
+		}
+	}
+	if vs["1.0.0"].PublishedAt.IsZero() || !vs["1.0.1"].PublishedAt.IsZero() {
+		t.Errorf("PublishedAt: 1.0.0=%v 1.0.1=%v, want known and zero", vs["1.0.0"].PublishedAt, vs["1.0.1"].PublishedAt)
+	}
+}
+
+func TestBodyTooLargeIsWrapped(t *testing.T) {
+	big := manyVersions(600) // well over 1 KiB
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(big) }))
+	t.Cleanup(srv.Close)
+	c, err := netguard.New(netguard.Config{
+		MaxBodyBytes: 1 << 10,
+		MaxAttempts:  1,
+		Allow:        []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = npm.New(srv.URL, c.HTTPClient()).List(context.Background(), target("angelia-test-many"), source.FetchState{})
+	if !errors.Is(err, netguard.ErrBodyTooLarge) {
+		t.Fatalf("err = %v, want one wrapping netguard.ErrBodyTooLarge", err)
+	}
+	if !strings.Contains(err.Error(), "MaxBodyBytes") || !strings.Contains(err.Error(), "64 MiB") {
+		t.Errorf("error lacks the hint to raise the cap: %v", err)
+	}
+}
+
+func TestNilClient(t *testing.T) {
+	_, err := npm.New("http://unused.invalid", nil).List(context.Background(), target("x"), source.FetchState{})
+	if err == nil || errors.Is(err, source.ErrInvalidTarget) {
+		t.Errorf("err = %v, want a missing-client error", err)
+	}
+}
+
+func TestVersionURLIsEscaped(t *testing.T) {
+	doc := `{"versions":{"1.0.0+build/1":{}}}`
+	up := &upstream{docs: map[string][]byte{"/p": []byte(doc)}}
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	s := npm.New(srv.URL, sourcetest.Client(t, srv), npm.WithPackageURL("https://pkgs.example/p"))
+	res, err := s.List(context.Background(), target("p"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := res.Versions[0].URL, "https://pkgs.example/p/p/v/1.0.0+build%2F1"; got != want {
+		t.Errorf("URL = %q, want %q", got, want)
 	}
 }
 
@@ -402,7 +461,7 @@ func TestListRejectsInvalidTarget(t *testing.T) {
 
 func TestValidateAcceptsNames(t *testing.T) {
 	s := npm.New("", nil)
-	for _, n := range []string{"react", "@types/node", "JSONStream", "lodash.merge", "a-b_c", " react "} {
+	for _, n := range []string{"react", "@types/node", "JSONStream", "lodash.merge", "a-b_c"} {
 		if err := s.Validate(target(n)); err != nil {
 			t.Errorf("Validate(%q): %v", n, err)
 		}

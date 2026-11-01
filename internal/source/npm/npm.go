@@ -10,7 +10,27 @@
 // the default is the full document. WithAbbreviated opts in to the smaller
 // shape for callers that can live without both: it leaves PublishedAt zero and
 // cannot report unpublished versions. Full packuments of busy packages are
-// large (several MiB for react), so the HTTP client's body cap must allow it.
+// large. Decompressed sizes measured in November 2026:
+//
+//	package      full     abbreviated
+//	react        7.1 MB   3.0 MB
+//	@types/node  11.2 MB
+//	aws-sdk      10.6 MB  3.8 MB
+//	typescript   15.9 MB  8.8 MB
+//	next         31.5 MB  25.7 MB
+//
+// netguard's default body cap is 10 MiB, so several popular packages exceed
+// it. The HTTP client given to New should be built with a larger
+// netguard.Config.MaxBodyBytes; 64 MiB is recommended for npm. A response over
+// the cap makes List fail with an error wrapping netguard.ErrBodyTooLarge.
+//
+// # Errors and ordering
+//
+// A 404 (a package that never existed, or whose registry document is gone) is
+// returned as an error wrapping *netguard.StatusError, never as an empty
+// result. Versions are sorted newest first by PublishedAt, ties by Raw. In
+// abbreviated mode there is no PublishedAt, so the order is only by Raw
+// (string order, not semantic); the core must not rely on it.
 //
 // # What a Version carries
 //
@@ -26,6 +46,7 @@ package npm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -110,7 +131,9 @@ func (*Source) Validate(t source.Target) error {
 }
 
 func packageName(t source.Target) (string, error) {
-	name := strings.TrimSpace(t.Coordinates["name"])
+	// No trimming: the stored coordinate must equal what is validated, or
+	// watches of the same package would not coalesce.
+	name := t.Coordinates["name"]
 	switch {
 	case name == "":
 		return "", fmt.Errorf("%w: npm target needs a name", source.ErrInvalidTarget)
@@ -147,6 +170,9 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if err != nil {
 		return source.Result{}, err
 	}
+	if s.hc == nil {
+		return source.Result{}, errors.New("npm: source has no HTTP client")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.packageURL(name), nil)
 	if err != nil {
 		return source.Result{}, fmt.Errorf("npm: build request for %s: %w", name, err)
@@ -157,6 +183,10 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		req.Header.Set("Accept", acceptFull)
 	}
 	res, err := netguard.Fetch(ctx, s.hc, req, netguard.Validators{ETag: st.ETag, LastModified: st.LastModified})
+	if errors.Is(err, netguard.ErrBodyTooLarge) {
+		return source.Result{}, fmt.Errorf("npm: fetch %s: packument over the HTTP client's body cap; "+
+			"raise netguard.Config.MaxBodyBytes (64 MiB recommended for npm), see the npm package documentation: %w", name, err)
+	}
 	if err != nil {
 		return source.Result{}, fmt.Errorf("npm: fetch %s: %w", name, err)
 	}
@@ -174,7 +204,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 // packageURL builds {base}/{name}; the slash of a scoped name is sent as %2F,
 // as npm clients do.
 func (s *Source) packageURL(name string) string {
-	return s.base + "/" + strings.Replace(url.PathEscape(name), "/", "%2F", 1)
+	return s.base + "/" + url.PathEscape(name) // PathEscape turns the scope's "/" into %2F
 }
 
 func (s *Source) versions(name string, p *packument) []source.Version {
@@ -186,11 +216,24 @@ func (s *Source) versions(name string, p *packument) []source.Version {
 	for raw, info := range p.Versions {
 		out = append(out, s.version(name, raw, timeOf(p.Time, raw), &info, tagsOf[raw]))
 	}
-	// Keys of "time" that are not versions: "created", "modified" and, for a
-	// fully unpublished package, "unpublished". Any other key without an
-	// entry in "versions" is an unpublished version.
+	// Unpublished versions are keys of "time" that are not in "versions"
+	// ("created", "modified" and "unpublished" are not versions), plus, for a
+	// fully unpublished package, the list in time.unpublished.versions.
+	gone := map[string]bool{}
 	for raw := range p.Time {
-		if _, ok := p.Versions[raw]; ok || raw == "created" || raw == "modified" || raw == "unpublished" {
+		if raw != "created" && raw != "modified" && raw != "unpublished" {
+			gone[raw] = true
+		}
+	}
+	var un struct {
+		Versions []string `json:"versions"`
+	}
+	_ = json.Unmarshal(p.Time["unpublished"], &un) // not an object: ignore
+	for _, raw := range un.Versions {
+		gone[raw] = true
+	}
+	for raw := range gone {
+		if _, ok := p.Versions[raw]; ok {
 			continue
 		}
 		v := s.version(name, raw, timeOf(p.Time, raw), &pkgInfo{}, nil)
@@ -213,7 +256,7 @@ func (s *Source) version(name, raw, ts string, info *pkgInfo, tags []string) sou
 		v.PublishedAt = t.UTC()
 	}
 	if s.pageBase != "" {
-		v.URL = s.pageBase + "/" + name + "/v/" + raw
+		v.URL = s.pageBase + "/" + name + "/v/" + url.PathEscape(raw)
 	}
 	if msg := deprecation(info.Deprecated); msg != "" {
 		v.Metadata["deprecated"] = msg

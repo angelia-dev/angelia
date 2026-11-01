@@ -16,8 +16,10 @@ import (
 //
 //	go test -tags live -run TestLiveReact ./internal/source/npm
 func TestLiveReact(t *testing.T) {
-	// The full react packument is larger than netguard's default 10 MiB cap.
-	c, err := netguard.New(netguard.Config{MaxBodyBytes: 128 << 20, Timeout: 2 * time.Minute})
+	// The full react packument is 7.1 MB today, under netguard's default
+	// 10 MiB cap, but other packages are not (see the package documentation);
+	// use the recommended 64 MiB cap for npm.
+	c, err := netguard.New(netguard.Config{MaxBodyBytes: 64 << 20, Timeout: 2 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,5 +47,7 @@ func TestLiveReact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only logged, not asserted: whether the registry's CDN honours the ETag
+	// is its business and can vary, so it must not fail the test.
 	t.Logf("react: %d versions, second call NotModified=%v", len(res.Versions), again.NotModified)
 }
