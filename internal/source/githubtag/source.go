@@ -301,7 +301,12 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 			lookups++
 			d, err := s.commitDate(ctx, owner, name, tg.Commit.SHA, tok)
 			if err != nil {
-				if ctx.Err() != nil || fatalLookup(err) {
+				if ctx.Err() != nil {
+					// The call was cancelled: report the cancellation, not the
+					// half-read body it may have caused.
+					return source.Result{}, fmt.Errorf("github-tag %s: date of %s: %w", repoRef, tg.Name, context.Cause(ctx))
+				}
+				if fatalLookup(err) {
 					// State is not advanced: the next call retries this tag.
 					return source.Result{}, fmt.Errorf("github-tag %s: date of %s: %w", repoRef, tg.Name, err)
 				}
