@@ -121,13 +121,7 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	for _, o := range opts {
 		o(s)
 	}
-	s.hc = apiclient.GuardRedirects(Kind, hc, func(_ *http.Request, via []*http.Request) bool {
-		// The credentials are those of the original request: net/http drops
-		// Authorization on a cross-domain hop but keeps PRIVATE-TOKEN, so
-		// req.Header says nothing about what the first request carried.
-		h := via[0].Header
-		return h.Get("PRIVATE-TOKEN") != "" || h.Get("Authorization") != ""
-	})
+	s.hc = apiclient.GuardRedirects(Kind, hc)
 	u, err := url.Parse(s.base)
 	switch {
 	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil ||

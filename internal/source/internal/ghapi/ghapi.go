@@ -58,9 +58,7 @@ func New(kind, baseURL string, hc *http.Client, tok apiclient.Token) *Client {
 		baseURL = DefaultBaseURL
 	}
 	c := &Client{base: strings.TrimRight(baseURL, "/")}
-	c.hc = apiclient.GuardRedirects(kind, hc, func(req *http.Request, _ []*http.Request) bool {
-		return req.Header.Get("Authorization") != ""
-	})
+	c.hc = apiclient.GuardRedirects(kind, hc)
 	u, err := url.Parse(c.base)
 	switch {
 	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil:

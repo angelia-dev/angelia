@@ -255,3 +255,35 @@ func TestRedirectGuardChainsCallerCheckRedirect(t *testing.T) {
 		t.Errorf("caller CheckRedirect not honoured: %v", err)
 	}
 }
+
+func TestRedirectGuardRefusesWhenFirstRequestHadCredentials(t *testing.T) {
+	// net/http strips Authorization on a hop to another host name, so the
+	// redirected request carries none. The guard still refuses, because the
+	// first request did.
+	var otherHits int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Host, "127.0.0.1") {
+			otherHits++
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		_, port, _ := net.SplitHostPort(r.Host)
+		// The httptest certificate is valid for both example.com and 127.0.0.1.
+		http.Redirect(w, r, "https://127.0.0.1:"+port+"/x", http.StatusFound) //nolint:gosec // G710: test server, fixed target.
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	host := "example.com:" + port
+	c := New("k", "https://"+host, routed(srv.Client(), srv.Listener.Addr().String()), apiclient.FixedToken("tok"))
+	_, err := get(t, c, "https://"+host+"/start", "tok")
+	if err == nil || !strings.Contains(err.Error(), "k: refusing to follow a redirect to 127.0.0.1:") {
+		t.Errorf("err = %v, want a refusal", err)
+	}
+	if otherHits != 0 {
+		t.Errorf("other host was contacted %d times", otherHits)
+	}
+	// Anonymous requests still follow the redirect.
+	if _, err := get(t, c, "https://"+host+"/start", ""); err != nil || otherHits != 1 {
+		t.Errorf("anonymous: err %v, hits %d", err, otherHits)
+	}
+}

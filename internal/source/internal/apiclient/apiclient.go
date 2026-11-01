@@ -95,27 +95,29 @@ func TokenSafe(u *url.URL) bool {
 	return strings.EqualFold(u.Hostname(), "localhost")
 }
 
+// hasCredentials reports whether h carries one of the credential headers.
+func hasCredentials(h http.Header) bool {
+	return h.Get("Authorization") != "" || h.Get("PRIVATE-TOKEN") != ""
+}
+
 // GuardRedirects returns a shallow copy of hc whose CheckRedirect refuses to
 // follow a redirect that would carry credentials to another host or to plain
 // http (net/http only compares host names, so it would keep a header across
 // ports and subdomains). kind prefixes the refusal message.
 //
-// hasCredentials says whether the request chain carries credentials; req is
-// the request about to be sent and via the requests already made, oldest
-// first. Which to read depends on the credential header. net/http drops
-// Authorization when a redirect goes to another domain, so req may no longer
-// show it: that is fine when the guard only has to stop a header that is
-// still there, and reading req is enough. A header that net/http forwards
-// to any host, such as GitLab's PRIVATE-TOKEN, survives such hops, but a
-// guard that looks at req alone would also lose track of Authorization sent
-// first; read via[0], the request that carried the credentials, to judge
-// the whole chain. After the guard, the caller's own CheckRedirect runs, or a cap of 10
-// redirects if hc has none. hc itself is not modified.
-func GuardRedirects(kind string, hc *http.Client, hasCredentials func(req *http.Request, via []*http.Request) bool) *http.Client {
+// The chain counts as carrying credentials when either the first request
+// (via[0]) or the request about to be sent has an Authorization or a
+// PRIVATE-TOKEN header. Checking the first request matters because net/http
+// strips Authorization on a hop to another domain, so the outgoing request
+// no longer shows what the first one carried; checking the outgoing request
+// matters because a header net/http keeps, such as PRIVATE-TOKEN, is there to
+// be stopped. After the guard, the caller's own CheckRedirect runs, or a cap
+// of 10 redirects if hc has none. hc itself is not modified.
+func GuardRedirects(kind string, hc *http.Client) *http.Client {
 	cp := *hc
 	orig := cp.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if hasCredentials(req, via) {
+		if hasCredentials(via[0].Header) || hasCredentials(req.Header) {
 			if !TokenSafe(req.URL) || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
 				return fmt.Errorf("%s: refusing to follow a redirect to %s with credentials", kind, req.URL.Host)
 			}
