@@ -1,4 +1,4 @@
-# ADR 0009: WASM source plugins on Extism, with HTTP through a netguard host function (prototype)
+# ADR 0011: WASM source plugins on Extism, with HTTP through a netguard host function (prototype)
 
 - **Status:** Proposed
 - **Date:** 2026-11-01

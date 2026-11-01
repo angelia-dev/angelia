@@ -1,7 +1,7 @@
 // Package wasm hosts source plugins compiled to WebAssembly, on Extism and
 // wazero (pure Go, no CGO). It is the Phase 0 prototype of
 // angelia-dev/angelia#59; the manifest, the exports and the host functions
-// are a draft (ADR 0009).
+// are a draft (ADR 0011).
 //
 // A plugin reaches the network only through the http_request host function,
 // which sends every hop through the injected netguard client after checking

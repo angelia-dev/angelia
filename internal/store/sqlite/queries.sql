@@ -17,13 +17,22 @@ VALUES (?, ?, ?, ?, ?);
 -- name: GetWatch :one
 SELECT * FROM watch WHERE id = ?;
 
+-- name: ListWatchesByTarget :many
+SELECT * FROM watch WHERE target_id = ? ORDER BY id;
+
+-- name: MarkBaselineDone :execrows
+UPDATE watch SET baseline_done = 1 WHERE id = ?;
+
 -- name: DeleteWatch :execrows
 DELETE FROM watch WHERE id = ?;
 
 -- name: AddVersion :execrows
-INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (target_id, raw) DO NOTHING;
+
+-- name: UpdateVersionState :execrows
+UPDATE version SET yanked = ?, removed_at = ? WHERE target_id = ? AND raw = ?;
 
 -- name: ListVersions :many
 SELECT * FROM version WHERE target_id = ? ORDER BY first_seen_at, raw;
@@ -52,6 +61,27 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListDeliveries :many
 SELECT * FROM delivery WHERE event_id = ? ORDER BY id;
+
+-- name: PruneBatchEnd :many
+-- There is no index on event.created_at, so this scans by seq from after_seq
+-- and stops at batch matches. That is fine for a periodic job, not for a hot path.
+SELECT seq FROM event WHERE seq > sqlc.arg(after_seq) AND created_at < sqlc.arg(before) ORDER BY seq LIMIT sqlc.arg(batch);
+
+-- name: PruneDeliveries :execrows
+DELETE FROM delivery
+WHERE status IN ('delivered', 'dead')
+  AND event_id IN (
+    SELECT e.id FROM event e
+    WHERE e.seq > sqlc.arg(after_seq) AND e.seq <= sqlc.arg(up_to_seq) AND e.created_at < sqlc.arg(before)
+      AND NOT EXISTS (
+        SELECT 1 FROM delivery p WHERE p.event_id = e.id AND p.status IN ('pending', 'in_flight')
+      )
+  );
+
+-- name: PruneEvents :execrows
+DELETE FROM event
+WHERE seq > sqlc.arg(after_seq) AND seq <= sqlc.arg(up_to_seq) AND created_at < sqlc.arg(before)
+  AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id);
 
 -- name: DeleteExpiredLease :exec
 DELETE FROM lease WHERE name = ? AND expires_at <= ?;
