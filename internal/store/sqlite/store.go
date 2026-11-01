@@ -200,14 +200,67 @@ func (s *Store) GetTarget(ctx context.Context, id string) (store.Target, error) 
 	if err != nil {
 		return store.Target{}, wrap(err, "get target", id)
 	}
+	return targetFromRow(r)
+}
+
+func targetFromRow(r Target) (store.Target, error) {
 	t := store.Target{
 		ID: r.ID, Kind: r.Kind, FetchState: json.RawMessage(r.FetchStateJson),
 		LastCheckedAt: fromNullMillis(r.LastCheckedAt), NextCheckAt: fromMillis(r.NextCheckAt), ErrorCount: r.ErrorCount,
 	}
 	if err := json.Unmarshal([]byte(r.CoordinatesJson), &t.Coordinates); err != nil {
-		return store.Target{}, fmt.Errorf("store: target %s coordinates: %w", id, err)
+		return store.Target{}, fmt.Errorf("store: target %s coordinates: %w", r.ID, err)
 	}
 	return t, nil
+}
+
+// LeaseDueTargets implements [store.Store]. The select and the lease writes
+// run in one immediate transaction, which holds SQLite's single write lock,
+// so two callers never lease the same target.
+func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.Target, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if holder == "" || !until.After(now) {
+		return nil, fmt.Errorf("store: lease due targets: empty holder or until not after now: %w", store.ErrInvalid)
+	}
+	var out []store.Target
+	err := s.withTx(ctx, func(q *Queries) error {
+		rows, err := q.ListLeasableDueTargets(ctx, ListLeasableDueTargetsParams{Now: millis(now), MaxRows: int64(limit)})
+		if err != nil {
+			return wrap(err, "list due targets", holder)
+		}
+		out = make([]store.Target, 0, len(rows))
+		for _, r := range rows {
+			name := store.TargetLeaseName(r.ID)
+			if err := q.DeleteExpiredLease(ctx, DeleteExpiredLeaseParams{Name: name, ExpiresAt: millis(now)}); err != nil {
+				return wrap(err, "expire lease", name)
+			}
+			n, err := q.AcquireLease(ctx, AcquireLeaseParams{Name: name, Holder: holder, ExpiresAt: millis(until)})
+			if err != nil {
+				return wrap(err, "acquire lease", name)
+			}
+			if n != 1 { // the select excluded live leases, so this is a bug
+				return fmt.Errorf("store: lease %s held by another holder: %w", name, store.ErrConflict)
+			}
+			t, err := targetFromRow(r)
+			if err != nil {
+				return err
+			}
+			out = append(out, t)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CountDueTargets implements [store.Store].
+func (s *Store) CountDueTargets(ctx context.Context, now time.Time) (int64, error) {
+	n, err := s.q.CountLeasableDueTargets(ctx, millis(now))
+	return n, wrap(err, "count due targets", "")
 }
 
 // CreateWatch implements [store.Store].

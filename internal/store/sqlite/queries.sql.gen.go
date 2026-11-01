@@ -62,6 +62,22 @@ func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, 
 	return result.RowsAffected()
 }
 
+const countLeasableDueTargets = `-- name: CountLeasableDueTargets :one
+SELECT count(*) FROM target
+WHERE next_check_at <= ?1
+  AND NOT EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = 'target:' || target.id AND lease.expires_at > ?1
+  )
+`
+
+func (q *Queries) CountLeasableDueTargets(ctx context.Context, now int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLeasableDueTargets, now)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createDelivery = `-- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -347,6 +363,56 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 			&i.Type,
 			&i.PayloadJson,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLeasableDueTargets = `-- name: ListLeasableDueTargets :many
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count FROM target
+WHERE next_check_at <= ?1
+  AND NOT EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = 'target:' || target.id AND lease.expires_at > ?1
+  )
+ORDER BY next_check_at, id
+LIMIT ?2
+`
+
+type ListLeasableDueTargetsParams struct {
+	Now     int64
+	MaxRows int64
+}
+
+// Due targets that no unexpired lease covers ('target:' || id, see
+// store.TargetLeaseName), oldest due first. Postgres will use
+// FOR UPDATE SKIP LOCKED here instead.
+func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDueTargetsParams) ([]Target, error) {
+	rows, err := q.db.QueryContext(ctx, listLeasableDueTargets, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Target
+	for rows.Next() {
+		var i Target
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.CoordinatesJson,
+			&i.FetchStateJson,
+			&i.LastCheckedAt,
+			&i.NextCheckAt,
+			&i.ErrorCount,
 		); err != nil {
 			return nil, err
 		}

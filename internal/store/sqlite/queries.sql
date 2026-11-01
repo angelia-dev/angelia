@@ -63,3 +63,24 @@ WHERE lease.holder = excluded.holder;
 
 -- name: ReleaseLease :exec
 DELETE FROM lease WHERE name = ? AND holder = ?;
+
+-- Due targets that no unexpired lease covers ('target:' || id, see
+-- store.TargetLeaseName), oldest due first. Postgres will use
+-- FOR UPDATE SKIP LOCKED here instead.
+-- name: ListLeasableDueTargets :many
+SELECT * FROM target
+WHERE next_check_at <= sqlc.arg(now)
+  AND NOT EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = 'target:' || target.id AND lease.expires_at > sqlc.arg(now)
+  )
+ORDER BY next_check_at, id
+LIMIT sqlc.arg(max_rows);
+
+-- name: CountLeasableDueTargets :one
+SELECT count(*) FROM target
+WHERE next_check_at <= sqlc.arg(now)
+  AND NOT EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = 'target:' || target.id AND lease.expires_at > sqlc.arg(now)
+  );
