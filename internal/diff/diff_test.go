@@ -188,26 +188,100 @@ func TestCompute(t *testing.T) {
 			update: []string{"1.4.0:true:false", "1.1.0:false:false", "1.2.0:false:true"}, // fetch order, then removals
 		},
 		{
-			name:    "blank and duplicate entries are skipped",
+			name:    "blank, padded and duplicate entries are skipped",
 			known:   known("1.0.0"),
-			fetched: fetched("1.1.0", " ", "1.1.0!", "", "1.0.0"),
+			fetched: fetched("1.1.0", " ", "1.1.0!", "", " 1.2.0", "1.3.0\n", "1.0.0"),
 			want:    []string{"new 1.1.0 prev=1.0.0 bump=minor"},
 			add:     []string{"1.1.0"},
 		},
 		{
-			name:    "equal precedence, different raw strings",
+			name:    "a duplicate with another yank flag is a stale copy",
+			known:   known("1.0.0"),
+			fetched: fetched("1.0.0", "1.0.0!"),
+		},
+		{
+			name:    "new version listed twice, first entry wins",
+			fetched: fetched("1.0.0!", "1.0.0"),
+			want:    []string{"new 1.0.0 prev= bump= yanked"},
+			add:     []string{"1.0.0"},
+		},
+		{
+			name:    "all entries blank: nothing removed",
+			known:   known("1.0.0"),
+			fetched: fetched(" ", ""),
+		},
+		{
+			name:    "equal precedence with a known version: 1.0 then 1.0.0",
 			scheme:  pep440.Scheme{},
-			known:   known("1.0"),
-			fetched: fetched("1.0.0", "1.0"),
+			known:   known("0.9", "1.0"),
+			fetched: fetched("1.0.0", "1.0", "0.9"),
+			want:    []string{"new 1.0.0 prev=1.0 bump=other"},
+			add:     []string{"1.0.0"},
+		},
+		{
+			name:    "equal precedence with a known version: v1.2.0 then 1.2.0",
+			known:   known("1.1.0", "1.2.0"),
+			fetched: fetched("v1.2.0", "1.2.0", "1.1.0"),
+			want:    []string{"new v1.2.0 prev=1.2.0 bump=other"},
+			add:     []string{"v1.2.0"},
+		},
+		{
+			name:    "equal precedence with build metadata",
+			known:   known("1.1.0", "1.2.0+a"),
+			fetched: fetched("1.2.0+b", "1.2.0+a", "1.1.0"),
+			want:    []string{"new 1.2.0+b prev=1.2.0+a bump=other"},
+			add:     []string{"1.2.0+b"},
+		},
+		{
+			name:    "equal precedence within one fetch: the earlier entry is the original",
+			known:   known("1.1.0"),
+			fetched: fetched("v1.2.0", "1.2.0", "1.1.0"),
+			want:    []string{"new 1.2.0 prev=v1.2.0 bump=other", "new v1.2.0 prev=1.1.0 bump=minor"},
+			add:     []string{"1.2.0", "v1.2.0"},
+		},
+		{
+			name:    "a removed version is not a backport reason",
+			known:   known("2.0.0", "3.0.0~"),
+			fetched: fetched("2.0.1", "2.0.0"),
+			want:    []string{"new 2.0.1 prev=2.0.0 bump=patch"},
+			add:     []string{"2.0.1"},
+		},
+		{
+			name:    "a removed version can be the previous one",
+			known:   known("1.0.0~", "0.9.0"),
+			fetched: fetched("1.0.1", "0.9.0"),
+			want:    []string{"new 1.0.1 prev=1.0.0 bump=patch"},
+			add:     []string{"1.0.1"},
+		},
+		{
+			name:    "known pre-release above a backport",
+			known:   known("1.9.3", "2.0.0-rc.1"),
+			fetched: fetched("1.9.4", "2.0.0-rc.1", "1.9.3"),
+			want:    []string{"new 1.9.4 prev=1.9.3 bump=patch backport"},
+			add:     []string{"1.9.4"},
+		},
+		{
+			name:    "lexical fallback: no backport, no previous across schemes",
+			scheme:  schemes.WithFallback(semver.Scheme{Coerce: true}, nil),
+			known:   known("1.0.0"),
+			fetched: fetched("latest", "1.0.0"),
+			want:    []string{"new latest prev= bump="},
+			add:     []string{"latest"},
+		},
+		{
+			name:    "known fallback below a first real version",
+			scheme:  schemes.WithFallback(semver.Scheme{Coerce: true}, nil),
+			known:   known("nightly"),
+			fetched: fetched("1.0.0", "nightly"),
 			want:    []string{"new 1.0.0 prev= bump="},
 			add:     []string{"1.0.0"},
 		},
 		{
-			name:    "lexical fallback ranks below the scheme",
-			known:   known("1.0.0"),
-			fetched: fetched("nightly", "1.0.0"),
-			want:    []string{"new nightly prev= bump= backport"},
-			add:     []string{"nightly"},
+			name:    "two fallbacks compare among themselves",
+			known:   known("1.0.0", "edge-1"),
+			fetched: fetched("edge-2", "edge-1", "1.0.0"),
+			want:    []string{"new edge-2 prev=edge-1 bump=other"},
+			add:     []string{"edge-2"},
 		},
 	}
 	for _, tt := range tests {
@@ -329,9 +403,10 @@ func TestComputeDetails(t *testing.T) {
 	if r := Compute("t", nil, fetched("a", "b"), lexical.Scheme{}, t0); len(r.Fallbacks) != 0 || len(r.Add) != 2 {
 		t.Errorf("lexical: %+v", r)
 	}
-	// A scheme without fallback skips what it cannot parse.
-	if r := Compute("t", known("1.0.0"), fetched("1.0.0", "nope", "1.1.0"), semver.Scheme{}, t0); r.Skipped != 1 || len(r.Add) != 1 {
-		t.Errorf("strict: skipped=%d add=%+v", r.Skipped, r.Add)
+	// A scheme without fallback still orders what it cannot parse lexically.
+	if r := Compute("t", known("1.0.0"), fetched("1.0.0", "nope", "1.1.0"), semver.Scheme{}, t0); r.Skipped != 0 || len(r.Add) != 2 ||
+		!slices.Equal(r.Fallbacks, []string{"nope"}) || r.Usable != 3 {
+		t.Errorf("strict: %+v", r)
 	}
 }
 

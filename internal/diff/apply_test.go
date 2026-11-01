@@ -13,6 +13,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 	"github.com/angelia-dev/angelia/internal/version/semver"
 )
@@ -207,7 +208,7 @@ func TestApplyLogs(t *testing.T) {
 	for _, want := range []string{
 		`level=INFO msg="versions no longer listed upstream" target=t count=2 versions="[1.0.1 1.0.2]"`,
 		`level=WARN msg="new versions do not match the scheme, using lexical order" target=t scheme=semver count=2 versions="[nightly edge]"`,
-		`level=WARN msg="skipped blank or duplicate upstream versions" target=t count=2`,
+		`level=WARN msg="skipped blank, padded or repeated upstream versions" target=t count=2`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("missing %s\nin\n%s", want, logs)
@@ -219,11 +220,11 @@ func TestApplyLogs(t *testing.T) {
 
 	buf.Reset()
 	check(t, s, list("1.0.1", "1.0.0"), logger)
-	check(t, s, source.Result{}, logger)
+	check(t, s, list(" ", ""), logger) // no usable entry
 	logs = buf.String()
 	for _, want := range []string{
 		`msg="removed versions listed upstream again" target=t count=1 versions=[1.0.1]`,
-		`msg="upstream listed no versions; known set kept" target=t known=5`,
+		`msg="upstream listed no usable versions; known set kept" target=t known=5`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("missing %s\nin\n%s", want, logs)
@@ -241,7 +242,10 @@ func TestApplyLogs(t *testing.T) {
 
 // failTx fails the method named in fail and otherwise behaves like a
 // target with one known version and one watch without a baseline.
-type failTx struct{ fail string }
+type failTx struct {
+	fail string
+	done bool // the watch's baseline is done
+}
 
 var errTx = errors.New("tx failed")
 
@@ -257,11 +261,11 @@ func (f failTx) ListVersions(context.Context, string) ([]store.Version, error) {
 }
 
 func (f failTx) ListWatches(context.Context, string) ([]store.Watch, error) {
-	return []store.Watch{{ID: "w"}}, f.err("ListWatches")
+	return []store.Watch{{ID: "w", BaselineDone: f.done}}, f.err("ListWatches")
 }
 
 func (f failTx) AddVersion(context.Context, store.Version) (bool, error) {
-	return true, f.err("AddVersion")
+	return f.fail != "dup", f.err("AddVersion")
 }
 
 func (f failTx) UpdateVersion(context.Context, store.Version) error { return f.err("UpdateVersion") }
@@ -283,6 +287,13 @@ func TestApplyErrors(t *testing.T) {
 	}
 	if _, err := Apply(t.Context(), failTx{}, in); err != nil {
 		t.Errorf("Apply = %v", err)
+	}
+	if _, err := Apply(t.Context(), failTx{fail: "dup"}, in); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("version already known: Apply = %v", err)
+	}
+	in.SchemeFor = func(store.Watch) (version.Scheme, error) { return nil, errTx }
+	if _, err := Apply(t.Context(), failTx{done: true}, in); !errors.Is(err, errTx) {
+		t.Errorf("SchemeFor failing: Apply = %v", err)
 	}
 	in.Scheme = nil
 	if _, err := Apply(t.Context(), failTx{}, in); !errors.Is(err, errNoScheme) {

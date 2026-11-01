@@ -13,7 +13,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0006](0006-source-target-and-fetchstate.md) | Source Target, FetchState and error contract | Proposed | #50 |
 | [0007](0007-version-schemes-in-house-with-lexical-fallback.md) | Version schemes are in-house, with a lexical fallback | Proposed | #54 |
 | [0008](0008-store-history-rows-and-event-cursor.md) | Store history rows have no foreign key to config; the event cursor is a commit-order sequence | Proposed | #46 |
-| [0009](0009-diff-engine-known-set-and-baseline.md) | The known set never shrinks; baseline is per watch; backports are classified against the merged set | Proposed | #56 |
+| [0010](0010-diff-engine-known-set-and-baseline.md) | The known set never shrinks and is scheme-neutral; baseline is per watch; changes are classified per scheme | Proposed | #56 |
 
 ## Process
 
