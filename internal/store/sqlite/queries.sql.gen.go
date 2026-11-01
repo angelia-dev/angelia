@@ -771,7 +771,7 @@ type ListLeasableDueDeliveriesParams struct {
 	MaxRows int64
 }
 
-// Dispatcher (story #107, ADR 0016). A delivery is due when it is pending
+// Dispatcher (story #107, ADR 0017). A delivery is due when it is pending
 // and its next_attempt_at has passed (NULL counts as due), or when it is in
 // flight under no unexpired lease: its holder crashed or stalled, so it is
 // sent again (at-least-once). Oldest due first. Postgres will use

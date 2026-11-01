@@ -157,7 +157,7 @@ type Store interface {
 	// how many it deleted.
 	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
 	// LeaseDueDeliveries atomically leases up to limit due deliveries for
-	// holder (ADR 0016): pending ones whose NextAttemptAt has passed (zero
+	// holder (ADR 0017): pending ones whose NextAttemptAt has passed (zero
 	// counts as due), and in-flight ones whose lease expired (a crashed or
 	// stalled holder), that no unexpired lease named DeliveryLeaseName(id)
 	// covers, oldest due first. Each is set in flight, its Attempts counts

@@ -114,7 +114,7 @@ type Options struct {
 // dead after a permanent error or the last attempt.
 //
 // Delivery is at least once. A delivery is sent by one holder at a time
-// (its lease, ADR 0016); a holder that crashes mid-send leaves it in flight
+// (its lease, ADR 0017); a holder that crashes mid-send leaves it in flight
 // and another holder sends it again once the lease expires. Consumers drop
 // duplicates by the event id or the idempotency key.
 type Dispatcher struct {

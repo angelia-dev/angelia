@@ -1,8 +1,10 @@
-# ADR 0016: The dispatcher leases deliveries through the lease table, retries with full-jitter backoff, and passes sinks one request struct
+# ADR 0017: The dispatcher leases deliveries through the lease table, retries with full-jitter backoff, and passes sinks one request struct
 
 - **Status:** Proposed
 - **Date:** 2026-11-01
 - **Story:** angelia-dev/angelia#107
+
+ADR 0016 is reserved for #114 (message templating).
 
 ## Context
 
