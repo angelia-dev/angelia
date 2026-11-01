@@ -1,0 +1,20 @@
+{
+  "kind": "crates",
+  "allowed_hosts": ["crates.io"],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "format": "uri",
+        "description": "crates.io API base URL. Default https://crates.io."
+      },
+      "token": {
+        "type": "string",
+        "description": "Optional crates.io API token, sent as the Authorization header."
+      }
+    },
+    "additionalProperties": false
+  }
+}

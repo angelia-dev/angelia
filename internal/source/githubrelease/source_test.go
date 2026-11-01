@@ -33,6 +33,8 @@ const (
 	enterprisePx = "/api/v3"
 )
 
+func fixedNow() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
+
 var valid = source.Target{Kind: "github-release", Coordinates: map[string]string{"repo": "example/tool"}}
 
 // reqRecord is what the fake upstream saw for one request.
@@ -138,7 +140,8 @@ func TestContract(t *testing.T) {
 	sourcetest.Run(t, nil, sourcetest.Fixtures{
 		Handler: f,
 		New: func(baseURL string, c *http.Client) source.Source {
-			return githubrelease.New(baseURL, c, githubrelease.WithPageSize(2)) // 3 pages: paginated
+			// A fixed clock keeps the cursor (full_at) identical across calls.
+			return githubrelease.New(baseURL, c, githubrelease.WithPageSize(2), githubrelease.WithClock(fixedNow)) // 3 pages: paginated
 		},
 		Valid: valid,
 		Invalid: []source.Target{
