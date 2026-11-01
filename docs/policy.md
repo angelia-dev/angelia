@@ -111,8 +111,16 @@ new versions are logged at `DEBUG`, drops of held versions at `INFO`.
 Emitted releases are ordered: formerly held versions first (oldest detection first, then version
 order), then new versions in version order.
 
+## Subscription policy
+
+A subscription can narrow the watch's policy ([watch-file.md §2.6](watch-file.md),
+[ADR 0014](adr/0014-subscription-policy-overrides.md)) with `filter.bump` and `policy.prerelease` /
+`policy.cooldown`. It is applied after this policy, when the event's deliveries are created, to the
+events this policy admitted, so it can only receive **less, later**: the pre-release mode is
+intersected with the watch's, the cooldown is `max(watch, subscription)` counted from the same start
+as the watch's, and a bump the watch drops never arrives. Useless values are clamped, not rejected.
+`release.yanked` events ignore `policy.*`. Code: `subscription.Policy.Evaluate`.
+
 ## Not in Phase 0
 
-- Policy on subscriptions (architecture.md §3.4 says "per watch or subscription"); subscriptions have
-  a `filter` instead.
 - `baseline: false`.

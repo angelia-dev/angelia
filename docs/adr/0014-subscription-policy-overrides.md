@@ -4,9 +4,9 @@
 - **Date:** 2026-11-01
 - **Story:** angelia-dev/angelia#69
 
-This is a design note only. It adds watch-file keys (a public contract) and a migration, so both wait
-for the maintainer ([AGENTS.md](../../AGENTS.md)). No implementation exists yet. ADR 0013 is reserved
-for #60.
+The maintainer answered the open questions on PR #162 (section "Maintainer decisions" below). The
+implementation is in the same PR; where the decisions changed a section, the section says so. ADR 0013
+is reserved for #60.
 
 ## Context
 
@@ -57,7 +57,7 @@ subscriptions:
 | Key | Type | Default | Validation |
 |---|---|---|---|
 | `policy.prerelease` | string | absent = inherit the watch | `none`, `only` or `include`; `include` is accepted and narrows nothing |
-| `policy.cooldown` | duration | absent = `0` (no extra hold) | Go syntax, whole seconds, `0` to `8760h`: the rules of the watch's `cooldown` |
+| `policy.cooldown` | duration | absent = `0` (no extra hold) | Go syntax; clamped to `0` to `8760h` and cut to whole seconds (not an error, decision 2) |
 | `filter.bump` | list | any | unchanged: `major`, `minor`, `patch` |
 
 Unknown keys under `policy` are errors, as everywhere in the file. A subscription's `policy` is
@@ -96,12 +96,15 @@ At **match time**, in the check's transaction, after the watch policy and in the
 matcher (`internal/subscription`), before the delivery rows are written:
 
 1. `Filter.Match` as today, with `bump` now documented as narrowing.
-2. New `Input.Prerelease` (bool, from the release) and the `policy.prerelease` rule: drop if the
-   subscription's mode excludes this version.
-3. Cooldown: `releaseAt = start + policy.cooldown`, where `start` is the watch policy's cooldown
-   start (a new `policy.Release.CooldownStartedAt`, filled whether or not the watch has a cooldown,
-   carried in `Input.CooldownStart`). If `releaseAt` is not after the event's creation time, the
-   delivery is created as today. Otherwise the delivery is created **held**.
+2. `policy.prerelease`: drop if the subscription's mode (or the watch's) excludes this version.
+3. Cooldown: `releaseAt = start + max(watch cooldown, policy.cooldown)`, where `start` is the watch
+   policy's cooldown start. If `releaseAt` is not after the event's creation time, the delivery is
+   created as today. Otherwise the delivery is created **held**.
+
+Steps 2 and 3 are one pure function, `subscription.Policy.Evaluate(event, now)`, returning admit, hold
+until T or drop for (watch policy result, subscription policy, event). A `release.yanked` event is always
+admitted (decision 5). Calling it from the check's transaction and building the held `store.Delivery`
+(`Hold`) is the match step of #106, not this story.
 
 A held delivery is an ordinary `pending` delivery whose `next_attempt_at` is `releaseAt`. The
 dispatcher needs no change: it leases pending rows when their time comes, so release is "the
@@ -109,10 +112,21 @@ dispatcher reaches `next_attempt_at`", with no timer in memory. Match time (not 
 chosen because the dispatcher then stays a pure sender, and the decision uses the same snapshot of the
 release as the event.
 
-Edits to a subscription **do not** re-evaluate deliveries already created, held ones included. This
-is the rule already in watch-file.md §4 (D8: queued deliveries of a kept subscription are sent). It
-differs from the watch's cooldown, which re-reads the current policy at every check; the difference
-is that a held delivery belongs to an event that already exists.
+Editing a subscription **does not touch deliveries that are already queued** (watch-file.md §4, D8:
+queued deliveries of a kept subscription are sent). It **does** decide again the **held** ones, that is
+the pending deliveries whose `held_until` is still ahead (maintainer decision 6). On a watch-file apply
+that changes a subscription's `policy`, every such delivery is recomputed with the new policy from what
+its hold recorded:
+
+- the new release time is `start + max(watch cooldown, new subscription cooldown)`; if it has passed,
+  the hold is cleared and `next_attempt_at` is now; if it is ahead, `held_until` and `next_attempt_at`
+  move to it (earlier or later);
+- if the new `policy.prerelease` excludes the version, the delivery becomes `dead` with a reason.
+
+A hold whose time has already passed is just a queued delivery and is not touched. The recomputation
+is `watchfile.reevaluateHeld`, one function with one call site, using the same `Policy.Evaluate` as
+the match step, so it can be dropped without changing anything else. What it needs is stored on the
+delivery (section 4).
 
 A yank while a delivery is held must cancel it, as it does for a version held by the watch's cooldown
 ("dropped if yanked meanwhile"). The yank handling (#112) calls a store method that removes held
@@ -122,23 +136,28 @@ had withdrawn before the chat was told of it.
 ### 4. Storage
 
 One additive migration, **`00006_subscription_policy_holds.sql`** (next free after 00005; the number
-is provisional if another story merges first; Postgres gets the same DDL with `BIGINT`):
+was free on main; there is no Postgres engine yet, which will get the same DDL with `BIGINT`):
 
 ```sql
 -- +goose Up
 ALTER TABLE subscription ADD COLUMN policy_json TEXT NOT NULL DEFAULT '{}'
     CHECK (json_valid(policy_json));
-ALTER TABLE delivery ADD COLUMN held_until    INTEGER;  -- NULL = not held
-ALTER TABLE delivery ADD COLUMN hold_watch_id TEXT;     -- no FK, like the rest of delivery
-ALTER TABLE delivery ADD COLUMN hold_raw      TEXT;     -- raw upstream version
-CREATE INDEX delivery_held ON delivery (hold_watch_id, hold_raw) WHERE held_until IS NOT NULL;
+ALTER TABLE delivery ADD COLUMN held_until             INTEGER;  -- NULL = not held
+ALTER TABLE delivery ADD COLUMN hold_started_at        INTEGER;  -- the cooldowns count from here
+ALTER TABLE delivery ADD COLUMN hold_watch_cooldown_ms INTEGER;  -- the watch cooldown already waited
+ALTER TABLE delivery ADD COLUMN hold_prerelease        INTEGER;  -- 1 when the version is a pre-release
+ALTER TABLE delivery ADD COLUMN hold_watch_id          TEXT;     -- no FK, like the rest of delivery
+ALTER TABLE delivery ADD COLUMN hold_raw               TEXT;     -- raw upstream version
+CREATE INDEX delivery_held ON delivery (subscription_id) WHERE held_until IS NOT NULL;
+CREATE INDEX delivery_hold_version ON delivery (hold_watch_id, hold_raw) WHERE held_until IS NOT NULL;
 ```
 
 Nothing is dropped or rewritten; existing rows get `'{}'` and `NULL`. For a held delivery,
-`status = 'pending'`, `next_attempt_at = held_until`, and the two `hold_*` columns identify the
-version for cancellation. `status` is not extended (the public status list stays four values).
-`held_until` is kept after release so the API can say "released from hold"; "currently held" means
-`status = 'pending' AND held_until > now`.
+`status = 'pending'`, `next_attempt_at = held_until`. `hold_started_at`, `hold_watch_cooldown_ms` and
+`hold_prerelease` are what re-evaluation on a subscription edit needs; `hold_watch_id` and `hold_raw`
+identify the version for cancellation. `status` is not extended (the public status list stays four values).
+A hold ended by the clock keeps `held_until`; a hold ended by an edit is cleared. "Currently held"
+means `status = 'pending' AND held_until > now`.
 
 Survival: held deliveries are rows, so a restart, a lease moving to another node or a crash between
 checks loses nothing.
@@ -147,11 +166,9 @@ Lifecycle:
 
 - **Yank of the version** (#112): delete the watch's held deliveries with `hold_watch_id` and
   `hold_raw` still held.
-- **Subscription deleted** (watch-file apply, or the API): held deliveries are pending, so by D8
-  they are deleted. To stay consistent with #107's "fail as dead" rule we recommend that **held**
-  deliveries are instead set `dead` with `last_error = 'subscription removed while held'`, so
-  they stay visible and cannot silently disappear (plain pending deliveries keep D8 until #107
-  says otherwise).
+- **Subscription deleted** (watch-file apply, or the API): **all** its pending deliveries, held or
+  not, become `dead` with `last_error = 'subscription removed'` (maintainer decision 4; this amends
+  D8 in watch-file.md, which deleted them). In-flight, delivered and dead rows are left alone.
 - **Watch re-targeted** (source or coordinates changed; `pending_release` rows are already deleted by
   `DeletePendingReleasesOfWatch`): held deliveries with that `hold_watch_id` are set `dead` with
   `last_error = 'watch re-targeted while held'`; their raw versions belong to another target.
@@ -160,9 +177,8 @@ Lifecycle:
 - **Subscription's sink changed or removed**: unchanged rules; a held delivery follows its
   subscription.
 
-I could not find #107's text in the repository; the two `dead` rules above assume it means "a
-delivery that can never be sent becomes `dead` with a reason instead of being deleted". Please
-confirm.
+The re-target rule is not implemented here: nothing creates held deliveries until #106, and the yank
+cancellation belongs to #112; the columns they need are in the migration.
 
 ## Consequences
 
@@ -175,29 +191,42 @@ confirm.
 
 ### Negative
 
-- Cooldown is not re-evaluated at release time: a sink does not benefit from a later policy change
-  for deliveries already queued.
+- Cooldown is not re-evaluated at release time: a policy change reaches held deliveries when the
+  subscription is edited, but not deliveries already queued.
 - A subscription can ask for something useless (`prerelease: only` on a `none` watch) with no error.
 - Four new columns on `delivery`/`subscription`; `hold_watch_id` and `hold_raw` duplicate facts held
   in the event payload, to make cancellation an indexed delete.
 - `filter.bump` and `policy.*` are in two blocks.
 
-### Open questions
+### Resolved questions
 
-1. **Block layout.** Recommendation: `bump` stays in `filter`, the new keys in `policy`. Alternative:
-   accept `policy.bump` as an alias of `filter.bump`, rejected (two ways to say it).
-2. **Clamp or error** for useless values (section 2). Recommendation: clamp, plus an optional
-   `config check` warning.
-3. **Cooldown start.** Same start as the watch's, so `max` not sum. Recommendation: keep. Say so if
-   "72 h after the watch released it" (sum) is wanted.
-4. **#107.** Held deliveries to `dead` on subscription delete and re-target (above). Confirm the
-   rule, and whether D8 should move to `dead` for all pending deliveries.
-5. **Event types.** Should `policy.prerelease` and `policy.cooldown` apply to `release.yanked`
-   events? Recommendation: no, they apply to `release.published` and `release.prerelease` only; a
-   yank notice is not delayed.
-6. **Subscription edits and held deliveries** are not re-evaluated (section 3). Recommendation: keep.
-7. **Dependencies.** The yank cancellation needs a hook in #112, and event building (#106) must be in
-   place for the match step. Which story owns the integration, this one or #106?
+1. **Block layout.** Resolved: `bump` stays in `filter`, the new keys are in `policy`, no `policy.bump`
+   alias.
+2. **Clamp or error.** Resolved: clamp; never fail at load time for a useless value. Syntax errors
+   still fail. The optional `config check` warning is not part of this story.
+3. **Cooldown start.** Resolved: the same start as the watch's; the effective hold is the max.
+4. **#107.** Resolved: on subscription delete, all pending deliveries become `dead` with a reason;
+   D8 is amended. The re-target rule stays as proposed and waits for the match step.
+5. **Event types.** Resolved: `policy.*` does not apply to `release.yanked`.
+6. **Edits and held deliveries.** Resolved as "queued": edits do not touch queued deliveries but
+   decide again the held ones (section 3).
+7. **Ownership.** Resolved by the scope of #69 below.
+
+### Maintainer decisions (2026-11-01, PR #162)
+
+1. Layout: OK. `bump` stays in `filter`, the new keys go in `policy`, and there is no `policy.bump`
+   alias.
+2. Clamp useless values. Never fail at load time.
+3. Effective cooldown = max(watch, subscription), measured from the same start.
+4. On subscription delete, ALL pending deliveries of that subscription become `dead` with a reason,
+   not only held ones. This amends D8 in [watch-file.md](../watch-file.md).
+5. `policy.*` does not apply to `release.yanked`.
+6. Subscription edits do not touch already-queued deliveries (no hold), but do re-evaluate held
+   deliveries: on a watch-file apply, every pending delivery of the subscription with `held_until`
+   set is recomputed with the new policy, as described in section 3.
+7. Scope of #69: the watch-file keys, validation and clamping; migration 00006; the store queries; the
+   pure evaluation function the #106 match step calls (admit, hold until T, drop); the held-delivery
+   re-evaluation on apply; and dead-on-delete. Wiring it into the event pipeline is #106's job.
 
 ## Alternatives considered
 

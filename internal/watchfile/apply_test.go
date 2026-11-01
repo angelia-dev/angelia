@@ -62,7 +62,7 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Count(KindSink, Create) != 1 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 2 || plan.Count(KindTarget, Create) != 4 {
+	if plan.Count(KindSink, Create) != 1 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 3 || plan.Count(KindTarget, Create) != 4 {
 		t.Fatalf("plan:\n%s", plan)
 	}
 
@@ -71,7 +71,7 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 		string(s.sinks[0].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
 		t.Fatalf("sinks: %+v", s.sinks)
 	}
-	if len(s.watches) != 4 || len(s.subs) != 2 {
+	if len(s.watches) != 4 || len(s.subs) != 3 {
 		t.Fatalf("watches=%d subs=%d", len(s.watches), len(s.subs))
 	}
 	byName := map[string]store.Watch{}
@@ -123,6 +123,9 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	}
 	if got := string(sub["web-and-tooling-bumps"].Filter); got != `{"source":["npm","github-release"],"labels":{},"bump":["major","minor"],"package":"re*","type":["release.published"]}` {
 		t.Fatalf("filter: %s", got)
+	}
+	if got := string(sub["platform-to-chat-minors"].Policy); got != `{"prerelease":"none","cooldown":"72h0m0s"}` {
+		t.Fatalf("policy: %s", got)
 	}
 
 	// Idempotent: a second run changes nothing.

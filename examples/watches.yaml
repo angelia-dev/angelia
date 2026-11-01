@@ -72,3 +72,15 @@ subscriptions:
       source: [npm, github-release]
       bump: [major, minor]
       package: "re*"
+
+  # The same platform events for chat, but only minors, final versions, and not before they are
+  # 72 h old. A subscription can only receive less, later, than the watch policy admits.
+  - name: platform-to-chat-minors
+    sink: ci-webhook
+    filter:
+      labels:
+        team: platform
+      bump: [minor]
+    policy:
+      prerelease: none
+      cooldown: 72h
