@@ -14,8 +14,10 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null || echo unknown)
 LDFLAGS := -X $(BUILDINFO).version=$(VERSION) -X $(BUILDINFO).commit=$(COMMIT) -X $(BUILDINFO).date=$(DATE)
 
-GOLANGCI_LINT       ?= golangci-lint
-FUZZTIME            ?= 30s
+GOLANGCI_LINT         ?= golangci-lint
+GOLANGCI_LINT_VERSION := v2.15.0
+GOVULNCHECK_VERSION   := v1.9.0
+FUZZTIME              ?= 30s
 # package:FuzzTarget pairs run by `make fuzz`; go test -fuzz takes one target at a time.
 FUZZ_TARGETS := \
 	./internal/version:FuzzNatural \
@@ -26,9 +28,8 @@ FUZZ_TARGETS := \
 	./internal/version/pep440:FuzzCompare \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
-GOVULNCHECK_VERSION := v1.9.0
 
-.PHONY: help build test fuzz lint vuln generate clean
+.PHONY: help build test fuzz lint lint-tools vuln generate clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -45,12 +46,19 @@ fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
 		go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) "$${t%%:*}"; \
 	done
 
+# Same toolchain pin as vuln: a go1.26 build cannot lint go1.27 code.
+lint-tools: ## Install the pinned golangci-lint version into GOBIN
+	GOTOOLCHAIN=$$(go env GOVERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 lint: ## Run golangci-lint and the gofumpt format check
 	$(GOLANGCI_LINT) run
 	$(GOLANGCI_LINT) fmt --diff
 
+# govulncheck's go.mod asks for Go 1.26, so `go run` would build it with go1.26
+# and it could not load this module (go 1.27). Build it with the toolchain this
+# module uses instead.
 vuln: ## Check for known vulnerabilities (needs access to vuln.go.dev)
-	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	GOTOOLCHAIN=$$(go env GOVERSION) go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 generate: ## Run go generate (sqlc, oapi-codegen); commit the output
 	go generate ./...
