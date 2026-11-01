@@ -124,4 +124,9 @@ func TestConfigCheckWatches(t *testing.T) {
 	if _, err := run("--watches", writeFile(t, "w.yaml", "version: 2\n")); err == nil || !strings.Contains(err.Error(), "line 1: version: must be 1") {
 		t.Fatalf("err = %v", err)
 	}
+	// A broken watch file never prints "configuration OK".
+	out, err = run("--watches", writeFile(t, "w.yaml", "version: 2\n"))
+	if err == nil || strings.Contains(out, "configuration OK") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
 }

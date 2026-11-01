@@ -38,11 +38,12 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range cfg.Warnings() {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
-			if _, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK"); err != nil {
+			watches, err := watchesPath(cmd)
+			if err != nil {
 				return err
 			}
-			watches, err := watchesPath(cmd)
-			if err != nil || watches == "" {
+			if watches == "" {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK")
 				return err
 			}
 			f, err := parseWatchFile(cfg, watches)
@@ -52,7 +53,7 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range f.Warnings {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions))
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions))
 			return err
 		},
 	}

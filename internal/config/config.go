@@ -73,6 +73,23 @@ type Database struct {
 	DSN string `yaml:"dsn"`
 }
 
+// SQLitePath returns the database file of a sqlite DSN (sqlite:///abs/path.db;
+// the scheme is case-insensitive). A DSN with a host, such as
+// sqlite://./data/a.db, is rejected: the host would be silently dropped.
+func (d Database) SQLitePath() (string, error) {
+	u, err := url.Parse(d.DSN)
+	if err != nil || !strings.EqualFold(u.Scheme, "sqlite") {
+		return "", errors.New("database.dsn is not a sqlite DSN")
+	}
+	if u.Host != "" {
+		return "", errors.New("database.dsn: a sqlite DSN has no host; write sqlite:///absolute/path.db (three slashes) for an absolute path")
+	}
+	if u.Path == "" {
+		return "", errors.New("database.dsn: sqlite DSN needs a file path, e.g. sqlite:///var/lib/angelia/angelia.db")
+	}
+	return u.Path, nil
+}
+
 // Secrets configures the key file used for secrets (encryption is Phase 1).
 type Secrets struct {
 	KeyFile string `yaml:"key_file"`

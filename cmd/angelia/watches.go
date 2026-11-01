@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
 
@@ -84,11 +83,11 @@ func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *s
 	for _, w := range f.Warnings {
 		log.Warn(w)
 	}
-	u, err := url.Parse(cfg.Database.DSN)
-	if err != nil || u.Scheme != "sqlite" {
-		return fmt.Errorf("--watches: only sqlite databases are supported in this phase (database.dsn scheme is not sqlite)")
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		return fmt.Errorf("--watches: only sqlite databases are supported in this phase: %w", err)
 	}
-	st, err := sqlite.Open(ctx, u.Path, log)
+	st, err := sqlite.Open(ctx, dbPath, log)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
