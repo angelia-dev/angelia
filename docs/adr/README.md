@@ -5,6 +5,11 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 
 | ADR | Title | Status | Story |
 |---|---|---|---|
+| [0001](0001-go-as-implementation-language.md) | Go is the implementation language (provisional until Phase 0 benchmarks) | Proposed | #43 |
+| [0002](0002-one-binary-several-roles.md) | One binary, several roles | Proposed | #43 |
+| [0003](0003-sqlite-default-postgres-ha-no-external-queue.md) | SQLite by default, Postgres for HA, no external queue | Proposed | #43 |
+| [0004](0004-cloudevents-purl-event-contract.md) | CloudEvents 1.0 and purl as the event contract; event is not delivery; transactional outbox | Proposed | #43 |
+| [0005](0005-standard-webhooks-signing.md) | Sign webhook deliveries with Standard Webhooks | Proposed | #43 |
 
 ## Process
 
