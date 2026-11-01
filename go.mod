@@ -7,6 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
 
