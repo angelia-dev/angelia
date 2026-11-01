@@ -1,0 +1,12 @@
+version: "2"
+sql:
+  - engine: sqlite
+    schema: migrations
+    queries: sqlite/queries.sql
+    gen:
+      go:
+        package: sqlite
+        out: sqlite
+        output_db_file_name: db.gen.go
+        output_models_file_name: models.gen.go
+        output_files_suffix: .gen
