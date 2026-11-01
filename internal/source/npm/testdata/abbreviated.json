@@ -1,0 +1,9 @@
+{
+  "name": "angelia-test-abbr",
+  "modified": "2024-02-01T00:00:00.000Z",
+  "dist-tags": {"latest": "0.2.0"},
+  "versions": {
+    "0.1.0": {"name": "angelia-test-abbr", "version": "0.1.0", "dist": {"tarball": "https://registry.example/angelia-test-abbr/-/angelia-test-abbr-0.1.0.tgz", "shasum": "0001"}},
+    "0.2.0": {"name": "angelia-test-abbr", "version": "0.2.0", "deprecated": "old", "dist": {"tarball": "https://registry.example/angelia-test-abbr/-/angelia-test-abbr-0.2.0.tgz", "shasum": "0002"}}
+  }
+}
