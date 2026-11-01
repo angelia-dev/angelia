@@ -43,12 +43,27 @@ func Budget(n int, per time.Duration, burst int) (Limit, error) {
 // HostLimit holds the limits for one host. A request carrying an
 // Authorization header uses Authenticated; others use Anonymous. The two
 // budgets are tracked in separate buckets.
+//
+// MaxBodyBytes caps the decompressed response body for responses served by
+// this host, overriding Config.MaxBodyBytes. Zero means use the global cap.
+// The cap follows the host that actually serves the body: a redirect from a
+// host with a large cap to one without does not carry the large cap along
+// (and the reverse). It lives here, not in a context option, so that one
+// table configures everything known about a host, a caller cannot raise a cap
+// per request, and the cap stays tied to the host the SSRF guard approved.
+// Entries given in Config.HostLimits replace the built-in entry for the same
+// host as a whole, MaxBodyBytes included. It is ignored in
+// Config.FallbackLimit, which only describes rates.
 type HostLimit struct {
 	Authenticated Limit
 	Anonymous     Limit
+	MaxBodyBytes  int64
 }
 
 func (h HostLimit) validate() error {
+	if h.MaxBodyBytes < 0 {
+		return fmt.Errorf("max body bytes must not be negative, got %d", h.MaxBodyBytes)
+	}
 	if err := h.Authenticated.validate(); err != nil {
 		return fmt.Errorf("authenticated: %w", err)
 	}
@@ -71,13 +86,30 @@ func DefaultFallbackLimit() HostLimit {
 // api.github.com allows 5,000 requests per hour with a token and 60 without.
 // Burst + Rate*1h equals those budgets (see Budget), so the buckets never
 // exceed them over any one-hour window.
+//
+// registry.npmjs.org and index.crates.io serve single documents above the
+// global 10 MiB body cap (npm packuments up to 31.5 MB for next, the
+// swc_core sparse index file 16.0 MB on 2026-11-01), so they get a 64 MiB
+// cap. Their request rates are the fallback's.
 func DefaultHostLimits() map[string]HostLimit {
+	fb := DefaultFallbackLimit()
 	return map[string]HostLimit{
+		"registry.npmjs.org": {Authenticated: fb.Authenticated, Anonymous: fb.Anonymous, MaxBodyBytes: LargeRegistryMaxBodyBytes},
+		"index.crates.io":    {Authenticated: fb.Authenticated, Anonymous: fb.Anonymous, MaxBodyBytes: LargeRegistryMaxBodyBytes},
 		"api.github.com": {
 			Authenticated: Limit{Rate: (5000 - 10) / 3600.0, Burst: 10},
 			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},
 		},
 	}
+}
+
+// maxBodyBytes returns the body cap for host: its entry's MaxBodyBytes if
+// set, else global.
+func (l *limiter) maxBodyBytes(host string, global int64) int64 {
+	if hl, ok := l.limits[normHost(host)]; ok && hl.MaxBodyBytes > 0 {
+		return hl.MaxBodyBytes
+	}
+	return global
 }
 
 // normHost returns the key used for a host: lower case, without a trailing dot.

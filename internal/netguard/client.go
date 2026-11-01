@@ -22,11 +22,14 @@ import (
 const (
 	DefaultTimeout      = 30 * time.Second
 	DefaultMaxBodyBytes = 10 << 20 // 10 MiB
-	DefaultMaxAttempts  = 4
-	DefaultBaseBackoff  = 500 * time.Millisecond
-	DefaultMaxBackoff   = 30 * time.Second
-	DefaultMaxRetryWait = 2 * time.Minute
-	maxRedirects        = 10 // net/http's own default
+	// LargeRegistryMaxBodyBytes is the built-in cap for registry hosts known
+	// to serve documents above DefaultMaxBodyBytes (see DefaultHostLimits).
+	LargeRegistryMaxBodyBytes = 64 << 20 // 64 MiB
+	DefaultMaxAttempts        = 4
+	DefaultBaseBackoff        = 500 * time.Millisecond
+	DefaultMaxBackoff         = 30 * time.Second
+	DefaultMaxRetryWait       = 2 * time.Minute
+	maxRedirects              = 10 // net/http's own default
 )
 
 // ErrBodyTooLarge is returned when reading a response body past the cap.
@@ -38,7 +41,8 @@ type Config struct {
 	UserAgent string
 	// Timeout bounds one attempt, including reading the body. Default 30s.
 	Timeout time.Duration
-	// MaxBodyBytes caps response bodies. Default 10 MiB.
+	// MaxBodyBytes caps decompressed response bodies. Default 10 MiB. A
+	// HostLimit with a non-zero MaxBodyBytes overrides it for that host.
 	MaxBodyBytes int64
 	// MaxAttempts is the total number of attempts for a retryable request,
 	// including the first. Default 4; 1 disables retries.
@@ -178,7 +182,8 @@ func (c *Client) HTTPClient() *http.Client {
 
 // RoundTrip sends one hop after the SSRF check and the hop host's rate
 // limit. Requests without a body and with an idempotent method are retried
-// on 429, 5xx and timeouts. The response body is capped at MaxBodyBytes:
+// on 429, 5xx and timeouts. The response body is capped at the serving
+// host's HostLimit.MaxBodyBytes, or Config.MaxBodyBytes if it has none:
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -216,7 +221,8 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 				cancel()
 				return nil, err
 			}
-			resp.Body = &cappedBody{rc: resp.Body, remaining: c.cfg.MaxBodyBytes, limit: c.cfg.MaxBodyBytes, cancel: cancel}
+			maxBody := c.limiter.maxBodyBytes(host, c.cfg.MaxBodyBytes)
+			resp.Body = &cappedBody{rc: resp.Body, remaining: maxBody, limit: maxBody, cancel: cancel}
 			return resp, nil
 		}
 		attrs := []any{"host", host, "attempt", attempt, "wait", wait}

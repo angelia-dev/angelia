@@ -14,7 +14,11 @@
 //   - conditional requests ([Fetch], [Validators]): a 304 is reported
 //     as [Result.NotModified] and its body is never read;
 //   - a User-Agent with the build version, per-attempt timeouts and a
-//     response size cap ([ErrBodyTooLarge]);
+//     response size cap on the decompressed body ([ErrBodyTooLarge]): 10 MiB
+//     ([Config].MaxBodyBytes) unless the host that serves the response has
+//     its own [HostLimit].MaxBodyBytes, as registry.npmjs.org and
+//     index.crates.io do (64 MiB). A redirect does not carry a cap to the
+//     next host; each hop's host decides;
 //   - a basic SSRF guard ([Guard]) that refuses loopback, private,
 //     link-local, CGNAT, multicast, broadcast and IPv4-embedding IPv6
 //     addresses unless they are allowlisted.
