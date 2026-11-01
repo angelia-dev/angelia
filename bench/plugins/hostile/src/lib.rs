@@ -3,9 +3,24 @@
 //! Never deploy it.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use angelia_plugin_abi::{self as abi, HttpRequest, ListInput, ListOutput, Target, ValidateOutput, Version};
+use angelia_plugin_abi::{self as abi, HttpRequest, ListInput, ListOutput, Target, ValidateOutput, Validators, Version};
 use extism_pdk::{Error, FnResult, Json, plugin_fn};
+
+/// The host's log function with an untyped argument, to send entries that
+/// are not JSON.
+mod raw {
+    use extism_pdk::host_fn;
+
+    #[host_fn("angelia:host/v0")]
+    extern "ExtismHost" {
+        pub fn log(entry: String);
+    }
+}
+
+/// Counts the calls served by this instance; shows instance reuse.
+static CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn coord<'a>(t: &'a Target, k: &str) -> &'a str {
     t.coordinates.get(k).map(String::as_str).unwrap_or("")
@@ -27,6 +42,12 @@ pub fn validate(Json(t): Json<Target>) -> FnResult<Json<ValidateOutput>> {
             Ok(Json(ValidateOutput::default()))
         }
         "validate_trap" => panic!("validate traps"),
+        "validate_loop" => {
+            let mut n: u64 = 0;
+            loop {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+        }
         _ => Ok(Json(ValidateOutput::default())),
     }
 }
@@ -48,9 +69,16 @@ pub fn list(Json(input): Json<ListInput>) -> FnResult<Json<ListOutput>> {
             if let Some(a) = t.coordinates.get("authorization") {
                 headers.insert("Authorization".to_string(), a.clone());
             }
+            // Coordinates "h:<name>" become request headers as given.
+            for (k, v) in &t.coordinates {
+                if let Some(name) = k.strip_prefix("h:") {
+                    headers.insert(name.to_string(), v.clone());
+                }
+            }
+            let validators = t.coordinates.get("etag").map(|e| Validators { etag: e.clone(), ..Default::default() });
             let method = coord(t, "method").to_string();
             let body = abi::encode_body(coord(t, "body").as_bytes());
-            let resp = abi::http(HttpRequest { url, method, headers, body, ..Default::default() })?;
+            let resp = abi::http(HttpRequest { url, method, headers, body, validators })?;
             let mut out = one(&resp.status.to_string());
             let body = String::from_utf8_lossy(&resp.body_bytes()?).into_owned();
             out.versions[0].metadata.insert("body".into(), body.into());
@@ -87,6 +115,32 @@ pub fn list(Json(input): Json<ListInput>) -> FnResult<Json<ListOutput>> {
             abi::log("info", "x".repeat(10_000));
             Ok(Json(one("1.0.0")))
         }
+        // Floods the host's log with valid, non-JSON and oversized entries.
+        "log_flood" => {
+            for i in 0..5000 {
+                match i % 3 {
+                    0 => abi::log("info", format!("flood {i}")),
+                    1 => {
+                        let _ = unsafe { raw::log(format!("not json {i}")) };
+                    }
+                    _ if i < 300 => {
+                        let _ = unsafe { raw::log("x".repeat(70_000)) };
+                    }
+                    _ => {
+                        let _ = unsafe { raw::log(String::from("{")) };
+                    }
+                }
+            }
+            Ok(Json(one("1.0.0")))
+        }
+        // Floods Extism's own log functions (extism:host/env log_*).
+        "extism_log_flood" => {
+            for i in 0..5000 {
+                extism_pdk::info!("flood {i}");
+            }
+            Ok(Json(one("1.0.0")))
+        }
+        "counter" => Ok(Json(one(&(CALLS.fetch_add(1, Ordering::Relaxed) + 1).to_string()))),
         "loop" => {
             let mut n: u64 = 0;
             loop {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -90,7 +91,7 @@ func TestPluginFailures(t *testing.T) {
 	cases := map[string]string{
 		"trap":             "unreachable", // panic = "abort" traps
 		"error":            "plugin says no",
-		"alloc":            "",
+		"alloc":            "wasm error: unreachable", // the allocator aborts at MaxMemoryPages
 		"bad_published_at": "published_at",
 		"empty_raw":        "empty raw",
 	}
@@ -194,7 +195,7 @@ func TestConcurrentCallsAndReuse(t *testing.T) {
 	errs := make(chan error, 32)
 	for range 32 {
 		wg.Go(func() {
-			if _, err := s.List(t.Context(), hostileTarget("ok"), source.FetchState{}); err != nil {
+			if _, err := s.List(t.Context(), hostileTarget("counter"), source.FetchState{}); err != nil {
 				errs <- err
 			}
 		})
@@ -203,6 +204,26 @@ func TestConcurrentCallsAndReuse(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+	// Sequential calls take the same idle instance back: its call counter,
+	// which lives in the instance's memory, goes on increasing.
+	counter := func() int {
+		res, err := s.List(t.Context(), hostileTarget("counter"), source.FetchState{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := strconv.Atoi(res.Versions[0].Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	first := counter()
+	if first < 2 {
+		t.Fatalf("first counter = %d: the instance that ran a concurrent call was not reused", first)
+	}
+	if second := counter(); second != first+1 {
+		t.Fatalf("counters %d then %d, want consecutive values from one reused instance", first, second)
 	}
 }
 

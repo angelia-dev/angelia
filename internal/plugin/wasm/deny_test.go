@@ -25,28 +25,47 @@ func TestDenyHostNotInAllowedHosts(t *testing.T) {
 	net, hc := newTestNet(t, handlers)
 	s := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{HTTPClient: hc})
 
-	cases := map[string]string{
-		"other host":            "http://denied.test/",
-		"suffix of allowed":     "http://evilallowed.test/",
-		"allowed as subdomain":  "http://allowed.test.denied.test/",
-		"subdomain of allowed":  "http://www.allowed.test/",
+	// Denied by the allowlist: the call's error wraps ErrHostNotAllowed.
+	denied := map[string]string{
+		"other host":           "http://denied.test/",
+		"suffix of allowed":    "http://evilallowed.test/",
+		"allowed as subdomain": "http://allowed.test.denied.test/",
+		"subdomain of allowed": "http://www.allowed.test/",
+		"ip of allowed host":   "http://203.0.113.10/",
+		"loopback ipv6":        "http://[::1]/",
+		"metadata ip":          "http://169.254.169.254/latest/meta-data/",
+		"file scheme":          "file:///etc/passwd",
+		"ftp scheme":           "ftp://allowed.test/",
+		"no host":              "http:///path",
+		"relative":             "/api/v1",
+		"non-ascii lookalike":  "http://\u0430llowed.test/", // Cyrillic a
+		"non-ascii name":       "http://allowed.t\u00e9st/",
+	}
+	// Rejected earlier, as malformed (code bad_request).
+	malformed := map[string]string{
 		"allowed as userinfo":   "http://allowed.test@denied.test/",
-		"ip of allowed host":    "http://203.0.113.10/",
-		"loopback ipv6":         "http://[::1]/",
-		"metadata ip":           "http://169.254.169.254/latest/meta-data/",
-		"file scheme":           "file:///etc/passwd",
-		"ftp scheme":            "ftp://allowed.test/",
-		"no host":               "http:///path",
-		"relative":              "/api/v1",
 		"backslash trick":       "http://denied.test\\@allowed.test/",
 		"percent-encoded colon": "http://denied.test%3a80@allowed.test/",
+		"percent-encoded host":  "http://%61llowed.test/",
 	}
-	for name, u := range cases {
+	for name, u := range denied {
 		t.Run(name, func(t *testing.T) {
 			before := len(net.requests())
 			_, err := s.List(t.Context(), hostileTarget("fetch", "url", u), source.FetchState{})
-			if err == nil {
-				t.Fatalf("List(%q) succeeded", u)
+			if !errors.Is(err, wasm.ErrHostNotAllowed) {
+				t.Fatalf("List(%q) = %v, want ErrHostNotAllowed", u, err)
+			}
+			if got := net.requests()[before:]; len(got) != 0 {
+				t.Fatalf("List(%q) reached the network: %v", u, got)
+			}
+		})
+	}
+	for name, u := range malformed {
+		t.Run(name, func(t *testing.T) {
+			before := len(net.requests())
+			_, err := s.List(t.Context(), hostileTarget("fetch", "url", u), source.FetchState{})
+			if err == nil || !strings.Contains(err.Error(), "bad_request") {
+				t.Fatalf("List(%q) = %v, want bad_request", u, err)
 			}
 			if got := net.requests()[before:]; len(got) != 0 {
 				t.Fatalf("List(%q) reached the network: %v", u, got)
@@ -243,6 +262,16 @@ func TestDenyBadRequests(t *testing.T) {
 		"bad url":         hostileTarget("fetch", "url", "http://allowed.test/%zz"),
 		"bad body base64": hostileTarget("fetch_raw", "url", "http://allowed.test/", "method", "POST", "raw_body", "%%%"),
 		"bad header":      hostileTarget("fetch", "url", "http://allowed.test/", "authorization", "a\nb"),
+		"bad etag":        hostileTarget("fetch", "url", "http://allowed.test/", "etag", "\"a\"\r\nX-Evil: 1"),
+		"header collision after canonicalisation": hostileTarget("fetch", "url", "http://allowed.test/",
+			"h:x-token", "a", "h:X-Token", "b"),
+	}
+	reserved := []string{
+		"Connection", "upgrade", "TE", "Keep-Alive", "Proxy-Authorization",
+		"Proxy-Connection", "Expect", "Transfer-Encoding", "content-length", "Host",
+	}
+	for _, h := range reserved {
+		cases["reserved header "+h] = hostileTarget("fetch", "url", "http://allowed.test/", "h:"+h, "1")
 	}
 	for name, tg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -252,8 +281,8 @@ func TestDenyBadRequests(t *testing.T) {
 				if err != nil || res.Versions[0].Metadata["code"] != "bad_request" {
 					t.Fatalf("res = %+v, err = %v, want code bad_request", res, err)
 				}
-			} else if err == nil {
-				t.Fatal("List succeeded")
+			} else if err == nil || !strings.Contains(err.Error(), "bad_request") {
+				t.Fatalf("err = %v, want bad_request", err)
 			}
 		})
 	}

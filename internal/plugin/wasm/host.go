@@ -67,10 +67,21 @@ func (t *allowlistTransport) check(u *url.URL) error {
 	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
 		return fmt.Errorf("%w: scheme %q", ErrHostNotAllowed, u.Scheme)
 	}
-	if h := normHost(u.Hostname()); h == "" || !t.allowed[h] {
+	// allowed_hosts holds ASCII names only: a non-ASCII name, which the
+	// transport would IDNA-encode, is never compared loosely.
+	if h := normHost(u.Hostname()); h == "" || !isASCII(h) || !t.allowed[h] {
 		return &HostNotAllowedError{Host: u.Hostname(), Allowed: sortedKeys(t.allowed)}
 	}
 	return nil
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Source) hostFunctions() []extism.HostFunction {
@@ -142,6 +153,8 @@ func (s *Source) doHTTP(ctx context.Context, in []byte) wireHTTPResponse {
 		switch {
 		case errors.As(err, &hna), errors.Is(err, ErrHostNotAllowed):
 			return failure(codeHostNotAllowed, err.Error())
+		case errors.Is(err, ErrPolicy): // the redirect hops exhausted the request budget
+			return failure(codeTooManyRequests, err.Error())
 		case errors.Is(err, netguard.ErrBlocked):
 			cs.violate(err)
 			s.log.WarnContext(ctx, "wasm plugin request blocked by the SSRF guard", "error", err)
@@ -212,9 +225,19 @@ func (s *Source) newRequest(ctx context.Context, r wireHTTPRequest) (*http.Reque
 		if !validHeader(k, v) {
 			return nil, fmt.Errorf("invalid header %q", k)
 		}
-		req.Header.Set(k, v)
+		ck := http.CanonicalHeaderKey(k)
+		if reservedHeaders[ck] {
+			return nil, fmt.Errorf("header %q is set by the host", k)
+		}
+		if _, dup := req.Header[ck]; dup {
+			return nil, fmt.Errorf("header %q given twice", ck)
+		}
+		req.Header.Set(ck, v)
 	}
 	if v := r.Validators; v != nil {
+		if !validHeader("If-None-Match", v.ETag) || !validHeader("If-Modified-Since", v.LastModified) {
+			return nil, errors.New("invalid validators")
+		}
 		if v.ETag != "" && req.Header.Get("If-None-Match") == "" {
 			req.Header.Set("If-None-Match", v.ETag)
 		}
@@ -223,6 +246,22 @@ func (s *Source) newRequest(ctx context.Context, r wireHTTPRequest) (*http.Reque
 		}
 	}
 	return req, nil
+}
+
+// reservedHeaders are hop-by-hop or transport headers the plugin may not
+// set: the transport owns them, and some would let a plugin smuggle
+// requests or reach a proxy. User-Agent stays overridable (see ADR 0011).
+var reservedHeaders = map[string]bool{
+	"Connection":          true,
+	"Content-Length":      true,
+	"Expect":              true,
+	"Host":                true,
+	"Keep-Alive":          true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
 }
 
 // validHeader reports whether name is an RFC 9110 token and value holds no
@@ -251,6 +290,10 @@ func (s *Source) hostLog(ctx context.Context, p *extism.CurrentPlugin, stack []u
 	n, err := p.Length(stack[0])
 	if err != nil {
 		panic(fmt.Errorf("log: %w", err))
+	}
+	cs, ok := ctx.Value(callKey{}).(*callState)
+	if !ok || !s.chargeLog(ctx, cs, int64(n)) { //nolint:gosec // G115: a block length fits in int64
+		return
 	}
 	if n > maxLogEntry {
 		s.log.WarnContext(ctx, "wasm plugin log entry dropped: too large", "bytes", n)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,12 @@ func hostileManifest(t *testing.T, allowed ...string) wasm.Manifest {
 // testCache shares compiled code between the tests' Sources; compiling the
 // plugin is the slow part of New.
 var testCache = wazero.NewCompilationCache()
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	_ = testCache.Close(context.Background())
+	os.Exit(code)
+}
 
 func newHostile(t *testing.T, m wasm.Manifest, opts wasm.Options) *wasm.Source {
 	t.Helper()

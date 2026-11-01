@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 const (
 	DefaultMaxRequestsPerCall = 100
 	DefaultCallTimeout        = 2 * time.Minute
+	DefaultValidateTimeout    = 2 * time.Second
 	DefaultMaxMemoryPages     = 1024 // 64 MiB
 	DefaultMaxResponseBytes   = 10 << 20
 	DefaultMaxOutputBytes     = 16 << 20
@@ -42,12 +44,16 @@ type Options struct {
 	// Logger receives the plugin's log host function calls and the host's
 	// warnings. Default: discard.
 	Logger *slog.Logger
-	// MaxRequestsPerCall bounds the http_request calls of one List call
-	// (pagination included). Default 100.
+	// MaxRequestsPerCall bounds the HTTP requests of one List call:
+	// every http_request and every redirect hop it follows (pagination
+	// included). Default 100.
 	MaxRequestsPerCall int
-	// CallTimeout bounds one Validate or List call, HTTP included; the
-	// plugin is interrupted when it expires. Default 2m.
+	// CallTimeout bounds one List call, HTTP included; the plugin is
+	// interrupted when it expires. Default 2m.
 	CallTimeout time.Duration
+	// ValidateTimeout bounds one Validate call, which has no network
+	// access and should be quick. Default 2s.
+	ValidateTimeout time.Duration
 	// MaxMemoryPages caps the plugin's linear memory in 64 KiB pages.
 	// Default 1024 (64 MiB).
 	MaxMemoryPages uint32
@@ -111,6 +117,7 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 	}
 	setDefault(&opts.MaxRequestsPerCall, DefaultMaxRequestsPerCall)
 	setDefault(&opts.CallTimeout, DefaultCallTimeout)
+	setDefault(&opts.ValidateTimeout, DefaultValidateTimeout)
 	setDefault(&opts.MaxMemoryPages, DefaultMaxMemoryPages)
 	setDefault(&opts.MaxResponseBytes, DefaultMaxResponseBytes)
 	setDefault(&opts.MaxOutputBytes, DefaultMaxOutputBytes)
@@ -130,10 +137,13 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 		s.allowed[n] = true
 	}
 	hc := opts.HTTPClient
+	inner := hc.CheckRedirect
 	s.client = &http.Client{
-		Transport:     &allowlistTransport{base: hc.Transport, allowed: s.allowed},
-		CheckRedirect: hc.CheckRedirect,
-		Timeout:       hc.Timeout,
+		Transport: &allowlistTransport{base: hc.Transport, allowed: s.allowed},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return s.checkRedirect(req, via, inner)
+		},
+		Timeout: hc.Timeout,
 		// No Jar: cookies must not leak between plugins or targets.
 	}
 
@@ -176,7 +186,7 @@ func (s *Source) Validate(t source.Target) error {
 	if err != nil {
 		return fmt.Errorf("wasm %s: validate: %w", s.kind, err)
 	}
-	out, err := s.call(context.Background(), "validate", in, false)
+	out, err := s.call(context.Background(), "validate", in, false, s.opts.ValidateTimeout)
 	if err != nil {
 		return err
 	}
@@ -199,7 +209,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if err != nil {
 		return source.Result{}, fmt.Errorf("wasm %s: list: %w", s.kind, err)
 	}
-	out, err := s.call(ctx, "list", in, true)
+	out, err := s.call(ctx, "list", in, true, s.opts.CallTimeout)
 	if err != nil {
 		return source.Result{}, err
 	}
@@ -227,14 +237,26 @@ func (s *Source) Close(ctx context.Context) error {
 
 type callKey struct{}
 
+// Per-call log budget, shared by the log host function and Extism's own
+// log functions. Once either bound is crossed, further entries are dropped
+// with a single warning.
+const (
+	maxLogEntriesPerCall = 256
+	maxLogBytesPerCall   = 256 << 10
+)
+
 // callState is the per-call state the host functions see through the
-// context: whether the network is allowed, the request count and the first
-// policy violation.
+// context: whether the network is allowed, the request count, the log
+// budget and the first policy violation.
 type callState struct {
 	allowNet bool
 	mu       sync.Mutex
 	requests int
 	violated error
+
+	logEntries   int
+	logBytes     int64
+	logExhausted bool
 }
 
 func (c *callState) violate(err error) {
@@ -259,11 +281,29 @@ func (c *callState) takeRequest(limit int) bool {
 	return c.requests <= limit
 }
 
-func (s *Source) call(ctx context.Context, fn string, in []byte, allowNet bool) ([]byte, error) {
+// takeLog charges one log entry of n bytes to the budget. It reports
+// whether to emit the entry, and whether this is the first refused entry,
+// which gets the single "budget exhausted" warning.
+func (c *callState) takeLog(n int64) (ok, first bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.logExhausted {
+		return false, false
+	}
+	c.logEntries++
+	c.logBytes += n
+	if c.logEntries > maxLogEntriesPerCall || c.logBytes > maxLogBytesPerCall {
+		c.logExhausted = true
+		return false, true
+	}
+	return true, false
+}
+
+func (s *Source) call(ctx context.Context, fn string, in []byte, allowNet bool, timeout time.Duration) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("wasm %s: %s: %w", s.kind, fn, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.opts.CallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cs := &callState{allowNet: allowNet}
 	ctx = context.WithValue(ctx, callKey{}, cs)
@@ -272,6 +312,8 @@ func (s *Source) call(ctx context.Context, fn string, in []byte, allowNet bool) 
 	if err != nil {
 		return nil, fmt.Errorf("wasm %s: %s: %w", s.kind, fn, err)
 	}
+	// Extism's logger has no context: bind it to this call's budget.
+	p.SetLogger(func(l extism.LogLevel, msg string) { s.extismLog(ctx, cs, l, msg) })
 	_, out, err := p.CallWithContext(ctx, fn, in)
 	if err != nil {
 		// A trap or an interrupted call can leave the instance in any
@@ -292,6 +334,8 @@ func (s *Source) call(ctx context.Context, fn string, in []byte, allowNet bool) 
 		}
 		return nil, fmt.Errorf("wasm %s: %s: %w", s.kind, fn, err)
 	}
+	// The output is already in host memory here: this bounds what the
+	// caller decodes, not what the plugin may allocate (MaxMemoryPages does).
 	if len(out) > s.opts.MaxOutputBytes {
 		return nil, fmt.Errorf("wasm %s: %s: %w: output of %d bytes exceeds %d", s.kind, fn, errPluginOutput, len(out), s.opts.MaxOutputBytes)
 	}
@@ -315,7 +359,6 @@ func (s *Source) instance(ctx context.Context) (*extism.Plugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("instantiate: %w", err)
 	}
-	p.SetLogger(s.extismLog)
 	return p, nil
 }
 
@@ -331,10 +374,59 @@ func (s *Source) release(ctx context.Context, p *extism.Plugin) {
 }
 
 // extismLog receives Extism's own log functions (extism:host/env log_*),
-// which are off unless the process sets extism.SetLogLevel.
-func (s *Source) extismLog(level extism.LogLevel, msg string) {
-	s.log.Log(context.Background(), slogLevel(level.String()), truncate(msg, maxLogMessage))
+// which are off unless the process sets extism.SetLogLevel. They share the
+// call's log budget with the log host function.
+func (s *Source) extismLog(ctx context.Context, cs *callState, level extism.LogLevel, msg string) {
+	if !s.chargeLog(ctx, cs, int64(len(msg))) {
+		return
+	}
+	s.log.Log(ctx, slogLevel(level.String()), truncate(msg, maxLogMessage))
 }
+
+// chargeLog charges one entry of n bytes to the call's log budget and
+// reports whether to emit it. The first refusal logs one warning.
+func (s *Source) chargeLog(ctx context.Context, cs *callState, n int64) bool {
+	ok, first := cs.takeLog(n)
+	if first {
+		s.log.WarnContext(ctx, "wasm plugin log budget exhausted; dropping further entries of this call",
+			"max_entries", maxLogEntriesPerCall, "max_bytes", maxLogBytesPerCall)
+	}
+	return ok
+}
+
+// checkRedirect runs before every redirect hop is sent. It refuses a
+// downgrade from https, which would send the Authorization header and the
+// rest of the request in clear text (net/http keeps them on a same-host
+// redirect), and counts the hop against the call's request budget, then
+// applies the injected client's own check.
+func (s *Source) checkRedirect(req *http.Request, via []*http.Request, inner func(*http.Request, []*http.Request) error) error {
+	if !strings.EqualFold(req.URL.Scheme, "https") {
+		for _, v := range via {
+			if strings.EqualFold(v.URL.Scheme, "https") {
+				return fmt.Errorf("%w: from https to %s://%s", errInsecureRedirect, req.URL.Scheme, req.URL.Host)
+			}
+		}
+	}
+	if cs, ok := req.Context().Value(callKey{}).(*callState); ok && !cs.takeRequest(s.opts.MaxRequestsPerCall) {
+		err := fmt.Errorf("%w: more than %d HTTP requests, redirects included", ErrPolicy, s.opts.MaxRequestsPerCall)
+		cs.violate(err)
+		return err
+	}
+	if inner != nil {
+		return inner(req, via)
+	}
+	if len(via) >= defaultMaxRedirects {
+		return fmt.Errorf("stopped after %d redirects", defaultMaxRedirects)
+	}
+	return nil
+}
+
+// defaultMaxRedirects is net/http's own limit, used when the injected
+// client has no CheckRedirect.
+const defaultMaxRedirects = 10
+
+// errInsecureRedirect refuses a redirect from https to another scheme.
+var errInsecureRedirect = errors.New("redirect downgrades https")
 
 // sortedKeys is used for deterministic error messages.
 func sortedKeys(m map[string]bool) []string {
