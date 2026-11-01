@@ -120,7 +120,7 @@ set (same rule as `token_env` in configuration.md).
 | `sink` | string | yes | none | the `name` of a sink **in the same file** |
 | `filter` | filter | no | `{}` (matches every event) | below |
 | `policy` | subscription policy | no | all inherited | section 2.6 |
-| `template` | string | no | empty (default CloudEvents JSON) | Go `text/template` that must parse; the available fields are defined by the dispatcher story, not here |
+| `template` | string | no | empty (default CloudEvents JSON) | Go `text/template` over the event (`.data.package`, ...) that must render the sample events within the limits; fields, functions and limits: [templates.md](templates.md) |
 
 `filter` (all given keys must match; PRD F6 lists ecosystem, labels, bump, package glob):
 

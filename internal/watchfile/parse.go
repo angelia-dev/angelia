@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 	"unicode"
 
@@ -22,6 +21,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/policy"
+	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version"
@@ -671,9 +671,19 @@ func (p *parser) subscription(n *yaml.Node, jp string, seen map[string]int) (Sub
 		s.Policy = p.subscriptionPolicy(pn, jp+".policy")
 	}
 	if tn := m["template"]; tn != nil {
-		if t, ok := p.secretFree(tn, jp+".template"); ok {
-			if _, err := template.New("subscription").Parse(t); err != nil {
-				p.errf(tn, jp+".template", "does not parse as a Go template") // the error would quote the template text
+		if t, ok := p.secretFree(tn, jp+".template"); ok && t != "" {
+			// Compiled and run on the sample events (docs/templates.md). Render
+			// errors give a position and a reason, never the template text.
+			tm, err := render.Compile(t, render.Limits{})
+			switch {
+			case errors.Is(err, render.ErrParse):
+				p.errf(tn, jp+".template", "does not parse as a Go template: %v", err)
+			case err != nil:
+				p.errf(tn, jp+".template", "%v", err)
+			default:
+				if err := tm.Check(); err != nil {
+					p.errf(tn, jp+".template", "%v", err)
+				}
 			}
 			s.Template = t
 		}
