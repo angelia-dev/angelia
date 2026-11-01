@@ -37,7 +37,7 @@ func (h *Host) HTTP(ctx context.Context, req HTTPRequest) (*HTTPResponse, error)
 // kills the process; call it from main.
 func Serve(p Plugin) {
 	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: Handshake,
+		HandshakeConfig: Handshake(),
 		Plugins:         goplugin.PluginSet{PluginName: &sourcePlugin{impl: p}},
 		GRPCServer:      goplugin.DefaultGRPCServer,
 	})

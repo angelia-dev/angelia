@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ const (
 	DefaultCallTimeout        = 2 * time.Minute
 	DefaultValidateTimeout    = 2 * time.Second
 	DefaultMaxResponseBytes   = 10 << 20
+	DefaultStartTimeout       = 10 * time.Second
+	DefaultRestartBackoff     = 5 * time.Second
 )
 
 // Options configures a Source.
@@ -53,6 +56,13 @@ type Options struct {
 	// discard.
 	Logger hclog.Logger
 
+	// StartTimeout bounds one start of the plugin process (exec, handshake,
+	// Configure), further capped by the caller's deadline. Default 10s.
+	StartTimeout time.Duration
+	// RestartBackoff is how long calls fail fast after a failed restart
+	// before the next restart is tried. Default 5s.
+	RestartBackoff time.Duration
+
 	MaxRequestsPerCall int
 	CallTimeout        time.Duration
 	ValidateTimeout    time.Duration
@@ -66,6 +76,10 @@ var ErrHostNotAllowed = errors.New("goplugin: host not in allowed_hosts")
 // ErrPolicy is wrapped when the plugin exhausted its request budget.
 var ErrPolicy = errors.New("goplugin: plugin violated host policy")
 
+// ErrRestartBackoff is wrapped by calls refused because the last restart of
+// a dead plugin failed less than RestartBackoff ago.
+var ErrRestartBackoff = errors.New("goplugin: plugin restart failed recently")
+
 // Source is a source.Source served by a go-plugin subprocess. One process
 // serves every call of the Source, concurrently; it is restarted on the
 // next call after it dies.
@@ -75,10 +89,12 @@ type Source struct {
 	client  *http.Client
 	calls   sync.Map // call id -> *callState
 
-	mu     sync.Mutex
-	pc     *goplugin.Client
-	rem    *remote
-	closed bool
+	mu       sync.Mutex
+	pc       *goplugin.Client
+	rem      *remote
+	closed   bool
+	failedAt time.Time // last failed restart
+	startErr error     // its error
 }
 
 var _ source.Source = (*Source)(nil)
@@ -95,12 +111,18 @@ func New(ctx context.Context, opts Options) (*Source, error) {
 	setDefault(&opts.CallTimeout, DefaultCallTimeout)
 	setDefault(&opts.ValidateTimeout, DefaultValidateTimeout)
 	setDefault(&opts.MaxResponseBytes, DefaultMaxResponseBytes)
+	setDefault(&opts.StartTimeout, DefaultStartTimeout)
+	setDefault(&opts.RestartBackoff, DefaultRestartBackoff)
 	if opts.Logger == nil {
 		opts.Logger = hclog.NewNullLogger()
 	}
 	s := &Source{opts: opts, allowed: map[string]bool{}}
 	for _, h := range opts.AllowedHosts {
-		s.allowed[normHost(h)] = true
+		n, err := allowedHost(h)
+		if err != nil {
+			return nil, err
+		}
+		s.allowed[n] = true
 	}
 	hc := *opts.HTTPClient
 	inner := hc.CheckRedirect
@@ -124,9 +146,19 @@ func setDefault[T comparable](v *T, d T) {
 	}
 }
 
+// startLocked starts and configures the plugin within StartTimeout, capped
+// by ctx's deadline. go-plugin's start has no context: StartTimeout bounds
+// the exec and handshake, ctx the Configure call.
 func (s *Source) startLocked(ctx context.Context) error {
+	timeout := s.opts.StartTimeout
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < timeout {
+		timeout = max(time.Until(dl), time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	cfg := &goplugin.ClientConfig{
-		HandshakeConfig:  Handshake,
+		HandshakeConfig:  Handshake(),
+		StartTimeout:     timeout,
 		Plugins:          goplugin.PluginSet{PluginName: &sourcePlugin{}},
 		Cmd:              s.opts.Command(),
 		AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
@@ -172,7 +204,11 @@ func connect(ctx context.Context, pc *goplugin.Client, s *Source) (*remote, erro
 	return rem, nil
 }
 
-// conn returns the running plugin, restarting a dead one.
+// conn returns the running plugin, restarting a dead one. After a failed
+// restart, calls fail fast with ErrRestartBackoff for RestartBackoff, so a
+// plugin that crashes at start is not re-spawned on every call. A restart
+// holds the Source's lock: concurrent calls wait for it, for at most
+// StartTimeout.
 func (s *Source) conn(ctx context.Context) (*remote, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,8 +216,12 @@ func (s *Source) conn(ctx context.Context) (*remote, error) {
 		return nil, fmt.Errorf("goplugin %s: source closed", s.opts.Kind)
 	}
 	if s.pc.Exited() {
+		if since := time.Since(s.failedAt); since < s.opts.RestartBackoff {
+			return nil, fmt.Errorf("goplugin %s: %w %v ago: %w", s.opts.Kind, ErrRestartBackoff, since.Round(time.Millisecond), s.startErr)
+		}
 		s.pc.Kill()
 		if err := s.startLocked(ctx); err != nil {
+			s.failedAt, s.startErr = time.Now(), err
 			return nil, err
 		}
 	}
@@ -334,7 +374,7 @@ func failure(code, msg string) *HTTPResponse {
 
 // HTTP implements the Host service. It is the go-plugin counterpart of the
 // WASM http_request host function, with the same rules, condensed.
-func (s *Source) HTTP(_ context.Context, r *HTTPRequest) (*HTTPResponse, error) {
+func (s *Source) HTTP(rpcCtx context.Context, r *HTTPRequest) (*HTTPResponse, error) {
 	v, ok := s.calls.Load(r.CallID)
 	if !ok {
 		return failure("not_allowed_here", "no List call in progress with this id"), nil
@@ -345,9 +385,12 @@ func (s *Source) HTTP(_ context.Context, r *HTTPRequest) (*HTTPResponse, error) 
 		cs.violate(err)
 		return failure("too_many_requests", err.Error()), nil
 	}
-	// The call's context, not the RPC's: the request ends with the call.
-	ctx := context.WithValue(cs.ctx, callKey{}, cs)
-	req, err := newRequest(ctx, r) //nolint:contextcheck // the List call's context, see above
+	// The request ends with the List call or with this RPC, whichever ends
+	// first: a plugin cannot keep a request alive past its call.
+	ctx, cancel := context.WithCancel(context.WithValue(cs.ctx, callKey{}, cs))
+	defer cancel()
+	defer context.AfterFunc(rpcCtx, cancel)()
+	req, err := newRequest(ctx, r) //nolint:contextcheck // the merged call and RPC context, see above
 	if err != nil {
 		return failure("bad_request", err.Error()), nil
 	}
@@ -424,6 +467,9 @@ func newRequest(ctx context.Context, r *HTTPRequest) (*http.Request, error) {
 		return nil, errors.New("credentials in the URL are not allowed")
 	}
 	for k, v := range r.Headers {
+		if !validHeader(k, v) {
+			return nil, fmt.Errorf("invalid header %q", k)
+		}
 		ck := http.CanonicalHeaderKey(k)
 		if reservedHeaders[ck] {
 			return nil, fmt.Errorf("header %q is set by the host", k)
@@ -431,9 +477,12 @@ func newRequest(ctx context.Context, r *HTTPRequest) (*http.Request, error) {
 		if _, dup := req.Header[ck]; dup {
 			return nil, fmt.Errorf("header %q given twice", ck)
 		}
-		req.Header.Set(ck, v) // net/http's transport rejects invalid names and values
+		req.Header.Set(ck, v)
 	}
 	if v := r.Validators; v != nil {
+		if !validHeader("If-None-Match", v.ETag) || !validHeader("If-Modified-Since", v.LastModified) {
+			return nil, errors.New("invalid validators")
+		}
 		if v.ETag != "" && req.Header.Get("If-None-Match") == "" {
 			req.Header.Set("If-None-Match", v.ETag)
 		}
@@ -468,7 +517,48 @@ func (a *allowlist) RoundTrip(r *http.Request) (*http.Response, error) {
 	return a.base.RoundTrip(r)
 }
 
-func normHost(h string) string { return strings.TrimSuffix(strings.ToLower(h), ".") }
+// validHeader reports whether name is an RFC 9110 token and value holds no
+// control characters other than tab (as the WASM host checks).
+func validHeader(name, value string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range []byte(name) {
+		if c <= ' ' || c >= 0x7f || strings.IndexByte(`"(),/:;<=>?@[\]{}`, c) >= 0 {
+			return false
+		}
+	}
+	for _, c := range []byte(value) {
+		if (c < ' ' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// normHost lower-cases a URL hostname, drops a trailing dot and writes an
+// IP literal in its canonical form, so that ::FFFF:127.0.0.1 and 127.0.0.1
+// are the same allowed host.
+func normHost(h string) string {
+	h = strings.TrimSuffix(strings.ToLower(strings.Trim(h, "[]")), ".")
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Unmap().WithZone("").String()
+	}
+	return h
+}
+
+// allowedHost normalises an AllowedHosts entry, which must be a bare
+// hostname or IP literal: no scheme, port, path or user info.
+func allowedHost(h string) (string, error) {
+	n := normHost(h)
+	if _, err := netip.ParseAddr(n); err == nil {
+		return n, nil
+	}
+	if n == "" || !isASCII(n) || strings.ContainsAny(n, ":/@?#[] ") {
+		return "", fmt.Errorf("goplugin: allowed host %q must be a bare hostname or IP literal", h)
+	}
+	return n, nil
+}
 
 func isASCII(s string) bool {
 	for i := range len(s) {

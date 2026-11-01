@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/angelia-dev/angelia/bench/plugins/goplugin"
 	"github.com/angelia-dev/angelia/bench/plugins/goplugin/goplugintest"
@@ -36,18 +35,22 @@ var fastLimit = netguard.HostLimit{
 // newCrates starts the crates plugin against baseURL, with a netguard
 // client over rt that allows loopback, and allowed_hosts set to the
 // host of baseURL unless mod changes it.
-func newCrates(t *testing.T, baseURL string, rt http.RoundTripper, config map[string]string, mod func(*goplugin.Options)) *goplugin.Source {
+func newCrates(t *testing.T, baseURL string, rt http.RoundTripper, config map[string]string, mod func(*goplugin.Options), ngMod ...func(*netguard.Config)) *goplugin.Source {
 	t.Helper()
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nc, err := netguard.New(netguard.Config{
+	ngc := netguard.Config{
 		Transport:   rt,
 		Allow:       []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
 		HostLimits:  map[string]netguard.HostLimit{u.Hostname(): fastLimit},
 		MaxAttempts: 1,
-	})
+	}
+	for _, m := range ngMod {
+		m(&ngc)
+	}
+	nc, err := netguard.New(ngc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,20 +211,7 @@ func TestRestartAfterCrash(t *testing.T) {
 	t.Cleanup(srv.Close)
 	s := newCrates(t, srv.URL, srv.Client().Transport, nil, nil)
 	pid := s.PID()
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := proc.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !s.Exited() {
-		if time.Now().After(deadline) {
-			t.Fatal("plugin process not reported as exited")
-		}
-		time.Sleep(10 * time.Millisecond) //nolint:forbidigo // polling a process exit
-	}
+	killAndWait(t, s)
 	res, err := s.List(t.Context(), crate("serde"), source.FetchState{})
 	if err != nil {
 		t.Fatalf("List after crash: %v", err)

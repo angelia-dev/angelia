@@ -14,8 +14,9 @@ import (
 // protoc could not be run in the sandbox that built this prototype, so the
 // two services are hand-written grpc.ServiceDesc values and the messages
 // are JSON (the same shapes as the WASM ABI v0 of ADR 0011), carried by a
-// gRPC codec registered under the content-subtype "json". go-plugin's own
-// services (broker, controller, stdio, health) keep protobuf.
+// gRPC codec registered under the content-subtype "angelia-json".
+// go-plugin's own services (broker, controller, stdio, health) keep
+// protobuf.
 //
 //	service Source {                      // served by the plugin
 //	  rpc Configure(ConfigureRequest) returns (Empty);
@@ -26,12 +27,15 @@ import (
 //	  rpc HTTP(HTTPRequest) returns (HTTPResponse);
 //	}
 
-// Handshake is checked by both sides before any RPC. The cookie is not a
-// security feature: it only stops a plugin binary from being run by hand.
-var Handshake = goplugin.HandshakeConfig{
-	ProtocolVersion:  1,
-	MagicCookieKey:   "ANGELIA_PLUGIN",
-	MagicCookieValue: "source-v0",
+// Handshake returns the handshake both sides check before any RPC. The
+// cookie is not a security feature: it only stops a plugin binary from
+// being run by hand.
+func Handshake() goplugin.HandshakeConfig {
+	return goplugin.HandshakeConfig{
+		ProtocolVersion:  1,
+		MagicCookieKey:   "ANGELIA_PLUGIN",
+		MagicCookieValue: "source-v0",
+	}
 }
 
 // PluginName is the key of the source plugin in the go-plugin PluginSet.
@@ -40,7 +44,7 @@ const PluginName = "source"
 const (
 	sourceService = "angelia.plugin.v0.Source"
 	hostService   = "angelia.plugin.v0.Host"
-	codecName     = "json"
+	codecName     = "angelia-json"
 )
 
 // jsonCodec is the gRPC codec of the two Angelia services.
