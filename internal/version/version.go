@@ -1,5 +1,5 @@
 // Package version defines how Angelia parses, orders and classifies upstream
-// versions. Each scheme lives in its own subpackage (semver, pep440, lexical);
+// versions. Each scheme lives in its own subpackage (semver, pep440, calver, lexical);
 // package schemes picks one per source kind and adds the lexical fallback.
 //
 // Every function here is pure: no I/O, no shared state, safe for concurrent use.

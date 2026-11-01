@@ -62,8 +62,29 @@ PEP 440 and Maven comparators. Upstream data is untrusted: one odd tag must not 
 
 ### Open questions
 
-- Maven and calver schemes (Phase 1); until then Maven sources use lexical order.
+- Maven scheme (Phase 1); until then Maven sources use lexical order. Calver is described below.
 - Conformance against real registry ordering (benchmark 6) is a separate story.
+
+## Addendum: calver (story #68)
+
+`internal/version/calver` (`scheme: calver`) is a fourth in-house scheme, selected **explicitly only**.
+
+- **Formats.** `<year>.<n>[.<n>[.<n>]][suffix]` after an optional `v`: a 2-digit (`24.04`, YY.MM) or
+  4-digit (`2026.10.1`, YYYY.MM.DD or YYYY.MM.MICRO; `2026.3`, YYYY.N) year, then one to three more
+  numbers. Leading zeros are allowed and ignored in comparison (`24.04` == `24.4`, and a missing
+  component counts as 0). The components are not validated as dates, since projects use them as
+  counters. A suffix starts with a letter or one of `-._+` (`24.04-rc1`, `2026.10b1`,
+  `2026.10.1.hotfix`, `2026.10.1+build5`).
+- **Order.** Numeric components, then suffix class (pre-release suffix < none < other suffix), then
+  the suffix in natural order, ignoring case. A suffix is a pre-release when the lexical heuristic
+  finds a marker (alpha, beta, rc, dev, ...).
+- **Bump.** First differing component: year = `major`, second = `minor`, third or fourth = `patch`;
+  same numbers: `prerelease` after a pre-release, else `patch`.
+- **No auto-detect.** No source kind defaults to calver and tags are never sniffed: `2026.10.1`
+  is also valid SemVer and `1.2` is a valid calver only for a 2- or 4-digit year, so guessing per
+  tag would give a watch an unstable order. A watch that wants calver says `scheme: calver`;
+  `schemes.Select(kind, override, logger)` is the lookup (an unknown name is an error). Tags that
+  are not calver fall back to lexical like for any other scheme.
 
 ## Alternatives considered
 
