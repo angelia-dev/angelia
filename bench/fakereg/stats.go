@@ -10,6 +10,7 @@ import (
 type Stats struct {
 	StartedAt      time.Time           `json:"started_at"`
 	ElapsedSeconds float64             `json:"elapsed_seconds"`
+	Window         Window              `json:"window"` // of Published, Seen and Lag
 	Ecosystems     map[string]EcoStats `json:"ecosystems"`
 	Total          EcoStats            `json:"total"`
 }
@@ -20,9 +21,12 @@ type EcoStats struct {
 	Requests    int64 `json:"requests"`
 	OK          int64 `json:"ok"`
 	NotModified int64 `json:"not_modified"`
-	Throttled   int64 `json:"throttled"`
+	Throttled   int64 `json:"throttled"` // 429
+	Forbidden   int64 `json:"forbidden"` // 403, primary limit
 	NotFound    int64 `json:"not_found"`
-	// Published counts the releases published since the start.
+	// Cancelled counts requests the client gave up on during the latency.
+	Cancelled int64 `json:"cancelled"`
+	// Published counts the releases published in the window.
 	Published int `json:"published"`
 	// Seen counts those that have been sent to a client at least once.
 	Seen int      `json:"seen"`
@@ -32,7 +36,8 @@ type EcoStats struct {
 // LagStats summarizes check lag: for a seen release, the time from its
 // publication to the first 200 that contained it; for an unseen release,
 // the time since its publication, a lower bound of its eventual lag. Both
-// count, so missed releases make the percentiles worse, never better.
+// count, so a missed release counts against the percentiles; how much
+// depends on how long before the snapshot it was published (see StatsIn).
 type LagStats struct {
 	Samples     int     `json:"samples"`
 	P50Seconds  float64 `json:"p50_seconds"`
@@ -41,13 +46,38 @@ type LagStats struct {
 	MeanSeconds float64 `json:"mean_seconds"`
 }
 
-// Stats returns a snapshot.
-func (s *Server) Stats() Stats {
+// Window limits the release counts and lag statistics to releases
+// published in [From, To). A zero bound is open.
+type Window struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+func (w Window) contains(t time.Time) bool {
+	return (w.From.IsZero() || !t.Before(w.From)) && (w.To.IsZero() || t.Before(w.To))
+}
+
+// seenRelease is a release sent for the first time.
+type seenRelease struct {
+	pub time.Time
+	lag time.Duration
+}
+
+// Stats returns a snapshot covering every release since the start.
+func (s *Server) Stats() Stats { return s.StatsIn(Window{}) }
+
+// StatsIn returns a snapshot whose release counts and lag cover only the
+// releases published in w. A caller that stops at time T should end the
+// window well before T: an unseen release counts with its age, so one
+// published just before T would count with a near-zero lag.
+func (s *Server) StatsIn(w Window) Stats {
 	now := s.now()
-	out := Stats{StartedAt: s.start, ElapsedSeconds: now.Sub(s.start).Seconds(), Ecosystems: map[string]EcoStats{}}
+	out := Stats{
+		StartedAt: s.start, ElapsedSeconds: now.Sub(s.start).Seconds(), Window: w, Ecosystems: map[string]EcoStats{},
+	}
 	var all []time.Duration
-	for _, name := range Ecosystems {
-		st, lags := s.ecos[name].stats(now)
+	for _, name := range Ecosystems() {
+		st, lags := s.ecos[name].stats(now, w)
 		out.Ecosystems[name] = st
 		all = append(all, lags...)
 		t := &out.Total
@@ -56,6 +86,8 @@ func (s *Server) Stats() Stats {
 		t.NotModified += st.NotModified
 		t.Throttled += st.Throttled
 		t.NotFound += st.NotFound
+		t.Forbidden += st.Forbidden
+		t.Cancelled += st.Cancelled
 		t.Published += st.Published
 		t.Seen += st.Seen
 	}
@@ -63,17 +95,25 @@ func (s *Server) Stats() Stats {
 	return out
 }
 
-func (e *eco) stats(now time.Time) (EcoStats, []time.Duration) {
+func (e *eco) stats(now time.Time, w Window) (EcoStats, []time.Duration) {
 	st := EcoStats{
 		Requests: e.requests.Load(), OK: e.ok.Load(), NotModified: e.notModified.Load(),
-		Throttled: e.throttled.Load(), NotFound: e.notFound.Load(),
+		Throttled: e.throttled.Load(), Forbidden: e.forbidden.Load(), NotFound: e.notFound.Load(),
+		Cancelled: e.cancelled.Load(),
 	}
 	e.mu.Lock()
-	lags := slices.Clone(e.lags)
+	var lags []time.Duration
+	for _, r := range e.seen {
+		if w.contains(r.pub) {
+			lags = append(lags, r.lag)
+		}
+	}
 	st.Seen = len(lags)
 	for i := range e.served {
 		for k, n := e.served[i], e.count(i, now); k < n; k++ {
-			lags = append(lags, now.Sub(e.publishedAt(i, k)))
+			if pub := e.publishedAt(i, k); w.contains(pub) {
+				lags = append(lags, now.Sub(pub))
+			}
 		}
 	}
 	e.mu.Unlock()

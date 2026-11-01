@@ -1,7 +1,7 @@
 # Fake registry behaviour for the scale benchmark (bench/fakereg/README.md).
 # Every key is optional; omitted keys take the defaults shown in README.md.
-# bench/load overrides `packages` so that each ecosystem has enough packages
-# for its share of the N watches.
+# A load generator usually overrides `packages` so that each ecosystem has
+# one package per watch.
 
 seed: 1
 
@@ -24,5 +24,9 @@ ecosystems:
     latency: 80ms
     # GitHub's secondary limits, roughly: requests beyond this get 429.
     rate_limit: {rps: 80, burst: 200, retry_after: 60s}
+    etag: weak              # api.github.com sends weak ETags
+    # GitHub's primary limit for one token (403 when used up; 304s are free).
+    # Off by default; uncomment to test token exhaustion.
+    # primary_limit: {requests: 5000, window: 1h}
   oci:
     etag: weak

@@ -23,9 +23,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Ecosystems lists the simulated registries. Each is served under
-// "/<name>/", so a source's base URL is "http://HOST/<name>".
-var Ecosystems = []string{"pypi", "npm", "crates", "github", "oci"}
+// Ecosystems returns the simulated registries, in a new slice. Each is
+// served under "/<name>/", so a source's base URL is "http://HOST/<name>".
+func Ecosystems() []string { return []string{"pypi", "npm", "crates", "github", "oci"} }
 
 // ETag modes.
 const (
@@ -63,6 +63,16 @@ type Behaviour struct {
 	// BodyPadding adds this many bytes to every 200 response body, to model
 	// real document sizes (an npm packument is often hundreds of KB).
 	BodyPadding int `yaml:"body_padding"`
+	// PrimaryLimit is GitHub's primary rate limit; github only.
+	PrimaryLimit PrimaryLimit `yaml:"primary_limit"`
+}
+
+// PrimaryLimit models GitHub's primary rate limit: Requests per fixed
+// Window, answered with 403 and x-ratelimit-remaining: 0 once used up.
+// A 304 does not count, as on GitHub. Requests 0 turns it off.
+type PrimaryLimit struct {
+	Requests int           `yaml:"requests"`
+	Window   time.Duration `yaml:"window"`
 }
 
 // RateLimit is a token bucket.
@@ -97,7 +107,7 @@ func DefaultBehaviour() Behaviour {
 // DefaultConfig returns DefaultBehaviour for every ecosystem.
 func DefaultConfig() *Config {
 	c := &Config{Seed: 1, Ecosystems: map[string]Behaviour{}}
-	for _, e := range Ecosystems {
+	for _, e := range Ecosystems() {
 		c.Ecosystems[e] = DefaultBehaviour()
 	}
 	return c
@@ -137,13 +147,13 @@ func ParseConfig(data []byte) (*Config, error) {
 	if raw.Seed != nil {
 		c.Seed = *raw.Seed
 	}
-	for _, e := range Ecosystems {
+	for _, e := range Ecosystems() {
 		c.Ecosystems[e] = base
 	}
 	for name, node := range raw.Ecosystems {
 		b, ok := c.Ecosystems[name]
 		if !ok {
-			return nil, fmt.Errorf("ecosystems: unknown ecosystem %q (want one of %v)", name, Ecosystems)
+			return nil, fmt.Errorf("ecosystems: unknown ecosystem %q (want one of %v)", name, Ecosystems())
 		}
 		if err := decodeNode(&node, &b); err != nil {
 			return nil, fmt.Errorf("ecosystems.%s: %w", name, err)
@@ -178,7 +188,7 @@ func decodeStrict(data []byte, out any) error {
 // Validate checks every ecosystem's behaviour.
 func (c *Config) Validate() error {
 	var errs []error
-	for _, name := range Ecosystems {
+	for _, name := range Ecosystems() {
 		b, ok := c.Ecosystems[name]
 		if !ok {
 			errs = append(errs, fmt.Errorf("ecosystem %s: missing", name))
@@ -186,6 +196,9 @@ func (c *Config) Validate() error {
 		}
 		if err := b.validate(); err != nil {
 			errs = append(errs, fmt.Errorf("ecosystem %s: %w", name, err))
+		}
+		if b.PrimaryLimit.Requests != 0 && name != "github" {
+			errs = append(errs, fmt.Errorf("ecosystem %s: primary_limit is only supported for github", name))
 		}
 	}
 	return errors.Join(errs...)
@@ -214,6 +227,9 @@ func (b Behaviour) validate() error {
 	}
 	if b.RateLimit.RPS > 0 && b.RateLimit.Burst < 1 {
 		bad("rate_limit.burst must be at least 1 when rps is set")
+	}
+	if pl := b.PrimaryLimit; pl.Requests < 0 || (pl.Requests > 0 && pl.Window <= 0) {
+		bad("primary_limit needs requests >= 0 and a positive window")
 	}
 	if b.Random429 < 0 || b.Random429 > 1 {
 		bad("random_429 must be between 0 and 1, got %v", b.Random429)

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -128,6 +130,16 @@ func TestReleasesAppearAndLagIsMeasured(t *testing.T) {
 	if s.Stats().Total.Published != 250 {
 		t.Errorf("total published = %d, want 250", s.Stats().Total.Published)
 	}
+	// A window keeps the releases published in [start+2s, start+4s): two
+	// per package.
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ws := s.StatsIn(Window{From: start.Add(2 * time.Second), To: start.Add(4 * time.Second)})
+	if st := ws.Ecosystems["npm"]; st.Published != 20 || st.Seen != 2 || st.Lag.Samples != 20 || st.Lag.MaxSeconds > 3 {
+		t.Errorf("windowed npm = %+v", st)
+	}
+	if ws.Window.To.IsZero() {
+		t.Error("window not reported")
+	}
 }
 
 func TestETagModes(t *testing.T) {
@@ -219,6 +231,72 @@ func TestLatency(t *testing.T) {
 	if d := time.Since(start); d > 30*time.Millisecond {
 		t.Errorf("cancelled request took %v", d)
 	}
+	if st := s.Stats().Ecosystems["npm"]; st.Cancelled != 1 || st.OK != 1 {
+		t.Errorf("stats = %+v, want 1 cancelled and 1 ok", st)
+	}
+}
+
+// Every ecosystem writes timestamps at a fixed precision, whatever the
+// clock's nanoseconds, so body sizes are stable.
+func TestTimestampPrecision(t *testing.T) {
+	for _, nanos := range []int{0, 120000000, 123456789} {
+		clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, nanos, time.UTC)}
+		s := New(fastConfig(func(b *Behaviour) { b.History = 1 }), WithClock(clk.now))
+		for path, want := range map[string]string{
+			"/pypi/pypi/pkg-00000/json":                `"2025-12-31T00:00:00.\d{6}Z"`,
+			"/npm/pkg-00000":                           `"2025-12-31T00:00:00.\d{3}Z"`,
+			"/crates/api/v1/crates/pkg-00000/versions": `"2025-12-31T00:00:00Z"`,
+			"/github/repos/bench/pkg-00000/releases":   `"2025-12-31T00:00:00Z"`,
+		} {
+			body := get(t, s, path).Body.String()
+			if !regexp.MustCompile(want).MatchString(body) || regexp.MustCompile(`:00\.\d{7,}`).MatchString(body) {
+				t.Errorf("%s at %dns: want %s in %s", path, nanos, want, body)
+			}
+		}
+	}
+}
+
+func TestPrimaryLimit(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	s := New(fastConfig(func(b *Behaviour) { b.PrimaryLimit = PrimaryLimit{Requests: 2, Window: time.Hour} }), WithClock(clk.now))
+	path := "/github/repos/bench/pkg-00000/releases"
+	w := get(t, s, path)
+	if w.Code != 200 || w.Header().Get("X-RateLimit-Remaining") != "1" {
+		t.Fatalf("first = %d, remaining %q", w.Code, w.Header().Get("X-RateLimit-Remaining"))
+	}
+	// A 304 does not count.
+	if got := get(t, s, path, "If-None-Match", w.Header().Get("ETag")); got.Code != 304 || got.Header().Get("X-RateLimit-Remaining") != "1" {
+		t.Errorf("304: code %d, remaining %q", got.Code, got.Header().Get("X-RateLimit-Remaining"))
+	}
+	if got := get(t, s, path).Code; got != 200 {
+		t.Errorf("second 200 = %d", got)
+	}
+	w = get(t, s, path)
+	reset := strconv.FormatInt(clk.now().Add(time.Hour).Unix(), 10)
+	if w.Code != 403 || w.Header().Get("X-RateLimit-Remaining") != "0" || w.Header().Get("X-RateLimit-Reset") != reset {
+		t.Errorf("over limit: %d %v", w.Code, w.Header())
+	}
+	clk.add(time.Hour)
+	if got := get(t, s, path).Code; got != 200 {
+		t.Errorf("next window = %d", got)
+	}
+	if st := s.Stats().Ecosystems["github"]; st.Forbidden != 1 || st.NotModified != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+}
+
+// A random 429 is decided before the token bucket and takes no token.
+func TestRandom429TakesNoToken(t *testing.T) {
+	s := New(fastConfig(func(b *Behaviour) {
+		b.Random429 = 1
+		b.RateLimit = RateLimit{RPS: 1, Burst: 1, RetryAfter: time.Second}
+	}))
+	for range 3 {
+		get(t, s, "/npm/pkg-00000")
+	}
+	if e := s.ecos["npm"]; !e.last.IsZero() {
+		t.Errorf("token bucket was touched: tokens %v", e.tokens)
+	}
 }
 
 func TestNotFound(t *testing.T) {
@@ -272,10 +350,13 @@ func TestOCITagsPaging(t *testing.T) {
 }
 
 func TestBodyPaddingAndStatsEndpoint(t *testing.T) {
-	plain := get(t, New(fastConfig(nil)), "/npm/pkg-00000").Body.Len()
-	s := New(fastConfig(func(b *Behaviour) { b.BodyPadding = 5000 }))
-	if got := get(t, s, "/npm/pkg-00000").Body.Len(); got < plain+5000 {
-		t.Errorf("padded body = %d bytes, want >= %d", got, plain+5000)
+	// Both servers start at the same instant, so the bodies differ only by
+	// the padding.
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 123456789, time.UTC)}
+	plain := get(t, New(fastConfig(nil), WithClock(clk.now)), "/npm/pkg-00000").Body.Len()
+	s := New(fastConfig(func(b *Behaviour) { b.BodyPadding = 5000 }), WithClock(clk.now))
+	if got := get(t, s, "/npm/pkg-00000").Body.Len(); got != plain+5000 {
+		t.Errorf("padded body = %d bytes, want %d", got, plain+5000)
 	}
 	var st Stats
 	if err := json.Unmarshal(get(t, s, StatsPath).Body.Bytes(), &st); err != nil {

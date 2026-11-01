@@ -35,8 +35,8 @@ ecosystems:
 	if npm.ETag != ETagStrong || npm.History != DefaultBehaviour().History || npm.RateLimit.RPS != 0 {
 		t.Errorf("npm = %+v, want defaults", npm)
 	}
-	if len(c.Ecosystems) != len(Ecosystems) {
-		t.Errorf("got %d ecosystems, want %d", len(c.Ecosystems), len(Ecosystems))
+	if len(c.Ecosystems) != len(Ecosystems()) {
+		t.Errorf("got %d ecosystems, want %d", len(c.Ecosystems), len(Ecosystems()))
 	}
 }
 
@@ -45,7 +45,7 @@ func TestParseConfigEmptyIsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range Ecosystems {
+	for _, e := range Ecosystems() {
 		if c.Ecosystems[e] != DefaultBehaviour() {
 			t.Errorf("%s = %+v, want DefaultBehaviour", e, c.Ecosystems[e])
 		}
@@ -66,6 +66,8 @@ func TestParseConfigErrors(t *testing.T) {
 		"negative latency":      {"defaults: {latency: -1s}", "must not be negative"},
 		"negative rate":         {"defaults: {releases_per_hour: -1}", "releases_per_hour"},
 		"huge padding":          {"defaults: {body_padding: 999999999}", "body_padding"},
+		"primary not github":    {"ecosystems: {npm: {primary_limit: {requests: 5, window: 1h}}}", "only supported for github"},
+		"primary no window":     {"ecosystems: {github: {primary_limit: {requests: 5}}}", "positive window"},
 		"bad duration":          {"defaults: {latency: soon}", "defaults: yaml"},
 	} {
 		t.Run(name, func(t *testing.T) {

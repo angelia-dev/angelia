@@ -42,7 +42,7 @@ func New(c *Config, opts ...Option) *Server {
 		o(s)
 	}
 	s.start = s.now()
-	for _, name := range Ecosystems {
+	for _, name := range Ecosystems() {
 		b := c.Ecosystems[name]
 		e := &eco{name: name, b: b, start: s.start, served: make([]int, b.Packages), phases: make([]time.Duration, b.Packages)}
 		if b.ReleasesPerHour > 0 {
@@ -107,13 +107,73 @@ type eco struct {
 	interval time.Duration // between two releases of one package; 0: none
 	phases   []time.Duration
 
-	requests, ok, notModified, throttled, notFound atomic.Int64
+	requests, ok, notModified, throttled, forbidden, notFound, cancelled atomic.Int64
 
 	mu     sync.Mutex
 	served []int // per package: highest version count sent in a 200
-	lags   []time.Duration
+	seen   []seenRelease
 	tokens float64
 	last   time.Time
+	pStart time.Time // start of the current primary-limit window
+	pUsed  int
+}
+
+// ts formats t at the ecosystem's fixed precision, as the real registry
+// does, so body sizes do not depend on the clock.
+func (e *eco) ts(t time.Time) string {
+	layout := time.RFC3339 // GitHub, crates.io: whole seconds
+	switch e.name {
+	case "pypi":
+		layout = "2006-01-02T15:04:05.000000Z07:00" // microseconds
+	case "npm":
+		layout = "2006-01-02T15:04:05.000Z07:00" // milliseconds
+	}
+	return t.UTC().Format(layout)
+}
+
+// primaryTake reserves one request of the primary limit. It reports false
+// when the window is used up.
+func (e *eco) primaryTake(now time.Time) bool {
+	pl := e.b.PrimaryLimit
+	if pl.Requests <= 0 {
+		return true
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pStart.IsZero() || !now.Before(e.pStart.Add(pl.Window)) {
+		e.pStart, e.pUsed = now, 0
+	}
+	if e.pUsed >= pl.Requests {
+		return false
+	}
+	e.pUsed++
+	return true
+}
+
+// primaryRefund gives back a request that ended in 304.
+func (e *eco) primaryRefund() {
+	if e.b.PrimaryLimit.Requests <= 0 {
+		return
+	}
+	e.mu.Lock()
+	e.pUsed = max(e.pUsed-1, 0)
+	e.mu.Unlock()
+}
+
+// primaryHeaders sets GitHub's x-ratelimit-* headers.
+func (e *eco) primaryHeaders(h http.Header) {
+	pl := e.b.PrimaryLimit
+	if pl.Requests <= 0 {
+		return
+	}
+	e.mu.Lock()
+	used, reset := e.pUsed, e.pStart.Add(pl.Window)
+	e.mu.Unlock()
+	h.Set("X-RateLimit-Limit", strconv.Itoa(pl.Requests))
+	h.Set("X-RateLimit-Remaining", strconv.Itoa(pl.Requests-used))
+	h.Set("X-RateLimit-Used", strconv.Itoa(used))
+	h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+	h.Set("X-RateLimit-Resource", "core")
 }
 
 // count is the number of versions package i has at t.
@@ -162,7 +222,8 @@ func (e *eco) recordServed(i, n int, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for k := e.served[i]; k < n; k++ {
-		e.lags = append(e.lags, now.Sub(e.publishedAt(i, k)))
+		pub := e.publishedAt(i, k)
+		e.seen = append(e.seen, seenRelease{pub: pub, lag: now.Sub(pub)})
 	}
 	e.served[i] = max(e.served[i], n)
 }
@@ -188,11 +249,18 @@ func (s *Server) handle(name string, render renderer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		e.requests.Add(1)
 		b := e.b
+		// A random 429 is decided first, so it does not take a token.
 		//nolint:gosec // simulated faults and latency, not security
-		if !e.allow(s.now()) || (b.Random429 > 0 && rand.Float64() < b.Random429) {
+		if (b.Random429 > 0 && rand.Float64() < b.Random429) || !e.allow(s.now()) {
 			e.throttled.Add(1)
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(b.RateLimit.RetryAfter.Seconds()))))
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"message": "rate limited"})
+			return
+		}
+		if !e.primaryTake(s.now()) {
+			e.forbidden.Add(1)
+			e.primaryHeaders(w.Header())
+			writeJSON(w, http.StatusForbidden, map[string]string{"message": "API rate limit exceeded"})
 			return
 		}
 		d := b.Latency
@@ -205,12 +273,14 @@ func (s *Server) handle(name string, render renderer) http.HandlerFunc {
 			case <-t.C:
 			case <-r.Context().Done():
 				t.Stop()
+				e.cancelled.Add(1)
 				return
 			}
 		}
 		i, ok := parseName(r.PathValue("name"), b.Packages)
 		if !ok {
 			e.notFound.Add(1)
+			e.primaryHeaders(w.Header())
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
 			return
 		}
@@ -230,6 +300,8 @@ func (s *Server) handle(name string, render renderer) http.HandlerFunc {
 		}
 		if notModified(r, b, etag, lastMod) {
 			e.notModified.Add(1)
+			e.primaryRefund() // a 304 does not count against GitHub's limit
+			e.primaryHeaders(w.Header())
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -238,6 +310,7 @@ func (s *Server) handle(name string, render renderer) http.HandlerFunc {
 			base: "http://" + r.Host + "/" + name, pad: strings.Repeat("x", b.BodyPadding),
 		}
 		body, newest := render(p, w.Header())
+		e.primaryHeaders(w.Header())
 		writeJSON(w, http.StatusOK, body)
 		e.ok.Add(1)
 		if newest {
@@ -281,15 +354,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(data)
 }
 
-func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-
 func renderPyPI(p page, _ http.Header) (any, bool) {
 	releases := make(map[string]any, p.n)
 	for k := range p.n {
 		v := Version(k)
 		releases[v] = []any{map[string]any{
 			"filename":             p.name + "-" + v + ".tar.gz",
-			"upload_time_iso_8601": ts(p.e.publishedAt(p.i, k)),
+			"upload_time_iso_8601": p.e.ts(p.e.publishedAt(p.i, k)),
 			"yanked":               false,
 			"yanked_reason":        nil,
 		}}
@@ -302,14 +373,14 @@ func renderPyPI(p page, _ http.Header) (any, bool) {
 
 func renderNPM(p page, _ http.Header) (any, bool) {
 	versions := make(map[string]any, p.n)
-	times := map[string]string{"created": ts(p.e.publishedAt(p.i, 0)), "modified": ts(p.e.publishedAt(p.i, p.n-1))}
+	times := map[string]string{"created": p.e.ts(p.e.publishedAt(p.i, 0)), "modified": p.e.ts(p.e.publishedAt(p.i, p.n-1))}
 	for k := range p.n {
 		v := Version(k)
 		versions[v] = map[string]any{
 			"name": p.name, "version": v,
 			"dist": map[string]string{"tarball": p.base + "/" + p.name + "/-/" + p.name + "-" + v + ".tgz"},
 		}
-		times[v] = ts(p.e.publishedAt(p.i, k))
+		times[v] = p.e.ts(p.e.publishedAt(p.i, k))
 	}
 	return map[string]any{
 		"name": p.name, "dist-tags": map[string]string{"latest": Version(p.n - 1)},
@@ -322,7 +393,7 @@ func renderCrates(p page, _ http.Header) (any, bool) {
 	for k := p.n - 1; k >= 0; k-- {
 		v := Version(k)
 		versions = append(versions, map[string]any{
-			"num": v, "created_at": ts(p.e.publishedAt(p.i, k)), "yanked": false,
+			"num": v, "created_at": p.e.ts(p.e.publishedAt(p.i, k)), "yanked": false,
 			"dl_path": "/api/v1/crates/" + p.name + "/" + v + "/download",
 		})
 	}
@@ -340,7 +411,7 @@ func renderGitHub(p page, _ http.Header) (any, bool) {
 	for j := first; j < first+perPage && j < p.n; j++ {
 		k := p.n - 1 - j
 		tag := "v" + Version(k)
-		at := ts(p.e.publishedAt(p.i, k))
+		at := p.e.ts(p.e.publishedAt(p.i, k))
 		rel := map[string]any{
 			"id": k + 1, "tag_name": tag, "name": tag, "draft": false, "prerelease": false,
 			"html_url":   p.base + "/" + p.owner + "/" + p.name + "/releases/tag/" + tag,

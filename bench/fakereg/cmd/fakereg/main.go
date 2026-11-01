@@ -2,7 +2,7 @@
 //
 //	go run ./bench/fakereg/cmd/fakereg -config bench/fakereg/fakereg.yaml
 //
-// bench/load embeds the same server, so the scale benchmark does not need
+// A benchmark can embed the server instead (fakereg.New) and not need
 // this binary.
 package main
 
@@ -48,7 +48,7 @@ func run() error {
 		defer cancel()
 		_ = srv.Shutdown(shut)
 	}()
-	for _, e := range fakereg.Ecosystems {
+	for _, e := range fakereg.Ecosystems() {
 		fmt.Printf("%-7s http://%s/%s\n", e, *listen, e)
 	}
 	fmt.Printf("stats   http://%s%s\n", *listen, fakereg.StatsPath)
