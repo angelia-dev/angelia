@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,8 +99,8 @@ func TestCommitWritesEventsAndOneDeliveryPerMatchingSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	// wNow emits both versions; wCool holds 2.33.0 and drops the rc.
-	// s-cool holds both events.
-	if n != (Emitted{Events: 2, Deliveries: 5, Held: 2}) {
+	// s-cool holds both events; s-broken gets a dead delivery for each.
+	if n != (Emitted{Events: 2, Deliveries: 7, Held: 2, Dead: 2}) {
 		t.Fatalf("emitted %+v", n)
 	}
 	s := loadSchemas(t)
@@ -137,10 +139,19 @@ func TestCommitWritesEventsAndOneDeliveryPerMatchingSubscription(t *testing.T) {
 	// 2.33.0: s-all and s-final due now; s-cool held 24h from the upload
 	// time (pypi dates are trusted); s-npm does not match; s-broken is skipped.
 	final := byVersion["2.33.0"]
-	if got := subsOf(final); !reflect.DeepEqual(got, []string{"s-all", "s-cool", "s-final"}) {
+	if got := subsOf(final); !reflect.DeepEqual(got, []string{"s-all", "s-broken", "s-cool", "s-final"}) {
 		t.Fatalf("2.33.0 deliveries to %v", got)
 	}
 	for _, d := range final {
+		if d.SubscriptionID == "s-broken" {
+			// An undecodable subscription does not block the others; its
+			// delivery is dead, with the reason, so it is visible.
+			if d.Status != store.DeliveryDead || !strings.HasPrefix(d.LastError, InvalidSubscription) ||
+				!strings.Contains(d.LastError, "nope") || d.Hold != nil || !d.NextAttemptAt.IsZero() {
+				t.Errorf("delivery to the invalid subscription: %+v", d)
+			}
+			continue
+		}
 		if d.Status != store.DeliveryPending || d.Attempts != 0 || !ulid.Valid(d.ID) {
 			t.Errorf("delivery %+v", d)
 		}
@@ -164,7 +175,7 @@ func TestCommitWritesEventsAndOneDeliveryPerMatchingSubscription(t *testing.T) {
 		}
 	}
 	// The pre-release: s-final's policy drops it, s-cool holds it.
-	if got := subsOf(byVersion["2.34.0rc1"]); !reflect.DeepEqual(got, []string{"s-all", "s-cool"}) {
+	if got := subsOf(byVersion["2.34.0rc1"]); !reflect.DeepEqual(got, []string{"s-all", "s-broken", "s-cool"}) {
 		t.Fatalf("2.34.0rc1 deliveries to %v", got)
 	}
 
@@ -250,6 +261,20 @@ func (x faultTx) DeletePendingRelease(ctx context.Context, w, tg, raw string) er
 	return x.Tx.DeletePendingRelease(ctx, w, tg, raw)
 }
 
+func (x faultTx) DeletePendingReleasesOfWatch(ctx context.Context, w string) (int64, error) {
+	if err := x.f.write("DeletePendingReleasesOfWatch"); err != nil {
+		return 0, err
+	}
+	return x.Tx.DeletePendingReleasesOfWatch(ctx, w)
+}
+
+func (x faultTx) UpdateTarget(ctx context.Context, tg store.Target) error {
+	if err := x.f.write("UpdateTarget"); err != nil {
+		return err
+	}
+	return x.Tx.UpdateTarget(ctx, tg)
+}
+
 func (x faultTx) AppendEvent(ctx context.Context, e store.Event, ds []store.Delivery) error {
 	if err := x.f.write("AppendEvent"); err != nil {
 		return err
@@ -300,8 +325,67 @@ func snap(t *testing.T, st *sqlite.Store, targetID string, watches ...string) sn
 	return s
 }
 
+// faultTx must intercept every write of store.Tx: a method that is not
+// List* or Get* and that faultTx does not override would reach the nil
+// embedded Tx and panic instead of returning the injected crash.
+func TestFaultTxOverridesEveryWrite(t *testing.T) {
+	typ := reflect.TypeFor[store.Tx]()
+	x := reflect.ValueOf(faultTx{f: &faults{failAt: 1, seen: map[string]bool{}}})
+	for m := range typ.Methods() {
+		if strings.HasPrefix(m.Name, "List") || strings.HasPrefix(m.Name, "Get") {
+			continue
+		}
+		t.Run(m.Name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("faultTx does not override the write %s", m.Name)
+				}
+			}()
+			fn := x.MethodByName(m.Name)
+			args := make([]reflect.Value, fn.Type().NumIn())
+			for i := range args {
+				args[i] = reflect.Zero(fn.Type().In(i))
+			}
+			args[0] = reflect.ValueOf(t.Context())
+			x.Interface().(faultTx).f.writes = 0
+			out := fn.Call(args)
+			if err, _ := out[len(out)-1].Interface().(error); !errors.Is(err, errCrash) {
+				t.Fatalf("%s = %v, want the injected crash", m.Name, err)
+			}
+		})
+	}
+}
+
+// crashEveryWrite runs the check once per write, failing that write, and
+// checks that each failure left the store as before; then it runs the check
+// without a fault. It returns the operations faults were injected at.
+func crashEveryWrite(t *testing.T, st *sqlite.Store, in CheckInput, watches []string) (map[string]bool, Emitted) {
+	t.Helper()
+	ctx := t.Context()
+	before := snap(t, st, in.Target.ID, watches...)
+	f := &faults{seen: map[string]bool{}}
+	for f.failAt = 1; ; f.failAt++ {
+		f.writes = 0
+		n, err := Commit(ctx, failingStore{st: st, f: f}, in)
+		if f.writes < f.failAt { // no write left to fail: the check committed
+			if err != nil {
+				t.Fatalf("check without a fault: %v", err)
+			}
+			return f.seen, n
+		}
+		if !errors.Is(err, errCrash) || n != (Emitted{}) {
+			t.Fatalf("crash at write %d: %+v, %v", f.failAt, n, err)
+		}
+		if got := snap(t, st, in.Target.ID, watches...); !reflect.DeepEqual(got, before) {
+			t.Fatalf("crash at write %d left a partial check:\n%+v\nwant\n%+v", f.failAt, got, before)
+		}
+	}
+}
+
 // Acceptance criterion 2 of #106: a crash injected between any two writes
-// of a check leaves either everything or nothing.
+// of a check leaves either everything or nothing. Three checks cover every
+// write a check makes: new versions (with a baseline), a held version
+// released after its cooldown, and a yank.
 func TestCommitAllOrNothing(t *testing.T) {
 	st, tg := fixture(t)
 	ctx := t.Context()
@@ -309,36 +393,40 @@ func TestCommitAllOrNothing(t *testing.T) {
 	wNew := ulid.New(check1)
 	must(t, st.CreateWatch(ctx, store.Watch{ID: wNew, TargetID: tg.ID}))
 	watches := []string{wNow, wCool, wNew}
-	before := snap(t, st, tg.ID, watches...)
+	seen := map[string]bool{}
 
-	f := &faults{seen: map[string]bool{}}
-	for f.failAt = 1; ; f.failAt++ {
-		f.writes = 0
-		n, err := Commit(ctx, failingStore{st: st, f: f}, secondCheck(tg))
-		if f.writes < f.failAt { // no write left to fail: the check committed
-			if err != nil {
-				t.Fatalf("check without a fault: %v", err)
-			}
-			if n.Events != 2 {
-				t.Fatalf("emitted %+v", n)
-			}
-			break
-		}
-		if !errors.Is(err, errCrash) || n != (Emitted{}) {
-			t.Fatalf("crash at write %d: %+v, %v", f.failAt, n, err)
-		}
-		if got := snap(t, st, tg.ID, watches...); !reflect.DeepEqual(got, before) {
-			t.Fatalf("crash at write %d left a partial check:\n%+v\nwant\n%+v", f.failAt, got, before)
-		}
+	got, n := crashEveryWrite(t, st, secondCheck(tg), watches)
+	maps.Copy(seen, got)
+	after := snap(t, st, tg.ID, watches...)
+	if n.Events != 2 || len(after.Versions) != 4 || len(after.Pending) != 1 || len(after.Events) != 2 || !after.Baselines[2] {
+		t.Fatalf("committed check: %+v, %+v", n, after)
 	}
-	for _, op := range []string{"AddVersion", "MarkBaselineDone", "AddPendingRelease", "AppendEvent"} {
-		if !f.seen[op] {
+
+	cooled := secondCheck(tg)
+	cooled.Now, cooled.Fetched = check2.Add(80*time.Hour), source.Result{NotModified: true}
+	got, n = crashEveryWrite(t, st, cooled, watches)
+	maps.Copy(seen, got)
+	if after = snap(t, st, tg.ID, watches...); n.Events != 1 || len(after.Pending) != 0 || len(after.Events) != 3 {
+		t.Fatalf("after cooldown: %+v, %+v", n, after)
+	}
+
+	yank := secondCheck(tg)
+	yank.Now = check2.Add(81 * time.Hour)
+	yank.Fetched.Versions = slices.Clone(yank.Fetched.Versions)
+	yank.Fetched.Versions[2].Yanked = true // 2.32.0
+	got, n = crashEveryWrite(t, st, yank, watches)
+	maps.Copy(seen, got)
+	vs, err := st.ListVersions(ctx, tg.ID)
+	must(t, err)
+	yanked := slices.IndexFunc(vs, func(v store.Version) bool { return v.Raw == "2.32.0" && v.Yanked })
+	if n.Events != 0 || yanked < 0 {
+		t.Fatalf("yank check: %+v, versions %+v", n, vs)
+	}
+
+	for _, op := range []string{"AddVersion", "UpdateVersion", "MarkBaselineDone", "AddPendingRelease", "DeletePendingRelease", "AppendEvent"} {
+		if !seen[op] {
 			t.Errorf("no crash was injected at %s", op)
 		}
-	}
-	after := snap(t, st, tg.ID, watches...)
-	if len(after.Versions) != 4 || len(after.Pending) != 1 || len(after.Events) != 2 || !after.Baselines[2] {
-		t.Fatalf("committed check: %+v", after)
 	}
 }
 
@@ -359,27 +447,35 @@ func (errTx) ListSubscriptions(context.Context) ([]store.Subscription, error) {
 func TestEmitErrors(t *testing.T) {
 	ctx := t.Context()
 	tg := store.Target{ID: "t", Kind: "npm", Coordinates: map[string]string{"name": "x"}}
-	rel := []policy.WatchReleases{{Watch: store.Watch{ID: wNow}, Releases: []policy.Release{{Raw: "1.0.0", DetectedAt: check1}}}}
+	rel := []policy.WatchReleases{{Watch: store.Watch{ID: wNow}, Releases: []policy.Release{{Raw: "1.0.0", Scheme: "semver", DetectedAt: check1}}}}
 	if _, err := Emit(ctx, errTx{}, rel, EmitInput{Target: tg, Instance: "angelia", Now: check1}); !errors.Is(err, errCrash) {
 		t.Errorf("list subscriptions error: %v", err)
 	}
 	st, _ := fixture(t)
-	err := st.InTx(ctx, func(tx store.Tx) error {
-		bad := slices.Clone(rel)
-		bad[0].Watch.Policy = json.RawMessage(`{"nope":1}`)
-		if _, err := Emit(ctx, tx, bad, EmitInput{Target: tg, Instance: "angelia", Now: check1}); !errors.Is(err, policy.ErrInvalid) {
-			t.Errorf("invalid watch policy: %v", err)
-		}
-		if _, err := Emit(ctx, tx, rel, EmitInput{Target: tg, Instance: "Bad", Now: check1}); !errors.Is(err, ErrInvalid) {
-			t.Errorf("invalid instance: %v", err)
-		}
-		dup := func(time.Time) string { return "01JBX2A7C8D9E0F1G2H3J4K5M6" }
-		if _, err := Emit(ctx, tx, rel, EmitInput{Target: tg, Instance: "angelia", Now: check1, NewID: dup}); !errors.Is(err, store.ErrConflict) {
-			t.Errorf("event and delivery with one id: %v", err)
-		}
-		return errCrash
-	})
-	if !errors.Is(err, errCrash) {
-		t.Fatal(err)
+	emit := func(in EmitInput) error {
+		in.Target, in.Now = tg, check1
+		return st.InTx(ctx, func(tx store.Tx) error {
+			_, err := Emit(ctx, tx, rel, in)
+			return err
+		})
+	}
+	if err := emit(EmitInput{Instance: "Bad"}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("invalid instance: %v", err)
+	}
+	// Every delivery gets the same id: the second one conflicts after the
+	// event and the first delivery were written.
+	dup := func(time.Time) string { return "01JBX2A7C8D9E0F1G2H3J4K5M6" }
+	if err := emit(EmitInput{Instance: "angelia", NewID: dup}); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("deliveries with one id: %v", err)
+	}
+	evs, err := st.ListEventsAfter(ctx, 0, 0)
+	must(t, err)
+	if len(evs) != 0 {
+		t.Fatalf("events persisted after a failed emit: %+v", evs)
+	}
+	ds, err := st.ListDeliveries(ctx, "01JBX2A7C8D9E0F1G2H3J4K5M6")
+	must(t, err)
+	if len(ds) != 0 {
+		t.Fatalf("deliveries persisted after a failed emit: %+v", ds)
 	}
 }

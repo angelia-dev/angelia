@@ -11,7 +11,7 @@ import (
 // registryURL, when not empty, is the repository_url qualifier of a
 // non-default registry. It is written by hand: package-url/packageurl-go is
 // not in architecture.md §6, and the rules here deviate from it (go-proxy
-// case, pypi name from the registry).
+// case, pypi and crates names from the registry).
 func PURL(kind, pkg, raw string, md map[string]any, registryURL string) *string {
 	var typ string
 	var path []string // namespace segments then the name
@@ -34,7 +34,13 @@ func PURL(kind, pkg, raw string, md map[string]any, registryURL string) *string 
 			return nil
 		}
 	case "crates":
-		typ, path = "cargo", []string{pkg}
+		// The name as published, in its case (the crates source keeps it
+		// from the index); without it no purl is built, as for pypi.
+		name, _ := md["crate_name"].(string)
+		if name == "" {
+			return nil
+		}
+		typ, path = "cargo", []string{name}
 	case "github-release", "github-tag":
 		typ, path = "github", strings.Split(strings.ToLower(pkg), "/")
 		if len(path) != 2 {

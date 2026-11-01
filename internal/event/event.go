@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/policy"
@@ -139,17 +141,28 @@ type Input struct {
 var (
 	instanceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,62}$`)
 	urlRE      = regexp.MustCompile(`^https?://[^\s/?#]+([/?#]\S*)?$`)
+	// tokenRE is the spec's open set token (data.source, data.scheme).
+	tokenRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	// labelKeyRE and the limits below are the spec's watch.labels rules.
+	labelKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`)
 
 	// ErrInvalid is wrapped by Build errors: no event valid under the spec can
 	// be built from the input.
 	ErrInvalid = errors.New("event: invalid input")
 )
 
+// Spec limits of watch.labels.
+const (
+	maxLabels        = 32
+	maxLabelValueLen = 253
+)
+
 // Build maps a release a watch emits to its event: release.prerelease when
 // the version is a pre-release, release.published otherwise. It does no I/O.
-// An input from which no event valid under the spec can be built (an
-// instance name or watch id of the wrong form, no package or version) is an
-// error wrapping ErrInvalid.
+// An input from which no event valid under the spec can be built is an error
+// wrapping ErrInvalid: an instance name, watch id, source kind or scheme of
+// the wrong form, a blank package, no version or time, or labels outside the
+// spec's limits.
 func Build(in Input) (Envelope, error) {
 	r := in.Release
 	kind := in.Target.Kind
@@ -159,10 +172,17 @@ func Build(in Input) (Envelope, error) {
 		return Envelope{}, fmt.Errorf("%w: instance name %q", ErrInvalid, in.Instance)
 	case !ulid.Valid(in.Watch.ID):
 		return Envelope{}, fmt.Errorf("%w: watch id %q is not a ULID", ErrInvalid, in.Watch.ID)
-	case strings.TrimSpace(pkg) == "":
+	case !tokenRE.MatchString(kind):
+		return Envelope{}, fmt.Errorf("%w: source kind %q", ErrInvalid, kind)
+	case blank(pkg):
 		return Envelope{}, fmt.Errorf("%w: target %s has no package name", ErrInvalid, in.Target.ID)
 	case r.Raw == "" || r.DetectedAt.IsZero() || in.Time.IsZero():
 		return Envelope{}, fmt.Errorf("%w: release without version, detection or emission time", ErrInvalid)
+	case !tokenRE.MatchString(r.Scheme):
+		return Envelope{}, fmt.Errorf("%w: scheme %q", ErrInvalid, r.Scheme)
+	}
+	if err := checkLabels(in.Watch.Labels); err != nil {
+		return Envelope{}, err
 	}
 	id := in.ID
 	if id == "" {
@@ -285,10 +305,36 @@ func nonEmpty(s string) *string {
 	return &s
 }
 
-// validURL keeps an absolute http(s) URL without whitespace; anything else
-// is unknown (null) rather than an event that fails the schema.
+// isSpace is ECMA-262 \s, which the spec patterns use: Unicode white space
+// plus U+FEFF. Go's regexp \s is ASCII only.
+func isSpace(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }
+
+// blank reports whether s has no character but white space (spec pattern \S).
+func blank(s string) bool { return strings.IndexFunc(s, func(r rune) bool { return !isSpace(r) }) < 0 }
+
+func checkLabels(labels map[string]string) error {
+	if len(labels) > maxLabels {
+		return fmt.Errorf("%w: %d labels, at most %d", ErrInvalid, len(labels), maxLabels)
+	}
+	for k, v := range labels {
+		if !labelKeyRE.MatchString(k) {
+			return fmt.Errorf("%w: label key %q", ErrInvalid, k)
+		}
+		if utf8.RuneCountInString(v) > maxLabelValueLen || strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return fmt.Errorf("%w: value of label %q", ErrInvalid, k)
+		}
+	}
+	return nil
+}
+
+// validURL keeps an absolute http(s) URL without whitespace (ECMA \s) that
+// net/url parses; anything else is unknown (null) rather than an event that
+// fails the schema.
 func validURL(s string) *string {
-	if !urlRE.MatchString(s) {
+	if !urlRE.MatchString(s) || strings.ContainsFunc(s, isSpace) {
+		return nil
+	}
+	if _, err := url.Parse(s); err != nil {
 		return nil
 	}
 	return &s

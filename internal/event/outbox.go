@@ -37,7 +37,8 @@ type EmitInput struct {
 
 // Emitted counts what Emit wrote.
 type Emitted struct {
-	Events, Deliveries, Held int
+	// Deliveries counts every delivery written; Held and Dead are subsets.
+	Events, Deliveries, Held, Dead int
 }
 
 // Emit is the outbox step of a check, inside its transaction, after
@@ -49,8 +50,11 @@ type Emitted struct {
 // it.
 //
 // A subscription whose stored filter or policy does not decode (it should
-// have been rejected when stored) is skipped with an Error log. Every other
-// error is returned and the caller must roll back.
+// have been rejected when stored) cannot be matched; it does not block the
+// others. Each event gets a dead delivery for it, with LastError
+// InvalidSubscription and the decode error, so the problem shows wherever
+// deliveries are listed, and an Error log. Every other error is returned and
+// the caller must roll back.
 func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitInput) (Emitted, error) {
 	var n Emitted
 	if len(rel) == 0 {
@@ -64,7 +68,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	if newID == nil {
 		newID = ulid.New
 	}
-	matcher, policies, err := loadSubscriptions(ctx, tx, logger)
+	matcher, policies, invalid, err := loadSubscriptions(ctx, tx, logger)
 	if err != nil {
 		return n, err
 	}
@@ -72,10 +76,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	trust := policy.TrustsPublishedAt(kind)
 	var ids []string
 	for _, wr := range rel {
-		wp, err := policy.Decode(wr.Watch.Policy)
-		if err != nil { // policy.Apply skips such a watch, so it emits nothing
-			return n, fmt.Errorf("event: watch %s policy: %w", wr.Watch.ID, err)
-		}
+		wp := wr.Policy
 		for _, r := range wr.Releases {
 			env, err := Build(Input{
 				ID: newID(in.Now), Instance: in.Instance, Target: in.Target, RegistryURL: in.RegistryURL,
@@ -118,6 +119,12 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 				}
 				ds = append(ds, d)
 			}
+			for _, bad := range invalid {
+				ds = append(ds, store.Delivery{
+					ID: newID(in.Now), SubscriptionID: bad.id, Status: store.DeliveryDead, LastError: bad.reason,
+				})
+				n.Dead++
+			}
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: wr.Watch.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now,
 			}, ds); err != nil {
@@ -130,27 +137,35 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	return n, nil
 }
 
+// InvalidSubscription starts the LastError of the dead delivery Emit writes
+// for a subscription whose stored filter or policy does not decode.
+const InvalidSubscription = "invalid subscription filter/policy: "
+
+type invalidSub struct{ id, reason string }
+
 // loadSubscriptions builds the matcher and the policies of every
-// subscription that decodes.
-func loadSubscriptions(ctx context.Context, tx store.Tx, logger *slog.Logger) (*subscription.Matcher, map[string]subscription.Policy, error) {
+// subscription that decodes, and lists those that do not.
+func loadSubscriptions(ctx context.Context, tx store.Tx, logger *slog.Logger) (*subscription.Matcher, map[string]subscription.Policy, []invalidSub, error) {
 	subs, err := tx.ListSubscriptions(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("event: %w", err)
+		return nil, nil, nil, fmt.Errorf("event: %w", err)
 	}
 	var valid []subscription.Subscription
+	var invalid []invalidSub
 	policies := make(map[string]subscription.Policy, len(subs))
 	for _, s := range subs {
 		f, ferr := subscription.FromJSON(s.Filter)
 		p, perr := subscription.PolicyFromJSON(s.Policy)
 		if err := errors.Join(ferr, perr); err != nil {
-			logger.ErrorContext(ctx, "invalid subscription; skipped for this check",
+			logger.ErrorContext(ctx, "invalid subscription; its deliveries of this check are dead",
 				slog.String("subscription", s.ID), slog.String("error", err.Error()))
+			invalid = append(invalid, invalidSub{id: s.ID, reason: InvalidSubscription + err.Error()})
 			continue
 		}
 		valid = append(valid, subscription.Subscription{ID: s.ID, Filter: f})
 		policies[s.ID] = p
 	}
-	return subscription.NewMatcher(valid), policies, nil
+	return subscription.NewMatcher(valid), policies, invalid, nil
 }
 
 // Committer is the part of store.Store a check commits through.

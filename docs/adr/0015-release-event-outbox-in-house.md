@@ -18,25 +18,30 @@ ADR 0004 left open whether the outbox is a separate table or the `delivery` rows
 1. **No new module.** `internal/event` maps a `policy.Release` to a plain `Envelope` struct whose `encoding/json`
    form is the CloudEvents 1.0 structured-mode event. ULIDs come from `internal/ulid` (standard library, the
    generator the watch file already used). purls are built by `event.PURL` from the spec's table:
-   `packageurl-go` is not in §6, and the spec deviates from it anyway (go-proxy keeps case; the pypi name comes
-   from the registry). `cloudevents/sdk-go` can come with a sink that needs its transports.
+   `packageurl-go` is not in §6, and the spec deviates from it anyway (go-proxy keeps case; the pypi and crates
+   names come from the registry). `cloudevents/sdk-go` can come with a sink that needs its transports.
 2. **The outbox is the delivery rows** (no separate table). `event.Commit` runs `diff.Apply`, `policy.Apply` and
    `event.Emit` in one `store.InTx`. `Emit` writes one event per emitted release and one delivery per subscription
    whose filter matches and whose `subscription.Policy.Evaluate` does not drop it; a held delivery carries
    `store.Hold` ([ADR 0014](0014-subscription-policy-overrides.md)). An event no subscription takes is still
-   written, for the pull API. A subscription whose stored filter or policy does not decode is skipped with an
-   Error log, like a watch with an invalid policy.
+   written, for the pull API. A subscription whose stored filter or policy does not decode cannot be matched and
+   does not block the others: each event gets a `dead` delivery for it, with `last_error`
+   `invalid subscription filter/policy: <error>`, and an Error log, so the problem is visible where deliveries
+   are listed. This is a choice the maintainer can revisit (alternatives: skip with a log only, or fail the
+   check).
 3. **Stored form.** `event.type` holds the full CloudEvents type (`dev.angelia.release.published.v1`) and
    `event.payload_json` the whole envelope, so a replay sends the same bytes, `id` and `time` included.
 4. **Immutability.** The store API has no event update; a second append of an id is `ErrConflict`; migration
    00007 adds a trigger that aborts any `UPDATE` of `event`. Retention still deletes rows.
-5. **pypi purl.** The pypi source stores `info.name` as `Metadata["project_name"]`. When it is missing (an old
-   held release, a mirror without `info.name`) the purl is `null`, which the spec allows, instead of a guess from
-   the PEP 503 name.
+5. **pypi and crates purls.** The pypi source stores `info.name` as `Metadata["project_name"]`, and the crates
+   source the index line's `name` (the crate name as published, in its case) as `Metadata["crate_name"]`. When
+   it is missing (an old held release, a mirror or index without it) the purl is `null`, which the spec allows,
+   instead of a guess from the normalised name.
 6. **Schema conformance in tests.** The two spec schemas and the spec's examples are vendored under
    `internal/event/testdata/spec` with their commit. A test-only validator covers the subset of JSON Schema
-   2020-12 the schemas use; it is checked against the spec's 41 valid and invalid examples and panics on any
-   keyword it does not know.
+   2020-12 the schemas use, with ECMA-262 `\s` and `\S` (Unicode white space) in patterns; it is checked
+   against the spec's 41 valid and invalid examples. A static walk of both schema documents panics on any keyword
+   it does not know, including in subschemas no test instance reaches.
 
 ## Consequences
 
@@ -51,18 +56,22 @@ ADR 0004 left open whether the outbox is a separate table or the `delivery` rows
 - The test validator is ours to maintain; a schema change that uses a new keyword makes it panic until it is
   extended.
 - The vendored schemas must be refreshed by hand when the spec changes.
+- `Emit` reads and decodes every subscription inside the check's write transaction. Measured in review at 10,000
+  subscriptions: about 87 ms per `Emit` (about 85 ms of it loading the subscriptions), during which SQLite's
+  single write lock is held. A follow-up issue will cache the compiled matcher and invalidate it on
+  subscription writes.
 
 ### Open questions
 
-- crates purls use the lower-cased coordinate, not the crate's published case (the source does not keep it).
 - oci, go-proxy and maven purls are built from `data.package`; their sources do not exist yet and may report
   digests or coordinates that change this.
 - `release.yanked` emission is not part of this story.
 
 ## Alternatives considered
 
-- **cloudevents/sdk-go for the envelope.** Listed in §6, but it adds a module tree for what a struct does, and
-  the envelope profile forbids extension attributes anyway.
+- **cloudevents/sdk-go for the envelope.** Listed in §6, but it adds a module tree for what a struct does. v1
+  emits no extension attributes (the envelope schema only allows names matching `^[a-z0-9]{1,20}$`, for
+  intermediaries), so nothing needs the SDK's attribute handling.
 - **A JSON Schema library in tests** (for example `santhosh-tekuri/jsonschema`). Not in §6; would need a
   maintainer decision. Recommended if the schemas grow beyond the current subset.
 

@@ -3,6 +3,7 @@ package event
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -122,8 +123,9 @@ func TestBuildValidatesAgainstSpecSchema(t *testing.T) {
 			name: "crates backport", tgt: target("crates", map[string]string{"name": "Serde"}),
 			rel: func(r *policy.Release) {
 				r.Raw, r.Backport, r.Previous, r.Bump = "1.0.215", true, "1.0.214", version.BumpPatch
+				r.Metadata = map[string]any{"crate_name": "Serde"}
 			},
-			typ: TypePublished, purl: "pkg:cargo/serde@1.0.215", subject: "crates:serde@1.0.215",
+			typ: TypePublished, purl: "pkg:cargo/Serde@1.0.215", subject: "crates:serde@1.0.215",
 		},
 		{
 			name: "plugin kind, no normalized form, bad URL dropped", tgt: target("my-plugin", map[string]string{"name": "thing"}),
@@ -179,6 +181,28 @@ func TestBuildValidatesAgainstSpecSchema(t *testing.T) {
 	}
 }
 
+// URLs with Unicode white space (ECMA-262 \s, which the spec pattern uses) or
+// that net/url rejects are null, not an event that fails the schema.
+func TestValidURL(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"https://pypi.org/project/x/1.0/": true,
+		"http://mirror.example.org/x":     true,
+		"https://a.org/x\vy":              false, // VT
+		"https://a.org/x\u00a0y":          false, // NBSP
+		"https://a.org/x\u2028y":          false, // line separator
+		"https://a.org/x\ufeff":           false,
+		"https://a.org/x y":               false,
+		"https://a.org/%zz":               false, // net/url rejects it
+		"ftp://a.org/":                    false,
+		"https:///x":                      false,
+		"":                                false,
+	} {
+		if got := validURL(in); (got != nil) != ok {
+			t.Errorf("validURL(%q) = %v, want kept %v", in, got, ok)
+		}
+	}
+}
+
 func TestBuildIDsAndTime(t *testing.T) {
 	r := policy.Release{Raw: "1.0.0", Normalized: "1.0.0", Scheme: "semver", DetectedAt: detected}
 	in := Input{
@@ -201,7 +225,7 @@ func TestBuildIDsAndTime(t *testing.T) {
 func TestBuildRejectsInputsTheSchemaRejects(t *testing.T) {
 	ok := Input{
 		Instance: "angelia", Target: target("npm", map[string]string{"name": "x"}), Watch: store.Watch{ID: watchID},
-		Release: policy.Release{Raw: "1", DetectedAt: detected}, Time: emitted,
+		Release: policy.Release{Raw: "1", Scheme: "semver", DetectedAt: detected}, Time: emitted,
 	}
 	for name, mod := range map[string]func(*Input){
 		"instance upper case": func(in *Input) { in.Instance = "Angelia" },
@@ -212,6 +236,19 @@ func TestBuildRejectsInputsTheSchemaRejects(t *testing.T) {
 		"no version":          func(in *Input) { in.Release.Raw = "" },
 		"no detection time":   func(in *Input) { in.Release.DetectedAt = time.Time{} },
 		"no emission time":    func(in *Input) { in.Time = time.Time{} },
+		"package of spaces":   func(in *Input) { in.Target.Coordinates = map[string]string{"name": "\u00a0\u3000\ufeff"} },
+		"kind upper case":     func(in *Input) { in.Target.Kind = "NPM" },
+		"no scheme":           func(in *Input) { in.Release.Scheme = "" },
+		"scheme with dot":     func(in *Input) { in.Release.Scheme = "pep.440" },
+		"label key":           func(in *Input) { in.Watch.Labels = map[string]string{"-x": "v"} },
+		"label value control": func(in *Input) { in.Watch.Labels = map[string]string{"x": "a\tb"} },
+		"label value long":    func(in *Input) { in.Watch.Labels = map[string]string{"x": strings.Repeat("\u00e9", 254)} },
+		"33 labels": func(in *Input) {
+			in.Watch.Labels = map[string]string{}
+			for i := range 33 {
+				in.Watch.Labels[fmt.Sprintf("k%d", i)] = "v"
+			}
+		},
 	} {
 		in := ok
 		mod(&in)
@@ -245,7 +282,10 @@ func TestPURL(t *testing.T) {
 		{"npm", "@angular/core", "17.3.0", nil, "", "pkg:npm/%40angular/core@17.3.0"},
 		{"npm", "left-pad", "1.3.0", nil, "", "pkg:npm/left-pad@1.3.0"},
 		{"npm", "x", "1.0.0+build.5", nil, "", "pkg:npm/x@1.0.0%2Bbuild.5"},
-		{"crates", "serde", "1.0.215", nil, "", "pkg:cargo/serde@1.0.215"},
+		// crates: the name as published, case kept; not guessed when missing.
+		{"crates", "serde", "1.0.215", map[string]any{"crate_name": "serde"}, "", "pkg:cargo/serde@1.0.215"},
+		{"crates", "inflector", "0.11.4", map[string]any{"crate_name": "Inflector"}, "", "pkg:cargo/Inflector@0.11.4"},
+		{"crates", "serde", "1.0.215", nil, "", ""},
 		// github: owner and repo lower-cased, version the tag.
 		{"github-release", "cli/cli", "v2.62.0", nil, "", "pkg:github/cli/cli@v2.62.0"},
 		{"github-release", "BurntSushi/ripgrep", "14.1.1", nil, "", "pkg:github/burntsushi/ripgrep@14.1.1"},

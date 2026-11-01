@@ -46,6 +46,7 @@ func loadSchemas(t *testing.T) *schemaSet {
 		if err := json.Unmarshal(b, &doc); err != nil {
 			t.Fatalf("%s: %v", p, err)
 		}
+		walkKeywords(doc, p)
 		s.docs[doc["$id"].(string)] = doc
 	}
 	return s
@@ -203,15 +204,93 @@ func formatOK(format, s string) bool {
 	panic("format not supported by the test validator: " + format)
 }
 
-// re compiles an ECMA-262 pattern of the schemas as RE2: the only difference
-// they use is \uXXXX.
+// re compiles an ECMA-262 pattern of the schemas as RE2.
 func (s *schemaSet) re(p string) *regexp.Regexp {
 	if r, ok := s.res[p]; ok {
 		return r
 	}
-	r := regexp.MustCompile(regexp.MustCompile(`\\u([0-9A-Fa-f]{4})`).ReplaceAllString(p, `\x{$1}`))
+	r := regexp.MustCompile(ecmaToRE2(p))
 	s.res[p] = r
 	return r
+}
+
+// ecmaSpace is the body of a class matching ECMA-262 \s (white space and
+// line terminators); RE2's \s is only [\t\n\f\r ].
+const ecmaSpace = `\s\v\p{Zs}\x{FEFF}\x{2028}\x{2029}`
+
+// ecmaToRE2 rewrites the ECMA-262 escapes whose RE2 meaning differs: \uXXXX,
+// \s and \S. A \S inside a class has no RE2 form and panics.
+func ecmaToRE2(p string) string {
+	var b strings.Builder
+	inClass := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c == '\\' && i+1 < len(p):
+			e := p[i+1]
+			i++
+			switch {
+			case e == 'u' && i+4 < len(p):
+				b.WriteString(`\x{` + p[i+1:i+5] + `}`)
+				i += 4
+			case e == 's' && inClass:
+				b.WriteString(ecmaSpace)
+			case e == 's':
+				b.WriteString("[" + ecmaSpace + "]")
+			case e == 'S' && inClass:
+				panic(`\S inside a character class: ` + p)
+			case e == 'S':
+				b.WriteString("[^" + ecmaSpace + "]")
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(e)
+			}
+		case c == '[' && !inClass:
+			inClass = true
+			b.WriteByte(c)
+		case c == ']' && inClass:
+			inClass = false
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// supported are the keywords the validator asserts or ignores knowingly.
+var supported = append([]string{
+	"$ref", "type", "enum", "const", "pattern", "minLength", "maxLength", "format", "anyOf", "required",
+	"maxProperties", "propertyNames", "properties", "patternProperties", "additionalProperties",
+}, annotations...)
+
+// walkKeywords visits every subschema of a schema document, including those
+// no instance reaches, and panics on a keyword the validator does not know.
+func walkKeywords(schema any, at string) {
+	sc, ok := schema.(map[string]any)
+	if !ok {
+		if _, isBool := schema.(bool); !isBool {
+			panic(fmt.Sprintf("%s: schema of type %T", at, schema))
+		}
+		return
+	}
+	for kw, val := range sc {
+		if !slices.Contains(supported, kw) {
+			panic(at + ": schema keyword not supported by the test validator: " + kw)
+		}
+		switch kw {
+		case "properties", "patternProperties", "$defs":
+			for k, sub := range val.(map[string]any) {
+				walkKeywords(sub, at+"/"+kw+"/"+k)
+			}
+		case "anyOf":
+			for i, sub := range val.([]any) {
+				walkKeywords(sub, fmt.Sprintf("%s/anyOf/%d", at, i))
+			}
+		case "additionalProperties", "propertyNames":
+			walkKeywords(val, at+"/"+kw)
+		}
+	}
 }
 
 // resolve finds the schema a $ref names, relative to the document base, and
@@ -285,4 +364,46 @@ func TestValidatorAgainstSpecExamples(t *testing.T) {
 	if n < 40 {
 		t.Fatalf("checked %d examples, want the 41 vendored ones", n)
 	}
+}
+
+// The validator follows ECMA-262 \s and \S, as check-jsonschema does: Unicode
+// white space is white space, not a character of a URL or a package.
+func TestValidatorECMAWhiteSpace(t *testing.T) {
+	s := loadSchemas(t)
+	b, err := fs.ReadFile(specFS, "examples/valid/release/v1/published-pypi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := func(d map[string]any) map[string]any { return d["urls"].(map[string]any) }
+	for name, mod := range map[string]func(d map[string]any){
+		"url with NBSP":       func(d map[string]any) { urls(d)["release"] = "https://a.org/x\u00a0y" },
+		"url with LS":         func(d map[string]any) { urls(d)["release"] = "https://a.org/x\u2028y" },
+		"url with VT":         func(d map[string]any) { urls(d)["changelog"] = "https://a.org/x\vy" },
+		"host with BOM":       func(d map[string]any) { urls(d)["release"] = "https://a\ufeff.org/" },
+		"package space":       func(d map[string]any) { d["package"] = " " },
+		"package NBSP only":   func(d map[string]any) { d["package"] = "\u00a0" },
+		"package ideographic": func(d map[string]any) { d["package"] = "\u3000\u3000" },
+	} {
+		d := decode(t, b).(map[string]any)
+		if errs := s.validate(dataSchemaID, d); len(errs) > 0 {
+			t.Fatalf("base example invalid: %v", errs)
+		}
+		mod(d)
+		if errs := s.validate(dataSchemaID, d); len(errs) == 0 {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	want := `^[^` + ecmaSpace + `/?#]+[^` + ecmaSpace + `]\x{0000}$`
+	if got := ecmaToRE2(`^[^\s/?#]+\S\u0000$`); got != want {
+		t.Errorf("ecmaToRE2 = %s, want %s", got, want)
+	}
+}
+
+func TestWalkKeywordsFailsLoudly(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("an unsupported keyword in an unvisited subschema did not panic")
+		}
+	}()
+	walkKeywords(map[string]any{"$defs": map[string]any{"x": map[string]any{"oneOf": []any{}}}}, "test")
 }
