@@ -32,8 +32,12 @@ const (
 const DefaultEventLimit = 100
 
 // DefaultPruneBatch is the number of events PruneHistory deletes per
-// transaction when batch <= 0.
-const DefaultPruneBatch = 500
+// transaction when batch <= 0. MaxPruneBatch is the upper bound: a larger batch
+// is cut down to it, so one transaction stays short.
+const (
+	DefaultPruneBatch = 500
+	MaxPruneBatch     = 5000
+)
 
 // Tx is the set of writes that must commit together when a check finds new
 // versions: the known set, the events and deliveries (transactional outbox,
@@ -78,8 +82,10 @@ type Store interface {
 	ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error)
 	// PruneHistory deletes events created before the given time, with their
 	// deliveries, in transactions of at most batch events (DefaultPruneBatch
-	// when batch <= 0). An event is kept while any of its deliveries is
-	// pending or in flight, and so are its deliveries. Config rows are never
+	// when batch <= 0, MaxPruneBatch when larger). An event is kept while any
+	// of its deliveries is pending or in flight, and so are its deliveries.
+	// Delivered and dead deliveries follow their event's age, not the time they
+	// finished (see the sqlite engine's PruneHistory). Config rows are never
 	// touched. Callers pass before = now - retention.
 	PruneHistory(ctx context.Context, before time.Time, batch int) (PruneResult, error)
 	// AcquireLease takes or renews the named lease for holder until the given

@@ -406,6 +406,8 @@ type PruneBatchEndParams struct {
 	Batch    int64
 }
 
+// There is no index on event.created_at, so this scans by seq from after_seq
+// and stops at batch matches. That is fine for a periodic job, not for a hot path.
 func (q *Queries) PruneBatchEnd(ctx context.Context, arg PruneBatchEndParams) ([]int64, error) {
 	rows, err := q.db.QueryContext(ctx, pruneBatchEnd, arg.AfterSeq, arg.Before, arg.Batch)
 	if err != nil {

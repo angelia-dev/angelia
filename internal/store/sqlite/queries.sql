@@ -54,6 +54,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 SELECT * FROM delivery WHERE event_id = ? ORDER BY id;
 
 -- name: PruneBatchEnd :many
+-- There is no index on event.created_at, so this scans by seq from after_seq
+-- and stops at batch matches. That is fine for a periodic job, not for a hot path.
 SELECT seq FROM event WHERE seq > sqlc.arg(after_seq) AND created_at < sqlc.arg(before) ORDER BY seq LIMIT sqlc.arg(batch);
 
 -- name: PruneDeliveries :execrows

@@ -240,3 +240,79 @@ func TestPruneHistoryManyBatches(t *testing.T) {
 		t.Fatalf("retained %d events, first %v; want %d recent events", len(got), got[:1], recent)
 	}
 }
+
+// TestPruneHistoryWritersBetweenBatches: between batches the prune holds no
+// transaction, so a writer runs at once and its event is kept. The hook makes
+// this deterministic: it runs after each committed batch.
+func TestPruneHistoryWritersBetweenBatches(t *testing.T) {
+	s, _ := openTest(t)
+	seed(t, s)
+	ctx := t.Context()
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("e%d", i)
+		must(t, s.AppendEvent(ctx, eventAt(id, pruneOld), []store.Delivery{
+			deliveryWith("d-"+id, id, "s1", store.DeliveryDelivered),
+		}))
+	}
+
+	batches := 0
+	res, err := s.pruneHistory(ctx, pruneBefore, 2, func() {
+		batches++
+		// A writer runs now. If the prune still held the write lock, this
+		// insert would fail with a busy error after the busy timeout.
+		id := fmt.Sprintf("late%d", batches)
+		must(t, s.AppendEvent(ctx, eventAt(id, t0), []store.Delivery{
+			deliveryWith("d-"+id, id, "s1", store.DeliveryPending),
+		}))
+	})
+	must(t, err)
+	// Six old events in batches of 2: three batches, and the hook runs after each.
+	if batches != 3 {
+		t.Fatalf("hook ran %d times, want 3", batches)
+	}
+	if res.Events != 6 || res.Deliveries != 6 {
+		t.Fatalf("prune = %+v, want 6 events and 6 deliveries", res)
+	}
+	want := []string{"late1", "late2", "late3"}
+	if got := listEventIDs(t, s); !equalStrings(got, want) {
+		t.Fatalf("retained events = %v, want the writers' events %v", got, want)
+	}
+}
+
+// TestPruneHistoryTerminalDeliveryFollowsEventAge pins the documented rule:
+// a dead delivery is pruned with its event by the event's age, even when the
+// delivery died recently. Here the event is 91 days old and the cutoff is 90
+// days.
+func TestPruneHistoryTerminalDeliveryFollowsEventAge(t *testing.T) {
+	s, _ := openTest(t)
+	seed(t, s)
+	ctx := t.Context()
+	ninetyOne := t0.Add(-91 * 24 * time.Hour)
+	must(t, s.AppendEvent(ctx, eventAt("e1", ninetyOne), []store.Delivery{
+		deliveryWith("d1", "e1", "s1", store.DeliveryDead),
+	}))
+
+	res, err := s.PruneHistory(ctx, t0.Add(-90*24*time.Hour), 0)
+	must(t, err)
+	if res.Events != 1 || res.Deliveries != 1 {
+		t.Fatalf("prune = %+v, want the dead delivery pruned with its 91-day-old event", res)
+	}
+}
+
+// TestPruneBatchSize: batch <= 0 means the default, and anything above the
+// cap is cut to it.
+func TestPruneBatchSize(t *testing.T) {
+	for in, want := range map[int]int{
+		-3:                      store.DefaultPruneBatch,
+		0:                       store.DefaultPruneBatch,
+		1:                       1,
+		7:                       7,
+		store.MaxPruneBatch:     store.MaxPruneBatch,
+		store.MaxPruneBatch + 1: store.MaxPruneBatch,
+		1 << 30:                 store.MaxPruneBatch,
+	} {
+		if got := pruneBatchSize(in); got != want {
+			t.Errorf("pruneBatchSize(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
