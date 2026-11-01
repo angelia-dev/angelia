@@ -49,6 +49,23 @@ func TestRegistryErrors(t *testing.T) {
 	}
 }
 
+func TestRegistryTypedNilAndZeroValue(t *testing.T) {
+	var r source.Registry // zero value must work
+	var typedNil *sourcetest.Fake
+	if err := r.Register(typedNil); err == nil {
+		t.Error("typed-nil source accepted")
+	}
+	if _, err := r.Get("x"); !errors.Is(err, source.ErrUnknownKind) {
+		t.Errorf("Get on zero registry: %v", err)
+	}
+	if err := r.Register(sourcetest.NewFake("x")); err != nil {
+		t.Fatalf("Register on zero registry: %v", err)
+	}
+	if !slices.Equal(r.Kinds(), []string{"x"}) {
+		t.Errorf("Kinds() = %v", r.Kinds())
+	}
+}
+
 func TestRegistryConcurrent(t *testing.T) {
 	r := source.NewRegistry()
 	var wg sync.WaitGroup

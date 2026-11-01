@@ -1,11 +1,16 @@
 // Package sourcetest is the contract test suite every source.Source must
-// pass. A source's own test builds the source against a fake server
-// (httptest) or fixtures and calls Run:
+// pass. A source's own test describes a fake upstream and calls Run; Run owns
+// the httptest server and hands the constructor a client that can reach
+// nothing else:
 //
 //	func TestContract(t *testing.T) {
-//		srv := httptest.NewServer(fakeUpstream())
-//		t.Cleanup(srv.Close)
-//		sourcetest.Run(t, pypi.New(srv.URL, srv.Client()), sourcetest.Fixtures{...})
+//		sourcetest.Run(t, nil, sourcetest.Fixtures{
+//			Handler: fakeUpstream(),
+//			New: func(baseURL string, c *http.Client) source.Source {
+//				return pypi.New(baseURL, c)
+//			},
+//			Valid: ...,
+//		})
 //	}
 package sourcetest
 
@@ -13,10 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,29 +31,58 @@ import (
 
 // Fixtures describes the upstream the source under test is wired to.
 type Fixtures struct {
+	// Handler, with New, makes Run own a fake upstream: it starts an httptest
+	// server for Handler, builds the source with New(srv.URL, client) and
+	// passes Run a client from Client, so the suite can assert that Validate
+	// sends no request and that nothing leaves the server. Leave both unset
+	// for sources that need no HTTP (the in-memory Fake) and pass the source
+	// to Run instead.
+	Handler http.Handler
+	New     func(baseURL string, c *http.Client) source.Source
+
 	// Valid is a target the source accepts and that resolves to at least one
 	// version on the fake upstream.
 	Valid source.Target
 	// Invalid lists targets Validate must reject (bad or missing coordinates,
 	// wrong kind). At least one is required.
 	Invalid []source.Target
+	// Missing, if set, is a valid target that does not exist upstream; List
+	// must return an error for it (not an empty result).
+	Missing *source.Target
 	// WantRaw, if set, is the exact Raw list List must return, in order.
 	WantRaw []string
 	// Conditional is true when the fake upstream supports conditional
 	// requests (ETag, Last-Modified or cursor). The suite then checks the
 	// NotModified path.
 	Conditional bool
+	// Change, if set together with Conditional, mutates the upstream so that
+	// Valid has new versions (and a new ETag or cursor). The suite then
+	// checks that the state from before the change no longer yields
+	// NotModified. It runs last, after every other check, because it alters
+	// the upstream.
+	Change func()
 	// HasPublishedAt is true when the fake upstream provides publication
 	// dates; every version must then carry a non-zero PublishedAt.
 	HasPublishedAt bool
 }
 
-// Run executes the contract suite against src as subtests of t. It must not
-// be used with t.Parallel: it swaps the default HTTP transport to enforce
-// that nothing leaves loopback.
+// Run executes the contract suite as subtests of t. Pass src directly for a
+// source without HTTP, or leave src nil and set Fixtures.Handler and
+// Fixtures.New so Run owns the fake server and its guarded client.
 func Run(t *testing.T, src source.Source, fx Fixtures) {
 	t.Helper()
-	guardNetwork(t)
+	var client *http.Client
+	switch {
+	case src != nil && fx.New != nil:
+		t.Fatal("sourcetest: pass either src or Fixtures.New, not both")
+	case src == nil && (fx.New == nil || fx.Handler == nil):
+		t.Fatal("sourcetest: pass src, or set both Fixtures.Handler and Fixtures.New")
+	case src == nil:
+		srv := httptest.NewServer(fx.Handler)
+		t.Cleanup(srv.Close)
+		client = Client(t, srv)
+		src = fx.New(srv.URL, client)
+	}
 	checks := []struct {
 		name string
 		fn   func(context.Context, source.Source, Fixtures) error
@@ -55,11 +90,17 @@ func Run(t *testing.T, src source.Source, fx Fixtures) {
 		{"Kind", checkKind},
 		{"ValidateAccepts", checkValidateAccepts},
 		{"ValidateRejects", checkValidateRejects},
+		{"ValidateNoRequests", func(ctx context.Context, s source.Source, f Fixtures) error {
+			return checkNoRequests(ctx, s, f, client)
+		}},
 		{"ListDeterministic", checkDeterministic},
+		{"ListConcurrent", checkConcurrent},
 		{"ListMatchesFixture", checkWantRaw},
+		{"ListMissing", checkMissing},
 		{"ListHonoursContext", checkContext},
 		{"NotModified", checkNotModified},
 		{"PublishedAt", checkPublishedAt},
+		{"ChangeInvalidatesState", checkChange}, // last: mutates the upstream
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -214,29 +255,75 @@ func checkPublishedAt(ctx context.Context, src source.Source, fx Fixtures) error
 	return nil
 }
 
-// guardNetwork makes the default HTTP transport refuse any host that is not
-// loopback (httptest servers), so a source that escapes its fake server fails
-// instead of reaching a live registry. The transport is restored on cleanup.
-func guardNetwork(t *testing.T) {
-	t.Helper()
-	orig := http.DefaultTransport
-	http.DefaultTransport = loopbackOnly{next: orig}
-	t.Cleanup(func() { http.DefaultTransport = orig })
+func checkNoRequests(_ context.Context, src source.Source, fx Fixtures, c *http.Client) error {
+	if c == nil {
+		return nil // no owned server: cannot count
+	}
+	before := Requests(c)
+	_ = src.Validate(fx.Valid)
+	for _, bad := range fx.Invalid {
+		_ = src.Validate(bad)
+	}
+	if n := Requests(c) - before; n != 0 {
+		return fmt.Errorf("Validate sent %d HTTP request(s); it must do no I/O", n)
+	}
+	return nil
 }
 
-type loopbackOnly struct{ next http.RoundTripper }
-
-func (l loopbackOnly) RoundTrip(r *http.Request) (*http.Response, error) {
-	if !isLoopback(r.URL.Hostname()) {
-		return nil, fmt.Errorf("sourcetest: network access to %q blocked, use the fake server", r.URL.Host)
+func checkConcurrent(ctx context.Context, src source.Source, fx Fixtures) error {
+	want, err := list(ctx, src, fx.Valid, source.FetchState{})
+	if err != nil {
+		return err
 	}
-	return l.next.RoundTrip(r)
+	const workers = 8
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := list(ctx, src, fx.Valid, source.FetchState{})
+			switch {
+			case err != nil:
+				errs[i] = err
+			case !reflect.DeepEqual(got, want):
+				errs[i] = fmt.Errorf("concurrent List differs:\ngot:  %+v\nwant: %+v", got, want)
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
+func checkMissing(ctx context.Context, src source.Source, fx Fixtures) error {
+	if fx.Missing == nil {
+		return nil
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	res, err := src.List(ctx, *fx.Missing, source.FetchState{})
+	if err == nil {
+		return fmt.Errorf("List of the missing target returned no error (%d versions)", len(res.Versions))
+	}
+	return nil
+}
+
+func checkChange(ctx context.Context, src source.Source, fx Fixtures) error {
+	if !fx.Conditional || fx.Change == nil {
+		return nil
+	}
+	before, err := list(ctx, src, fx.Valid, source.FetchState{})
+	if err != nil {
+		return err
+	}
+	fx.Change()
+	after, err := list(ctx, src, fx.Valid, before.State)
+	if err != nil {
+		return err
+	}
+	if after.NotModified {
+		return errors.New("List with the pre-change State reported NotModified after the upstream changed")
+	}
+	if len(after.Versions) == 0 {
+		return errors.New("List after the upstream changed returned no versions")
+	}
+	return nil
 }

@@ -13,6 +13,11 @@ import (
 )
 
 // Source detects releases on one kind of upstream.
+//
+// Implementations that do HTTP receive their *http.Client through their
+// constructor (injection) and never use http.DefaultClient, so the netguard
+// client or a test guard can be substituted. List wraps context errors with
+// %w. See ADR 0006.
 type Source interface {
 	// Kind is the registry key: "pypi", "npm", "github-release", "oci", ...
 	Kind() string
@@ -60,7 +65,7 @@ type Version struct {
 	Raw         string         // "v2.3.0-rc.1"
 	PublishedAt time.Time      // zero if upstream does not say
 	Prerelease  *bool          // upstream flag if available; nil if unknown
-	Yanked      bool           // yanked, deprecated or withdrawn upstream
+	Yanked      bool           // yanked, unpublished or withdrawn upstream; deprecation goes in Metadata
 	URL         string         // release page
 	NotesURL    string         // release notes
 	Metadata    map[string]any // digest, tarball url, dist-tags, ...
