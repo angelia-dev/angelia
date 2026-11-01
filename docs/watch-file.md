@@ -1,8 +1,8 @@
-# Watch file (draft, will change)
+# Watch file
 
-Story: angelia-dev/angelia#48. Status: **format proposal, awaiting maintainer approval of the key names.
-No loader exists yet.** Everything below becomes a public contract in Phase 1 (`angelia apply`), so
-names and semantics are listed as decisions in the last section.
+Story: angelia-dev/angelia#48. Status: **format approved by the maintainer (decisions D1 to D17 in the
+last section), implemented in `internal/watchfile`.** It becomes a public contract in Phase 1
+(`angelia apply`), so names and semantics change only through a decision recorded here.
 
 Until the REST API exists, `angelia serve --watches watches.yaml` loads **watches, sinks and
 subscriptions** from one YAML file and reconciles them into the store. A complete example is in
@@ -13,7 +13,7 @@ subscriptions** from one YAML file and reconciles them into the store. A complet
 | | Instance config ([configuration.md](configuration.md)) | Watch file (this document) |
 |---|---|---|
 | Describes | one Angelia process: listen address, database, roles, log, HTTP, per-source base URL and token | the data it manages: what to watch, where to deliver |
-| Selected by | `--config` / `ANGELIA_CONFIG` | `--watches` / `ANGELIA_WATCHES` (proposed) |
+| Selected by | `--config` / `ANGELIA_CONFIG` | `--watches` / `ANGELIA_WATCHES` |
 | Env overrides | `ANGELIA_*` per key | none; the file is declarative data |
 | Secrets | `token_env` names a variable | `*_env` keys name a variable (same rule) |
 
@@ -61,9 +61,9 @@ Every sink, watch and subscription has a `name`: the stable key used by apply. P
 | `labels` | map string to string | no | `{}` | at most 32 entries; key `^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`, value at most 253 characters, no control characters |
 | `policy` | policy | no | all defaults | section 2.3 |
 
-- `coordinates` keys are source-owned. Proposed for the first three sources (they are defined by the
-  source stories, not here): `pypi`: `name`; `npm`: `name` (scoped names such as `@types/node` allowed);
-  `github-release`: `owner`, `repo`.
+- `coordinates` keys are source-owned. Defined by the source stories, not here. For the first three
+  sources: `pypi`: `name`; `npm`: `name` (scoped names such as `@types/node` allowed);
+  `github-release`: `repo` as `owner/name` (for example `cli/cli`), the form `Source.Validate` accepts.
 - `scheme` overrides the default chosen by source kind (`internal/version/schemes.ForSourceKind`).
   The loader checks the value against `schemes.Names()`, so it accepts `calver` as soon as #68 merges.
   `maven` is not accepted (Phase 1).
@@ -142,14 +142,15 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 | `sinks[]` | one `sink` (`config_json_encrypted`; in Phase 0 the secret *reference* `secret_env` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 
-**Gaps in the current schema** (decision D5, needs the maintainer because it is a migration):
+**Gaps in the schema of migration 00001** (decision D5):
 
 1. No table has a stable `name`, and no row records that it came from the file. Row ids are ULIDs.
 2. No column holds `interval`; architecture.md says `next_check_at` is computed from `interval`.
 
-Proposal: one additive migration `00003`: `name TEXT` and `managed_by TEXT NOT NULL DEFAULT 'api'` on
-`watch`, `sink` and `subscription` (unique on `(managed_by, name)`), and `interval_ms INTEGER` on
-`target`. Nothing is dropped or rewritten.
+Resolved by one additive migration, `00004_watch_file_ownership.sql`: `name TEXT` and
+`managed_by TEXT NOT NULL DEFAULT 'api'` on `watch`, `sink` and `subscription` (unique on
+`(managed_by, name)`; unnamed rows never collide), and `interval_ms INTEGER` on `target`. Nothing is
+dropped or rewritten; existing rows become `api` rows.
 
 ## 4. What apply does
 
@@ -189,30 +190,43 @@ Details:
 - A sink cannot be removed while a kept subscription references it (validation error).
 - Secrets: apply never reads the value of a `*_env` variable into the database.
 
-`angelia config check --watches FILE` (proposed) runs the same validation with no database and no network.
+`angelia config check --watches FILE` runs the same validation with no database and no network.
+
+### 4.1 Implementation notes
+
+- `watchfile.Parse` validates the whole file (every error, ordered by line); `watchfile.Apply` runs the
+  reconciliation in one `Store.InConfigTx` transaction; `watchfile.PlanFile` computes the same plan
+  without writing. Both return a plan of `create`, `update`, `delete` and `unchanged` lines.
+- A target's `interval_ms` is the smallest interval among the file's watches on it, kept in step with the
+  file on every apply. Lowering it also pulls `next_check_at` forward to at most one interval from now. A
+  new target is due immediately. Rows created through the API on the same target keep using that value.
+- `policy_json` holds the policy with every default filled in plus `scheme`; `filter_json` likewise. This
+  keeps the no-op comparison exact. Watch and subscription rows are compared by value, never by text.
+- Webhook URLs are never echoed in errors. A query parameter whose name contains `token`, `secret`, `key`,
+  `password`, `passwd`, `auth` or `sig` is rejected.
+- Any string that looks like a credential (prefixes above) is rejected in labels, URLs and `*_env` values.
+  Names and coordinates are exempt, because registry names such as `npm_foo` are legitimate.
 
 ## 5. Conflicts with the existing documents
 
 1. The issue says the format goes in `docs/config.md`; the instance config doc is
-   `docs/configuration.md`. This proposal lives in `docs/watch-file.md` and should be linked from
-   configuration.md ("Watches and subscriptions are separate") when the loader lands (D1).
+   `docs/configuration.md`. The format lives in `docs/watch-file.md`, linked from configuration.md (D1).
 2. architecture.md section 3.1 describes `angelia apply -f watches.yaml` going through the API; Phase 0
    uses `angelia serve --watches` straight into the store, as the issue says. The file format is meant to
    be the same one.
 3. architecture.md section 3.4 says policy applies "per watch or subscription"; the store has a policy
-   only on `watch`. This draft puts policy on the watch only (D6).
-4. The store has no `name`, `managed_by` or `interval` columns (section 3).
-5. PRD F3 lists Maven as a scheme; #68 adds calver and not Maven. The `scheme` enum follows #68.
-6. `schemes.Names()` does not yet list `calver` (#68 is in progress).
+   only on `watch`. This format puts policy on the watch only (D6).
+4. The store had no `name`, `managed_by` or `interval` columns; migration 00004 adds them (section 3).
+5. PRD F3 lists Maven as a scheme; #68 added calver and not Maven. The `scheme` enum follows #68.
+6. `schemes.Names()` now lists `calver`, so `scheme: calver` is accepted.
 
 ## 6. JSON Schema
 
-The issue does not ask for one and the format is a draft, so none is shipped. Once the names are
-frozen (Phase 1), the right home is the **spec repository** (`schemas/watch-file/v1.json`, JSON Schema
+The issue does not ask for one, so none is shipped. For Phase 1, the right home is the **spec repository** (`schemas/watch-file/v1.json`, JSON Schema
 2020-12, valid and invalid examples validated in CI, as AGENTS.md of that repository requires), because it
 is a public contract consumers use for editor completion and CI linting. Any change there is Human-led.
 
-## 7. Decisions for the maintainer
+## 7. Decisions (all approved as recommended)
 
 | # | Decision | Alternatives | Recommendation |
 |---|---|---|---|
@@ -223,11 +237,11 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D5 | Add migration `00003` (`name`, `managed_by` on watch/sink/subscription, `interval_ms` on target) | deterministic ids derived from names (no migration); store name and interval inside `*_json` | Migration: explicit, supports the Phase 1 API coexisting with file-managed rows |
 | D6 | `policy` on the watch only; subscription has `filter` only | policy also on subscriptions (architecture.md 3.4) | Watch only in Phase 0; add later without breaking the format |
 | D7 | Changing source/coordinates resets the baseline; other edits keep it | never reset; always reset on any edit | As proposed, to avoid a flood of events for the new target |
-| D8 | Deleted subscription removes its pending deliveries; deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed. **Please confirm** the reading of the issue's "(and its future deliveries)" |
+| D8 | Deleted subscription removes its pending deliveries; deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription) |
 | D9 | No per-watch token; credentials come from the instance config `token_env` | `token_env` on a watch or sink | None in Phase 0; add `auth_env` later if needed |
 | D10 | No `${VAR}` interpolation; only `*_env` references | interpolate env into any value | No interpolation: avoids accidental inline secrets and keeps the file reviewable |
 | D11 | Bounds: `interval` 5m to 720h default 1h; `labels` at most 32; name pattern in 2.1 | other limits | Accept; the 5m floor protects upstream rate limits (netguard has per-host limits anyway) |
-| D12 | Webhook `url` must be `https://` | allow `http://` too (needed for local tests and homelabs) | `https` by default; `http` only if the instance config allowlist permits the host (security rule, needs your call) |
+| D12 | Webhook `url` must be `https://` | allow `http://` too (needed for local tests and homelabs) | `https` by default; `http` only if the instance config allowlist permits the host. The loader takes the allowlist as an option; the instance config has no such key yet, so `angelia serve` accepts `https` only for now |
 | D13 | `baseline` defaults to `true` | default `false` | `true`: no event flood on first run |
 | D14 | Sink `secret_env` stores the reference, resolved at delivery | read the value at apply and store it encrypted (needs the Phase 1 secrets key) | Reference in Phase 0; revisit with encryption at rest (architecture.md, security section) |
 | D15 | Whole-file validation, all-or-nothing, process exits non-zero on error | skip invalid entries and continue | All-or-nothing; a half-applied GitOps file is worse than a crash |

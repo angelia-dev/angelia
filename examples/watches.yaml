@@ -1,5 +1,5 @@
 # Example watch file for `angelia serve --watches examples/watches.yaml`.
-# DRAFT FORMAT (story #48): key names are proposals and will change. See docs/watch-file.md.
+# Format reference: docs/watch-file.md. Check it with `angelia config check --watches examples/watches.yaml`.
 version: 1
 
 sinks:
@@ -51,8 +51,7 @@ watches:
   - name: gh-cli
     source: github-release
     coordinates:
-      owner: cli
-      repo: cli
+      repo: cli/cli
     interval: 6h
     scheme: semver            # optional override of the default scheme for the source kind
     labels:
