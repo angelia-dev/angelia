@@ -27,7 +27,8 @@ requirement ([prd.md §7](../prd.md#7-non-functional-requirements)); see also G3
 5. **Delivery semantics.** At-least-once. Each delivery carries `idempotency-key = event.id + subscription.id`.
    Retries and dead-letter are per delivery (architecture.md §3.5); replay is by event or time range (prd.md F9).
 6. **Event types** for v1: `release.published`, `release.yanked`, `release.prerelease`; `release.advisory` later.
-   Event ids are ULIDs, monotonic, and serve as cursors in the pull API (§3.1, §5).
+   Event ids are ULIDs. The pull-API cursor is a separate store sequence in commit order, not the event id
+   ([ADR 0008](0008-store-history-rows-and-event-cursor.md)).
 
 ## Consequences
 
