@@ -1,10 +1,13 @@
 package githubrelease_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -13,7 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -111,7 +116,10 @@ func (f *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(startBudget))
 	if rec.IfNoneMatch == etag {
-		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(f.remaining)) // a 304 costs nothing
+		if rec.Auth == "" {
+			f.remaining-- // anonymous 304s are charged; authenticated ones are free
+		}
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(f.remaining))
 		finish(http.StatusNotModified)
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -184,7 +192,7 @@ func TestMapsFields(t *testing.T) {
 	if ga.PublishedAt.Format("2006-01-02T15:04:05Z") != "2026-09-01T09:05:00Z" {
 		t.Errorf("PublishedAt = %v", ga.PublishedAt)
 	}
-	if res.State.Cursor != "105" || res.State.ETag == "" {
+	if cursorMax(t, res.State) != 105 || res.State.ETag == "" {
 		t.Errorf("state = %+v", res.State)
 	}
 	if recs := f.records(); len(recs) != 1 || recs[0].PerPage != 100 {
@@ -210,7 +218,7 @@ func TestNotModifiedDoesNotCostRateLimit(t *testing.T) {
 		}
 		return resp, err
 	})}
-	s := githubrelease.New(srv.URL, hc)
+	s := githubrelease.New(srv.URL, hc, githubrelease.WithToken(secretToken))
 	first, err := s.List(t.Context(), valid, source.FetchState{})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +283,7 @@ func TestStopsPaginatingAtKnownVersions(t *testing.T) {
 	if got := pages(f.records()); !slices.Equal(got, []int{1, 2}) {
 		t.Errorf("incremental fetch pages = %v, want [1 2] (page 3 only has known versions)", got)
 	}
-	if res.Versions[0].Raw != "v2.1.0" || res.State.Cursor != "107" {
+	if res.Versions[0].Raw != "v2.1.0" || cursorMax(t, res.State) != 107 {
 		t.Errorf("got first %q cursor %q, want v2.1.0 and 107", res.Versions[0].Raw, res.State.Cursor)
 	}
 }
@@ -330,16 +338,214 @@ func TestTokenFromEnvIsReadPerCall(t *testing.T) {
 	f := newFake(t, "")
 	t.Setenv("ANGELIA_TEST_GH_TOKEN", "")
 	s, _ := newSource(t, f, githubrelease.WithTokenEnv("ANGELIA_TEST_GH_TOKEN"))
-	if _, err := s.List(t.Context(), valid, source.FetchState{}); err != nil {
-		t.Fatal(err)
+	if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
+		t.Error("empty token_env variable: want an error, not an anonymous request")
+	}
+	t.Setenv("ANGELIA_TEST_GH_TOKEN", "  \n")
+	if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
+		t.Error("blank token_env variable: want an error")
+	}
+	if n := len(f.records()); n != 0 {
+		t.Errorf("%d requests sent without a token", n)
 	}
 	t.Setenv("ANGELIA_TEST_GH_TOKEN", " "+secretToken+"\n")
 	if _, err := s.List(t.Context(), valid, source.FetchState{}); err != nil {
 		t.Fatal(err)
 	}
-	recs := f.records()
-	if recs[0].Auth != "" || recs[1].Auth != "Bearer "+secretToken {
-		t.Errorf("auth headers = %q, %q; want none then the trimmed token", recs[0].Auth, recs[1].Auth)
+	if got := f.records()[0].Auth; got != "Bearer "+secretToken {
+		t.Errorf("auth = %q, want the trimmed token", got)
+	}
+}
+
+func TestBlankFixedTokenIsAnError(t *testing.T) {
+	f := newFake(t, "")
+	s, _ := newSource(t, f, githubrelease.WithToken("  "))
+	if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil || len(f.records()) != 0 {
+		t.Errorf("err = %v, requests = %d", err, len(f.records()))
+	}
+}
+
+func TestInvalidBaseURLIsReportedByList(t *testing.T) {
+	for _, base := range []string{"ftp://x", "://bad", "https://user:pw@host", "/relative"} {
+		s := githubrelease.New(base, http.DefaultClient)
+		if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
+			t.Errorf("base %q: want an error", base)
+		}
+	}
+}
+
+func cursorMax(t *testing.T, st source.FetchState) int64 {
+	t.Helper()
+	var c struct {
+		MaxID int64 `json:"max_id"`
+	}
+	if err := json.Unmarshal([]byte(st.Cursor), &c); err != nil {
+		t.Fatalf("cursor %q: %v", st.Cursor, err)
+	}
+	return c.MaxID
+}
+
+// An anonymous 304 is charged by GitHub, so the free-304 property is for
+// authenticated requests only.
+func TestAnonymousNotModifiedIsCharged(t *testing.T) {
+	f := newFake(t, "")
+	s, _ := newSource(t, f)
+	first, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(t.Context(), valid, first.State); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.remaining != startBudget-2 {
+		t.Errorf("remaining = %d, want %d", f.remaining, startBudget-2)
+	}
+}
+
+func TestUnauthorizedHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad credentials", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	s := githubrelease.New(srv.URL, sourcetest.Client(t, srv), githubrelease.WithToken(secretToken))
+	_, err := s.List(t.Context(), valid, source.FetchState{})
+	if err == nil || !strings.Contains(err.Error(), "invalid or expired") || strings.Contains(err.Error(), secretToken) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// B1: the token must not follow a redirect to plain http, to another port or
+// to another host name, which net/http alone would allow.
+func TestRedirectNeverCarriesToken(t *testing.T) {
+	var leaked atomic.Int32
+	spy := func(r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			leaked.Add(1)
+		}
+	}
+	plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { spy(r) }))
+	defer plain.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(plain.URL, "http://"))
+
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/x", http.StatusFound)
+	}))
+	defer tlsSrv.Close()
+
+	sameHostOtherPort := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/x", http.StatusFound)
+	}))
+	defer sameHostOtherPort.Close()
+
+	otherName := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:"+port+"/x", http.StatusFound) // 127.0.0.1 -> localhost
+	}))
+	defer otherName.Close()
+
+	cases := map[string]struct {
+		base string
+		hc   *http.Client
+	}{
+		"https to plain http":   {tlsSrv.URL, tlsSrv.Client()},
+		"same host, other port": {sameHostOtherPort.URL, &http.Client{}},
+		"host name changes":     {otherName.URL, &http.Client{}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := githubrelease.New(c.base, c.hc, githubrelease.WithToken(secretToken))
+			_, err := s.List(t.Context(), valid, source.FetchState{})
+			if err == nil || strings.Contains(err.Error(), secretToken) {
+				t.Errorf("err = %v, want a redirect refusal without the token", err)
+			}
+		})
+	}
+	if n := leaked.Load(); n != 0 {
+		t.Fatalf("%d requests reached the redirect target with the token", n)
+	}
+}
+
+func TestPlainRedirectWithoutTokenIsFollowed(t *testing.T) {
+	f := newFake(t, "")
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srv.URL+r.URL.RequestURI(), http.StatusMovedPermanently) //nolint:gosec // G710: test server, fixed target.
+	}))
+	defer front.Close()
+	// no token: no credentials to protect, the redirect is followed
+	c := &http.Client{}
+	s := githubrelease.New(front.URL, c)
+	if _, err := s.List(t.Context(), valid, source.FetchState{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaxPagesCap(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		i := int(n.Add(1))
+		_, _ = fmt.Fprintf(w, `[{"id":%d,"tag_name":"v0.%d.0","html_url":"u","draft":false,"prerelease":false,"created_at":"2026-01-01T00:00:00Z","published_at":"2026-01-01T00:00:00Z"}]`, 1000-i, i)
+	}))
+	defer srv.Close()
+	s := githubrelease.New(srv.URL, sourcetest.Client(t, srv), githubrelease.WithPageSize(1))
+	res, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 10 || len(res.Versions) != 10 {
+		t.Errorf("requests = %d, versions = %d, want 10 and 10", n.Load(), len(res.Versions))
+	}
+}
+
+func TestFullRescanAfterAWindow(t *testing.T) {
+	f := newFake(t, "")
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	s, _ := newSource(t, f, githubrelease.WithPageSize(2), githubrelease.WithClock(func() time.Time { return now }))
+	first, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := func() { f.mu.Lock(); f.reqs = nil; f.mu.Unlock() }
+
+	reset()
+	now = now.Add(23 * time.Hour)
+	if res, err := s.List(t.Context(), valid, first.State); err != nil || !res.NotModified {
+		t.Fatalf("within the window: %+v, %v; want NotModified", res, err)
+	}
+
+	reset()
+	now = now.Add(2 * time.Hour) // 25h after the first full scan
+	res, err := s.List(t.Context(), valid, first.State)
+	if err != nil || res.NotModified {
+		t.Fatalf("after the window: %+v, %v; want a full, unconditional scan", res, err)
+	}
+	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3, 4}) || f.records()[0].IfNoneMatch != "" {
+		t.Errorf("rescan pages = %v, first request %+v", got, f.records()[0])
+	}
+	if len(res.Versions) != 5 {
+		t.Errorf("rescan returned %d versions, want 5", len(res.Versions))
+	}
+
+	// The legacy decimal cursor is read as max_id with no full scan recorded.
+	reset()
+	if _, err := s.List(t.Context(), valid, source.FetchState{Cursor: "105"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pages(f.records()); len(got) != 4 {
+		t.Errorf("legacy cursor pages = %v, want a full scan", got)
+	}
+}
+
+func TestSourceNotLeakedBySlog(t *testing.T) {
+	var buf bytes.Buffer
+	for _, h := range []slog.Handler{slog.NewJSONHandler(&buf, nil), slog.NewTextHandler(&buf, nil)} {
+		s := githubrelease.New("https://api.github.com", http.DefaultClient, githubrelease.WithToken(secretToken))
+		slog.New(h).Info("source", "src", s, "src_v", fmt.Sprintf("%+v", s))
+	}
+	if strings.Contains(buf.String(), secretToken) {
+		t.Errorf("token leaked through slog: %s", buf.String())
 	}
 }
 
