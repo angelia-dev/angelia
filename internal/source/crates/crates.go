@@ -30,10 +30,12 @@
 //
 // # Size cap
 //
-// The index file of a very large crate (swc_core: 16.8 MB) is above
-// netguard's default 10 MiB response cap. Such a crate fails on every poll,
-// with an error wrapping netguard.ErrBodyTooLarge, until the per-host body cap
-// of issue #133 exists. The state is not advanced.
+// The index file of a very large crate (swc_core: about 16 MiB) is above
+// netguard's global 10 MiB response cap. netguard gives index.crates.io a
+// built-in 64 MiB cap; a custom index host keeps the global cap unless the
+// operator sets HostLimit.MaxBodyBytes for it. A crate over its host's cap
+// fails on every poll with an error wrapping netguard.ErrBodyTooLarge, and
+// the state is not advanced.
 //
 // # Names
 //
@@ -275,7 +277,7 @@ func indexError(name string, err error) error {
 	case errors.As(err, &se) && se.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("crates: fetch index of %s (crates.io names are exact about '-' versus '_'; check the spelling): %w", name, err)
 	case errors.Is(err, netguard.ErrBodyTooLarge):
-		return fmt.Errorf("crates: index of %s is above the response size cap (see issue #133): %w", name, err)
+		return fmt.Errorf("crates: index of %s is above the response size cap (set netguard.HostLimit.MaxBodyBytes for its host): %w", name, err)
 	}
 	return fmt.Errorf("crates: fetch index of %s: %w", name, err)
 }
