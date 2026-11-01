@@ -1,0 +1,70 @@
+name: Release snapshot
+
+# Dry run of the release build on pull requests that touch release files.
+# Nothing is published, signed or pushed; the job has read-only access.
+on:
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - "Dockerfile"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-snapshot.yml"
+      - "scripts/check-image.sh"
+      - "scripts/check-image_test.sh"
+      - "scripts/install-release-tools.sh"
+      - "cmd/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # GoReleaser derives the snapshot version and changelog from tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install goreleaser and syft
+        run: |
+          scripts/install-release-tools.sh goreleaser syft
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Test the image check script
+        run: scripts/check-image_test.sh
+      - name: Validate the GoReleaser config
+        run: goreleaser check
+      - name: Snapshot build (no publish)
+        run: goreleaser release --snapshot --clean
+      - name: Build the image for the runner platform from the snapshot binary
+        run: |
+          # GoReleaser only publishes multi-arch images; for the checks we need
+          # an image in the local daemon, built from the same binary and Dockerfile.
+          mkdir -p image-ctx/linux/amd64
+          cp dist/angelia_linux_amd64_v1/angelia image-ctx/linux/amd64/angelia
+          docker buildx build --load --platform linux/amd64 \
+            --file Dockerfile --tag angelia:snapshot-check image-ctx
+      - name: Image is non-root, shell-less, under 50 MB; SBOM
+        run: scripts/check-image.sh angelia:snapshot-check dist/angelia-image.spdx.json
+      - name: List snapshot artifacts and SBOMs
+        run: |
+          {
+            echo "### Snapshot artifacts"
+            echo
+            echo '```'
+            ls -l dist/*.tar.gz dist/*.zip dist/*.spdx.json dist/checksums.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
