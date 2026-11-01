@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "UTC",
+  "minimumReleaseAge": "14 days",
+  "packageRules": [
+    {
+      "description": "Group Go module updates into one weekly pull request",
+      "matchManagers": ["gomod"],
+      "groupName": "Go modules",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Pin GitHub Action references by full commit SHA and keep the SHAs updated",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "groupName": "GitHub Actions",
+      "schedule": ["before 6am on monday"]
+    }
+  ]
+}
