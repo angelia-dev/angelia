@@ -128,13 +128,22 @@ func (o txOps) AddVersion(ctx context.Context, v store.Version) (bool, error) {
 	return n == 1, wrap(err, "add version", v.TargetID+"@"+v.Raw)
 }
 
-func (o txOps) UpdateTarget(ctx context.Context, t store.Target) error {
+// targetStateArgs validates t and encodes its fetch state.
+func targetStateArgs(t store.Target) (string, error) {
 	fs, err := rawJSON(t.FetchState, false)
 	if err != nil {
-		return fmt.Errorf("store: target %s fetch state: %w", t.ID, err)
+		return "", fmt.Errorf("store: target %s fetch state: %w", t.ID, err)
 	}
 	if t.NextCheckAt.IsZero() {
-		return fmt.Errorf("store: target %s: zero next_check_at: %w", t.ID, store.ErrInvalid)
+		return "", fmt.Errorf("store: target %s: zero next_check_at: %w", t.ID, store.ErrInvalid)
+	}
+	return fs, nil
+}
+
+func (o txOps) UpdateTarget(ctx context.Context, t store.Target) error {
+	fs, err := targetStateArgs(t)
+	if err != nil {
+		return err
 	}
 	n, err := o.q.UpdateTargetState(ctx, UpdateTargetStateParams{
 		FetchStateJson: fs, LastCheckedAt: nullMillis(t.LastCheckedAt), NextCheckAt: millis(t.NextCheckAt),
@@ -255,6 +264,49 @@ func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until t
 		return nil, err
 	}
 	return out, nil
+}
+
+// HasDueTargets implements [store.Store]. It is a plain read, so an idle
+// scheduler poll does not take SQLite's write lock.
+func (s *Store) HasDueTargets(ctx context.Context, now time.Time) (bool, error) {
+	ok, err := s.q.HasLeasableDueTargets(ctx, millis(now))
+	return ok, wrap(err, "has due targets", "")
+}
+
+// UpdateTargetLeased implements [store.Store]. The lease check and the
+// update are one statement; the existence check that tells a lost lease
+// from a missing target runs in the same transaction.
+func (s *Store) UpdateTargetLeased(ctx context.Context, t store.Target, leaseName, holder string, now time.Time) (bool, error) {
+	fs, err := targetStateArgs(t)
+	if err != nil {
+		return false, err
+	}
+	var held bool
+	err = s.withTx(ctx, func(q *Queries) error {
+		n, err := q.UpdateTargetStateLeased(ctx, UpdateTargetStateLeasedParams{
+			FetchStateJson: fs, LastCheckedAt: nullMillis(t.LastCheckedAt), NextCheckAt: millis(t.NextCheckAt),
+			ErrorCount: t.ErrorCount, ID: t.ID, LeaseName: leaseName, Holder: holder, Now: millis(now),
+		})
+		if err != nil {
+			return wrap(err, "update target", t.ID)
+		}
+		if n == 1 {
+			held = true
+			return nil
+		}
+		exists, err := q.TargetExists(ctx, t.ID)
+		if err == nil && !exists {
+			err = sql.ErrNoRows
+		}
+		return wrap(err, "update target", t.ID)
+	})
+	return held, err
+}
+
+// DeleteExpiredTargetLeases implements [store.Store].
+func (s *Store) DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error) {
+	n, err := s.q.DeleteExpiredTargetLeases(ctx, millis(now))
+	return n, wrap(err, "delete expired target leases", "")
 }
 
 // CountDueTargets implements [store.Store].

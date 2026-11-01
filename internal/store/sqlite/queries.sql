@@ -105,3 +105,32 @@ WHERE next_check_at <= sqlc.arg(now)
     SELECT 1 FROM lease
     WHERE lease.name = 'target:' || target.id AND lease.expires_at > sqlc.arg(now)
   );
+
+-- name: HasLeasableDueTargets :one
+SELECT EXISTS (
+  SELECT 1 FROM target
+  WHERE next_check_at <= sqlc.arg(now)
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'target:' || target.id AND lease.expires_at > sqlc.arg(now)
+    )
+);
+
+-- The target write of a check, fenced by its lease: it only applies while
+-- holder still owns an unexpired lease named lease_name.
+-- name: UpdateTargetStateLeased :execrows
+UPDATE target
+SET fetch_state_json = sqlc.arg(fetch_state_json), last_checked_at = sqlc.arg(last_checked_at),
+    next_check_at = sqlc.arg(next_check_at), error_count = sqlc.arg(error_count)
+WHERE id = sqlc.arg(id)
+  AND EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = sqlc.arg(lease_name) AND lease.holder = sqlc.arg(holder)
+      AND lease.expires_at > sqlc.arg(now)
+  );
+
+-- name: TargetExists :one
+SELECT EXISTS (SELECT 1 FROM target WHERE id = ?);
+
+-- name: DeleteExpiredTargetLeases :execrows
+DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= ?;

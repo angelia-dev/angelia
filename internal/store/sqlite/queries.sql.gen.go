@@ -231,6 +231,18 @@ func (q *Queries) DeleteExpiredLease(ctx context.Context, arg DeleteExpiredLease
 	return err
 }
 
+const deleteExpiredTargetLeases = `-- name: DeleteExpiredTargetLeases :execrows
+DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredTargetLeases, expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteSink = `-- name: DeleteSink :execrows
 DELETE FROM sink WHERE id = ?
 `
@@ -301,6 +313,24 @@ func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 		&i.BaselineDone,
 	)
 	return i, err
+}
+
+const hasLeasableDueTargets = `-- name: HasLeasableDueTargets :one
+SELECT EXISTS (
+  SELECT 1 FROM target
+  WHERE next_check_at <= ?1
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'target:' || target.id AND lease.expires_at > ?1
+    )
+)
+`
+
+func (q *Queries) HasLeasableDueTargets(ctx context.Context, now int64) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasLeasableDueTargets, now)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
@@ -557,6 +587,17 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 	return err
 }
 
+const targetExists = `-- name: TargetExists :one
+SELECT EXISTS (SELECT 1 FROM target WHERE id = ?)
+`
+
+func (q *Queries) TargetExists(ctx context.Context, id string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, targetExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const updateTargetState = `-- name: UpdateTargetState :execrows
 UPDATE target
 SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = ?
@@ -578,6 +619,48 @@ func (q *Queries) UpdateTargetState(ctx context.Context, arg UpdateTargetStatePa
 		arg.NextCheckAt,
 		arg.ErrorCount,
 		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateTargetStateLeased = `-- name: UpdateTargetStateLeased :execrows
+UPDATE target
+SET fetch_state_json = ?1, last_checked_at = ?2,
+    next_check_at = ?3, error_count = ?4
+WHERE id = ?5
+  AND EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = ?6 AND lease.holder = ?7
+      AND lease.expires_at > ?8
+  )
+`
+
+type UpdateTargetStateLeasedParams struct {
+	FetchStateJson string
+	LastCheckedAt  sql.NullInt64
+	NextCheckAt    int64
+	ErrorCount     int64
+	ID             string
+	LeaseName      string
+	Holder         string
+	Now            int64
+}
+
+// The target write of a check, fenced by its lease: it only applies while
+// holder still owns an unexpired lease named lease_name.
+func (q *Queries) UpdateTargetStateLeased(ctx context.Context, arg UpdateTargetStateLeasedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateTargetStateLeased,
+		arg.FetchStateJson,
+		arg.LastCheckedAt,
+		arg.NextCheckAt,
+		arg.ErrorCount,
+		arg.ID,
+		arg.LeaseName,
+		arg.Holder,
+		arg.Now,
 	)
 	if err != nil {
 		return 0, err

@@ -102,6 +102,19 @@ type Store interface {
 	// CountDueTargets counts the targets LeaseDueTargets would return
 	// without a limit: due and not under an unexpired lease.
 	CountDueTargets(ctx context.Context, now time.Time) (int64, error)
+	// HasDueTargets reports whether LeaseDueTargets would return anything,
+	// with a read only: callers check it before leasing so that idle polls
+	// take no write lock.
+	HasDueTargets(ctx context.Context, now time.Time) (bool, error)
+	// UpdateTargetLeased is UpdateTarget fenced by a lease: it writes only
+	// while holder owns an unexpired lease named leaseName at now, and
+	// reports false, writing nothing, otherwise. A missing target is
+	// ErrNotFound.
+	UpdateTargetLeased(ctx context.Context, t Target, leaseName, holder string, now time.Time) (bool, error)
+	// DeleteExpiredTargetLeases deletes the target leases (TargetLeaseName)
+	// that expired at or before now, left by crashed holders, and returns
+	// how many it deleted.
+	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
 	Close() error
 }
 
