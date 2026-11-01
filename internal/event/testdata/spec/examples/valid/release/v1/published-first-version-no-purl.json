@@ -1,0 +1,27 @@
+{
+  "source": "http-json",
+  "package": "example-tool",
+  "version": "2026.10.1",
+  "normalized_version": "2026.10.1",
+  "previous_version": null,
+  "scheme": "calver",
+  "bump": null,
+  "backport": false,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": null,
+  "detected_at": "2026-10-31T06:00:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": null,
+    "changelog": null,
+    "artifact": null
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX7F8G9H0J1K2M3N4P5Q6R7",
+    "name": "example-tool",
+    "labels": {}
+  },
+  "purl": null
+}

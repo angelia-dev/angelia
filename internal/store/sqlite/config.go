@@ -290,6 +290,18 @@ func (o txOps) ListManagedSubscriptions(ctx context.Context, managedBy string) (
 	if err != nil {
 		return nil, wrap(err, "list subscriptions managed by", managedBy)
 	}
+	return subscriptionsFromRows(rows), nil
+}
+
+func (o txOps) ListSubscriptions(ctx context.Context) ([]store.Subscription, error) {
+	rows, err := o.q.ListSubscriptions(ctx)
+	if err != nil {
+		return nil, wrap(err, "list subscriptions", "")
+	}
+	return subscriptionsFromRows(rows), nil
+}
+
+func subscriptionsFromRows(rows []Subscription) []store.Subscription {
 	out := make([]store.Subscription, len(rows))
 	for i, r := range rows {
 		out[i] = store.Subscription{
@@ -297,7 +309,7 @@ func (o txOps) ListManagedSubscriptions(ctx context.Context, managedBy string) (
 			Policy: json.RawMessage(r.PolicyJson), Name: r.Name.String, ManagedBy: r.ManagedBy,
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (o txOps) FailPendingDeliveries(ctx context.Context, subscriptionID, reason string) (int64, error) {

@@ -1,0 +1,16 @@
+Vendored from https://github.com/angelia-dev/spec
+Commit: 68e022e9d85cc8351fcc5cac29094af369cb8102 (main, after angelia-dev/spec#6)
+
+Files, unchanged:
+  schemas/release/v1.json
+  schemas/release/envelope/v1.json
+  examples/valid/release/**      (must validate)
+  examples/invalid/release/**    (must fail validation)
+
+The schemas and examples are (c) the Angelia authors, published under
+Apache-2.0 and CC-BY-4.0 (spec repository LICENSE and LICENSE-SCHEMAS).
+
+The tests in internal/event validate every generated event against these
+schemas, and check the test validator itself against the examples. To update:
+copy the same paths from a newer spec commit, change the commit above, and run
+go test ./internal/event/.

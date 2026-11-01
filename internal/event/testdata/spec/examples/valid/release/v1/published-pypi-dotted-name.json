@@ -1,0 +1,27 @@
+{
+  "source": "pypi",
+  "package": "zope-interface",
+  "version": "7.1.1",
+  "normalized_version": "7.1.1",
+  "previous_version": "7.1.0",
+  "scheme": "pep440",
+  "bump": "patch",
+  "backport": false,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": "2026-10-28T09:12:41Z",
+  "detected_at": "2026-10-28T09:15:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": "https://pypi.org/project/zope-interface/7.1.1/",
+    "changelog": "https://github.com/zopefoundation/zope.interface/blob/master/CHANGES.rst",
+    "artifact": null
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX3B8D9E0F1G2H3J4K5M6N7",
+    "name": "zope-interface",
+    "labels": {}
+  },
+  "purl": "pkg:pypi/zope.interface@7.1.1"
+}
