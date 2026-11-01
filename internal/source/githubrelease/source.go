@@ -27,7 +27,8 @@ const (
 	maxPages = 10
 )
 
-// secret hides a token from fmt, slog and JSON.
+// secret hides a token from fmt, slog and JSON. The alias is kept for
+// secret_test.go.
 type secret = ghapi.Secret
 
 // Option configures a Source.
@@ -148,8 +149,8 @@ func parseCursor(c string) cursor {
 
 // List implements source.Source.
 func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState) (source.Result, error) {
-	if s.api.CfgErr != nil {
-		return source.Result{}, fmt.Errorf("github-release: %w", s.api.CfgErr)
+	if s.api.Err() != nil {
+		return source.Result{}, fmt.Errorf("github-release: %w", s.api.Err())
 	}
 	owner, name, err := parseRepo(t)
 	if err != nil {
@@ -250,7 +251,7 @@ func toVersion(r apiRelease) source.Version {
 
 func (s *Source) fetchPage(ctx context.Context, owner, name string, page int, v netguard.Validators) (*netguard.Result, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=%d&page=%d",
-		s.api.Base, url.PathEscape(owner), url.PathEscape(name), s.pageSize, page)
+		s.api.Base(), url.PathEscape(owner), url.PathEscape(name), s.pageSize, page)
 	tok, err := s.tok.Get()
 	if err != nil {
 		return nil, err

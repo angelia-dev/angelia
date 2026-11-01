@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -98,22 +99,22 @@ func TestTokenSafe(t *testing.T) {
 
 func TestNewConfig(t *testing.T) {
 	c := New("k", "", http.DefaultClient, Token{})
-	if c.Base != DefaultBaseURL || c.CfgErr != nil {
-		t.Errorf("default: base %q err %v", c.Base, c.CfgErr)
+	if c.Base() != DefaultBaseURL || c.Err() != nil {
+		t.Errorf("default: base %q err %v", c.Base(), c.Err())
 	}
-	if c := New("k", "https://h/api/v3///", http.DefaultClient, Token{}); c.Base != "https://h/api/v3" {
-		t.Errorf("trailing slashes kept: %q", c.Base)
+	if c := New("k", "https://h/api/v3///", http.DefaultClient, Token{}); c.Base() != "https://h/api/v3" {
+		t.Errorf("trailing slashes kept: %q", c.Base())
 	}
 	for _, bad := range []string{"::bad", "ftp://h", "https://", "https://u:p@h", "/rel"} {
-		if c := New("k", bad, http.DefaultClient, Token{}); c.CfgErr == nil || !strings.Contains(c.CfgErr.Error(), "invalid base URL") {
-			t.Errorf("base %q: CfgErr = %v", bad, c.CfgErr)
+		if c := New("k", bad, http.DefaultClient, Token{}); c.Err() == nil || !strings.Contains(c.Err().Error(), "invalid base URL") {
+			t.Errorf("base %q: CfgErr = %v", bad, c.Err())
 		}
 	}
-	if c := New("k", "http://example.com", http.DefaultClient, FixedToken("x")); !errors.Is(c.CfgErr, ErrBasePlain) {
-		t.Errorf("token over plain http: CfgErr = %v", c.CfgErr)
+	if c := New("k", "http://example.com", http.DefaultClient, FixedToken("x")); !errors.Is(c.Err(), ErrBasePlain) {
+		t.Errorf("token over plain http: CfgErr = %v", c.Err())
 	}
-	if c := New("k", "http://example.com", http.DefaultClient, Token{}); c.CfgErr != nil {
-		t.Errorf("plain http without a token is allowed, got %v", c.CfgErr)
+	if c := New("k", "http://example.com", http.DefaultClient, Token{}); c.Err() != nil {
+		t.Errorf("plain http without a token is allowed, got %v", c.Err())
 	}
 }
 
@@ -246,6 +247,60 @@ func TestRedirectGuard(t *testing.T) {
 	// Redirect cap when the caller's client has no CheckRedirect.
 	if _, err := get(t, c, srv.URL+"/loop", ""); err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
 		t.Errorf("redirect loop: err = %v", err)
+	}
+}
+
+// routed returns a client whose transport dials addr whatever host is asked.
+func routed(base *http.Client, addr string) *http.Client {
+	tr := base.Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	return &http.Client{Transport: tr}
+}
+
+func TestRedirectGuardRefusesSubdomain(t *testing.T) {
+	// https on both sides, so TokenSafe passes and only the host comparison
+	// can refuse; a suffix match would let the redirect through.
+	var subHits, subAuth int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Host, "sub.") {
+			subHits++
+			if r.Header.Get("Authorization") != "" {
+				subAuth++
+			}
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		http.Redirect(w, r, "https://sub."+r.Host+"/x", http.StatusFound) //nolint:gosec // G710: test server, fixed target.
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	hc := routed(srv.Client(), srv.Listener.Addr().String())
+	host := "example.com:" + port
+	c := New("k", "https://"+host, hc, FixedToken("tok"))
+	_, err := get(t, c, "https://"+host+"/start", "tok")
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect to sub.example.com:") {
+		t.Errorf("subdomain redirect with token: err = %v", err)
+	}
+	if subHits != 0 || subAuth != 0 {
+		t.Errorf("subdomain was contacted (%d hits, %d with a token)", subHits, subAuth)
+	}
+}
+
+func TestRedirectGuardRefusesHTTPSDowngrade(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Same host and port, plain scheme: only the scheme check can refuse it.
+		http.Redirect(w, r, "http://"+r.Host+"/x", http.StatusFound) //nolint:gosec // G710: test server, fixed target.
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	hc := routed(srv.Client(), srv.Listener.Addr().String())
+	host := "example.com:" + port // the httptest certificate is valid for example.com
+	c := New("k", "https://"+host, hc, FixedToken("tok"))
+	_, err := get(t, c, "https://"+host+"/start", "tok")
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect to "+host) {
+		t.Errorf("https to http redirect with token: err = %v", err)
 	}
 }
 

@@ -39,7 +39,8 @@ const (
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$|^[0-9a-f]{64}$`)
 
-// secret hides a token from fmt, slog and JSON.
+// secret hides a token from fmt, slog and JSON. The alias is kept for
+// secret_test.go.
 type secret = ghapi.Secret
 
 // Option configures a Source.
@@ -157,8 +158,8 @@ func parseCursor(c string) (cur cursor, ok bool) {
 
 // List implements source.Source.
 func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState) (source.Result, error) {
-	if s.api.CfgErr != nil {
-		return source.Result{}, fmt.Errorf("github-tag: %w", s.api.CfgErr)
+	if s.api.Err() != nil {
+		return source.Result{}, fmt.Errorf("github-tag: %w", s.api.Err())
 	}
 	owner, name, err := parseRepo(t)
 	if err != nil {
@@ -222,7 +223,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	for _, n := range cur.Tags {
 		known[n] = true
 	}
-	web := webBase(s.api.Base)
+	web := webBase(s.api.Base())
 	out := make([]source.Version, 0, len(tags))
 	names := make([]string, 0, len(tags))
 	lookups := 0
@@ -313,13 +314,13 @@ func webBase(api string) string {
 
 func (s *Source) tagsURL(owner, name string, page int) string {
 	return fmt.Sprintf("%s/repos/%s/%s/tags?per_page=%d&page=%d",
-		s.api.Base, url.PathEscape(owner), url.PathEscape(name), s.pageSize, page)
+		s.api.Base(), url.PathEscape(owner), url.PathEscape(name), s.pageSize, page)
 }
 
 // commitDate returns the committer date of sha (the date the tag points at).
 // A commit GitHub cannot serve (404, 409, 422) yields a zero time, not an error.
 func (s *Source) commitDate(ctx context.Context, owner, name, sha string, tok secret) (time.Time, error) {
-	u := fmt.Sprintf("%s/repos/%s/%s/git/commits/%s", s.api.Base, url.PathEscape(owner), url.PathEscape(name), sha)
+	u := fmt.Sprintf("%s/repos/%s/%s/git/commits/%s", s.api.Base(), url.PathEscape(owner), url.PathEscape(name), sha)
 	res, err := s.get(ctx, u, netguard.Validators{}, tok)
 	if err != nil {
 		var se *netguard.StatusError

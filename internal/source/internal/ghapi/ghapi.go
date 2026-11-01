@@ -91,28 +91,34 @@ func (t Token) Get() (Secret, error) {
 
 // Client sends GitHub API requests.
 type Client struct {
-	// Base is the API base URL without a trailing slash.
-	Base string
-	// CfgErr is an invalid configuration, to be reported by the source's List.
-	CfgErr error
-
-	hc *http.Client
+	base   string
+	cfgErr error
+	hc     *http.Client
 }
+
+// Base is the API base URL without a trailing slash.
+func (c *Client) Base() string { return c.base }
+
+// Err is an invalid configuration, to be reported by the source's List.
+func (c *Client) Err() error { return c.cfgErr }
 
 // New returns a Client for baseURL (DefaultBaseURL if empty) using hc,
 // normally the netguard client. hc must not be nil. An invalid baseURL, or a
 // token with a plain-http non-loopback base URL, does not panic: it is left
-// in CfgErr.
+// in Err.
 //
 // New works on a shallow copy of hc whose CheckRedirect refuses to follow a
 // redirect that would carry the token to another host or to plain http
 // (net/http only compares host names, so it would keep the header across
 // ports and subdomains). kind prefixes that refusal message.
+//
+// New only reads whether tok is set; the sources keep the Token themselves to
+// resolve it per List call or per page.
 func New(kind, baseURL string, hc *http.Client, tok Token) *Client {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	c := &Client{Base: strings.TrimRight(baseURL, "/")}
+	c := &Client{base: strings.TrimRight(baseURL, "/")}
 	cp := *hc
 	orig := cp.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -130,12 +136,12 @@ func New(kind, baseURL string, hc *http.Client, tok Token) *Client {
 		return nil
 	}
 	c.hc = &cp
-	u, err := url.Parse(c.Base)
+	u, err := url.Parse(c.base)
 	switch {
 	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil:
-		c.CfgErr = errors.New("invalid base URL: want an absolute http(s) URL without credentials")
+		c.cfgErr = errors.New("invalid base URL: want an absolute http(s) URL without credentials")
 	case tok.set && !TokenSafe(u):
-		c.CfgErr = ErrBasePlain
+		c.cfgErr = ErrBasePlain
 	}
 	return c
 }
