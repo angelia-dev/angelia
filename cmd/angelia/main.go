@@ -35,7 +35,8 @@ func newRootCmd() *cobra.Command {
 		Short:        "The self-hosted release event bus",
 		SilenceUsage: true,
 	}
-	root.AddCommand(newVersionCmd())
+	root.PersistentFlags().String("config", "", "path to the instance config file (default $ANGELIA_CONFIG)")
+	root.AddCommand(newVersionCmd(), newConfigCmd())
 	return root
 }
 
