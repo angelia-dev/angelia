@@ -7,6 +7,9 @@
 //
 //	go run ./bench/ordering
 //
+// A snapshot below -min-packages or -min-versions, or with packages the
+// registry did not return, is an error: a hollow snapshot must not pass.
+//
 // Exit status: 0 when every mismatch is listed in the known-mismatch file
 // (and no entry there is stale), 1 otherwise, 2 on usage or I/O errors.
 package main
@@ -48,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"comma-separated snapshot files")
 	knownPath := fs.String("known", "bench/ordering/known-mismatches.json", "known-mismatch file (empty: none)")
 	jsonOut := fs.String("json", "", "also write the full report as JSON to this file")
+	minPackages := fs.Int("min-packages", 100, "fail when a snapshot has fewer packages")
+	minVersions := fs.Int("min-versions", 10000, "fail when a snapshot has fewer versions")
 	window := fs.Int("window", 3, "versions of context shown around the first difference of an order")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -67,6 +72,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for _, path := range strings.Split(*snaps, ",") {
 		snap, err := ReadSnapshotFile(strings.TrimSpace(path))
 		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "ordering:", err)
+			return 2
+		}
+		if err := snap.Validate(*minPackages, *minVersions); err != nil {
 			_, _ = fmt.Fprintln(stderr, "ordering:", err)
 			return 2
 		}

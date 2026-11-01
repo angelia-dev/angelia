@@ -103,5 +103,41 @@ func ReadSnapshot(r io.Reader) (*Snapshot, error) {
 	if s.Meta.Packages != len(s.Packages) {
 		return nil, fmt.Errorf("meta says %d packages, file has %d", s.Meta.Packages, len(s.Packages))
 	}
+	if n := s.CountVersions(); s.Meta.Versions != n {
+		return nil, fmt.Errorf("meta says %d versions, file has %d", s.Meta.Versions, n)
+	}
 	return &s, nil
+}
+
+// CountVersions counts every version of the snapshot, valid or not.
+func (s *Snapshot) CountVersions() int {
+	n := 0
+	for _, p := range s.Packages {
+		n += len(p.Invalid)
+		for _, g := range p.Order {
+			n += len(g)
+		}
+	}
+	return n
+}
+
+// Validate rejects a hollow or incomplete snapshot: fewer packages or
+// versions than the floors, or packages of the list that the registry did
+// not return (meta.missing), which would silently shrink the benchmark.
+func (s *Snapshot) Validate(minPackages, minVersions int) error {
+	var errs []error
+	if len(s.Packages) < minPackages {
+		errs = append(errs, fmt.Errorf("%d packages, want at least %d", len(s.Packages), minPackages))
+	}
+	if n := s.CountVersions(); n < minVersions {
+		errs = append(errs, fmt.Errorf("%d versions, want at least %d", n, minVersions))
+	}
+	if len(s.Meta.Missing) > 0 {
+		errs = append(errs, fmt.Errorf("%d listed packages missing from the registry %q: fix the package list and rebuild",
+			len(s.Meta.Missing), s.Meta.Missing))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("%s snapshot: %w", s.Meta.Registry, err)
+	}
+	return nil
 }

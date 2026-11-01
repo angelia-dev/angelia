@@ -37,11 +37,20 @@ func gzLines(t *testing.T, lines ...any) []byte {
 // writeSnapshot writes a synthetic snapshot for registry and returns its path.
 func writeSnapshot(t *testing.T, registry string, pkgs ...Package) string {
 	t.Helper()
-	lines := []any{map[string]Meta{"meta": {Registry: registry, Oracle: "test", Generated: "2026-11-01", Packages: len(pkgs)}}}
+	return writeSnapshotMeta(t, Meta{Registry: registry, Oracle: "test", Generated: "2026-11-01"}, pkgs...)
+}
+
+// writeSnapshotMeta is writeSnapshot with a given meta; Packages and
+// Versions are filled in from pkgs.
+func writeSnapshotMeta(t *testing.T, meta Meta, pkgs ...Package) string {
+	t.Helper()
+	meta.Packages = len(pkgs)
+	meta.Versions = (&Snapshot{Packages: pkgs}).CountVersions()
+	lines := []any{map[string]Meta{"meta": meta}}
 	for _, p := range pkgs {
 		lines = append(lines, p)
 	}
-	path := filepath.Join(t.TempDir(), registry+".jsonl.gz")
+	path := filepath.Join(t.TempDir(), meta.Registry+".jsonl.gz")
 	if err := os.WriteFile(path, gzLines(t, lines...), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -69,4 +78,9 @@ func groups(vs ...string) [][]string {
 		out[i] = []string{v}
 	}
 	return out
+}
+
+// small prefixes args with floors low enough for synthetic snapshots.
+func small(args ...string) []string {
+	return append([]string{"-min-packages", "1", "-min-versions", "1"}, args...)
 }

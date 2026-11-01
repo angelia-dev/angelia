@@ -10,7 +10,12 @@ make bench-ordering-snapshot   # rebuild the snapshots from the live registries
 ```
 
 CI runs `make bench-ordering` in the `bench-ordering` job, which is part of **CI OK**.
-`go test ./bench/...` runs the same comparison too.
+`go test ./bench/...` runs the same comparison too (skipped with `-short`).
+
+A hollow snapshot does not pass: the run fails when a snapshot has fewer than `-min-packages`
+(default 100) packages or `-min-versions` (default 10,000) versions, when its `meta.versions`
+does not match the versions in the file, or when `meta.missing` names packages of the list that
+the registry did not return.
 
 ## What is compared
 
@@ -76,7 +81,8 @@ gives identical bytes (checked when this snapshot was made). Registries only add
 later rebuild may add versions and packages but should not change the order of existing ones.
 
 Rebuilding needs Python 3 with `packaging` (`pip install packaging==26.3`) and Node.js with npm
-(node-semver is taken from npm's bundled copy, or from `SEMVER_PATH`). The scripts use only
+(node-semver is taken from `SEMVER_PATH`, or else from the global npm's bundled copy, with a
+warning naming its version). The scripts use only
 those and their standard libraries, and contact only `pypi.org` and `registry.npmjs.org`.
 
 ## Known mismatches

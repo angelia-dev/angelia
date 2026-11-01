@@ -20,6 +20,9 @@ var committed = []string{
 // issue": the benchmark itself, on the committed snapshots. CI also runs
 // it as its own job (go run ./bench/ordering).
 func TestBenchmarkOnCommittedSnapshots(t *testing.T) {
+	if testing.Short() {
+		t.Skip("full benchmark run; skipped with -short (CI runs it in the bench-ordering job and the test job)")
+	}
 	var out, errb bytes.Buffer
 	code := run(committed, &out, &errb)
 	t.Log("\n" + out.String())
@@ -54,7 +57,7 @@ func TestRunReportsMismatches(t *testing.T) {
 	)
 	jsonPath := filepath.Join(t.TempDir(), "report.json")
 	var out, errb bytes.Buffer
-	code := run([]string{"-snapshots", snap, "-known", "", "-json", jsonPath}, &out, &errb)
+	code := run(small("-snapshots", snap, "-known", "", "-json", jsonPath), &out, &errb)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1; stderr %s", code, errb.String())
 	}
@@ -87,7 +90,7 @@ func TestRunPrintsOrders(t *testing.T) {
 	// pep440 scheme agrees, so build the disagreement with a fake order.
 	snap := writeSnapshot(t, "pypi", Package{Name: "demo", Order: groups("1.0.0", "1.0", "0.9")})
 	var out bytes.Buffer
-	if code := run([]string{"-snapshots", snap, "-known", "", "-window", "1"}, &out, &out); code != 1 {
+	if code := run(small("-snapshots", snap, "-known", "", "-window", "1"), &out, &out); code != 1 {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	for _, want := range []string{
@@ -107,7 +110,7 @@ func TestRunKnownAndStale(t *testing.T) {
 	entry := Known{Registry: "npm", Package: "bad", Kind: KindRejected, Versions: []string{"1.0"}, Explanation: "npm accepted it once", Issue: "angelia-dev/angelia#999"}
 
 	var out bytes.Buffer
-	if code := run([]string{"-snapshots", snap, "-known", writeJSON(t, []Known{entry})}, &out, &out); code != 0 {
+	if code := run(small("-snapshots", snap, "-known", writeJSON(t, []Known{entry})), &out, &out); code != 0 {
 		t.Fatalf("known: exit %d:\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "npm accepted it once (angelia-dev/angelia#999)") {
@@ -117,7 +120,7 @@ func TestRunKnownAndStale(t *testing.T) {
 	staleEntry := entry
 	staleEntry.Package = "gone"
 	out.Reset()
-	if code := run([]string{"-snapshots", snap, "-known", writeJSON(t, []Known{entry, staleEntry})}, &out, &out); code != 1 {
+	if code := run(small("-snapshots", snap, "-known", writeJSON(t, []Known{entry, staleEntry})), &out, &out); code != 1 {
 		t.Fatalf("stale: exit %d, want 1:\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "STALE known entry npm gone") {
@@ -133,8 +136,13 @@ func TestRunUsageErrors(t *testing.T) {
 		"missing snap":   {"-known", "", "-snapshots", filepath.Join(dir, "missing.gz")},
 		"bad known":      {"-known", filepath.Join(dir, "missing.json")},
 		"no registry":    {"-known", "", "-snapshots", writeSnapshot(t, "")},
-		"other registry": {"-known", "", "-snapshots", writeSnapshot(t, "maven")},
-		"unwritable":     {"-known", "", "-snapshots", writeSnapshot(t, "npm"), "-json", filepath.Join(dir, "no", "such", "dir.json")},
+		"other registry": small("-known", "", "-snapshots", writeSnapshot(t, "maven", Package{Name: "a", Order: groups("1.0.0")})),
+		"unwritable": small("-known", "", "-snapshots", writeSnapshot(t, "npm", Package{Name: "a", Order: groups("1.0.0")}),
+			"-json", filepath.Join(dir, "no", "such", "dir.json")),
+		// A hollow snapshot must not pass: default floors, and listed packages the registry lacked.
+		"hollow": {"-known", "", "-snapshots", writeSnapshot(t, "npm", Package{Name: "a", Order: groups("1.0.0")})},
+		"missing packages": small("-known", "", "-snapshots",
+			writeSnapshotMeta(t, Meta{Registry: "npm", Missing: []string{"gone"}}, Package{Name: "a", Order: groups("1.0.0")})),
 	}
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {

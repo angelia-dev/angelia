@@ -40,6 +40,10 @@ const semverDir = semverPath()
 const require = createRequire(join(semverDir, 'package.json'))
 const semver = require('./index.js')
 const semverVersion = JSON.parse(readFileSync(join(semverDir, 'package.json'), 'utf8')).version
+if (!process.env.SEMVER_PATH) {
+  console.error(`warning: SEMVER_PATH is not set; using node-semver ${semverVersion} bundled with the global npm (${semverDir}). ` +
+    'Set SEMVER_PATH to pin the reference implementation.')
+}
 
 function readList (path) {
   const names = readFileSync(path, 'utf8').split('\n')
