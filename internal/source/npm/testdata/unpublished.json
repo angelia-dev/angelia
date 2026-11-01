@@ -1,0 +1,15 @@
+{
+  "name": "angelia-test-gone",
+  "dist-tags": {"latest": "1.0.1"},
+  "versions": {
+    "1.0.0": {"name": "angelia-test-gone", "version": "1.0.0", "dist": {"tarball": "https://registry.example/angelia-test-gone/-/angelia-test-gone-1.0.0.tgz", "shasum": "1111"}},
+    "1.0.1": {"name": "angelia-test-gone", "version": "1.0.1", "dist": {"tarball": "https://registry.example/angelia-test-gone/-/angelia-test-gone-1.0.1.tgz", "shasum": "2222"}}
+  },
+  "time": {
+    "created": "2023-05-01T00:00:00.000Z",
+    "modified": "2023-05-04T00:00:00.000Z",
+    "1.0.0": "2023-05-01T00:00:00.000Z",
+    "1.0.1": "2023-05-03T00:00:00.000Z",
+    "1.0.2": "2023-05-02T12:00:00.000Z"
+  }
+}

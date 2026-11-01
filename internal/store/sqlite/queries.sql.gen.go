@@ -31,8 +31,8 @@ func (q *Queries) AcquireLease(ctx context.Context, arg AcquireLeaseParams) (int
 }
 
 const addVersion = `-- name: AddVersion :execrows
-INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (target_id, raw) DO NOTHING
 `
 
@@ -44,6 +44,7 @@ type AddVersionParams struct {
 	Prerelease  int64
 	Yanked      int64
 	FirstSeenAt int64
+	RemovedAt   sql.NullInt64
 }
 
 func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, error) {
@@ -55,6 +56,7 @@ func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, 
 		arg.Prerelease,
 		arg.Yanked,
 		arg.FirstSeenAt,
+		arg.RemovedAt,
 	)
 	if err != nil {
 		return 0, err
@@ -362,7 +364,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 }
 
 const listVersions = `-- name: ListVersions :many
-SELECT target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at FROM version WHERE target_id = ? ORDER BY first_seen_at, raw
+SELECT target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at FROM version WHERE target_id = ? ORDER BY first_seen_at, raw
 `
 
 func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version, error) {
@@ -382,6 +384,7 @@ func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version,
 			&i.Prerelease,
 			&i.Yanked,
 			&i.FirstSeenAt,
+			&i.RemovedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -394,6 +397,132 @@ func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version,
 		return nil, err
 	}
 	return items, nil
+}
+
+const listWatchesByTarget = `-- name: ListWatchesByTarget :many
+SELECT id, target_id, policy_json, labels_json, baseline_done FROM watch WHERE target_id = ? ORDER BY id
+`
+
+func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]Watch, error) {
+	rows, err := q.db.QueryContext(ctx, listWatchesByTarget, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Watch
+	for rows.Next() {
+		var i Watch
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.PolicyJson,
+			&i.LabelsJson,
+			&i.BaselineDone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markBaselineDone = `-- name: MarkBaselineDone :execrows
+UPDATE watch SET baseline_done = 1 WHERE id = ?
+`
+
+func (q *Queries) MarkBaselineDone(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markBaselineDone, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneBatchEnd = `-- name: PruneBatchEnd :many
+SELECT seq FROM event WHERE seq > ?1 AND created_at < ?2 ORDER BY seq LIMIT ?3
+`
+
+type PruneBatchEndParams struct {
+	AfterSeq int64
+	Before   int64
+	Batch    int64
+}
+
+// There is no index on event.created_at, so this scans by seq from after_seq
+// and stops at batch matches. That is fine for a periodic job, not for a hot path.
+func (q *Queries) PruneBatchEnd(ctx context.Context, arg PruneBatchEndParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, pruneBatchEnd, arg.AfterSeq, arg.Before, arg.Batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pruneDeliveries = `-- name: PruneDeliveries :execrows
+DELETE FROM delivery
+WHERE status IN ('delivered', 'dead')
+  AND event_id IN (
+    SELECT e.id FROM event e
+    WHERE e.seq > ?1 AND e.seq <= ?2 AND e.created_at < ?3
+      AND NOT EXISTS (
+        SELECT 1 FROM delivery p WHERE p.event_id = e.id AND p.status IN ('pending', 'in_flight')
+      )
+  )
+`
+
+type PruneDeliveriesParams struct {
+	AfterSeq int64
+	UpToSeq  int64
+	Before   int64
+}
+
+func (q *Queries) PruneDeliveries(ctx context.Context, arg PruneDeliveriesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneDeliveries, arg.AfterSeq, arg.UpToSeq, arg.Before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneEvents = `-- name: PruneEvents :execrows
+DELETE FROM event
+WHERE seq > ?1 AND seq <= ?2 AND created_at < ?3
+  AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id)
+`
+
+type PruneEventsParams struct {
+	AfterSeq int64
+	UpToSeq  int64
+	Before   int64
+}
+
+func (q *Queries) PruneEvents(ctx context.Context, arg PruneEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneEvents, arg.AfterSeq, arg.UpToSeq, arg.Before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const releaseLease = `-- name: ReleaseLease :exec
@@ -431,6 +560,30 @@ func (q *Queries) UpdateTargetState(ctx context.Context, arg UpdateTargetStatePa
 		arg.NextCheckAt,
 		arg.ErrorCount,
 		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateVersionState = `-- name: UpdateVersionState :execrows
+UPDATE version SET yanked = ?, removed_at = ? WHERE target_id = ? AND raw = ?
+`
+
+type UpdateVersionStateParams struct {
+	Yanked    int64
+	RemovedAt sql.NullInt64
+	TargetID  string
+	Raw       string
+}
+
+func (q *Queries) UpdateVersionState(ctx context.Context, arg UpdateVersionStateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateVersionState,
+		arg.Yanked,
+		arg.RemovedAt,
+		arg.TargetID,
+		arg.Raw,
 	)
 	if err != nil {
 		return 0, err
