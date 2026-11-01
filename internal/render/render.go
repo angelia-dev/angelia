@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"text/template"
 	"text/template/parse"
@@ -18,6 +17,9 @@ const (
 	DefaultTimeout          = time.Second
 	DefaultMaxOutputBytes   = 256 << 10
 	DefaultMaxTemplateBytes = 32 << 10
+	// CheckTimeout bounds each sample render of Template.Check, so a slow
+	// template cannot hold up configuration loading.
+	CheckTimeout = 250 * time.Millisecond
 )
 
 // Content types of a Rendered body.
@@ -129,7 +131,7 @@ func Compile(src string, l Limits) (*Template, error) {
 	if len(src) > l.MaxTemplateBytes {
 		return nil, &Error{Reason: fmt.Sprintf("template is %d bytes, at most %d", len(src), l.MaxTemplateBytes), kind: ErrNotAllowed}
 	}
-	t, err := template.New(templateName).Option("missingkey=error").Funcs(funcMap(l.MaxOutputBytes)).Parse(src)
+	t, err := template.New(templateName).Option("missingkey=error").Funcs(funcMap(nil, l.MaxOutputBytes)).Parse(src)
 	if err != nil {
 		return nil, parseError(err)
 	}
@@ -210,16 +212,12 @@ func Render(ctx context.Context, t *Template, envelope []byte) (Rendered, error)
 
 // Render executes t on the event envelope JSON.
 func (t *Template) Render(ctx context.Context, envelope []byte) (Rendered, error) {
-	g := t.newGuard()
+	g := newGuard(t.limits.Timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(g.deadline) {
 		g.deadline = d
 	}
 	g.done = ctx.Done()
 	return t.render(g, envelope)
-}
-
-func (t *Template) newGuard() *guard {
-	return &guard{deadline: time.Now().Add(t.limits.Timeout)}
 }
 
 func (t *Template) render(g *guard, envelope []byte) (Rendered, error) {
@@ -231,16 +229,23 @@ func (t *Template) render(g *guard, envelope []byte) (Rendered, error) {
 	if err != nil {
 		return Rendered{}, fmt.Errorf("render: clone template: %w", err)
 	}
-	c.Funcs(template.FuncMap{tickFunc: g.tick})
+	c.Funcs(funcMap(g, t.limits.MaxOutputBytes))
 	w := &cappedWriter{max: t.limits.MaxOutputBytes, g: g}
 	if err := c.Execute(w, data); err != nil {
-		return Rendered{}, t.execError(err)
+		return Rendered{}, t.execError(err, g)
 	}
-	ct := ContentTypeText
-	if json.Valid(w.buf.Bytes()) {
-		ct = ContentTypeJSON
+	body := w.buf.Bytes()
+	return Rendered{Body: body, ContentType: contentType(body), Templated: true}, nil
+}
+
+// contentType is ContentTypeJSON for an object or array that is valid JSON,
+// ContentTypeText for anything else (a bare "true" or "42" is text).
+func contentType(body []byte) string {
+	b := bytes.TrimSpace(body)
+	if len(b) > 0 && (b[0] == '{' || b[0] == '[') && json.Valid(b) {
+		return ContentTypeJSON
 	}
-	return Rendered{Body: w.buf.Bytes(), ContentType: ct, Templated: true}, nil
+	return ContentTypeText
 }
 
 func isObject(b []byte) bool {
@@ -253,6 +258,11 @@ func isObject(b []byte) bool {
 type guard struct {
 	done     <-chan struct{}
 	deadline time.Time
+	timeout  time.Duration // for the error message
+}
+
+func newGuard(timeout time.Duration) *guard {
+	return &guard{deadline: time.Now().Add(timeout), timeout: timeout}
 }
 
 func (g *guard) check() error {
@@ -280,47 +290,8 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 	if err := w.g.check(); err != nil {
 		return 0, err
 	}
-	if w.buf.Len()+len(p) > w.max {
+	if int64(w.buf.Len())+int64(len(p)) > int64(w.max) {
 		return 0, ErrOutputTooLarge
 	}
 	return w.buf.Write(p)
-}
-
-var (
-	// parseRE matches text/template parse errors: "template: NAME:LINE: REASON".
-	parseRE = regexp.MustCompile(`^template: [^:]*:(\d+): (.*)$`)
-	// execRE matches execution errors:
-	// `template: NAME:LINE:COL: executing "NAME" at <NODE>: REASON`.
-	// locRE reads the line and column of parse.Tree.ErrorContext.
-	locRE  = regexp.MustCompile(`:(\d+):(\d+)$`)
-	execRE = regexp.MustCompile(`^template: [^:]*:(\d+):(\d+): executing "[^"]*" at <.*?>: (.*)$`)
-)
-
-func parseError(err error) error {
-	e := &Error{Reason: "does not parse", kind: ErrParse}
-	if m := parseRE.FindStringSubmatch(err.Error()); m != nil {
-		e.Line, _ = strconv.Atoi(m[1])
-		e.Reason = m[2]
-	}
-	return e
-}
-
-func (t *Template) execError(err error) error {
-	e := &Error{kind: ErrExec, Reason: "execution failed"}
-	var ee template.ExecError
-	if errors.As(err, &ee) {
-		if m := execRE.FindStringSubmatch(ee.Error()); m != nil {
-			e.Line, _ = strconv.Atoi(m[1])
-			e.Col, _ = strconv.Atoi(m[2])
-			e.Reason = m[3]
-		}
-	}
-	switch {
-	case errors.Is(err, ErrTimeout):
-		e.kind, e.Reason = ErrTimeout, fmt.Sprintf("execution took longer than %s", t.limits.Timeout)
-		e.Line, e.Col = 0, 0 // the position is that of the instrumented check
-	case errors.Is(err, ErrOutputTooLarge):
-		e.kind, e.Reason = ErrOutputTooLarge, fmt.Sprintf("output larger than %d bytes", t.limits.MaxOutputBytes)
-	}
-	return e
 }

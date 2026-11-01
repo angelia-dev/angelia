@@ -40,7 +40,7 @@ func ExampleTemplate_Render() {
 
 // A JSON body: toJSON quotes and escapes every value.
 func ExampleTemplate_Render_json() {
-	t, err := render.Compile(`{"text": {{printf "%s %s released" .data.package .data.version | toJSON}}, "team": {{toJSON .data.watch.labels.team}}}`, render.Limits{})
+	t, err := render.Compile(`{"text": {{printf "%s %s released" .data.package .data.version | toJSON}}, "team": {{index .data.watch.labels "team" | default "none" | toJSON}}}`, render.Limits{})
 	if err != nil {
 		panic(err)
 	}

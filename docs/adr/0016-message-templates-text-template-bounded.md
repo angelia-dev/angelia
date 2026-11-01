@@ -26,38 +26,54 @@ data, nested) can run for hours without writing a byte, and a variable reassigne
    expression language (good for filters, poor for producing a multi-line body) and would be a new
    dependency outside §6.
 2. **Data: the event's JSON object.** The dot is `event.payload_json` decoded into `map[string]any`, so a
-   template uses the spec's wire names (`.type`, `.subject`, `.data.package`, `.data.watch.labels.team`), as
-   architecture.md §4 already shows. Nothing new is named: the template data model *is* the event contract,
+   template uses the spec's wire names (`.type`, `.subject`, `.data.package`), as architecture.md §4 already
+   shows. Labels are read with `index .data.watch.labels "team"` (with `default`): a watch may have none, and
+   `.data.watch.labels.team` fails on a missing key. Nothing new is named: the template data model *is* the event contract,
    and additive spec fields appear without code changes. `missingkey=error`: a misspelt key fails instead of
    printing `<no value>`.
 3. **Functions** (`render.FuncNames`, [templates.md](../templates.md#functions)): `default`, `upper`, `lower`,
    `trim`, `trimPrefix`, `trimSuffix`, `contains`, `hasPrefix`, `hasSuffix`, `replace`, `split`, `join`,
    `truncate`, `toJSON`, `date`, plus the builtins. No environment, file, network or clock access (no `now`,
    so a retry renders the same bytes). The builtins that build strings (`print`, `printf`, `println`, `html`,
-   `js`, `urlquery`) are replaced by size-checked versions; `call` is disabled. String functions take their
-   subject last (pipeline order) and treat JSON null as `""`.
+   `js`, `urlquery`) are replaced by size-checked versions that accept **scalar arguments only** (string,
+   number, boolean, null): `fmt` applies a width to every element of a list, so `printf "%100000s"` of a
+   5000-element list would allocate gigabytes in one call; lists and objects go through `join` or `toJSON`.
+   `call` is disabled. String functions take their subject last (pipeline order) and treat JSON null as `""`.
 4. **Not allowed:** `define`, `block` and `template`. A message template does not need them, and recursive
    invocation is the only loop that would escape point 5.
 5. **Timeout: 1 s, enforced inside the loops.** `Compile` walks the parse tree and prepends a call to an
    internal function to every `range` body; at execution that function fails once the deadline (or the
    context's deadline or cancellation) has passed, which stops `text/template`. The output writer checks it
-   too. With point 4 every iteration of every loop checks the deadline, so no goroutine is left running past
-   it.
-6. **Size caps: 256 KiB of output, 32 KiB of template.** The output writer fails past the cap, and every
-   function that builds a string checks the size *before* building it (for `printf`: format length, explicit
-   widths and precisions, and the largest argument once per verb; `*` widths are refused). So no value, not
-   only the output, can grow past the cap.
-7. **Load-time check against two sample events** (`render.Samples`, `Template.Check`, no I/O and bounded by the timeout, so it takes no context): **full** (every
+   too, and so does every curated function when it starts (the function map is rebound to each execution's
+   deadline, like the range check), so the timeout also applies to templates made only of function calls.
+   With point 4 every iteration of every loop checks the deadline, so no goroutine is left running past it.
+6. **Size caps: 256 KiB of output, 32 KiB of template.** The output writer fails past the cap. The print
+   functions, `replace` and `join` bound their result *before* building it (for `printf`: format length,
+   explicit widths and precisions, and the largest argument once per verb; `*` widths are refused), using
+   int64 arithmetic that stops at the cap. `toJSON`, the escapers and `upper`/`lower` check right *after*:
+   their output is at most about six times an input that is itself capped, so the transient allocation is
+   bounded. So no value, not only the output, can grow past the cap.
+7. **Load-time check against two sample events** (`render.Samples`, `Template.Check`): **full** (every
    nullable field set) and **sparse** (every nullable field null, no labels). A template must render both
-   within the limits. This rejects unguarded null fields (`{{.data.notes.body}}`, which every event fails
-   today) before the first delivery, at the cost of requiring `with`/`if` guards.
+   within the limits, each in at most 250 ms (`render.CheckTimeout`; Check does no I/O, so it takes no
+   context). This rejects unguarded null fields (`{{.data.notes.body}}`, which every event fails today)
+   before the first delivery, at the cost of requiring `with`/`if` guards. **Maintainer, please confirm:**
+   templates the parse-only check accepted are now rejected when they (a) use a misspelt or unknown key,
+   (b) read a nullable field without a guard, (c) read a label as a field (`.data.watch.labels.team`),
+   (d) give a list or object to a print function, (e) use `define`, `block`, `template`, `call` or an
+   unknown function, or (f) pass a limit ([watch-file.md §2.5](../watch-file.md#25-subscriptions)).
 8. **Errors never quote the template text**, which may hold a credential the configuration's prefix check
-   missed: `render.Error` keeps the line, column and `text/template`'s reason, and drops the
-   `at <…>` fragment. The watch file reports them as
-   `subscriptions[0].template: on the sparse sample event: line 1, column 7: nil pointer evaluating …`.
+   missed. `text/template`'s messages quote it (the `at <…>` node, literals, unexpected tokens), so
+   `render.Error` keeps only the position (read from the message prefix, which holds the fixed template
+   name) and maps the reason to a fixed set (`unknown function`, `undefined variable`, `unexpected token`,
+   `unclosed action`, `unknown key`, `cannot read field … of a null value`, ...), matched on the end of the
+   message where node text cannot follow. A name is shown only when it matches `^[a-z_][a-z0-9_]{0,39}$` or
+   is a function name; the messages of the curated functions are written here and shown as they are. The
+   watch file reports them as
+   `subscriptions[0].template: on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`.
 9. **Output.** `render.Render(ctx, nil, envelope)` returns the stored envelope unchanged, content type
    `application/cloudevents+json; charset=utf-8`. A template's output is `application/json; charset=utf-8`
-   when it is valid JSON, `text/plain; charset=utf-8` otherwise; `Rendered.Templated` tells sinks which case
+   when, trimmed, it starts with `{` or `[` and is valid JSON, `text/plain; charset=utf-8` otherwise; `Rendered.Templated` tells sinks which case
    they have. The package is `internal/render`; the dispatcher (#107) compiles each subscription's template
    and passes the `Rendered` to the sink.
 
@@ -75,7 +91,10 @@ data, nested) can run for hours without writing a byte, and a variable reassigne
   call per loop iteration.
 - `define`/`template` are gone; reusable snippets need a later design if anyone asks.
 - The sparse sample makes guards mandatory even for fields a given watch always fills.
-- Each render clones the compiled template (to bind its deadline), a small allocation per delivery.
+- Each render clones the compiled template and rebinds its functions (to bind its deadline), a small
+  allocation per delivery.
+- The error reasons are a fixed mapping of `text/template` messages; a message Go changes or adds falls back
+  to `syntax error` / `execution failed` (with the position) until the table is updated.
 
 ### Open questions
 

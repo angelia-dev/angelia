@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // AC: a curated func map, no env, no file access. Adding a function means
@@ -114,8 +115,8 @@ func TestFuncErrors(t *testing.T) {
 func TestFormatBound(t *testing.T) {
 	tests := []struct {
 		format  string
-		largest int
-		want    int
+		largest int64
+		want    int64
 	}{
 		{"abc", 10, 3},
 		{"%s", 10, 12},
@@ -125,14 +126,86 @@ func TestFormatBound(t *testing.T) {
 		{"%", 3, 4},
 	}
 	for _, tt := range tests {
-		if got, err := formatBound(tt.format, tt.largest); err != nil || got != tt.want {
+		if got, err := formatBound(tt.format, tt.largest, 1<<20); err != nil || got != tt.want {
 			t.Errorf("formatBound(%q, %d) = %d, %v; want %d", tt.format, tt.largest, got, err, tt.want)
 		}
 	}
-	if _, err := formatBound("%99999999999d", 0); !errors.Is(err, ErrOutputTooLarge) {
-		t.Errorf("huge width: %v", err)
+	for _, f := range []string{"%99999999999999999999999d", "%2000d", "%s%s%s"} {
+		if _, err := formatBound(f, 600, 1000); !errors.Is(err, ErrOutputTooLarge) {
+			t.Errorf("formatBound(%q): %v, want ErrOutputTooLarge", f, err)
+		}
 	}
-	if _, err := formatBound("%.*f", 0); err == nil {
+	if _, err := formatBound("%.*f", 0, 1000); err == nil {
 		t.Error("* accepted")
+	}
+}
+
+// The running total of argsLen fails even when every argument fits alone.
+func TestArgsLenRunningTotal(t *testing.T) {
+	c := capper{max: 10}
+	if _, err := c.argsLen("print", []any{"abcd", "efgh", "ijk"}); !errors.Is(err, ErrOutputTooLarge) {
+		t.Errorf("11 bytes in three args: %v", err)
+	}
+	if n, err := (capper{max: 20}).argsLen("print", []any{"abcd", 12345, nil, true}); err != nil || n != 5 {
+		t.Errorf("scalars: %d %v", n, err)
+	}
+}
+
+// Blocker: fmt applies a width to every element of a list, so print-like
+// functions refuse lists and maps (a 5000-element list printed with
+// "%100000s" would allocate gigabytes).
+func TestPrintRefusesListsAndMaps(t *testing.T) {
+	tests := []struct{ src, reason string }{
+		{`{{$l := split "" (printf "%5000s" "")}}{{$x := printf "%100000s" $l}}ok`, "error calling printf: printf: argument 1 is a list; use join or toJSON for lists and objects"},
+		{`{{print .data.watch.labels}}`, "error calling print: print: argument 1 is a object; use join or toJSON for lists and objects"},
+		{`{{println "a" (split "," "a,b")}}`, "error calling println: println: argument 2 is a list; use join or toJSON for lists and objects"},
+		{`{{html .data.watch}}`, "error calling html: print: argument 1 is a object; use join or toJSON for lists and objects"},
+	}
+	for _, tt := range tests {
+		start := time.Now()
+		_, err := render(t, tt.src, Limits{}, "full")
+		var e *Error
+		if !errors.As(err, &e) || e.Reason != tt.reason {
+			t.Errorf("%s: err = %v, want %q", tt.src, err, tt.reason)
+		}
+		if el := time.Since(start); el > time.Second {
+			t.Errorf("%s: took %s", tt.src, el)
+		}
+	}
+}
+
+// The pre-bound of printf, not the result check, rejects a call whose
+// worst case passes the cap even when the actual result is short.
+func TestPrintfPreBound(t *testing.T) {
+	_, err := render(t, `{{$x := printf "%600s" ""}}{{printf "%.0s%.0s" $x $x}}`, Limits{MaxOutputBytes: 1000}, "full")
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Errorf("err = %v, want ErrOutputTooLarge from the pre-bound", err)
+	}
+	r, err := render(t, `{{$x := printf "%400s" ""}}{{printf "%.0s%.0s" $x $x}}`, Limits{MaxOutputBytes: 1000}, "full")
+	if err != nil || len(r.Body) != 0 {
+		t.Errorf("under the bound: %q %v", r.Body, err)
+	}
+}
+
+// Should-fix: every function checks the deadline when it starts, so a
+// template that only assigns (no output, no range) still stops.
+func TestFunctionsCheckDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, src := range []string{`{{$x := toJSON .}}`, `{{$x := upper "a"}}`, `{{$x := default "a" nil}}`, `{{$x := split "," "a"}}`} {
+		tm := mustCompile(t, src, Limits{})
+		if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+			t.Errorf("%s with a canceled context: %v", src, err)
+		}
+	}
+	// About 28 KB of toJSON calls on the whole event, without output.
+	src := strings.Repeat(`{{$x := toJSON .}}`, 28<<10/len(`{{$x := toJSON .}}`))
+	start := time.Now()
+	_, err := render(t, src, Limits{Timeout: time.Millisecond}, "full")
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("repeated toJSON: %v", err)
+	}
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("repeated toJSON took %s", el)
 	}
 }

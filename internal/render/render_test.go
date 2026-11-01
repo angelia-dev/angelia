@@ -99,8 +99,8 @@ func TestRenderErrors(t *testing.T) {
 		line, col         int
 		reason            string
 	}{
-		{"missing key", "ok\n{{.data.nosuch}}", "full", ErrExec, 2, 7, `map has no entry for key "nosuch"`},
-		{"nil field", `{{.data.notes.body}}`, "sparse", ErrExec, 1, 7, "nil pointer evaluating interface {}.body"},
+		{"missing key", "ok\n{{.data.nosuch}}", "full", ErrExec, 2, 7, `unknown key "nosuch"`},
+		{"nil field", `{{.data.notes.body}}`, "sparse", ErrExec, 1, 7, `cannot read field "body" of a null value`},
 		{"function error", `{{upper .data.prerelease}}`, "full", ErrExec, 1, 2, "error calling upper: argument: want a string, got bool"},
 		{"call disabled", `{{call .data.package}}`, "full", ErrExec, 1, 2, "error calling call: call is not available"},
 	}
@@ -131,9 +131,9 @@ func TestCompileRejects(t *testing.T) {
 		{"empty", "", ErrNotAllowed, "template is empty"},
 		{"too large", big, ErrNotAllowed, "template is 101 bytes, at most 100"},
 		{"parse error", "a\n{{ .Foo ", ErrParse, "line 2: unclosed action"},
-		{"unknown function env", `{{env "HOME"}}`, ErrParse, `line 1: function "env" not defined`},
-		{"unknown function readFile", `{{readFile "/etc/passwd"}}`, ErrParse, `line 1: function "readFile" not defined`},
-		{"unknown function now", `{{now}}`, ErrParse, `line 1: function "now" not defined`},
+		{"unknown function env", `{{env "HOME"}}`, ErrParse, `line 1: unknown function "env"`},
+		{"unknown function readFile", `{{readFile "/etc/passwd"}}`, ErrParse, `line 1: unknown function`},
+		{"unknown function now", `{{now}}`, ErrParse, `line 1: unknown function "now"`},
 		{"define", `{{define "a"}}x{{end}}y`, ErrNotAllowed, "define and block are not allowed"},
 		{"block", `{{block "a" .}}x{{end}}`, ErrNotAllowed, "define and block are not allowed"},
 		{"template", "x\n  {{if true}}{{template \"a\"}}{{end}}", ErrNotAllowed, "line 2, column 24: the template action is not allowed"},
@@ -150,27 +150,41 @@ func TestCompileRejects(t *testing.T) {
 
 // Error messages give a position and a reason but never the template text.
 func TestErrorsDoNotQuoteTemplate(t *testing.T) {
-	const marker = "SECRETMARKER"
-	srcs := []string{
-		`{{"` + marker + `" | .data.nosuch}}`,
-		`{{.data.notes.body}}{{"` + marker + `"}}`,
-		`{{"` + marker + `"}}{{upper .data.backport}}`,
+	// Each probe and the exact message it gives: none holds "SECRET".
+	probes := []struct{ src, msg string }{
+		{`{{"SECRETMARKER" | .data.nosuch}}`, `on the full sample event: line 1, column 24: arguments given to field "nosuch"`},
+		{`{{.data.notes.body}}{{"SECRETMARKER"}}`, `on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`},
+		{`{{"SECRETMARKER"}}{{upper .data.backport}}`, `on the full sample event: line 1, column 20: error calling upper: argument: want a string, got bool`},
+		{`{{ "SECRETMARKER" `, `line 1: unclosed action`},
+		{`{{index "x>: SECRETAKIA" 99}}`, `on the full sample event: line 1, column 2: error calling index`},
+		{`{{ghp_SECRETTOKENabc}}`, `line 1: unknown function`},
+		{`{{$SECRETVAR}}`, `line 1: undefined variable`},
+		{`{{.data.package SECRET}}`, `line 1: unknown function`},
+		{`{{ 'SECRET' }}`, `line 1: bad character constant`},
+		{`{{end SECRET}}`, `line 1: unexpected token`},
+		{`{{.data.SECRETFIELD}}`, `on the full sample event: line 1, column 7: unknown key`},
+		{`{{range "SECRET>: x"}}{{end}}`, `on the full sample event: line 1, column 8: cannot range over this value`},
+		{`{{"SECRET" 1}}`, `on the full sample event: line 1, column 2: arguments given to a value that is not a function`},
+		{`{{printf "%s" "SECRET" 1 | len 2}}`, `on the full sample event: line 1, column 27: wrong number of arguments for len`},
+		{`{{$x := 1}}{{$x.SECRET}}`, `on the full sample event: line 1, column 15: cannot read a field of a value that is not an object`},
+		{`{{$x := "a"}}{{eq $x "SECRET" "SECRET" (index "SECRET" 9)}}`, `on the full sample event: line 1, column 40: error calling index`},
+		{`{{eq .data.watch "SECRET"}}`, `on the full sample event: line 1, column 2: error calling eq`},
 	}
-	for _, src := range srcs {
-		tm, err := Compile(src, Limits{})
+	for _, p := range probes {
+		tm, err := Compile(p.src, Limits{})
 		if err == nil {
 			err = tm.Check()
 		}
 		if err == nil {
-			t.Fatalf("%q: no error", src)
+			t.Errorf("%s: no error", p.src)
+			continue
 		}
-		if strings.Contains(err.Error(), marker) {
-			t.Errorf("%q: error quotes the template: %v", src, err)
+		if strings.Contains(err.Error(), "SECRET") {
+			t.Errorf("%s: error quotes the template: %v", p.src, err)
 		}
-	}
-	_, err := Compile(`{{ "`+marker+`" `, Limits{})
-	if err == nil || strings.Contains(err.Error(), marker) {
-		t.Errorf("parse error quotes the template: %v", err)
+		if err.Error() != p.msg {
+			t.Errorf("%s: message %q, want %q", p.src, err, p.msg)
+		}
 	}
 }
 
@@ -201,19 +215,81 @@ func TestRenderTimeout(t *testing.T) {
 
 func TestRenderContextEnds(t *testing.T) {
 	tm := mustCompile(t, `{{range 2000000000}}{{end}}`, Limits{Timeout: time.Hour})
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
 		t.Errorf("deadline: %v", err)
 	}
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("context deadline: took %s", el)
+	}
+	// A context without a deadline, canceled during execution: only Done
+	// can stop the loop.
 	ctx, cancel = context.WithCancel(context.Background())
-	cancel()
+	time.AfterFunc(30*time.Millisecond, cancel)
+	start = time.Now()
+	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+		t.Errorf("canceled during execution: %v", err)
+	}
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("context Done: took %s", el)
+	}
 	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
 		t.Errorf("canceled: %v", err)
 	}
 	// Without a range the writer checks the context.
 	if _, err := mustCompile(t, "text", Limits{}).Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
 		t.Errorf("canceled, no range: %v", err)
+	}
+}
+
+// Parse messages map to fixed reasons.
+func TestParseReasons(t *testing.T) {
+	tests := map[string]string{
+		`{{/* x`:                           "unclosed comment",
+		`{{(len "a"}}`:                     "unbalanced parentheses",
+		`{{len "a")}}`:                     "unbalanced parentheses",
+		`{{"abc}}`:                         "unterminated string",
+		"{{`abc}}":                         "unterminated string",
+		`{{0x}}`:                           "bad number",
+		`{{break}}`:                        "break outside range",
+		`{{continue}}`:                     "continue outside range",
+		`{{if}}{{end}}`:                    "missing value",
+		`{{range $a, $b, $c := .}}{{end}}`: "bad variable declaration",
+		`{{len | 1}}`:                      "bad pipeline",
+		`{{if true}}`:                      "unexpected end of template",
+		`{{#}}`:                            "unexpected token",
+		`{{$x := 1}}{{$y}}`:                `undefined variable "$y"`,
+		`{{trimprefix "a" "b"}}`:           `unknown function "trimprefix"`,
+		`{{trimPrefixX "a" "b"}}`:          "unknown function",
+	}
+	for src, want := range tests {
+		_, err := Compile(src, Limits{})
+		var e *Error
+		if !errors.As(err, &e) || e.Reason != want {
+			t.Errorf("%s: %v, want reason %q", src, err, want)
+		}
+	}
+}
+
+// Should-fix: only an object or array is sent as JSON.
+func TestContentType(t *testing.T) {
+	tests := map[string]string{
+		`{"a": 1}`:   ContentTypeJSON,
+		"  [1, 2]\n": ContentTypeJSON,
+		`true`:       ContentTypeText,
+		`42`:         ContentTypeText,
+		`"quoted"`:   ContentTypeText,
+		`{"a": `:     ContentTypeText,
+		`hello`:      ContentTypeText,
+		`{{"   "}}`:  ContentTypeText,
+	}
+	for src, want := range tests {
+		r, err := render(t, src, Limits{}, "full")
+		if err != nil || r.ContentType != want {
+			t.Errorf("%q: %q %v, want %q", src, r.ContentType, err, want)
+		}
 	}
 }
 

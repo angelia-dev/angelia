@@ -122,6 +122,20 @@ set (same rule as `token_env` in configuration.md).
 | `policy` | subscription policy | no | all inherited | section 2.6 |
 | `template` | string | no | empty (default CloudEvents JSON) | Go `text/template` over the event (`.data.package`, ...) that must render the sample events within the limits; fields, functions and limits: [templates.md](templates.md) |
 
+**Template check (story #114, [ADR 0016](adr/0016-message-templates-text-template-bounded.md); maintainer:
+please confirm).** A template used to be accepted when it parsed. It is now also run against the full
+and sparse sample events ([templates.md](templates.md#checked-when-the-configuration-loads)), so these
+templates, accepted before, are now rejected at load time:
+
+1. a misspelt or unknown key (`{{.data.pakage}}`);
+2. a nullable field read without a guard (`{{.data.notes.body}}`, `{{.data.urls.release | len}}`):
+   every event fails it today for `notes`;
+3. a label read as a field (`{{.data.watch.labels.team}}`): the sparse sample has no labels; use
+   `{{index .data.watch.labels "team"}}`;
+4. `print`, `printf`, `println`, `html`, `js` or `urlquery` given a list or an object;
+5. `define`, `block`, `template` or `call`, and functions outside the curated set (`env`, ...);
+6. a template over 32 KiB, or whose sample render takes over 250 ms or writes over 256 KiB.
+
 `filter` (all given keys must match; PRD F6 lists ecosystem, labels, bump, package glob):
 
 | Key | Type | Default | Validation |

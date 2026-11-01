@@ -79,14 +79,15 @@ func Samples() []Sample {
 // naming the sample. Configuration loading calls it so that a template that
 // cannot render, or renders past the limits, is rejected before any
 // delivery uses it. It does no I/O and each sample is bounded by
-// Limits.Timeout, so it takes no context.
+// CheckTimeout (or Limits.Timeout if shorter), so it takes no context.
 func (t *Template) Check() error {
+	timeout := min(t.limits.Timeout, CheckTimeout)
 	for _, s := range Samples() {
 		b, err := json.Marshal(s.Envelope)
 		if err != nil {
 			return fmt.Errorf("render: sample %s: %w", s.Name, err)
 		}
-		if _, err := t.render(t.newGuard(), b); err != nil {
+		if _, err := t.render(newGuard(timeout), b); err != nil {
 			return fmt.Errorf("on the %s sample event: %w", s.Name, err)
 		}
 	}

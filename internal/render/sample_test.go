@@ -81,8 +81,8 @@ func TestCheck(t *testing.T) {
 		kind error
 		msg  string
 	}{
-		{`{{.data.pakage}}`, ErrExec, `on the full sample event: line 1, column 7: map has no entry for key "pakage"`},
-		{`{{.data.notes.body}}`, ErrExec, `on the sparse sample event: line 1, column 7: nil pointer evaluating interface {}.body`},
+		{`{{.data.pakage}}`, ErrExec, `on the full sample event: line 1, column 7: unknown key "pakage"`},
+		{`{{.data.notes.body}}`, ErrExec, `on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`},
 		{`{{.data.previous_version | upper}}`, nil, ""}, // null is "" for string functions
 		{`{{range 2000000000}}{{end}}`, ErrTimeout, "on the full sample event: execution took longer than 20ms"},
 		{`{{range 300}}x{{end}}`, ErrOutputTooLarge, "on the full sample event: output larger than 200 bytes"},

@@ -42,6 +42,9 @@ Rules:
 - **Null fields need a guard.** `{{.data.notes.body}}` fails when `notes` is null; write
   `{{with .data.notes}}{{.body}}{{end}}`. A null printed directly gives `<no value>`; prefer `with`
   or `default`. The string functions below treat null as `""`.
+- **Read a label with `index`.** A watch may have no labels, so `.data.watch.labels.team` fails
+  (on the sparse sample event at load time, and on any watch without that label). Write
+  `{{index .data.watch.labels "team" | default "none"}}`: `index` gives null for a missing label.
 - Fields added by a later minor version of the spec appear under their spec name.
 
 ## Functions
@@ -62,8 +65,8 @@ template's output depends on the event alone. Functions that take a value last w
 | `truncate n s` | `{{truncate 80 .subject}}` | at most `n` characters, the last one `…` when cut |
 | `toJSON v` | `{{toJSON .data.package}}` | `v` as JSON (strings quoted and escaped); use it for every value in a JSON body |
 | `date layout ts` | `{{date "2006-01-02" .data.published_at}}` | timestamp in UTC with a [Go layout](https://pkg.go.dev/time#pkg-constants); null gives `""` |
-| `print`, `printf`, `println` | `{{printf "%s@%s" .data.package .data.version}}` | as in Go; `*` widths are refused |
-| `html`, `js`, `urlquery` | `{{urlquery .data.package}}` | escaped for HTML, JavaScript, a URL query |
+| `print`, `printf`, `println` | `{{printf "%s@%s" .data.package .data.version}}` | as in Go, for strings, numbers, booleans and null only (use `join` or `toJSON` for lists and objects); `*` widths are refused |
+| `html`, `js`, `urlquery` | `{{urlquery .data.package}}` | escaped for HTML, JavaScript, a URL query; same arguments as `print` |
 | `and`, `or`, `not`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `len`, `index`, `slice` | `{{if eq .data.bump "major"}}` | the `text/template` builtins |
 
 `call`, `define`, `template` and `block` are not available.
@@ -73,13 +76,14 @@ template's output depends on the event alone. Functions that take a value last w
 | Limit | Value | When it is passed |
 |---|---|---|
 | Template size | 32 KiB | the configuration is rejected |
-| Execution time | 1 s | the delivery attempt fails |
+| Execution time | 1 s per delivery, 250 ms per sample event at load time | the delivery attempt fails, or the configuration is rejected |
 | Output size | 256 KiB (also any single string a function builds) | the delivery attempt fails |
 
 ## Content type
 
-A template's body is sent as `application/json; charset=utf-8` when it is valid JSON, and as
-`text/plain; charset=utf-8` otherwise. A sink may set its own (a chat service that takes text).
+A template's body is sent as `application/json; charset=utf-8` when, without surrounding white space,
+it starts with `{` or `[` and is valid JSON; as `text/plain; charset=utf-8` otherwise (so `true` or
+`42` is text). A sink may set its own (a chat service that takes text).
 
 ## Checked when the configuration loads
 
@@ -87,8 +91,13 @@ Every template is compiled and run against two sample events when the watch file
 **full** (every nullable field set, notes and labels included) and **sparse** (a first version with
 every nullable field null, no name and no labels). A template that fails either one, or passes a
 limit, is rejected with its line and column, for example
-`subscriptions[0].template: on the sparse sample event: line 1, column 7: nil pointer evaluating interface {}.body`.
-Error messages never quote the template text.
+`subscriptions[0].template: on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`.
+Error messages never quote the template text: the reason is one of a fixed set (`unknown function`,
+`undefined variable`, `unexpected token`, `unclosed action`, `unknown key`, ...), and a name is shown
+only when it is short and lower case (`[a-z_][a-z0-9_]{0,39}`) or a function name.
+
+Templates accepted before this check (they only had to parse) can now be rejected; see
+[watch-file.md §2.5](watch-file.md#25-subscriptions).
 
 ## Examples
 
@@ -96,6 +105,7 @@ A chat line:
 
 ```gotemplate
 {{.data.package}} {{.data.version}}{{if .data.prerelease}} (pre-release){{end}} is out{{with .data.previous_version}}, was {{.}}{{end}}.
+Team: {{index .data.watch.labels "team" | default "none"}}
 {{with .data.urls.release}}{{.}}{{end}}
 ```
 
