@@ -17,13 +17,22 @@ VALUES (?, ?, ?, ?, ?);
 -- name: GetWatch :one
 SELECT * FROM watch WHERE id = ?;
 
+-- name: ListWatchesByTarget :many
+SELECT * FROM watch WHERE target_id = ? ORDER BY id;
+
+-- name: MarkBaselineDone :execrows
+UPDATE watch SET baseline_done = 1 WHERE id = ?;
+
 -- name: DeleteWatch :execrows
 DELETE FROM watch WHERE id = ?;
 
 -- name: AddVersion :execrows
-INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (target_id, raw) DO NOTHING;
+
+-- name: UpdateVersionState :execrows
+UPDATE version SET yanked = ?, removed_at = ? WHERE target_id = ? AND raw = ?;
 
 -- name: ListVersions :many
 SELECT * FROM version WHERE target_id = ? ORDER BY first_seen_at, raw;
