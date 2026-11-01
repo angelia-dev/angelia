@@ -33,11 +33,23 @@ type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-// Guard is the basic SSRF guard. By default it refuses loopback
-// (127.0.0.0/8, ::1), private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
-// fc00::/7), link-local (169.254.0.0/16, fe80::/10) and unspecified
-// (0.0.0.0, ::) addresses. IPv4-mapped IPv6 addresses are checked as IPv4.
-// An address inside one of the allowlisted prefixes is accepted.
+// Guard is the basic SSRF guard. By default it refuses:
+//
+//   - loopback: 127.0.0.0/8, ::1;
+//   - private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7;
+//   - link-local: 169.254.0.0/16, fe80::/10;
+//   - unspecified and "this network": 0.0.0.0/8, ::;
+//   - shared address space (CGNAT): 100.64.0.0/10, which holds the
+//     100.100.100.200 cloud metadata address;
+//   - multicast: 224.0.0.0/4, ff00::/8;
+//   - broadcast: 255.255.255.255;
+//   - IPv6 prefixes that embed or reach IPv4: NAT64 64:ff9b::/96, 6to4
+//     2002::/16 and IPv4-compatible ::/96, each blocked whole so that the
+//     guard fails closed without decoding the embedded address;
+//   - deprecated site-local fec0::/10.
+//
+// IPv4-mapped IPv6 addresses (::ffff:0:0/96) are checked as IPv4. An
+// address inside one of the allowlisted prefixes is accepted.
 //
 // The guard is not proof against DNS rebinding; see the package doc.
 type Guard struct {
@@ -63,10 +75,27 @@ func (g *Guard) CheckAddr(host string, addr netip.Addr) error {
 			return nil
 		}
 	}
-	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsUnspecified() {
+	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsUnspecified() || a.IsMulticast() {
 		return &BlockedError{Host: host, Addr: a}
 	}
+	for _, p := range blockedPrefixes {
+		if p.Contains(a) {
+			return &BlockedError{Host: host, Addr: a}
+		}
+	}
 	return nil
+}
+
+// blockedPrefixes are the denied ranges that netip.Addr has no predicate
+// for. Read-only after package initialisation.
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),          // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),      // shared address space (CGNAT), incl. 100.100.100.200
+	netip.MustParsePrefix("255.255.255.255/32"), // limited broadcast
+	netip.MustParsePrefix("::/96"),              // IPv4-compatible IPv6
+	netip.MustParsePrefix("64:ff9b::/96"),       // NAT64
+	netip.MustParsePrefix("2002::/16"),          // 6to4
+	netip.MustParsePrefix("fec0::/10"),          // site-local (deprecated)
 }
 
 // CheckURL checks the scheme and host of u. A hostname is resolved and

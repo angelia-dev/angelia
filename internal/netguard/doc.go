@@ -15,8 +15,9 @@
 //     as [Result.NotModified] and its body is never read;
 //   - a User-Agent with the build version, per-attempt timeouts and a
 //     response size cap ([ErrBodyTooLarge]);
-//   - a basic SSRF guard ([Guard]) that refuses loopback, private and
-//     link-local addresses unless they are allowlisted.
+//   - a basic SSRF guard ([Guard]) that refuses loopback, private,
+//     link-local, CGNAT, multicast, broadcast and IPv4-embedding IPv6
+//     addresses unless they are allowlisted.
 //
 // The SSRF guard checks the URL host of each hop before it is sent,
 // resolving hostnames once. It is not proof against DNS rebinding: the

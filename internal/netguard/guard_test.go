@@ -28,7 +28,9 @@ func addrs(s ...string) []netip.Addr {
 }
 
 // AC: requests to 127.0.0.1, 10.0.0.0/8, 169.254.0.0/16, ::1, fc00::/7 are
-// refused unless allowlisted; tests cover each range.
+// refused unless allowlisted; tests cover each range, plus the extra ranges
+// the maintainer asked for on PR #127 (0/8, CGNAT, multicast, broadcast,
+// NAT64, 6to4, IPv4-compatible and site-local).
 func TestGuardDefaultDenyRanges(t *testing.T) {
 	cases := []struct {
 		name, host string
@@ -47,6 +49,25 @@ func TestGuardDefaultDenyRanges(t *testing.T) {
 		{"link-local fe80::/10", "[fe80::1]"},
 		{"ipv4-mapped loopback", "[::ffff:127.0.0.1]"},
 		{"unspecified", "0.0.0.0"},
+		{"unspecified ::", "[::]"},
+		{"this network 0/8", "0.1.2.3"},
+		{"CGNAT 100.64/10 low", "100.64.0.1"},
+		{"CGNAT 100.64/10 high", "100.127.255.254"},
+		{"CGNAT metadata 100.100.100.200", "100.100.100.200"},
+		{"multicast 224/4 low", "224.0.0.1"},
+		{"multicast 224/4 high", "239.255.255.250"},
+		{"multicast ff00::/8", "[ff02::1]"},
+		{"multicast ff00::/8 global", "[ff0e::1]"},
+		{"broadcast 255.255.255.255", "255.255.255.255"},
+		{"NAT64 64:ff9b::/96 public", "[64:ff9b::808:808]"},
+		{"NAT64 64:ff9b::/96 metadata", "[64:ff9b::a9fe:a9fe]"},
+		{"6to4 2002::/16 public", "[2002:808:808::1]"},
+		{"6to4 2002::/16 loopback", "[2002:7f00:1::1]"},
+		{"ipv4-compatible ::/96", "[::808:808]"},
+		{"ipv4-compatible ::/96 metadata", "[::a9fe:a9fe]"},
+		{"site-local fec0::/10", "[fec0::1]"},
+		{"site-local fec0::/10 high", "[feff:ffff::1]"},
+		{"ipv4-mapped CGNAT metadata", "[::ffff:100.100.100.200]"},
 	}
 	g := NewGuard(nil, fakeResolver{})
 	for _, tc := range cases {
@@ -71,9 +92,10 @@ func TestGuardAllowlistOptsIn(t *testing.T) {
 		netip.MustParsePrefix("169.254.0.0/16"),
 		netip.MustParsePrefix("::1/128"),
 		netip.MustParsePrefix("fc00::/7"),
+		netip.MustParsePrefix("100.64.0.0/10"),
 	}
 	g := NewGuard(allow, fakeResolver{})
-	for _, host := range []string{"127.0.0.1", "10.9.8.7", "169.254.169.254", "[::1]", "[fd00::1]", "[::ffff:10.1.1.1]"} {
+	for _, host := range []string{"127.0.0.1", "10.9.8.7", "169.254.169.254", "[::1]", "[fd00::1]", "[::ffff:10.1.1.1]", "100.100.100.200"} {
 		u := &url.URL{Scheme: "http", Host: host}
 		if err := g.CheckURL(t.Context(), u); err != nil {
 			t.Errorf("CheckURL(%s) with allowlist: %v", host, err)
