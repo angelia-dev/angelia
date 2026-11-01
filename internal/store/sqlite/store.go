@@ -200,7 +200,10 @@ func (o txOps) ListWatches(ctx context.Context, targetID string) ([]store.Watch,
 }
 
 func watchFromRow(r Watch) (store.Watch, error) {
-	w := store.Watch{ID: r.ID, TargetID: r.TargetID, Policy: json.RawMessage(r.PolicyJson), BaselineDone: r.BaselineDone != 0}
+	w := store.Watch{
+		ID: r.ID, TargetID: r.TargetID, Policy: json.RawMessage(r.PolicyJson), BaselineDone: r.BaselineDone != 0,
+		Name: r.Name.String, ManagedBy: r.ManagedBy,
+	}
 	if err := json.Unmarshal([]byte(r.LabelsJson), &w.Labels); err != nil {
 		return store.Watch{}, fmt.Errorf("store: watch %s labels: %w", r.ID, err)
 	}
@@ -252,112 +255,6 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 		}
 	}
 	return nil
-}
-
-// CreateTarget implements [store.Store].
-func (s *Store) CreateTarget(ctx context.Context, t store.Target) error {
-	coords, err := json.Marshal(nonNil(t.Coordinates)) // sorted keys: canonical
-	if err != nil {
-		return fmt.Errorf("store: target %s coordinates: %w", t.ID, err)
-	}
-	fs, err := rawJSON(t.FetchState, false)
-	if err != nil {
-		return fmt.Errorf("store: target %s fetch state: %w", t.ID, err)
-	}
-	if t.NextCheckAt.IsZero() {
-		return fmt.Errorf("store: target %s: zero next_check_at: %w", t.ID, store.ErrInvalid)
-	}
-	return wrap(s.q.CreateTarget(ctx, CreateTargetParams{
-		ID: t.ID, Kind: t.Kind, CoordinatesJson: string(coords), FetchStateJson: fs,
-		LastCheckedAt: nullMillis(t.LastCheckedAt), NextCheckAt: millis(t.NextCheckAt), ErrorCount: t.ErrorCount,
-	}), "create target", t.ID)
-}
-
-// GetTarget implements [store.Store].
-func (s *Store) GetTarget(ctx context.Context, id string) (store.Target, error) {
-	r, err := s.q.GetTarget(ctx, id)
-	if err != nil {
-		return store.Target{}, wrap(err, "get target", id)
-	}
-	t := store.Target{
-		ID: r.ID, Kind: r.Kind, FetchState: json.RawMessage(r.FetchStateJson),
-		LastCheckedAt: fromNullMillis(r.LastCheckedAt), NextCheckAt: fromMillis(r.NextCheckAt), ErrorCount: r.ErrorCount,
-	}
-	if err := json.Unmarshal([]byte(r.CoordinatesJson), &t.Coordinates); err != nil {
-		return store.Target{}, fmt.Errorf("store: target %s coordinates: %w", id, err)
-	}
-	return t, nil
-}
-
-// CreateWatch implements [store.Store].
-func (s *Store) CreateWatch(ctx context.Context, w store.Watch) error {
-	labels, err := json.Marshal(nonNil(w.Labels))
-	if err != nil {
-		return fmt.Errorf("store: watch %s labels: %w", w.ID, err)
-	}
-	policy, err := rawJSON(w.Policy, false)
-	if err != nil {
-		return fmt.Errorf("store: watch %s policy: %w", w.ID, err)
-	}
-	return wrap(s.q.CreateWatch(ctx, CreateWatchParams{
-		ID: w.ID, TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), BaselineDone: boolInt(w.BaselineDone),
-	}), "create watch", w.ID)
-}
-
-// GetWatch implements [store.Store].
-func (s *Store) GetWatch(ctx context.Context, id string) (store.Watch, error) {
-	r, err := s.q.GetWatch(ctx, id)
-	if err != nil {
-		return store.Watch{}, wrap(err, "get watch", id)
-	}
-	return watchFromRow(r)
-}
-
-// DeleteWatch implements [store.Store].
-func (s *Store) DeleteWatch(ctx context.Context, id string) error {
-	n, err := s.q.DeleteWatch(ctx, id)
-	return deleted(n, err, "delete watch", id)
-}
-
-// DeleteSink implements [store.Store].
-func (s *Store) DeleteSink(ctx context.Context, id string) error {
-	n, err := s.q.DeleteSink(ctx, id)
-	return deleted(n, err, "delete sink", id)
-}
-
-// DeleteSubscription implements [store.Store].
-func (s *Store) DeleteSubscription(ctx context.Context, id string) error {
-	n, err := s.q.DeleteSubscription(ctx, id)
-	return deleted(n, err, "delete subscription", id)
-}
-
-// deleted turns the result of a DELETE by id into an error: ErrNotFound when
-// no row matched.
-func deleted(n int64, err error, op, id string) error {
-	if err == nil && n == 0 {
-		err = sql.ErrNoRows
-	}
-	return wrap(err, op, id)
-}
-
-// CreateSink implements [store.Store].
-func (s *Store) CreateSink(ctx context.Context, k store.Sink) error {
-	cfg := k.ConfigEncrypted
-	if cfg == nil {
-		cfg = []byte{} // the column is NOT NULL
-	}
-	return wrap(s.q.CreateSink(ctx, CreateSinkParams{ID: k.ID, Kind: k.Kind, ConfigJsonEncrypted: cfg}), "create sink", k.ID)
-}
-
-// CreateSubscription implements [store.Store].
-func (s *Store) CreateSubscription(ctx context.Context, sub store.Subscription) error {
-	filter, err := rawJSON(sub.Filter, false)
-	if err != nil {
-		return fmt.Errorf("store: subscription %s filter: %w", sub.ID, err)
-	}
-	return wrap(s.q.CreateSubscription(ctx, CreateSubscriptionParams{
-		ID: sub.ID, FilterJson: filter, SinkID: sub.SinkID, Template: sub.Template,
-	}), "create subscription", sub.ID)
 }
 
 // ListEventsAfter implements [store.Store].
@@ -473,4 +370,13 @@ func fromNullMillis(n sql.NullInt64) time.Time {
 		return time.Time{}
 	}
 	return fromMillis(n.Int64)
+}
+
+// deleted turns the result of a DELETE by id into an error: ErrNotFound when
+// no row matched.
+func deleted(n int64, err error, op, id string) error {
+	if err == nil && n == 0 {
+		err = sql.ErrNoRows
+	}
+	return wrap(err, op, id)
 }

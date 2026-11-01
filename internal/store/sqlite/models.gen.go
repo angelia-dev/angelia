@@ -37,6 +37,8 @@ type Sink struct {
 	ID                  string
 	Kind                string
 	ConfigJsonEncrypted []byte
+	Name                sql.NullString
+	ManagedBy           string
 }
 
 type Subscription struct {
@@ -44,6 +46,8 @@ type Subscription struct {
 	FilterJson string
 	SinkID     string
 	Template   string
+	Name       sql.NullString
+	ManagedBy  string
 }
 
 type Target struct {
@@ -54,6 +58,7 @@ type Target struct {
 	LastCheckedAt   sql.NullInt64
 	NextCheckAt     int64
 	ErrorCount      int64
+	IntervalMs      sql.NullInt64
 }
 
 type Version struct {
@@ -73,4 +78,6 @@ type Watch struct {
 	PolicyJson   string
 	LabelsJson   string
 	BaselineDone int64
+	Name         sql.NullString
+	ManagedBy    string
 }

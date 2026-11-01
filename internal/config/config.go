@@ -37,7 +37,7 @@ var (
 	envNameRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE     = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	unknownRE  = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
-	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-"}
+	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
 )
 
 // secret holds a credential. It prints as [REDACTED] with every fmt verb and
@@ -337,6 +337,15 @@ func (c *Config) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// IsEnvName reports whether s is a valid environment variable name. Other
+// files that reference a secret by variable name (the watch file) use it so
+// the rule is the same everywhere.
+func IsEnvName(s string) bool { return envNameRE.MatchString(s) }
+
+// LooksLikeToken reports whether v starts with a well-known credential prefix.
+// Callers must not echo v when it does.
+func LooksLikeToken(v string) bool { return hasTokenPrefix(v) }
 
 func hasTokenPrefix(v string) bool {
 	for _, p := range tokenStart {

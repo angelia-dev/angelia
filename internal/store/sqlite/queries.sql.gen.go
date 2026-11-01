@@ -116,22 +116,30 @@ func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) error 
 }
 
 const createSink = `-- name: CreateSink :exec
-INSERT INTO sink (id, kind, config_json_encrypted) VALUES (?, ?, ?)
+INSERT INTO sink (id, kind, config_json_encrypted, name, managed_by) VALUES (?, ?, ?, ?, ?)
 `
 
 type CreateSinkParams struct {
 	ID                  string
 	Kind                string
 	ConfigJsonEncrypted []byte
+	Name                sql.NullString
+	ManagedBy           string
 }
 
 func (q *Queries) CreateSink(ctx context.Context, arg CreateSinkParams) error {
-	_, err := q.db.ExecContext(ctx, createSink, arg.ID, arg.Kind, arg.ConfigJsonEncrypted)
+	_, err := q.db.ExecContext(ctx, createSink,
+		arg.ID,
+		arg.Kind,
+		arg.ConfigJsonEncrypted,
+		arg.Name,
+		arg.ManagedBy,
+	)
 	return err
 }
 
 const createSubscription = `-- name: CreateSubscription :exec
-INSERT INTO subscription (id, filter_json, sink_id, template) VALUES (?, ?, ?, ?)
+INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by) VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type CreateSubscriptionParams struct {
@@ -139,6 +147,8 @@ type CreateSubscriptionParams struct {
 	FilterJson string
 	SinkID     string
 	Template   string
+	Name       sql.NullString
+	ManagedBy  string
 }
 
 func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscriptionParams) error {
@@ -147,13 +157,15 @@ func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscription
 		arg.FilterJson,
 		arg.SinkID,
 		arg.Template,
+		arg.Name,
+		arg.ManagedBy,
 	)
 	return err
 }
 
 const createTarget = `-- name: CreateTarget :exec
-INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateTargetParams struct {
@@ -164,6 +176,7 @@ type CreateTargetParams struct {
 	LastCheckedAt   sql.NullInt64
 	NextCheckAt     int64
 	ErrorCount      int64
+	IntervalMs      sql.NullInt64
 }
 
 func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) error {
@@ -175,13 +188,14 @@ func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) erro
 		arg.LastCheckedAt,
 		arg.NextCheckAt,
 		arg.ErrorCount,
+		arg.IntervalMs,
 	)
 	return err
 }
 
 const createWatch = `-- name: CreateWatch :exec
-INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateWatchParams struct {
@@ -190,6 +204,8 @@ type CreateWatchParams struct {
 	PolicyJson   string
 	LabelsJson   string
 	BaselineDone int64
+	Name         sql.NullString
+	ManagedBy    string
 }
 
 func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error {
@@ -199,6 +215,8 @@ func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error 
 		arg.PolicyJson,
 		arg.LabelsJson,
 		arg.BaselineDone,
+		arg.Name,
+		arg.ManagedBy,
 	)
 	return err
 }
@@ -215,6 +233,18 @@ type DeleteExpiredLeaseParams struct {
 func (q *Queries) DeleteExpiredLease(ctx context.Context, arg DeleteExpiredLeaseParams) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredLease, arg.Name, arg.ExpiresAt)
 	return err
+}
+
+const deletePendingDeliveries = `-- name: DeletePendingDeliveries :execrows
+DELETE FROM delivery WHERE subscription_id = ? AND status = 'pending'
+`
+
+func (q *Queries) DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePendingDeliveries, subscriptionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteSink = `-- name: DeleteSink :execrows
@@ -241,6 +271,27 @@ func (q *Queries) DeleteSubscription(ctx context.Context, id string) (int64, err
 	return result.RowsAffected()
 }
 
+const deleteTargetIfUnused = `-- name: DeleteTargetIfUnused :execrows
+DELETE FROM target WHERE target.id = ? AND NOT EXISTS (SELECT 1 FROM watch w WHERE w.target_id = target.id)
+`
+
+func (q *Queries) DeleteTargetIfUnused(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTargetIfUnused, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteTargetVersions = `-- name: DeleteTargetVersions :exec
+DELETE FROM version WHERE target_id = ?
+`
+
+func (q *Queries) DeleteTargetVersions(ctx context.Context, targetID string) error {
+	_, err := q.db.ExecContext(ctx, deleteTargetVersions, targetID)
+	return err
+}
+
 const deleteWatch = `-- name: DeleteWatch :execrows
 DELETE FROM watch WHERE id = ?
 `
@@ -254,7 +305,7 @@ func (q *Queries) DeleteWatch(ctx context.Context, id string) (int64, error) {
 }
 
 const getTarget = `-- name: GetTarget :one
-SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count FROM target WHERE id = ?
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE id = ?
 `
 
 func (q *Queries) GetTarget(ctx context.Context, id string) (Target, error) {
@@ -268,12 +319,38 @@ func (q *Queries) GetTarget(ctx context.Context, id string) (Target, error) {
 		&i.LastCheckedAt,
 		&i.NextCheckAt,
 		&i.ErrorCount,
+		&i.IntervalMs,
+	)
+	return i, err
+}
+
+const getTargetByCoordinates = `-- name: GetTargetByCoordinates :one
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE kind = ? AND coordinates_json = ?
+`
+
+type GetTargetByCoordinatesParams struct {
+	Kind            string
+	CoordinatesJson string
+}
+
+func (q *Queries) GetTargetByCoordinates(ctx context.Context, arg GetTargetByCoordinatesParams) (Target, error) {
+	row := q.db.QueryRowContext(ctx, getTargetByCoordinates, arg.Kind, arg.CoordinatesJson)
+	var i Target
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.CoordinatesJson,
+		&i.FetchStateJson,
+		&i.LastCheckedAt,
+		&i.NextCheckAt,
+		&i.ErrorCount,
+		&i.IntervalMs,
 	)
 	return i, err
 }
 
 const getWatch = `-- name: GetWatch :one
-SELECT id, target_id, policy_json, labels_json, baseline_done FROM watch WHERE id = ?
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE id = ?
 `
 
 func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
@@ -285,6 +362,8 @@ func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 		&i.PolicyJson,
 		&i.LabelsJson,
 		&i.BaselineDone,
+		&i.Name,
+		&i.ManagedBy,
 	)
 	return i, err
 }
@@ -363,6 +442,73 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 	return items, nil
 }
 
+const listSinksManagedBy = `-- name: ListSinksManagedBy :many
+SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE managed_by = ? ORDER BY name
+`
+
+func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]Sink, error) {
+	rows, err := q.db.QueryContext(ctx, listSinksManagedBy, managedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Sink
+	for rows.Next() {
+		var i Sink
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.ConfigJsonEncrypted,
+			&i.Name,
+			&i.ManagedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubscriptionsManagedBy = `-- name: ListSubscriptionsManagedBy :many
+SELECT id, filter_json, sink_id, template, name, managed_by FROM subscription WHERE managed_by = ? ORDER BY name
+`
+
+func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy string) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptionsManagedBy, managedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVersions = `-- name: ListVersions :many
 SELECT target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at FROM version WHERE target_id = ? ORDER BY first_seen_at, raw
 `
@@ -400,7 +546,7 @@ func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version,
 }
 
 const listWatchesByTarget = `-- name: ListWatchesByTarget :many
-SELECT id, target_id, policy_json, labels_json, baseline_done FROM watch WHERE target_id = ? ORDER BY id
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE target_id = ? ORDER BY id
 `
 
 func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]Watch, error) {
@@ -418,6 +564,43 @@ func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]W
 			&i.PolicyJson,
 			&i.LabelsJson,
 			&i.BaselineDone,
+			&i.Name,
+			&i.ManagedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWatchesManagedBy = `-- name: ListWatchesManagedBy :many
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE managed_by = ? ORDER BY name
+`
+
+func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([]Watch, error) {
+	rows, err := q.db.QueryContext(ctx, listWatchesManagedBy, managedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Watch
+	for rows.Next() {
+		var i Watch
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.PolicyJson,
+			&i.LabelsJson,
+			&i.BaselineDone,
+			&i.Name,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -539,6 +722,66 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 	return err
 }
 
+const setTargetInterval = `-- name: SetTargetInterval :execrows
+UPDATE target SET interval_ms = ?, next_check_at = ? WHERE id = ?
+`
+
+type SetTargetIntervalParams struct {
+	IntervalMs  sql.NullInt64
+	NextCheckAt int64
+	ID          string
+}
+
+func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTargetInterval, arg.IntervalMs, arg.NextCheckAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateSink = `-- name: UpdateSink :execrows
+UPDATE sink SET kind = ?, config_json_encrypted = ? WHERE id = ?
+`
+
+type UpdateSinkParams struct {
+	Kind                string
+	ConfigJsonEncrypted []byte
+	ID                  string
+}
+
+func (q *Queries) UpdateSink(ctx context.Context, arg UpdateSinkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSink, arg.Kind, arg.ConfigJsonEncrypted, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateSubscription = `-- name: UpdateSubscription :execrows
+UPDATE subscription SET filter_json = ?, sink_id = ?, template = ? WHERE id = ?
+`
+
+type UpdateSubscriptionParams struct {
+	FilterJson string
+	SinkID     string
+	Template   string
+	ID         string
+}
+
+func (q *Queries) UpdateSubscription(ctx context.Context, arg UpdateSubscriptionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSubscription,
+		arg.FilterJson,
+		arg.SinkID,
+		arg.Template,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateTargetState = `-- name: UpdateTargetState :execrows
 UPDATE target
 SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = ?
@@ -584,6 +827,32 @@ func (q *Queries) UpdateVersionState(ctx context.Context, arg UpdateVersionState
 		arg.RemovedAt,
 		arg.TargetID,
 		arg.Raw,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateWatchConfig = `-- name: UpdateWatchConfig :execrows
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ?, baseline_done = ? WHERE id = ?
+`
+
+type UpdateWatchConfigParams struct {
+	TargetID     string
+	PolicyJson   string
+	LabelsJson   string
+	BaselineDone int64
+	ID           string
+}
+
+func (q *Queries) UpdateWatchConfig(ctx context.Context, arg UpdateWatchConfigParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateWatchConfig,
+		arg.TargetID,
+		arg.PolicyJson,
+		arg.LabelsJson,
+		arg.BaselineDone,
+		arg.ID,
 	)
 	if err != nil {
 		return 0, err
