@@ -214,7 +214,7 @@ func Render(ctx context.Context, t *Template, envelope []byte) (Rendered, error)
 func (t *Template) Render(ctx context.Context, envelope []byte) (Rendered, error) {
 	g := newGuard(t.limits.Timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(g.deadline) {
-		g.deadline = d
+		g.deadline, g.ctxDeadline = d, true
 	}
 	g.done = ctx.Done()
 	return t.render(g, envelope)
@@ -259,6 +259,10 @@ type guard struct {
 	done     <-chan struct{}
 	deadline time.Time
 	timeout  time.Duration // for the error message
+	// ctxDeadline: deadline is the caller's context deadline, earlier than
+	// the template timeout. ctxEnded: execution stopped because the
+	// caller's context ended, not because the template ran too long.
+	ctxDeadline, ctxEnded bool
 }
 
 func newGuard(timeout time.Duration) *guard {
@@ -268,10 +272,12 @@ func newGuard(timeout time.Duration) *guard {
 func (g *guard) check() error {
 	select {
 	case <-g.done:
+		g.ctxEnded = true
 		return ErrTimeout
 	default:
 	}
 	if !time.Now().Before(g.deadline) {
+		g.ctxEnded = g.ctxDeadline
 		return ErrTimeout
 	}
 	return nil

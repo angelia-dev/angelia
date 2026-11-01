@@ -188,6 +188,36 @@ func TestErrorsDoNotQuoteTemplate(t *testing.T) {
 	}
 }
 
+// Lower-case hex secrets (a sha1, a token) used as a function name, key or
+// variable are not echoed: too long, or holding a run of 4 digits.
+func TestErrorsDoNotEchoHex(t *testing.T) {
+	hexes := []string{
+		"da39a3ee5e6b4b0d3255bfef95601890afd80709", // sha1, 40 characters
+		"abcdefabcdefabcdefabcdefa",                // 25 characters, no digits
+		"ab12345cd",                                // short, digit run
+		"f00d1234",
+	}
+	for _, h := range hexes {
+		for _, src := range []string{"{{" + h + "}}", "{{$" + h + "}}", "{{.data." + h + "}}", `{{"x" | .data.` + h + "}}"} {
+			tm, err := Compile(src, Limits{})
+			if err == nil {
+				err = tm.Check()
+			}
+			if err == nil || strings.Contains(err.Error(), h) {
+				t.Errorf("%s: %v", src, err)
+			}
+		}
+	}
+	for name, want := range map[string]bool{
+		"nosuch": true, "trimPrefix": true, "abcdefghijklmnopqrstuvwx": true, "v1_2_3": true, "x202": true,
+		"abcdefghijklmnopqrstuvwxy": false, "x2024": false, "Nosuch": false, "": false,
+	} {
+		if got := safeName(name); got != want {
+			t.Errorf("safeName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // AC: execution has a timeout.
 func TestRenderTimeout(t *testing.T) {
 	srcs := map[string]string{
@@ -218,7 +248,7 @@ func TestRenderContextEnds(t *testing.T) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) || err.Error() != "context ended" {
 		t.Errorf("deadline: %v", err)
 	}
 	if el := time.Since(start); el > 3*time.Second {
@@ -229,18 +259,26 @@ func TestRenderContextEnds(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 	time.AfterFunc(30*time.Millisecond, cancel)
 	start = time.Now()
-	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) || err.Error() != "context ended" {
 		t.Errorf("canceled during execution: %v", err)
 	}
 	if el := time.Since(start); el > 3*time.Second {
 		t.Errorf("context Done: took %s", el)
 	}
-	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+	if _, err := tm.Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) || err.Error() != "context ended" {
 		t.Errorf("canceled: %v", err)
 	}
 	// Without a range the writer checks the context.
-	if _, err := mustCompile(t, "text", Limits{}).Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) {
+	if _, err := mustCompile(t, "text", Limits{}).Render(ctx, sampleJSON(t, "full")); !errors.Is(err, ErrTimeout) || err.Error() != "context ended" {
 		t.Errorf("canceled, no range: %v", err)
+	}
+	// A context deadline later than the template timeout: the template ran
+	// too long, the context did not end.
+	ctx, cancel = context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	short := mustCompile(t, `{{range 2000000000}}{{end}}`, Limits{Timeout: 30 * time.Millisecond})
+	if _, err := short.Render(ctx, sampleJSON(t, "full")); err == nil || err.Error() != "execution took longer than 30ms" {
+		t.Errorf("template timeout under a later context deadline: %v", err)
 	}
 }
 

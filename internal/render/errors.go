@@ -14,17 +14,32 @@ import (
 // the configuration's credential check missed. text/template's messages do
 // quote it (the "at <…>" node, string literals, unexpected tokens), so they
 // are mapped to a fixed set of reasons. An identifier is echoed only when
-// it has the shape of identShape or is a function name; for execution errors
+// it passes safeName (short, lower case, no run of digits) or is a function name; for execution errors
 // only the position is read from the prefix, which text/template writes from
 // the template's name (fixed here) and the node's position.
 
 // identShape is the shape of an identifier safe to echo: short, lower case,
-// unlike a credential.
-var identShape = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,39}$`)
+// unlike a credential. digitRun rules out hex strings (a sha1, a token),
+// which almost always hold a run of 4 digits; maxEcho rules out the rest of
+// a long one.
+var (
+	identShape = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+	digitRun   = regexp.MustCompile(`[0-9]{4}`)
+)
+
+const maxEcho = 24
+
+// safeName reports whether an identifier from the template may be shown.
+func safeName(name string) bool {
+	if slices.Contains(FuncNames(), name) {
+		return true
+	}
+	return len(name) <= maxEcho && identShape.MatchString(name) && !digitRun.MatchString(name)
+}
 
 // echo quotes name when it is safe to show, and returns "" otherwise.
 func echo(name string) string {
-	if identShape.MatchString(name) || slices.Contains(FuncNames(), name) {
+	if safeName(name) {
 		return " " + strconv.Quote(name)
 	}
 	return ""
@@ -125,6 +140,9 @@ func (t *Template) execError(err error, g *guard) error {
 	switch {
 	case errors.Is(err, ErrTimeout):
 		e.kind, e.Reason = ErrTimeout, fmt.Sprintf("execution took longer than %s", g.timeout)
+		if g.ctxEnded {
+			e.Reason = "context ended"
+		}
 		return e // the position would be that of the instrumented check
 	case errors.Is(err, ErrOutputTooLarge):
 		e.kind, e.Reason = ErrOutputTooLarge, fmt.Sprintf("output larger than %d bytes", t.limits.MaxOutputBytes)

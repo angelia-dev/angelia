@@ -46,9 +46,12 @@ func TestTemplateErrorsDoNotEcho(t *testing.T) {
 		`'{{ ''SECRET'' }}'`,
 		`'{{end SECRET}}'`,
 		`'{{.data.SECRETFIELD}}'`,
+		`'{{da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
+		`'{{$da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
+		`'{{.data.da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
 	} {
 		_, err := Parse([]byte(base+subWith(tmpl)), "w.yaml", opts(t))
-		if err == nil || strings.Contains(err.Error(), marker) {
+		if err == nil || strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "da39a3ee") {
 			t.Errorf("%s: %v", tmpl, err)
 		}
 	}

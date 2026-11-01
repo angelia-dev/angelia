@@ -94,7 +94,7 @@ limit, is rejected with its line and column, for example
 `subscriptions[0].template: on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`.
 Error messages never quote the template text: the reason is one of a fixed set (`unknown function`,
 `undefined variable`, `unexpected token`, `unclosed action`, `unknown key`, ...), and a name is shown
-only when it is short and lower case (`[a-z_][a-z0-9_]{0,39}`) or a function name.
+only when it is a function name, or at most 24 characters of `[a-z_][a-z0-9_]*` with no run of 4 digits (so not a hex hash or token).
 
 Templates accepted before this check (they only had to parse) can now be rejected; see
 [watch-file.md §2.5](watch-file.md#25-subscriptions).

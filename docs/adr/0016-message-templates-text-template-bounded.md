@@ -43,7 +43,8 @@ data, nested) can run for hours without writing a byte, and a variable reassigne
    invocation is the only loop that would escape point 5.
 5. **Timeout: 1 s, enforced inside the loops.** `Compile` walks the parse tree and prepends a call to an
    internal function to every `range` body; at execution that function fails once the deadline (or the
-   context's deadline or cancellation) has passed, which stops `text/template`. The output writer checks it
+   context's deadline or cancellation) has passed, which stops `text/template`; the error says "context
+   ended" when the caller's context, not the template timeout, stopped it. The output writer checks it
    too, and so does every curated function when it starts (the function map is rebound to each execution's
    deadline, like the range check), so the timeout also applies to templates made only of function calls.
    With point 4 every iteration of every loop checks the deadline, so no goroutine is left running past it.
@@ -67,7 +68,7 @@ data, nested) can run for hours without writing a byte, and a variable reassigne
    `render.Error` keeps only the position (read from the message prefix, which holds the fixed template
    name) and maps the reason to a fixed set (`unknown function`, `undefined variable`, `unexpected token`,
    `unclosed action`, `unknown key`, `cannot read field … of a null value`, ...), matched on the end of the
-   message where node text cannot follow. A name is shown only when it matches `^[a-z_][a-z0-9_]{0,39}$` or
+   message where node text cannot follow. A name is shown only when it matches `^[a-z_][a-z0-9_]*$`, is at most 24 characters and has no run of 4 digits (which rules out hex hashes and tokens), or
    is a function name; the messages of the curated functions are written here and shown as they are. The
    watch file reports them as
    `subscriptions[0].template: on the sparse sample event: line 1, column 7: cannot read field "body" of a null value`.
