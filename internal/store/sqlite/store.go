@@ -134,6 +134,26 @@ func (s *Store) AppendEvent(ctx context.Context, e store.Event, ds []store.Deliv
 	return s.InTx(ctx, func(tx store.Tx) error { return tx.AppendEvent(ctx, e, ds) })
 }
 
+// ListPendingReleases implements [store.Tx] outside a transaction.
+func (s *Store) ListPendingReleases(ctx context.Context, targetID string) ([]store.PendingRelease, error) {
+	return txOps{q: s.q}.ListPendingReleases(ctx, targetID)
+}
+
+// AddPendingRelease implements [store.Tx] in its own statement.
+func (s *Store) AddPendingRelease(ctx context.Context, p store.PendingRelease) error {
+	return txOps{q: s.q}.AddPendingRelease(ctx, p)
+}
+
+// DeletePendingRelease implements [store.Tx] in its own statement.
+func (s *Store) DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error {
+	return txOps{q: s.q}.DeletePendingRelease(ctx, watchID, targetID, raw)
+}
+
+// DeletePendingReleasesOfWatch implements [store.Tx] in its own statement.
+func (s *Store) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	return txOps{q: s.q}.DeletePendingReleasesOfWatch(ctx, watchID)
+}
+
 // txOps runs the [store.Tx] writes on q, which may be bound to a transaction.
 type txOps struct{ q *Queries }
 
@@ -197,6 +217,49 @@ func (o txOps) ListWatches(ctx context.Context, targetID string) ([]store.Watch,
 		out[i] = w
 	}
 	return out, nil
+}
+
+func (o txOps) ListPendingReleases(ctx context.Context, targetID string) ([]store.PendingRelease, error) {
+	rows, err := o.q.ListPendingReleases(ctx, targetID)
+	if err != nil {
+		return nil, wrap(err, "list pending releases", targetID)
+	}
+	out := make([]store.PendingRelease, len(rows))
+	for i, r := range rows {
+		out[i] = store.PendingRelease{
+			WatchID: r.WatchID, TargetID: r.TargetID, Raw: r.Raw, HeldAt: fromMillis(r.HeldAt),
+			Release: json.RawMessage(r.ReleaseJson), Yanked: r.Yanked != 0, Removed: r.RemovedAt.Valid,
+		}
+	}
+	return out, nil
+}
+
+func (o txOps) AddPendingRelease(ctx context.Context, p store.PendingRelease) error {
+	id := p.WatchID + "@" + p.Raw
+	rel, err := rawJSON(p.Release, true)
+	if err != nil {
+		return fmt.Errorf("store: pending release %s: %w", id, err)
+	}
+	if p.HeldAt.IsZero() {
+		return fmt.Errorf("store: pending release %s: zero held_at: %w", id, store.ErrInvalid)
+	}
+	n, err := o.q.AddPendingRelease(ctx, AddPendingReleaseParams{
+		WatchID: p.WatchID, TargetID: p.TargetID, Raw: p.Raw, HeldAt: millis(p.HeldAt), ReleaseJson: rel,
+	})
+	if err == nil && n == 0 {
+		return fmt.Errorf("store: add pending release %s: already held: %w", id, store.ErrConflict)
+	}
+	return wrap(err, "add pending release", id)
+}
+
+func (o txOps) DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error {
+	n, err := o.q.DeletePendingRelease(ctx, DeletePendingReleaseParams{WatchID: watchID, TargetID: targetID, Raw: raw})
+	return deleted(n, err, "delete pending release", watchID+"@"+targetID+"@"+raw)
+}
+
+func (o txOps) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	n, err := o.q.DeletePendingReleasesOfWatch(ctx, watchID)
+	return n, wrap(err, "delete pending releases of watch", watchID)
 }
 
 func watchFromRow(r Watch) (store.Watch, error) {

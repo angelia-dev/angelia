@@ -33,6 +33,14 @@ type Lease struct {
 	ExpiresAt int64
 }
 
+type PendingRelease struct {
+	WatchID     string
+	TargetID    string
+	Raw         string
+	HeldAt      int64
+	ReleaseJson string
+}
+
 type Sink struct {
 	ID                  string
 	Kind                string

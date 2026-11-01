@@ -272,6 +272,22 @@ func (f failTx) UpdateVersion(context.Context, store.Version) error { return f.e
 
 func (f failTx) MarkBaselineDone(context.Context, string) error { return f.err("MarkBaselineDone") }
 
+func (f failTx) ListPendingReleases(context.Context, string) ([]store.PendingRelease, error) {
+	return nil, f.err("ListPendingReleases")
+}
+
+func (f failTx) AddPendingRelease(context.Context, store.PendingRelease) error {
+	return f.err("AddPendingRelease")
+}
+
+func (f failTx) DeletePendingRelease(context.Context, string, string, string) error {
+	return f.err("DeletePendingRelease")
+}
+
+func (f failTx) DeletePendingReleasesOfWatch(context.Context, string) (int64, error) {
+	return 0, f.err("DeletePendingReleasesOfWatch")
+}
+
 func (f failTx) AppendEvent(context.Context, store.Event, []store.Delivery) error {
 	return f.err("AppendEvent")
 }

@@ -65,6 +65,26 @@ type Tx interface {
 	// UpdateTarget stores FetchState, LastCheckedAt, NextCheckAt and
 	// ErrorCount of t. Kind and Coordinates are immutable.
 	UpdateTarget(ctx context.Context, t Target) error
+	// ListPendingReleases returns the versions held by the watches of a
+	// target (cooldown, ADR 0012), with the current Yanked and Removed state
+	// of each from the known set, ordered by WatchID, HeldAt, Raw. Rows of a
+	// watch that now points at another target are left out.
+	ListPendingReleases(ctx context.Context, targetID string) ([]PendingRelease, error)
+	// AddPendingRelease holds a known version for a watch. Yanked and
+	// Removed are ignored. ErrConflict when the watch already holds Raw of
+	// TargetID; ErrInvalidRef when the watch or the version (TargetID, Raw)
+	// does not exist. Rows are keyed by (WatchID, TargetID, Raw), so rows
+	// left on a watch's previous target never conflict.
+	AddPendingRelease(ctx context.Context, p PendingRelease) error
+	// DeletePendingRelease releases a version of targetID held by a watch
+	// (emitted or dropped). ErrNotFound when the watch does not hold it.
+	DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error
+	// DeletePendingReleasesOfWatch forgets every version a watch holds, on
+	// any target, and returns how many rows it deleted. The watch-file apply
+	// (#48, PR #132) must call it, in the same transaction, when it moves a
+	// watch to another target: the held versions of the old target must not
+	// come back if the watch later moves back.
+	DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error)
 }
 
 // Store is the persistence contract. Every engine must pass the same tests.
@@ -227,6 +247,21 @@ type Version struct {
 	Yanked      bool
 	FirstSeenAt time.Time
 	RemovedAt   time.Time // zero: listed upstream at the last check
+}
+
+// PendingRelease is a known version that a watch's policy holds back until
+// its cooldown ends (ADR 0012). It is deleted with its watch or version.
+type PendingRelease struct {
+	WatchID  string
+	TargetID string
+	Raw      string
+	HeldAt   time.Time
+	// Release is the policy engine's snapshot of the version as detected,
+	// opaque to the store.
+	Release json.RawMessage
+	// Yanked and Removed are the version's state in the known set, filled
+	// by ListPendingReleases.
+	Yanked, Removed bool
 }
 
 // Event is an immutable release event. WatchID may name a deleted watch.

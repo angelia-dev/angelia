@@ -30,6 +30,34 @@ func (q *Queries) AcquireLease(ctx context.Context, arg AcquireLeaseParams) (int
 	return result.RowsAffected()
 }
 
+const addPendingRelease = `-- name: AddPendingRelease :execrows
+INSERT INTO pending_release (watch_id, target_id, raw, held_at, release_json)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (watch_id, target_id, raw) DO NOTHING
+`
+
+type AddPendingReleaseParams struct {
+	WatchID     string
+	TargetID    string
+	Raw         string
+	HeldAt      int64
+	ReleaseJson string
+}
+
+func (q *Queries) AddPendingRelease(ctx context.Context, arg AddPendingReleaseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, addPendingRelease,
+		arg.WatchID,
+		arg.TargetID,
+		arg.Raw,
+		arg.HeldAt,
+		arg.ReleaseJson,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const addVersion = `-- name: AddVersion :execrows
 INSERT INTO version (target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -269,6 +297,36 @@ DELETE FROM delivery WHERE subscription_id = ? AND status = 'pending'
 
 func (q *Queries) DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deletePendingDeliveries, subscriptionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deletePendingRelease = `-- name: DeletePendingRelease :execrows
+DELETE FROM pending_release WHERE watch_id = ? AND target_id = ? AND raw = ?
+`
+
+type DeletePendingReleaseParams struct {
+	WatchID  string
+	TargetID string
+	Raw      string
+}
+
+func (q *Queries) DeletePendingRelease(ctx context.Context, arg DeletePendingReleaseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePendingRelease, arg.WatchID, arg.TargetID, arg.Raw)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deletePendingReleasesOfWatch = `-- name: DeletePendingReleasesOfWatch :execrows
+DELETE FROM pending_release WHERE watch_id = ?
+`
+
+func (q *Queries) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePendingReleasesOfWatch, watchID)
 	if err != nil {
 		return 0, err
 	}
@@ -525,6 +583,57 @@ func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDu
 			&i.NextCheckAt,
 			&i.ErrorCount,
 			&i.IntervalMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingReleases = `-- name: ListPendingReleases :many
+SELECT p.watch_id, p.target_id, p.raw, p.held_at, p.release_json, v.yanked, v.removed_at
+FROM pending_release p
+JOIN watch w ON w.id = p.watch_id AND w.target_id = p.target_id
+JOIN version v ON v.target_id = p.target_id AND v.raw = p.raw
+WHERE p.target_id = ?
+ORDER BY p.watch_id, p.held_at, p.raw
+`
+
+type ListPendingReleasesRow struct {
+	WatchID     string
+	TargetID    string
+	Raw         string
+	HeldAt      int64
+	ReleaseJson string
+	Yanked      int64
+	RemovedAt   sql.NullInt64
+}
+
+// Rows of watches that moved to another target are left out.
+func (q *Queries) ListPendingReleases(ctx context.Context, targetID string) ([]ListPendingReleasesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingReleases, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingReleasesRow
+	for rows.Next() {
+		var i ListPendingReleasesRow
+		if err := rows.Scan(
+			&i.WatchID,
+			&i.TargetID,
+			&i.Raw,
+			&i.HeldAt,
+			&i.ReleaseJson,
+			&i.Yanked,
+			&i.RemovedAt,
 		); err != nil {
 			return nil, err
 		}
