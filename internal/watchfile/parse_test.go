@@ -108,7 +108,10 @@ func TestTokenLikeValuesAreRejectedWithoutEcho(t *testing.T) {
 		base + "subscriptions:\n  - {name: x, sink: s, template: '" + tok + "'}\n",
 	} {
 		_, err := Parse([]byte(doc), "w.yaml", opts(t))
-		if err == nil || !(strings.Contains(err.Error(), "looks like a credential") || strings.Contains(err.Error(), "fragment")) {
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		if msg := err.Error(); !strings.Contains(msg, "looks like a credential") && !strings.Contains(msg, "fragment") {
 			t.Fatalf("want credential error, got %v", err)
 		}
 		if strings.Contains(err.Error(), "ghp_") || strings.Contains(err.Error(), "whsec_") {
