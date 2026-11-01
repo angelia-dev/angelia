@@ -102,7 +102,14 @@ func TokenSafe(u *url.URL) bool {
 //
 // hasCredentials says whether the request chain carries credentials; req is
 // the request about to be sent and via the requests already made, oldest
-// first. After the guard, the caller's own CheckRedirect runs, or a cap of 10
+// first. Which to read depends on the credential header. net/http drops
+// Authorization when a redirect goes to another domain, so req may no longer
+// show it: that is fine when the guard only has to stop a header that is
+// still there, and reading req is enough. A header that net/http forwards
+// to any host, such as GitLab's PRIVATE-TOKEN, survives such hops, but a
+// guard that looks at req alone would also lose track of Authorization sent
+// first; read via[0], the request that carried the credentials, to judge
+// the whole chain. After the guard, the caller's own CheckRedirect runs, or a cap of 10
 // redirects if hc has none. hc itself is not modified.
 func GuardRedirects(kind string, hc *http.Client, hasCredentials func(req *http.Request, via []*http.Request) bool) *http.Client {
 	cp := *hc

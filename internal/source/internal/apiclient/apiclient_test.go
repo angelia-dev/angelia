@@ -256,26 +256,39 @@ func TestRedirectGuardChainsCallerCheckRedirect(t *testing.T) {
 }
 
 func TestRedirectGuardUsesFirstRequestCredentials(t *testing.T) {
-	// A header that net/http keeps across hosts (PRIVATE-TOKEN style) is
-	// judged on the first request of the chain, not on the redirected one.
+	// net/http strips Authorization when a redirect goes to a different host
+	// name, so the redirected request carries none and a callback reading req
+	// would follow it. A callback reading via[0] still sees the credentials
+	// of the first request and must refuse.
 	var otherHits int
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		otherHits++
-		_, _ = w.Write([]byte("{}"))
-	}))
-	defer other.Close()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, other.URL+"/x", http.StatusFound)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Host, "127.0.0.1") {
+			otherHits++
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		_, port, _ := net.SplitHostPort(r.Host)
+		// The httptest certificate is valid for both example.com and 127.0.0.1.
+		http.Redirect(w, r, "https://127.0.0.1:"+port+"/x", http.StatusFound) //nolint:gosec // G710: test server, fixed target.
 	}))
 	defer srv.Close()
-	first := func(_ *http.Request, via []*http.Request) bool { return via[0].Header.Get("PRIVATE-TOKEN") != "" }
-	hc := GuardRedirects("k", srv.Client(), first)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
-	req.Header.Set("PRIVATE-TOKEN", "tok")
-	if _, err := Fetch(context.Background(), hc, req, netguard.Validators{}, "x"); err == nil || !strings.Contains(err.Error(), "refusing to follow") {
-		t.Errorf("err = %v", err)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	start := "https://example.com:" + port + "/start"
+	run := func(has func(*http.Request, []*http.Request) bool) error {
+		hc := GuardRedirects("k", routed(srv.Client(), srv.Listener.Addr().String()), has)
+		_, err := fetch(t, hc, start, "tok")
+		return err
+	}
+
+	first := func(_ *http.Request, via []*http.Request) bool { return via[0].Header.Get("Authorization") != "" }
+	if err := run(first); err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect to 127.0.0.1:") {
+		t.Errorf("via[0] callback: err = %v, want a refusal", err)
 	}
 	if otherHits != 0 {
 		t.Errorf("other host was contacted %d times", otherHits)
+	}
+	// Control: reading req misses the stripped header and follows the redirect.
+	if err := run(bearer); err != nil || otherHits != 1 {
+		t.Errorf("req callback: err %v, hits %d; want the redirect followed", err, otherHits)
 	}
 }
