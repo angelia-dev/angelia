@@ -1,65 +1,19 @@
 package ghapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/internal/apiclient"
 )
-
-func TestSecretRedactsEverywhere(t *testing.T) {
-	const raw = "ghp_SyntheticSecretValue" //nolint:gosec // G101: synthetic test value.
-	tok := Secret(raw)
-	var buf bytes.Buffer
-	for _, h := range []slog.Handler{slog.NewJSONHandler(&buf, nil), slog.NewTextHandler(&buf, nil)} {
-		slog.New(h).Info("x", "token", tok, slog.Any("t2", tok))
-	}
-	j, _ := json.Marshal(map[string]any{"t": tok})
-	out := buf.String() + string(j) + fmt.Sprintf("%v %+v %#v %s", tok, tok, tok, tok)
-	if strings.Contains(out, raw) {
-		t.Errorf("secret leaked: %s", out)
-	}
-	if !strings.Contains(out, "REDACTED") {
-		t.Errorf("no redaction marker in %s", out)
-	}
-}
-
-func TestTokens(t *testing.T) {
-	if tok, err := (Token{}).Get(); tok != "" || err != nil {
-		t.Errorf("zero Token = %q, %v; want empty, nil", tok, err)
-	}
-	if tok, err := FixedToken("  abc \n").Get(); tok != "abc" || err != nil {
-		t.Errorf("FixedToken = %q, %v; want trimmed value", tok, err)
-	}
-	if _, err := FixedToken("   ").Get(); err == nil {
-		t.Error("blank FixedToken: want error")
-	}
-	t.Setenv("GHAPI_TEST_TOKEN", " from-env ")
-	if tok, err := EnvToken("GHAPI_TEST_TOKEN").Get(); tok != "from-env" || err != nil {
-		t.Errorf("EnvToken = %q, %v", tok, err)
-	}
-	t.Setenv("GHAPI_TEST_TOKEN", "rotated")
-	tk := EnvToken("GHAPI_TEST_TOKEN")
-	t.Setenv("GHAPI_TEST_TOKEN", "rotated2")
-	if tok, _ := tk.Get(); tok != "rotated2" {
-		t.Errorf("EnvToken must read the variable on every Get, got %q", tok)
-	}
-	t.Setenv("GHAPI_TEST_TOKEN", "")
-	if _, err := tk.Get(); err == nil || !strings.Contains(err.Error(), `"GHAPI_TEST_TOKEN"`) {
-		t.Errorf("empty env: err = %v", err)
-	}
-}
 
 func TestParseRepo(t *testing.T) {
 	ok := source.Target{Kind: "k", Coordinates: map[string]string{"repo": "o-1/n.a_me"}}
@@ -77,56 +31,36 @@ func TestParseRepo(t *testing.T) {
 	}
 }
 
-func TestTokenSafe(t *testing.T) {
-	for raw, want := range map[string]bool{
-		"https://example.com":   true,
-		"http://example.com":    false,
-		"http://127.0.0.1:8080": true,
-		"http://[::1]:8080":     true,
-		"http://localhost":      true,
-		"http://LOCALHOST:1":    true,
-		"http://10.0.0.1":       false,
-	} {
-		u, err := url.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := TokenSafe(u); got != want {
-			t.Errorf("TokenSafe(%s) = %v, want %v", raw, got, want)
-		}
-	}
-}
-
 func TestNewConfig(t *testing.T) {
-	c := New("k", "", http.DefaultClient, Token{})
+	c := New("k", "", http.DefaultClient, apiclient.Token{})
 	if c.Base() != DefaultBaseURL || c.Err() != nil {
 		t.Errorf("default: base %q err %v", c.Base(), c.Err())
 	}
-	if c := New("k", "https://h/api/v3///", http.DefaultClient, Token{}); c.Base() != "https://h/api/v3" {
+	if c := New("k", "https://h/api/v3///", http.DefaultClient, apiclient.Token{}); c.Base() != "https://h/api/v3" {
 		t.Errorf("trailing slashes kept: %q", c.Base())
 	}
 	for _, bad := range []string{"::bad", "ftp://h", "https://", "https://u:p@h", "/rel"} {
-		if c := New("k", bad, http.DefaultClient, Token{}); c.Err() == nil || !strings.Contains(c.Err().Error(), "invalid base URL") {
+		if c := New("k", bad, http.DefaultClient, apiclient.Token{}); c.Err() == nil || !strings.Contains(c.Err().Error(), "invalid base URL") {
 			t.Errorf("base %q: CfgErr = %v", bad, c.Err())
 		}
 	}
-	if c := New("k", "http://example.com", http.DefaultClient, FixedToken("x")); !errors.Is(c.Err(), ErrBasePlain) {
+	if c := New("k", "http://example.com", http.DefaultClient, apiclient.FixedToken("x")); !errors.Is(c.Err(), apiclient.ErrBasePlain) {
 		t.Errorf("token over plain http: CfgErr = %v", c.Err())
 	}
-	if c := New("k", "http://example.com", http.DefaultClient, Token{}); c.Err() != nil {
+	if c := New("k", "http://example.com", http.DefaultClient, apiclient.Token{}); c.Err() != nil {
 		t.Errorf("plain http without a token is allowed, got %v", c.Err())
 	}
 }
 
 func TestNewDoesNotMutateCallerClient(t *testing.T) {
 	hc := &http.Client{}
-	New("k", "", hc, Token{})
+	New("k", "", hc, apiclient.Token{})
 	if hc.CheckRedirect != nil {
 		t.Error("New modified the caller's client")
 	}
 }
 
-func get(t *testing.T, c *Client, u string, tok Secret) (*netguard.Result, error) {
+func get(t *testing.T, c *Client, u string, tok apiclient.Secret) (*netguard.Result, error) {
 	t.Helper()
 	return c.Get(context.Background(), u, netguard.Validators{}, tok, "thing not found")
 }
@@ -138,7 +72,7 @@ func TestGetSendsHeadersAndToken(t *testing.T) {
 		_, _ = w.Write([]byte("{}"))
 	}))
 	defer srv.Close()
-	c := New("k", srv.URL, srv.Client(), FixedToken("tok"))
+	c := New("k", srv.URL, srv.Client(), apiclient.FixedToken("tok"))
 	if _, err := get(t, c, srv.URL+"/x", "tok"); err != nil {
 		t.Fatal(err)
 	}
@@ -154,14 +88,14 @@ func TestGetSendsHeadersAndToken(t *testing.T) {
 }
 
 func TestGetRefusesTokenOverPlainHTTP(t *testing.T) {
-	c := New("k", "https://example.com", http.DefaultClient, Token{})
-	if _, err := get(t, c, "http://example.com/x", "tok"); !errors.Is(err, ErrBasePlain) {
-		t.Errorf("err = %v, want ErrBasePlain", err)
+	c := New("k", "https://example.com", http.DefaultClient, apiclient.Token{})
+	if _, err := get(t, c, "http://example.com/x", "tok"); !errors.Is(err, apiclient.ErrBasePlain) {
+		t.Errorf("err = %v, want apiclient.ErrBasePlain", err)
 	}
 }
 
 func TestGetBadURL(t *testing.T) {
-	c := New("k", "", http.DefaultClient, Token{})
+	c := New("k", "", http.DefaultClient, apiclient.Token{})
 	if _, err := get(t, c, "http://bad\x7f/", ""); err == nil || err.Error() != "build request: invalid base URL" {
 		t.Errorf("err = %v", err)
 	}
@@ -179,7 +113,7 @@ func TestGetStatusHints(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := New("k", srv.URL, srv.Client(), Token{})
+	c := New("k", srv.URL, srv.Client(), apiclient.Token{})
 	var se *netguard.StatusError
 
 	_, err := get(t, c, srv.URL+"/404", "")
@@ -226,7 +160,7 @@ func TestRedirectGuard(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := New("my-kind", srv.URL, srv.Client(), FixedToken(secretTok))
+	c := New("my-kind", srv.URL, srv.Client(), apiclient.FixedToken(secretTok))
 	_, err := get(t, c, srv.URL+"/off", secretTok)
 	if err == nil || !strings.Contains(err.Error(), "my-kind: refusing to follow a redirect to ") {
 		t.Errorf("cross-host redirect with token: err = %v", err)
@@ -278,7 +212,7 @@ func TestRedirectGuardRefusesSubdomain(t *testing.T) {
 	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	hc := routed(srv.Client(), srv.Listener.Addr().String())
 	host := "example.com:" + port
-	c := New("k", "https://"+host, hc, FixedToken("tok"))
+	c := New("k", "https://"+host, hc, apiclient.FixedToken("tok"))
 	_, err := get(t, c, "https://"+host+"/start", "tok")
 	if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect to sub.example.com:") {
 		t.Errorf("subdomain redirect with token: err = %v", err)
@@ -297,7 +231,7 @@ func TestRedirectGuardRefusesHTTPSDowngrade(t *testing.T) {
 	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	hc := routed(srv.Client(), srv.Listener.Addr().String())
 	host := "example.com:" + port // the httptest certificate is valid for example.com
-	c := New("k", "https://"+host, hc, FixedToken("tok"))
+	c := New("k", "https://"+host, hc, apiclient.FixedToken("tok"))
 	_, err := get(t, c, "https://"+host+"/start", "tok")
 	if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect to "+host) {
 		t.Errorf("https to http redirect with token: err = %v", err)
@@ -316,7 +250,7 @@ func TestRedirectGuardChainsCallerCheckRedirect(t *testing.T) {
 	errStop := errors.New("caller says stop")
 	hc := srv.Client()
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return errStop }
-	c := New("k", srv.URL, hc, Token{})
+	c := New("k", srv.URL, hc, apiclient.Token{})
 	if _, err := get(t, c, srv.URL+"/a", ""); !errors.Is(err, errStop) {
 		t.Errorf("caller CheckRedirect not honoured: %v", err)
 	}
