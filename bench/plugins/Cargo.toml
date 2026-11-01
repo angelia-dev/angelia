@@ -1,0 +1,20 @@
+# Cargo workspace for the WASM plugins of benchmark 4 (angelia-dev/angelia#59).
+# Build with ./build.sh: it pins the toolchain and remaps paths so that the
+# committed .wasm files can be reproduced byte for byte.
+[workspace]
+members = ["abi", "crates", "hostile"]
+resolver = "2"
+
+[workspace.dependencies]
+extism-pdk = "=1.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = false
+strip = true
+panic = "abort"
