@@ -317,7 +317,7 @@ func TestBodyTooLargeIsWrapped(t *testing.T) {
 	if !errors.Is(err, netguard.ErrBodyTooLarge) {
 		t.Fatalf("err = %v, want one wrapping netguard.ErrBodyTooLarge", err)
 	}
-	if !strings.Contains(err.Error(), "MaxBodyBytes") || !strings.Contains(err.Error(), "64 MiB") {
+	if !strings.Contains(err.Error(), "HostLimit.MaxBodyBytes") {
 		t.Errorf("error lacks the hint to raise the cap: %v", err)
 	}
 }

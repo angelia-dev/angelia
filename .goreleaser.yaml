@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# GoReleaser configuration. See docs/operations/release.md.
+#   snapshot (no publish): goreleaser release --snapshot --clean
+version: 2
+
+project_name: angelia
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: angelia
+    main: ./cmd/angelia
+    binary: angelia
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # Commit time instead of build time: same commit, same bytes.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/angelia-dev/angelia/internal/buildinfo.version={{ .Version }}
+      - -X github.com/angelia-dev/angelia/internal/buildinfo.commit={{ .ShortCommit }}
+      - -X github.com/angelia-dev/angelia/internal/buildinfo.date={{ .CommitDate }}
+
+archives:
+  - id: angelia
+    ids: [angelia]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# SBOM (SPDX JSON) for every archive, generated with syft (must be on PATH).
+sboms:
+  - id: archives
+    artifacts: archive
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
+    documents: ["${artifact}.spdx.json"]
+
+# Multi-arch image from the prebuilt binaries; see Dockerfile.
+dockers_v2:
+  - id: angelia
+    ids: [angelia]
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/angelia-dev/angelia
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: angelia
+      org.opencontainers.image.description: Self-hosted release event bus
+      org.opencontainers.image.source: https://github.com/angelia-dev/angelia
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  # Created as a draft: publishing stays a human decision (H-publish).
+  draft: true
+  prerelease: auto

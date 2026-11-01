@@ -22,6 +22,7 @@ func newServeCmd() *cobra.Command {
 		RunE:  runServe,
 	}
 	cmd.Flags().String("roles", "", "comma-separated roles: api,scheduler,worker,dispatcher or all (default from config, else all)")
+	cmd.Flags().String("watches", "", watchesFlagHelp)
 	cmd.Flags().Duration("drain-timeout", supervisor.DefaultDrainTimeout, "how long to wait for in-flight work on shutdown")
 	return cmd
 }
@@ -48,6 +49,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	log := newLogger(cmd.ErrOrStderr(), cfg.Log)
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
+	}
+	watches, err := watchesPath(cmd)
+	if err != nil {
+		return err
+	}
+	if watches != "" {
+		if !hasAPIRole(roleNames) {
+			return fmt.Errorf("--watches: the watch file is applied by the api role, but this process runs %s", strings.Join(roleNames, ","))
+		}
+		if err := applyWatchFile(cmd.Context(), cfg, watches, log); err != nil {
+			return err
+		}
 	}
 	roles, err := supervisor.Select(roleNames, supervisor.NewStub)
 	if err != nil {

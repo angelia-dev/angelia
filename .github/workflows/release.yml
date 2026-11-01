@@ -1,0 +1,155 @@
+name: Release
+
+# Runs on version tags. GoReleaser creates a DRAFT release; a maintainer publishes
+# it by hand (see docs/operations/release.md). Setup of the publishing credentials
+# and the first real release are tracked separately (H-publish).
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+# Nothing by default; every job lists exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/angelia-dev/angelia
+
+jobs:
+  # Builds binaries, archives, checksums, SPDX SBOMs of the archives and the
+  # multi-arch image, pushes the image and creates the draft release.
+  # No id-token here: this job cannot mint a signing identity.
+  build:
+    name: build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the draft release and upload assets
+      packages: write # push the image to ghcr.io
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false # do not restore caches into a release build
+      - name: Install goreleaser and syft
+        run: |
+          scripts/install-release-tools.sh goreleaser syft
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Log in to ghcr.io
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+      # The BuildKit image is pinned by digest (moby/buildkit v0.34.1).
+      - name: Create a multi-platform buildx builder
+        run: |
+          docker buildx create --name release --driver docker-container --use \
+            --driver-opt image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+      - name: GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: goreleaser release --clean
+      # The sign job signs exactly this digest, not whatever the tag points to later.
+      - name: Read the pushed image digest
+        id: digest
+        run: |
+          digest="$(jq -r '[.[] | select(.type == "Docker Image V2") | .extra.Digest // empty] | unique | if length == 1 then .[0] else empty end' dist/artifacts.json)"
+          [[ "$digest" == sha256:* ]] || { echo "::error::no unique image digest in dist/artifacts.json"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Hand over the checksums to the sign job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checksums
+          path: dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  # Signs the checksums and the image keylessly (Sigstore, GitHub OIDC identity
+  # of this workflow), attaches SLSA build provenance and the image SBOM.
+  # No contents: write; the signed files are uploaded by publish-assets.
+  sign:
+    name: sign and attest
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write # request the OIDC token for Sigstore keyless signing and attestations
+      attestations: write # store the provenance attestations
+      packages: write # push signatures and attestations next to the image
+    env:
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
+      - name: Install cosign and syft
+        run: |
+          scripts/install-release-tools.sh cosign syft
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Log in to ghcr.io
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+      - name: Sign checksums (keyless)
+        run: cosign sign-blob --yes --bundle checksums.txt.sigstore.json checksums.txt
+      - name: Sign image (keyless)
+        run: cosign sign --yes "${{ env.IMAGE }}@$DIGEST"
+      - name: SBOM of the image (SPDX JSON) and signed attestation
+        run: |
+          syft "${{ env.IMAGE }}@$DIGEST" --output spdx-json=angelia-image.spdx.json
+          cosign attest --yes --type spdxjson --predicate angelia-image.spdx.json "${{ env.IMAGE }}@$DIGEST"
+      - name: SLSA build provenance for the release archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: checksums.txt
+      - name: SLSA build provenance for the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+      - name: Hand over the signature and SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signatures
+          path: |
+            checksums.txt.sigstore.json
+            angelia-image.spdx.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only uploads the signed files to the draft release. No OIDC, no registry.
+  publish-assets:
+    name: attach signatures to the release
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # upload assets to the draft release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signatures
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            checksums.txt.sigstore.json angelia-image.spdx.json

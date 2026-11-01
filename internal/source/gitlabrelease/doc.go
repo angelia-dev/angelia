@@ -32,9 +32,10 @@
 // walks every page when the last such scan is 24 hours old or missing, and
 // when an upcoming release is due (see below).
 //
-// Each page is capped by the netguard client at 10 MiB; a project whose page
+// Each page is capped by the netguard client at 10 MiB unless the GitLab
+// host has its own netguard.HostLimit.MaxBodyBytes; a project whose page
 // of 100 releases is larger fails with an error (gitlab-org/gitlab-runner
-// is about 1.3 MB per page). Making the cap configurable is follow-up #133.
+// is about 1.3 MB per page).
 //
 // # Mapping
 //

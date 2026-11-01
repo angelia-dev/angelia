@@ -416,6 +416,9 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 		log.WarnContext(ctx, "check failed", "error", err, "errors", next.ErrorCount, "next_check_at", next.NextCheckAt)
 	} else {
 		interval := s.opts.Interval
+		if t.Interval > 0 { // set by a watch file (docs/watch-file.md)
+			interval = min(t.Interval, MaxInterval)
+		}
 		if out.Interval > 0 {
 			interval = min(out.Interval, MaxInterval)
 		}

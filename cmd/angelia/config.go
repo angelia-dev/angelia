@@ -19,7 +19,7 @@ func newConfigCmd() *cobra.Command {
 }
 
 func newConfigCheckCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Validate the instance configuration and exit non-zero if invalid",
 		Args:  cobra.NoArgs,
@@ -38,8 +38,25 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range cfg.Warnings() {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK")
+			watches, err := watchesPath(cmd)
+			if err != nil {
+				return err
+			}
+			if watches == "" {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK")
+				return err
+			}
+			f, err := parseWatchFile(cfg, watches)
+			if err != nil {
+				return err
+			}
+			for _, w := range f.Warnings {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions))
 			return err
 		},
 	}
+	cmd.Flags().String("watches", "", watchesFlagHelp)
+	return cmd
 }
