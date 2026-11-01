@@ -66,7 +66,7 @@ func TestFetchNotModified(t *testing.T) {
 	defer srv.Close()
 	c, _ := newTestClient(t, nil)
 
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), prev)
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), prev)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestFetchNotModifiedDoesNotReadBody(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusNotModified, Header: h, Body: body, Request: r}, nil
 		})
 	})
-	res, err := c.Fetch(t.Context(), get(t, "https://192.0.2.1/pkg"), Validators{ETag: `"v1"`, LastModified: "lm"})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, "https://192.0.2.1/pkg"), Validators{ETag: `"v1"`, LastModified: "lm"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestFetchOKStoresValidators(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, nil)
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestRetryAfterSeconds(t *testing.T) {
 	})
 	var c *Client
 	c, clock = newTestClient(t, nil)
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestRetryAfterHTTPDate(t *testing.T) {
 	})
 	var c *Client
 	c, clock = newTestClient(t, nil)
-	if _, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{}); err != nil {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{}); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if gap := (*times)[1].Sub((*times)[0]); gap < 42*time.Second || gap > 43*time.Second {
@@ -205,11 +205,12 @@ func TestRetryAfterBeyondMaxWaitIsReturned(t *testing.T) {
 	var clock *fakeClock
 	srv, times := retryServer(t, &clock, func(w http.ResponseWriter) {
 		w.Header().Set("Retry-After", "3600")
+		w.Header().Set("Date", clock.Now().Format(http.TimeFormat))
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	var c *Client
 	c, clock = newTestClient(t, nil)
-	_, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	var se *StatusError
 	if !errors.As(err, &se) || se.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("got %v, want *StatusError 429", err)
@@ -222,7 +223,7 @@ func TestRetryAfterBeyondMaxWaitIsReturned(t *testing.T) {
 	}
 	// The host stays paused for later requests.
 	before := clock.Now()
-	_, _ = c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	_, _ = Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if waited := clock.Now().Sub(before); waited < 59*time.Minute {
 		t.Fatalf("next request waited %v, want ~1h", waited)
 	}
@@ -239,7 +240,7 @@ func TestRetries5xxWithBackoff(t *testing.T) {
 		cfg.BaseBackoff = time.Second
 		cfg.MaxBackoff = 3 * time.Second
 	})
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if err != nil || string(res.Body) != "ok" {
 		t.Fatalf("Fetch: %v %v", res, err)
 	}
@@ -282,7 +283,7 @@ func TestRetriesExhausted(t *testing.T) {
 			return base.RoundTrip(r)
 		})
 	})
-	_, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	var se *StatusError
 	if !errors.As(err, &se) || se.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("got %v, want *StatusError 503", err)
@@ -309,7 +310,7 @@ func TestRetriesTimeouts(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, func(cfg *Config) { cfg.Timeout = 100 * time.Millisecond })
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if err != nil || string(res.Body) != "ok" {
 		t.Fatalf("Fetch: %v, %v", res, err)
 	}
@@ -327,7 +328,7 @@ func TestNonIdempotentNotRetried(t *testing.T) {
 	defer srv.Close()
 	c, _ := newTestClient(t, nil)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, strings.NewReader("{}"))
-	resp, err := c.Do(t.Context(), req)
+	resp, err := c.HTTPClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,10 +356,10 @@ func TestGitHubRateLimitHeaders(t *testing.T) {
 	)
 	var c *Client
 	c, clock = newTestClient(t, nil)
-	if _, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{}); err != nil {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{}); err != nil {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{}); err != nil {
 		t.Fatalf("second Fetch: %v", err)
 	}
 	if len(*times) != 3 {
@@ -377,7 +378,7 @@ func TestPlain403NotRetried(t *testing.T) {
 	srv, times := retryServer(t, &clock, func(w http.ResponseWriter) { w.WriteHeader(http.StatusForbidden) })
 	var c *Client
 	c, clock = newTestClient(t, nil)
-	_, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	var se *StatusError
 	if !errors.As(err, &se) || se.StatusCode != http.StatusForbidden || len(*times) != 1 {
 		t.Fatalf("got %v after %d requests, want 403 after 1", err, len(*times))
@@ -396,7 +397,7 @@ func TestBodyCapDefault(t *testing.T) {
 		t.Fatalf("default cap %d, want 10 MiB", c.cfg.MaxBodyBytes)
 	}
 
-	resp, err := c.Do(t.Context(), get(t, srv.URL))
+	resp, err := c.HTTPClient().Do(get(t, srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +410,7 @@ func TestBodyCapDefault(t *testing.T) {
 		t.Fatalf("truncated body is %d bytes, want %d", len(body), DefaultMaxBodyBytes)
 	}
 
-	if _, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{}); !errors.Is(err, ErrBodyTooLarge) {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{}); !errors.Is(err, ErrBodyTooLarge) {
 		t.Fatalf("Fetch: got %v, want ErrBodyTooLarge", err)
 	}
 }
@@ -420,7 +421,7 @@ func TestBodyCapExactSizeOK(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, func(cfg *Config) { cfg.MaxBodyBytes = 10 })
-	res, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if err != nil || string(res.Body) != "0123456789" {
 		t.Fatalf("Fetch: %q, %v", res.Body, err)
 	}
@@ -431,7 +432,7 @@ func TestUserAgent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = r.UserAgent() }))
 	defer srv.Close()
 	c, _ := newTestClient(t, nil)
-	if _, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{}); err != nil {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(got, "angelia/"+buildinfo.Version()) {
@@ -440,7 +441,7 @@ func TestUserAgent(t *testing.T) {
 	// An explicit User-Agent on the request wins.
 	req := get(t, srv.URL)
 	req.Header.Set("User-Agent", "custom/1")
-	if _, err := c.Fetch(t.Context(), req, Validators{}); err != nil {
+	if _, err := Fetch(t.Context(), c.HTTPClient(), req, Validators{}); err != nil {
 		t.Fatal(err)
 	}
 	if got != "custom/1" {
@@ -461,7 +462,7 @@ func TestClientRefusesBlockedAddresses(t *testing.T) {
 		"http://127.0.0.1/", "http://10.0.0.1/", "http://169.254.169.254/latest/meta-data/",
 		"http://[::1]/", "http://[fc00::1]/",
 	} {
-		resp, err := c.Do(t.Context(), get(t, u))
+		resp, err := c.HTTPClient().Do(get(t, u))
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
@@ -480,7 +481,7 @@ func TestClientRefusesRedirectToBlockedAddress(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, nil)
-	_, err := c.Fetch(t.Context(), get(t, srv.URL), Validators{})
+	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, srv.URL), Validators{})
 	if !errors.Is(err, ErrBlocked) {
 		t.Fatalf("got %v, want ErrBlocked", err)
 	}
@@ -516,6 +517,10 @@ func TestParseRetryAfter(t *testing.T) {
 		"soon": 0,
 		now.Add(10 * time.Second).Format(http.TimeFormat): 10 * time.Second,
 		now.Add(-time.Minute).Format(http.TimeFormat):     0,
+		// S6: longer than a day is clamped to the maximum pause, not dropped.
+		"999999999": defaultMaxPause,
+		"3601":      defaultMaxPause,
+		now.Add(48 * time.Hour).Format(http.TimeFormat): defaultMaxPause,
 	}
 	for in, want := range cases {
 		if got := parseRetryAfter(in, now); got != want {

@@ -122,3 +122,35 @@ func TestGuardRejectsBadURLs(t *testing.T) {
 		}
 	}
 }
+
+// S7: non-canonical IPv4 forms fail closed; other spellings of blocked
+// addresses are still blocked.
+func TestGuardAddressSpellings(t *testing.T) {
+	numeric := []string{"2130706433", "0x7f000001", "017700000001", "127.1", "0177.0.0.1", "0x7f.0.0.1"}
+	table := fakeResolver{"localhost.": addrs("127.0.0.1")}
+	for _, h := range numeric {
+		table[h] = addrs("192.0.2.1") // even a resolver that says "public" is not asked
+	}
+	g := NewGuard(nil, table)
+	for _, host := range numeric {
+		if err := g.CheckURL(t.Context(), &url.URL{Scheme: "http", Host: host}); err == nil {
+			t.Errorf("%s: want error", host)
+		}
+	}
+	for _, raw := range []string{"http://[fe80::1%25eth0]/", "http://[::ffff:7f00:1]/", "http://localhost./"} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := g.CheckURL(t.Context(), u); !errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: got %v, want ErrBlocked", raw, err)
+		}
+	}
+	// Ordinary hostnames with hex-looking labels are not caught.
+	ok := NewGuard(nil, fakeResolver{"cafe.example": addrs("192.0.2.1"), "v2.dead.beef": addrs("192.0.2.1")})
+	for _, host := range []string{"cafe.example", "v2.dead.beef"} {
+		if err := ok.CheckURL(t.Context(), &url.URL{Scheme: "http", Host: host}); err != nil {
+			t.Errorf("%s: %v", host, err)
+		}
+	}
+}

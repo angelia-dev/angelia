@@ -82,6 +82,11 @@ func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return g.CheckAddr(addr.String(), addr)
 	}
+	if isNumericHost(host) {
+		// Decimal, octal, hex or short IPv4 forms such as 2130706433,
+		// 0x7f000001 or 127.1: some resolvers read them as addresses.
+		return fmt.Errorf("netguard: host %q is not a canonical IP address", host)
+	}
 	addrs, err := g.resolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return fmt.Errorf("netguard: resolve %s: %w", host, err)
@@ -95,4 +100,20 @@ func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 		}
 	}
 	return nil
+}
+
+// isNumericHost reports whether the last label of host is all digits or a
+// 0x hex number. No real top-level domain looks like that, so such a host
+// is a non-canonical IPv4 literal.
+func isNumericHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	label := host[strings.LastIndexByte(host, '.')+1:]
+	if label == "" {
+		return false
+	}
+	digits := "0123456789"
+	if l := strings.ToLower(label); strings.HasPrefix(l, "0x") {
+		label, digits = l[2:], "0123456789abcdef"
+	}
+	return strings.Trim(label, digits) == ""
 }

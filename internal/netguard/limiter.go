@@ -68,19 +68,25 @@ func DefaultFallbackLimit() HostLimit {
 // DefaultHostLimits returns the built-in limits for known hosts, keyed by
 // lower-case hostname. It returns a new map on every call.
 //
-// api.github.com allows 5,000 requests per hour with a token and 60 without;
-// the buckets stay within those budgets over any one-hour window.
+// api.github.com allows 5,000 requests per hour with a token and 60 without.
+// Burst + Rate*1h equals those budgets (see Budget), so the buckets never
+// exceed them over any one-hour window.
 func DefaultHostLimits() map[string]HostLimit {
-	// The arguments are constants that satisfy Budget's checks.
-	ghAuth, _ := Budget(5000, time.Hour, 10)
-	ghAnon, _ := Budget(60, time.Hour, 1)
 	return map[string]HostLimit{
-		"api.github.com": {Authenticated: ghAuth, Anonymous: ghAnon},
+		"api.github.com": {
+			Authenticated: Limit{Rate: (5000 - 10) / 3600.0, Burst: 10},
+			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},
+		},
 	}
 }
 
-// Limiter is a set of per-host token buckets. It is safe for concurrent use.
-type Limiter struct {
+// normHost returns the key used for a host: lower case, without a trailing dot.
+func normHost(h string) string {
+	return strings.TrimSuffix(strings.ToLower(h), ".")
+}
+
+// limiter is a set of per-host token buckets. It is safe for concurrent use.
+type limiter struct {
 	clock    Clock
 	fallback HostLimit
 	limits   map[string]HostLimit
@@ -96,36 +102,38 @@ type bucketKey struct {
 }
 
 // bucket tracks tokens as of time last. Tokens may go negative: each
-// negative token is a slot already promised to a waiting caller.
+// negative token is a slot already promised to a waiting caller. shift is
+// the total time pauses have pushed the bucket back; waiters compare it
+// before and after sleeping to pick up a pause that arrived meanwhile.
 type bucket struct {
 	limit  Limit
 	tokens float64
 	last   time.Time
+	shift  time.Duration
 }
 
-// NewLimiter returns a limiter that uses limits for the listed hosts (keys
-// are matched case-insensitively) and fallback for every other host.
-// Limits are not validated here; [New] validates them.
-func NewLimiter(clock Clock, fallback HostLimit, limits map[string]HostLimit) *Limiter {
+// newLimiter returns a limiter that uses limits for the listed hosts and
+// fallback for every other host. Limits are validated by New.
+func newLimiter(clock Clock, fallback HostLimit, limits map[string]HostLimit) *limiter {
 	if clock == nil {
 		clock = realClock{}
 	}
-	lower := make(map[string]HostLimit, len(limits))
+	norm := make(map[string]HostLimit, len(limits))
 	for h, l := range limits {
-		lower[strings.ToLower(h)] = l
+		norm[normHost(h)] = l
 	}
-	return &Limiter{
+	return &limiter{
 		clock:    clock,
 		fallback: fallback,
-		limits:   lower,
+		limits:   norm,
 		maxPause: defaultMaxPause,
 		buckets:  make(map[bucketKey]*bucket),
 	}
 }
 
 // bucketLocked returns the bucket for host, creating it full. l.mu must be held.
-func (l *Limiter) bucketLocked(host string, authed bool, now time.Time) *bucket {
-	k := bucketKey{host: strings.ToLower(host), authed: authed}
+func (l *limiter) bucketLocked(host string, authed bool, now time.Time) *bucket {
+	k := bucketKey{host: normHost(host), authed: authed}
 	b, ok := l.buckets[k]
 	if !ok {
 		hl, ok := l.limits[k.host]
@@ -164,24 +172,54 @@ func (b *bucket) reserve(now time.Time) time.Time {
 	return start.Add(time.Duration(wait))
 }
 
-// Wait blocks until a request to host may be sent. A token taken by a
-// caller whose context ends is not given back, so the budget is never
-// exceeded.
-func (l *Limiter) Wait(ctx context.Context, host string, authed bool) error {
+// refund gives back a token that a caller reserved but did not use.
+func (l *limiter) refund(b *bucket) {
 	l.mu.Lock()
-	now := l.clock.Now()
-	ready := l.bucketLocked(host, authed, now).reserve(now)
-	l.mu.Unlock()
-	if err := l.clock.Sleep(ctx, ready.Sub(now)); err != nil {
-		return fmt.Errorf("netguard: rate limit wait for %s: %w", host, err)
-	}
-	return nil
+	defer l.mu.Unlock()
+	b.advance(l.clock.Now())
+	b.tokens = math.Min(b.tokens+1, float64(b.limit.Burst))
 }
 
-// Pause stops requests to host until the given time and empties the bucket
-// at that point. Slots already promised are pushed back as well. A time in
-// the past is ignored; one further away than an hour is capped.
-func (l *Limiter) Pause(host string, authed bool, until time.Time) {
+// wait blocks until a request to host may be sent. A caller whose context
+// ends, or whose deadline comes before its slot, gets an error and its
+// token back.
+func (l *limiter) wait(ctx context.Context, host string, authed bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("netguard: rate limit wait for %s: %w", host, err)
+	}
+	l.mu.Lock()
+	now := l.clock.Now()
+	b := l.bucketLocked(host, authed, now)
+	ready := b.reserve(now)
+	shift := b.shift
+	l.mu.Unlock()
+
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < ready.Sub(now) {
+		l.refund(b)
+		return fmt.Errorf("netguard: rate limit wait for %s would pass the deadline: %w", host, context.DeadlineExceeded)
+	}
+	for {
+		if err := l.clock.Sleep(ctx, ready.Sub(now)); err != nil {
+			l.refund(b)
+			return fmt.Errorf("netguard: rate limit wait for %s: %w", host, err)
+		}
+		l.mu.Lock()
+		extra := b.shift - shift
+		shift = b.shift
+		now = l.clock.Now()
+		l.mu.Unlock()
+		if extra <= 0 {
+			return nil
+		}
+		ready = ready.Add(extra) // a pause arrived while we slept
+	}
+}
+
+// pause stops requests to host until the given time and empties the bucket
+// at that point. Slots already promised, including those of callers
+// sleeping in wait, are pushed back by the same amount. A time in the past
+// is ignored; one further away than maxPause is capped.
+func (l *limiter) pause(host string, authed bool, until time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock.Now()
@@ -193,8 +231,9 @@ func (l *Limiter) Pause(host string, authed bool, until time.Time) {
 	}
 	b := l.bucketLocked(host, authed, now)
 	b.advance(now)
-	if until.After(b.last) {
+	if delta := until.Sub(b.last); delta > 0 {
 		b.tokens = math.Min(b.tokens, 0)
 		b.last = until
+		b.shift += delta
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/buildinfo"
@@ -48,8 +49,8 @@ type Config struct {
 	MaxBackoff  time.Duration
 	// MaxRetryWait is the longest server-requested wait (Retry-After or a
 	// GitHub rate limit reset) the client sleeps through before retrying.
-	// A longer wait ends the call; the host stays paused and Fetch reports
-	// the time in StatusError.RetryAt. Default 2m.
+	// A longer wait, or one past the context deadline, ends the call with
+	// the last response; the host stays paused. Default 2m.
 	MaxRetryWait time.Duration
 	// HostLimits override or extend DefaultHostLimits, keyed by hostname.
 	HostLimits map[string]HostLimit
@@ -60,7 +61,11 @@ type Config struct {
 	Allow []netip.Prefix
 	// Resolver is used by the SSRF guard. Default net.DefaultResolver.
 	Resolver Resolver
-	// Transport defaults to a clone of http.DefaultTransport.
+	// Transport sends each attempt. By default it is an *http.Transport
+	// dialling through netguard's own net.Dialer, the place where
+	// dial-time address checks belong (angelia-dev/angelia#76). A custom
+	// Transport, as used in tests, bypasses any such dial-level check; the
+	// URL checks still apply.
 	Transport http.RoundTripper
 	// Clock defaults to the system clock.
 	Clock Clock
@@ -68,16 +73,22 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Client is the shared HTTP client. It is safe for concurrent use.
+// Client is the shared HTTP transport: an http.RoundTripper that applies
+// the SSRF guard, the per-host rate limit, retries, the User-Agent, the
+// per-attempt timeout and the body cap to every hop, redirects included.
+// Use HTTPClient to get an *http.Client built on it. It is safe for
+// concurrent use.
 type Client struct {
-	cfg     Config
-	http    *http.Client
-	guard   *Guard
-	limiter *Limiter
-	clock   Clock
-	log     *slog.Logger
-	jitter  func(time.Duration) time.Duration
+	cfg       Config
+	transport http.RoundTripper
+	guard     *Guard
+	limiter   *limiter
+	clock     Clock
+	log       *slog.Logger
+	jitter    func(time.Duration) time.Duration
 }
+
+var _ http.RoundTripper = (*Client)(nil)
 
 // New validates cfg, fills in defaults and returns a Client.
 func New(cfg Config) (*Client, error) {
@@ -97,11 +108,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.Resolver = net.DefaultResolver
 	}
 	if cfg.Transport == nil {
-		if t, ok := http.DefaultTransport.(*http.Transport); ok {
-			cfg.Transport = t.Clone()
-		} else {
-			cfg.Transport = http.DefaultTransport
-		}
+		cfg.Transport = newTransport()
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = realClock{}
@@ -118,28 +125,33 @@ func New(cfg Config) (*Client, error) {
 		if err := l.validate(); err != nil {
 			return nil, fmt.Errorf("netguard: limit for %s: %w", h, err)
 		}
-		limits[strings.ToLower(h)] = l
+		limits[normHost(h)] = l
 	}
 
-	c := &Client{
-		cfg:     cfg,
-		guard:   NewGuard(cfg.Allow, cfg.Resolver),
-		limiter: NewLimiter(cfg.Clock, cfg.FallbackLimit, limits),
-		clock:   cfg.Clock,
-		log:     cfg.Logger,
-		jitter:  fullJitter,
+	return &Client{
+		cfg:       cfg,
+		transport: cfg.Transport,
+		guard:     NewGuard(cfg.Allow, cfg.Resolver),
+		limiter:   newLimiter(cfg.Clock, cfg.FallbackLimit, limits),
+		clock:     cfg.Clock,
+		log:       cfg.Logger,
+		jitter:    fullJitter,
+	}, nil
+}
+
+// newTransport returns the default transport, dialling through a
+// net.Dialer owned by netguard rather than sharing http.DefaultTransport.
+func newTransport() *http.Transport {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
 	}
-	c.http = &http.Client{
-		Transport: cfg.Transport,
-		Timeout:   cfg.Timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxRedirects {
-				return fmt.Errorf("netguard: stopped after %d redirects", maxRedirects)
-			}
-			return c.guard.CheckURL(req.Context(), req.URL)
-		},
-	}
-	return c, nil
 }
 
 func setDefault[T comparable](p *T, v T) {
@@ -149,46 +161,63 @@ func setDefault[T comparable](p *T, v T) {
 	}
 }
 
-// Do sends req after the SSRF check and the host's rate limit, retrying
-// idempotent requests on 429, 5xx and timeouts. The response body is capped
-// at MaxBodyBytes: reading past the cap returns an error wrapping
-// ErrBodyTooLarge. The caller must close the body. As with net/http, a
-// non-2xx status is not an error.
-func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	req = req.Clone(ctx)
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", c.cfg.UserAgent)
+// HTTPClient returns an *http.Client that sends every hop through c. It
+// follows at most 10 redirects; each hop is checked by the guard in
+// RoundTrip. Its Timeout is unset because c bounds each attempt.
+func (c *Client) HTTPClient() *http.Client {
+	return &http.Client{
+		Transport: c,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("netguard: stopped after %d redirects", maxRedirects)
+			}
+			return nil
+		},
 	}
-	if err := c.guard.CheckURL(ctx, req.URL); err != nil {
+}
+
+// RoundTrip sends one hop after the SSRF check and the hop host's rate
+// limit. Requests without a body and with an idempotent method are retried
+// on 429, 5xx and timeouts. The response body is capped at MaxBodyBytes:
+// reading past the cap returns an error wrapping ErrBodyTooLarge. As with
+// any RoundTripper, a non-2xx status is not an error.
+func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	r := req.Clone(ctx)
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", c.cfg.UserAgent)
+	}
+	if err := c.guard.CheckURL(ctx, r.URL); err != nil {
+		closeRequestBody(req)
 		return nil, err
 	}
-	host := req.URL.Hostname()
-	authed := req.Header.Get("Authorization") != ""
-	canRetry := isIdempotent(req.Method) && (req.Body == nil || req.Body == http.NoBody || req.GetBody != nil)
+	host := normHost(r.URL.Hostname())
+	authed := r.Header.Get("Authorization") != ""
+	canRetry := isIdempotent(r.Method) && (r.Body == nil || r.Body == http.NoBody)
 
 	for attempt := 1; ; attempt++ {
-		if attempt > 1 && req.GetBody != nil {
-			body, err := req.GetBody()
-			if err != nil {
-				return nil, fmt.Errorf("netguard: rewind request body: %w", err)
-			}
-			req.Body = body
-		}
-		if err := c.limiter.Wait(ctx, host, authed); err != nil {
+		if err := c.limiter.wait(ctx, host, authed); err != nil {
+			closeRequestBody(req)
 			return nil, err
 		}
-		resp, err := c.http.Do(req) //nolint:gosec // G704: the URL was checked by the SSRF guard above.
-		retry, serverWait := c.inspect(ctx, host, authed, resp, err)
-		if !canRetry || !retry || attempt >= c.cfg.MaxAttempts || serverWait > c.cfg.MaxRetryWait {
-			if err != nil {
-				return nil, fmt.Errorf("netguard: %w", err)
-			}
-			resp.Body = &cappedBody{rc: resp.Body, remaining: c.cfg.MaxBodyBytes, limit: c.cfg.MaxBodyBytes}
-			return resp, nil
-		}
+		attemptCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))
+		retry, serverWait := c.inspect(ctx, attemptCtx, host, authed, resp, err)
 		wait := serverWait
 		if wait <= 0 {
 			wait = c.backoff(attempt)
+		}
+		final := !canRetry || !retry || attempt >= c.cfg.MaxAttempts || serverWait > c.cfg.MaxRetryWait
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < wait {
+			final = true // sleeping would only end in a deadline error
+		}
+		if final {
+			if err != nil {
+				cancel()
+				return nil, err
+			}
+			resp.Body = &cappedBody{rc: resp.Body, remaining: c.cfg.MaxBodyBytes, limit: c.cfg.MaxBodyBytes, cancel: cancel}
+			return resp, nil
 		}
 		attrs := []any{"host", host, "attempt", attempt, "wait", wait}
 		if resp != nil {
@@ -197,6 +226,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		} else {
 			attrs = append(attrs, "error", err)
 		}
+		cancel()
 		c.log.DebugContext(ctx, "netguard: retrying request", attrs...)
 		if err := c.clock.Sleep(ctx, wait); err != nil {
 			return nil, fmt.Errorf("netguard: retry wait for %s: %w", host, err)
@@ -204,20 +234,31 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	}
 }
 
+// closeRequestBody honours the RoundTripper contract of closing the body
+// even when no request is sent.
+func closeRequestBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+}
+
 // inspect applies rate limit headers to the limiter and decides whether the
 // outcome is worth a retry, and after how long the server asked us to wait.
-func (c *Client) inspect(ctx context.Context, host string, authed bool, resp *http.Response, err error) (retry bool, serverWait time.Duration) {
+func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bool, resp *http.Response, err error) (retry bool, serverWait time.Duration) {
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, 0
+		}
+		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+			return true, 0
 		}
 		var ne net.Error
 		return errors.As(err, &ne) && ne.Timeout(), 0
 	}
 	now := c.clock.Now()
-	retryAt := c.retryAt(resp.Header, now)
+	retryAt := retryAt(resp.Header, now)
 	if !retryAt.IsZero() {
-		c.limiter.Pause(host, authed, retryAt)
+		c.limiter.pause(host, authed, retryAt)
 		serverWait = retryAt.Sub(now)
 	}
 	switch code := resp.StatusCode; {
@@ -235,7 +276,7 @@ func (c *Client) inspect(ctx context.Context, host string, authed bool, resp *ht
 // retryAt returns when the server allows the next request, from
 // Retry-After or from GitHub's X-RateLimit-Remaining: 0 plus
 // X-RateLimit-Reset. It returns the zero time if the server set no limit.
-func (c *Client) retryAt(h http.Header, now time.Time) time.Time {
+func retryAt(h http.Header, now time.Time) time.Time {
 	if d := parseRetryAfter(h.Get("Retry-After"), now); d > 0 {
 		return now.Add(d)
 	}
@@ -249,23 +290,27 @@ func (c *Client) retryAt(h http.Header, now time.Time) time.Time {
 	return time.Time{}
 }
 
-// parseRetryAfter reads a Retry-After value in seconds or as an HTTP date.
-// It returns 0 for a missing, invalid or past value.
+// parseRetryAfter reads a Retry-After value in seconds or as an HTTP date,
+// capped at defaultMaxPause. It returns 0 for a missing, invalid or past
+// value.
 func parseRetryAfter(v string, now time.Time) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0
 	}
+	var d time.Duration
 	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
-		if secs <= 0 || secs > int64(defaultMaxPause/time.Second)*24 {
+		if secs <= 0 {
 			return 0
 		}
-		return time.Duration(secs) * time.Second
+		if secs > int64(defaultMaxPause/time.Second) {
+			return defaultMaxPause
+		}
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil && t.After(now) {
+		d = t.Sub(now)
 	}
-	if t, err := http.ParseTime(v); err == nil && t.After(now) {
-		return t.Sub(now)
-	}
-	return 0
+	return min(d, defaultMaxPause)
 }
 
 // backoff returns the jittered delay before retry number attempt (from 1).
@@ -301,11 +346,14 @@ func drainAndClose(rc io.ReadCloser) {
 }
 
 // cappedBody returns at most limit bytes, then an error wrapping
-// ErrBodyTooLarge if the underlying body has more.
+// ErrBodyTooLarge if the underlying body has more. It releases the
+// attempt's timeout context on Close or at the end of the body.
 type cappedBody struct {
 	rc        io.ReadCloser
 	remaining int64
 	limit     int64
+	cancel    context.CancelFunc
+	once      sync.Once
 }
 
 func (b *cappedBody) Read(p []byte) (int, error) {
@@ -315,6 +363,9 @@ func (b *cappedBody) Read(p []byte) (int, error) {
 		if n > 0 {
 			return 0, fmt.Errorf("netguard: %w (%d bytes)", ErrBodyTooLarge, b.limit)
 		}
+		if err != nil {
+			b.release()
+		}
 		return 0, err
 	}
 	if int64(len(p)) > b.remaining {
@@ -322,10 +373,19 @@ func (b *cappedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.rc.Read(p)
 	b.remaining -= int64(n)
+	if err != nil {
+		b.release()
+	}
 	return n, err
 }
 
-func (b *cappedBody) Close() error { return b.rc.Close() }
+func (b *cappedBody) Close() error {
+	err := b.rc.Close()
+	b.release()
+	return err
+}
+
+func (b *cappedBody) release() { b.once.Do(b.cancel) }
 
 // Result is the outcome of a successful Fetch.
 type Result struct {
@@ -356,21 +416,23 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("netguard: unexpected status %s, retry at %s", e.Status, e.RetryAt.UTC().Format(time.RFC3339))
 }
 
-// Fetch performs a conditional request: prev's validators are sent as
-// If-None-Match and If-Modified-Since. A 304 is reported as NotModified
-// without reading the body; a 2xx body is read in full (up to the cap);
-// any other status is a *StatusError.
-func (c *Client) Fetch(ctx context.Context, req *http.Request, prev Validators) (*Result, error) {
+// Fetch performs a conditional GET-style request with hc, normally the
+// HTTPClient of a netguard Client injected into the caller: prev's
+// validators are sent as If-None-Match and If-Modified-Since. A 304 is
+// reported as NotModified without reading the body; a 2xx body is read in
+// full (up to the cap); any other status is a *StatusError, whose RetryAt
+// is computed against the response's Date header when present.
+func Fetch(ctx context.Context, hc *http.Client, req *http.Request, prev Validators) (*Result, error) {
 	req = req.Clone(ctx)
 	prev.apply(req.Header)
-	resp, err := c.Do(ctx, req)
+	resp, err := hc.Do(req) //nolint:gosec // G704: hc is a netguard HTTPClient, whose RoundTrip checks every hop.
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	switch {
 	case resp.StatusCode == http.StatusNotModified:
+		_ = resp.Body.Close()
 		return &Result{
 			StatusCode:  resp.StatusCode,
 			Header:      resp.Header,
@@ -378,9 +440,10 @@ func (c *Client) Fetch(ctx context.Context, req *http.Request, prev Validators) 
 			Validators:  prev.merge(ValidatorsFrom(resp.Header)),
 		}, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("netguard: read body from %s: %w", req.URL.Host, err)
+			return nil, fmt.Errorf("read body from %s: %w", req.URL.Host, err)
 		}
 		return &Result{
 			StatusCode: resp.StatusCode,
@@ -389,10 +452,15 @@ func (c *Client) Fetch(ctx context.Context, req *http.Request, prev Validators) 
 			Validators: ValidatorsFrom(resp.Header),
 		}, nil
 	default:
+		drainAndClose(resp.Body)
+		now := time.Now()
+		if t, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+			now = t
+		}
 		return nil, &StatusError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
-			RetryAt:    c.retryAt(resp.Header, c.clock.Now()),
+			RetryAt:    retryAt(resp.Header, now),
 		}
 	}
 }

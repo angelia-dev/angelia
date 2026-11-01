@@ -20,7 +20,7 @@ func TestLimiterBurstAboveBudgetWaitsNeverExceeds(t *testing.T) {
 		step  = 50 * time.Millisecond
 	)
 	clock := newFakeClock(false)
-	l := NewLimiter(clock, HostLimit{
+	l := newLimiter(clock, HostLimit{
 		Authenticated: Limit{Rate: rate, Burst: burst},
 		Anonymous:     Limit{Rate: rate, Burst: burst},
 	}, nil)
@@ -31,7 +31,7 @@ func TestLimiterBurstAboveBudgetWaitsNeverExceeds(t *testing.T) {
 	var wg sync.WaitGroup
 	for range n {
 		wg.Go(func() {
-			if err := l.Wait(t.Context(), "registry.example", false); err != nil {
+			if err := l.wait(t.Context(), "registry.example", false); err != nil {
 				t.Errorf("Wait: %v", err)
 				return
 			}
@@ -86,9 +86,9 @@ func TestLimiterBurstAboveBudgetWaitsNeverExceeds(t *testing.T) {
 
 func TestLimiterRefillsAfterIdle(t *testing.T) {
 	clock := newFakeClock(true)
-	l := NewLimiter(clock, HostLimit{Anonymous: Limit{Rate: 1, Burst: 2}, Authenticated: Limit{Rate: 1, Burst: 2}}, nil)
+	l := newLimiter(clock, HostLimit{Anonymous: Limit{Rate: 1, Burst: 2}, Authenticated: Limit{Rate: 1, Burst: 2}}, nil)
 	for range 2 {
-		if err := l.Wait(t.Context(), "h", false); err != nil {
+		if err := l.wait(t.Context(), "h", false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -97,14 +97,14 @@ func TestLimiterRefillsAfterIdle(t *testing.T) {
 	}
 	clock.Advance(10 * time.Second) // refill, capped at burst
 	for range 2 {
-		if err := l.Wait(t.Context(), "h", false); err != nil {
+		if err := l.wait(t.Context(), "h", false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if s := clock.sleeps(); len(s) != 0 {
 		t.Fatalf("refilled burst should not sleep, slept %v", s)
 	}
-	if err := l.Wait(t.Context(), "h", false); err != nil {
+	if err := l.wait(t.Context(), "h", false); err != nil {
 		t.Fatal(err)
 	}
 	if s := clock.sleeps(); len(s) != 1 || s[0] != time.Second {
@@ -114,20 +114,20 @@ func TestLimiterRefillsAfterIdle(t *testing.T) {
 
 func TestLimiterPerHostAndAuth(t *testing.T) {
 	clock := newFakeClock(true)
-	l := NewLimiter(clock,
+	l := newLimiter(clock,
 		HostLimit{Anonymous: Limit{Rate: 1, Burst: 1}, Authenticated: Limit{Rate: 1, Burst: 1}},
 		map[string]HostLimit{
 			"api.example": {Authenticated: Limit{Rate: 100, Burst: 3}, Anonymous: Limit{Rate: 1, Burst: 1}},
 		})
 	ctx := t.Context()
 	// Different hosts have separate buckets.
-	_ = l.Wait(ctx, "a.example", false)
-	_ = l.Wait(ctx, "b.example", false)
+	_ = l.wait(ctx, "a.example", false)
+	_ = l.wait(ctx, "b.example", false)
 	// Authenticated requests get their own, larger bucket.
 	for range 3 {
-		_ = l.Wait(ctx, "API.example", true)
+		_ = l.wait(ctx, "API.example", true)
 	}
-	_ = l.Wait(ctx, "api.example", false)
+	_ = l.wait(ctx, "api.example", false)
 	if s := clock.sleeps(); len(s) != 0 {
 		t.Fatalf("no request should wait, slept %v", s)
 	}
@@ -135,19 +135,19 @@ func TestLimiterPerHostAndAuth(t *testing.T) {
 
 func TestLimiterPauseDelaysUntilReset(t *testing.T) {
 	clock := newFakeClock(true)
-	l := NewLimiter(clock, HostLimit{Anonymous: Limit{Rate: 10, Burst: 10}, Authenticated: Limit{Rate: 10, Burst: 10}}, nil)
-	l.Pause("h", false, fakeEpoch.Add(30*time.Second))
-	if err := l.Wait(t.Context(), "h", false); err != nil {
+	l := newLimiter(clock, HostLimit{Anonymous: Limit{Rate: 10, Burst: 10}, Authenticated: Limit{Rate: 10, Burst: 10}}, nil)
+	l.pause("h", false, fakeEpoch.Add(30*time.Second))
+	if err := l.wait(t.Context(), "h", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := clock.Now().Sub(fakeEpoch); got < 30*time.Second {
 		t.Fatalf("request granted at %v, want >= 30s", got)
 	}
 	// A pause in the past or beyond maxPause is ignored or capped.
-	l.Pause("h", false, fakeEpoch)
-	l.Pause("other", false, clock.Now().Add(100*time.Hour))
+	l.pause("h", false, fakeEpoch)
+	l.pause("other", false, clock.Now().Add(100*time.Hour))
 	start := clock.Now()
-	_ = l.Wait(t.Context(), "other", false)
+	_ = l.wait(t.Context(), "other", false)
 	if got := clock.Now().Sub(start); got > defaultMaxPause+time.Second {
 		t.Fatalf("pause not capped: waited %v", got)
 	}
@@ -155,11 +155,11 @@ func TestLimiterPauseDelaysUntilReset(t *testing.T) {
 
 func TestLimiterWaitCancelled(t *testing.T) {
 	clock := newFakeClock(false)
-	l := NewLimiter(clock, HostLimit{Anonymous: Limit{Rate: 1, Burst: 1}, Authenticated: Limit{Rate: 1, Burst: 1}}, nil)
-	_ = l.Wait(t.Context(), "h", false)
+	l := newLimiter(clock, HostLimit{Anonymous: Limit{Rate: 1, Burst: 1}, Authenticated: Limit{Rate: 1, Burst: 1}}, nil)
+	_ = l.wait(t.Context(), "h", false)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := l.Wait(ctx, "h", false); !errors.Is(err, context.Canceled) {
+	if err := l.wait(ctx, "h", false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Wait: got %v, want context.Canceled", err)
 	}
 }
@@ -193,5 +193,137 @@ func TestDefaultHostLimitsGitHub(t *testing.T) {
 	}
 	if got := float64(gh.Anonymous.Burst) + gh.Anonymous.Rate*3600; got > 60+1e-6 {
 		t.Errorf("anonymous budget %.1f/h, want <= 60", got)
+	}
+}
+
+// waitUntil polls cond in real time; the fake clock does not move meanwhile.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// B1: waits that are cancelled, or whose deadline comes before their slot,
+// give their token back, so they leave no debt behind.
+func TestLimiterCancelledWaitsAreRefunded(t *testing.T) {
+	const n = 100
+	clock := newFakeClock(false)
+	lim := Limit{Rate: 1.0 / 60, Burst: 1} // one per minute
+	l := newLimiter(clock, HostLimit{Authenticated: lim, Anonymous: lim}, nil)
+	ctx := t.Context()
+	if err := l.wait(ctx, "h", false); err != nil { // uses the burst
+		t.Fatal(err)
+	}
+
+	// Already-cancelled contexts never reserve.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	for range n {
+		if err := l.wait(cancelled, "h", false); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled wait: got %v", err)
+		}
+	}
+
+	// A deadline before the slot fails at once, without sleeping.
+	short, cancelShort := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelShort()
+	for range n {
+		if err := l.wait(short, "h", false); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("short-deadline wait: got %v", err)
+		}
+	}
+	if s := clock.sleeps(); len(s) != 0 {
+		t.Fatalf("short-deadline waits slept: %v", s)
+	}
+
+	// Waits cancelled while asleep refund their tokens.
+	sleepCtx, cancelSleep := context.WithCancel(ctx)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() { errs <- l.wait(sleepCtx, "h", false) })
+	}
+	waitUntil(t, "sleepers", func() bool { return clock.numSleepers() == n })
+	cancelSleep()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("sleeping wait: got %v", err)
+		}
+	}
+
+	// The next real wait is ready within 1/rate.
+	done := make(chan error, 1)
+	go func() { done <- l.wait(ctx, "h", false) }()
+	waitUntil(t, "real waiter", func() bool { return clock.numSleepers() == 1 })
+	s := clock.sleeps()
+	if got := s[len(s)-1]; got > time.Minute {
+		t.Fatalf("next wait sleeps %v, want <= 1m", got)
+	}
+	clock.Advance(time.Minute)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// S2: a pause also delays callers already asleep in wait.
+func TestLimiterPauseDelaysSleepingWaiters(t *testing.T) {
+	clock := newFakeClock(false)
+	lim := Limit{Rate: 1, Burst: 1}
+	l := newLimiter(clock, HostLimit{Authenticated: lim, Anonymous: lim}, nil)
+	if err := l.wait(t.Context(), "h", false); err != nil {
+		t.Fatal(err)
+	}
+	var granted atomic.Int64 // fake-clock offset in ns, or -1 while waiting
+	granted.Store(-1)
+	go func() {
+		if err := l.wait(t.Context(), "h", false); err != nil {
+			t.Error(err)
+		}
+		granted.Store(int64(clock.Now().Sub(fakeEpoch)))
+	}()
+	waitUntil(t, "waiter asleep", func() bool { return clock.numSleepers() == 1 })
+
+	l.pause("h", false, fakeEpoch.Add(30*time.Second))
+	clock.Advance(time.Second) // the original slot
+	waitUntil(t, "waiter re-sleeping or done", func() bool {
+		return clock.numSleepers() == 1 || granted.Load() >= 0
+	})
+	if g := granted.Load(); g >= 0 {
+		t.Fatalf("waiter granted at %v despite the pause", time.Duration(g))
+	}
+	clock.Advance(29 * time.Second)
+	clock.Advance(time.Second)
+	waitUntil(t, "grant", func() bool { return granted.Load() >= 0 })
+	if g := time.Duration(granted.Load()); g < 31*time.Second {
+		t.Fatalf("granted at %v, want >= 31s (pause end + its slot)", g)
+	}
+}
+
+func TestLimiterHostKeysNormalised(t *testing.T) {
+	clock := newFakeClock(true)
+	one := Limit{Rate: 1, Burst: 1}
+	l := newLimiter(clock, HostLimit{Authenticated: one, Anonymous: one}, map[string]HostLimit{
+		"API.Example.": {Authenticated: one, Anonymous: Limit{Rate: 1, Burst: 3}},
+	})
+	for _, h := range []string{"api.example", "API.EXAMPLE", "api.example."} {
+		if err := l.wait(t.Context(), h, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := clock.sleeps(); len(s) != 0 {
+		t.Fatalf("spellings of one host should share its burst of 3, slept %v", s)
+	}
+	l.pause("Api.Example.", false, clock.Now().Add(time.Minute))
+	start := clock.Now()
+	_ = l.wait(t.Context(), "api.example", false)
+	if got := clock.Now().Sub(start); got < time.Minute {
+		t.Fatalf("pause on another spelling not applied: waited %v", got)
 	}
 }
