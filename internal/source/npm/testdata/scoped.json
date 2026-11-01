@@ -1,0 +1,18 @@
+{
+  "name": "@angelia-test/widget",
+  "dist-tags": {"latest": "1.2.0", "next": "2.0.0-beta.1"},
+  "versions": {
+    "1.0.0": {"name": "@angelia-test/widget", "version": "1.0.0", "dist": {"tarball": "https://registry.example/@angelia-test/widget/-/widget-1.0.0.tgz", "shasum": "aaaa"}},
+    "1.1.0": {"name": "@angelia-test/widget", "version": "1.1.0", "deprecated": "use 1.2.0, this has a memory leak", "dist": {"tarball": "https://registry.example/@angelia-test/widget/-/widget-1.1.0.tgz", "shasum": "bbbb"}},
+    "1.2.0": {"name": "@angelia-test/widget", "version": "1.2.0", "dist": {"tarball": "https://registry.example/@angelia-test/widget/-/widget-1.2.0.tgz", "shasum": "cccc", "integrity": "sha512-cccc"}},
+    "2.0.0-beta.1": {"name": "@angelia-test/widget", "version": "2.0.0-beta.1", "dist": {"tarball": "https://registry.example/@angelia-test/widget/-/widget-2.0.0-beta.1.tgz", "shasum": "dddd"}}
+  },
+  "time": {
+    "created": "2024-01-10T09:00:00.000Z",
+    "modified": "2024-06-01T12:00:00.000Z",
+    "1.0.0": "2024-01-10T09:00:00.000Z",
+    "1.1.0": "2024-03-05T10:30:00.000Z",
+    "1.2.0": "2024-04-20T08:15:30.123Z",
+    "2.0.0-beta.1": "2024-06-01T12:00:00.000Z"
+  }
+}
