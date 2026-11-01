@@ -82,7 +82,7 @@ Keys follow architecture.md section 3.4 and PRD F4.
 | `prerelease` | string | no | `none` | `none`, `only` or `include` |
 | `include` | list of string | no | `[]` (all) | each a valid Go (RE2) regex, matched against the raw version; at most 16 |
 | `exclude` | list of string | no | `[]` | same; exclude wins over include |
-| `constraint` | string | no | empty (any) | range such as `">=2 <3"`, checked by the scheme in use |
+| `constraint` | string | no | empty (any) | range such as `">=2 <3"`, checked by the scheme in use ([syntax](policy.md#constraint)) |
 | `bump` | list of string | no | `[]` (all) | any of `major`, `minor`, `patch` |
 | `cooldown` | duration | no | `0` | Go syntax, at most `8760h` |
 | `baseline` | boolean | no | `true` | when true, versions known at the first check are recorded without events |

@@ -556,7 +556,7 @@ func (p *parser) compilePolicy(w Watch, m map[string]*yaml.Node, wn *yaml.Node, 
 	pol, err := policy.Decode(w.PolicyJSON())
 	if err == nil {
 		var s version.Scheme
-		if s, err = schemes.Select(w.Source, w.Scheme, nil); err == nil {
+		if s, err = schemes.Select(w.Source, pol.Scheme, nil); err == nil {
 			_, err = policy.Compile(pol, s)
 		}
 	}
@@ -570,13 +570,14 @@ func (p *parser) compilePolicy(w Watch, m map[string]*yaml.Node, wn *yaml.Node, 
 	for _, line := range strings.Split(err.Error(), "\n") {
 		line = strings.TrimPrefix(line, policy.ErrInvalid.Error()+": ")
 		path, node := jp+".policy", at
+		// Only constraint realistically gets here: the parser above already
+		// rejects the other keys; they are listed for safety.
 		if key, _, ok := strings.Cut(line, ":"); ok && at != wn {
 			switch key {
 			case "constraint", "prerelease", "cooldown", "baseline":
 				if kn := mapValue(at, key); kn != nil {
 					path, node = jp+".policy."+key, kn
-					line = strings.TrimPrefix(strings.TrimPrefix(line, key+":"), " ")
-					line = strings.TrimPrefix(strings.TrimPrefix(line, key+":"), " ")
+					line = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(line, key+":"), " "), policy.ErrInvalid.Error()+": ")
 				}
 			}
 		}
@@ -622,7 +623,7 @@ func (p *parser) policy(n *yaml.Node, jp string, out *Policy) {
 		}
 	}
 	if v := m["constraint"]; v != nil {
-		// The syntax is checked once internal/policy exists (docs/watch-file.md 2.3).
+		// The syntax and operands are checked by compilePolicy (docs/watch-file.md 2.3).
 		if s, ok := p.str(v, jp+".constraint"); ok {
 			if strings.TrimSpace(s) == "" {
 				p.errf(v, jp+".constraint", "must not be empty (omit the key to accept any version)")
