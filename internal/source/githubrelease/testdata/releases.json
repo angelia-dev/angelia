@@ -1,0 +1,8 @@
+[
+  {"id": 106, "tag_name": "v2.2.0", "name": "Draft", "html_url": "https://github.com/example/tool/releases/tag/untagged-abc", "draft": true, "prerelease": false, "created_at": "2026-10-20T10:00:00Z", "published_at": null},
+  {"id": 105, "tag_name": "v2.1.0-rc.1", "name": "2.1.0 RC1", "html_url": "https://github.com/example/tool/releases/tag/v2.1.0-rc.1", "draft": false, "prerelease": true, "created_at": "2026-10-10T09:00:00Z", "published_at": "2026-10-10T09:05:00Z"},
+  {"id": 104, "tag_name": "v2.0.0", "name": "2.0.0", "html_url": "https://github.com/example/tool/releases/tag/v2.0.0", "draft": false, "prerelease": false, "created_at": "2026-09-01T09:00:00Z", "published_at": "2026-09-01T09:05:00Z"},
+  {"id": 103, "tag_name": "v1.2.0", "name": "1.2.0", "html_url": "https://github.com/example/tool/releases/tag/v1.2.0", "draft": false, "prerelease": false, "created_at": "2026-08-01T09:00:00Z", "published_at": "2026-08-01T09:05:00Z"},
+  {"id": 102, "tag_name": "v1.1.0", "name": "1.1.0", "html_url": "https://github.com/example/tool/releases/tag/v1.1.0", "draft": false, "prerelease": false, "created_at": "2026-07-01T09:00:00Z", "published_at": "2026-07-01T09:05:00Z"},
+  {"id": 101, "tag_name": "v1.0.0", "name": "", "html_url": "https://github.com/example/tool/releases/tag/v1.0.0", "draft": false, "prerelease": false, "created_at": "2026-06-01T09:00:00Z", "published_at": "2026-06-01T09:05:00Z"}
+]
