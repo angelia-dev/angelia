@@ -11,8 +11,9 @@ sinks: WASM (Extism on `wazero`), a gRPC subprocess (`hashicorp/go-plugin`) and 
 built and measured the WASM option. This story builds the same crates.io source as a go-plugin subprocess, runs it
 against the same contract suite and the same benchmark 4, and compares overhead, isolation and packaging.
 
-The maintainer approved `hashicorp/go-plugin`, `google.golang.org/grpc` and `google.golang.org/protobuf` for this
-spike only ([§6](../architecture.md#6-language-and-framework-phase-0-assumptions)): they are used under `bench/`
+The maintainer approved go-plugin and gRPC for this spike only. The direct dependencies are `hashicorp/go-plugin`,
+`hashicorp/go-hclog` (its logger interface) and `google.golang.org/grpc`; `google.golang.org/protobuf` was already
+an indirect dependency ([§6](../architecture.md#6-language-and-framework-phase-0-assumptions)): they are used under `bench/`
 and nothing under `internal/` or `cmd/` imports them, so the shipped binary does not change
 (`go list -deps ./cmd/... ./internal/... | grep -E 'hashicorp|grpc'` is empty).
 
@@ -33,7 +34,7 @@ and nothing under `internal/` or `cmd/` imports them, so the shipped binary does
 **Wire format.** `protoc` could not be run in the sandbox that built this prototype (the binary download was
 refused by the session's policy), so there is no generated protobuf code. The two services are hand-written
 `grpc.ServiceDesc` values (`wire.go`, the `.proto` they stand for is in a comment) and the messages are the JSON
-shapes of the WASM ABI v0 (ADR 0011), carried by a gRPC codec registered under the content-subtype `json`.
+shapes of the WASM ABI v0 (ADR 0011), carried by a gRPC codec registered under the content-subtype `angelia-json`.
 go-plugin's own services keep protobuf. This keeps serialisation identical to the WASM host, so the comparison
 isolates the runtime and the IPC. A production go-plugin would use generated protobuf, which would remove the base64
 of bodies and some JSON cost: the go-plugin numbers below are, if anything, slightly pessimistic.
@@ -43,7 +44,8 @@ plugin sends every request as `Host.HTTP(call_id, request)`. The core applies th
 `http_request` host function (ADR 0011): `allowed_hosts` on every hop before netguard, the netguard client (SSRF
 guard, per-host limits), 100 requests per call, GET/HEAD/POST, reserved headers, https downgrade refusal, 10 MiB
 bodies, and a refused host or SSRF block fails the call even if the plugin swallows the error. A request with an
-unknown call id (outside a `List`, during `Validate`, or forged) is refused with `not_allowed_here`. This is
+unknown call id (outside a `List`, during `Validate`, or forged) is refused with `not_allowed_here`, and a
+request ends when its `List` call or its RPC ends, whichever comes first. This is
 **cooperative**: see Isolation.
 
 ## Measurements
@@ -53,13 +55,19 @@ unknown call id (outside a `List`, during `Validate`, or forged) is refused with
 The go-plugin crates source passes `sourcetest.Run` with the fixtures of the WASM crates source
 (`TestCratesContract`), plus pagination, ETag and auth (`TestCratesPaginationETagAuth`), `allowed_hosts` on the first
 hop and on redirects, the request budget, the call-id check, restart after `SIGKILL` and a checksum mismatch.
+`rules_test.go` checks the HTTP rules over the gRPC path with a second test plugin (`goplugintest`, probe): https
+downgrade refused before it is sent, netguard's SSRF block, redirect hops counted in the budget, the body cap,
+reserved and malformed headers, a refusal that the plugin swallows still failing the call, and a request that
+arrives after its call has returned being refused.
 
 ### Benchmark 4
 
 `go test -tags bench -run TestBenchmark4 -v ./bench/wasm`, measured exactly as in ADR 0011: 2,000 calls per
 workload, rotating native, WASM and go-plugin, same netguard client, in-memory fake upstream (no sockets), overhead
 = plugin percentile − native percentile. Same 4-vCPU cloud sandbox (Xeon 2.1 GHz, linux/amd64), not reference
-hardware. First run shown; a second run was within 20% on every cell, with the same conclusions:
+hardware. First run shown; a second run was within 20% on every cell, with the same conclusions. Run-to-run
+variance is real: an independent re-run by the reviewer measured the go-plugin 304 overhead p95 at 1.65 ms against
+1.07 ms here, so read small differences between cells as noise:
 
 | Workload | native p50 / p95 | go-plugin p50 / p95 | overhead p50 / p95 | < 5 ms? |
 |---|---|---|---|---|
@@ -107,7 +115,7 @@ is for the core alone; with go-plugin, each installed plugin adds a process of t
 | File system | none (no WASI) | everything the core's user can read: the SQLite database, the secret-encryption key file, tokens |
 | Environment | none | `SkipHostEnv` stops the core's environment (and its secrets) being inherited; set in the prototype |
 | Memory, CPU | memory capped, calls interrupted on timeout | unbounded unless set with rlimits or cgroups; a timeout cancels the RPC, not the process's work |
-| Crash | a trap discards the instance | the process dies, the core restarts it on the next call (`TestRestartAfterCrash`); the core is unaffected |
+| Crash | a trap discards the instance | the process dies, the core restarts it on the next call (`TestRestartAfterCrash`); the core is unaffected. A start is bounded by `StartTimeout` (default 10 s, capped by the caller's deadline; `TestStartTimeout`), and after a failed restart calls fail fast for `RestartBackoff` (default 5 s; `TestRestartBackoff`). A restart holds the Source's lock, so concurrent calls of that kind wait for it |
 | Language | any language with an Extism PDK | gRPC is language-neutral, but the handshake, AutoMTLS and broker exist only in Go |
 
 netguard cannot be enforced inside another process. To make `Host.HTTP` the only route out, the core would have to
@@ -133,7 +141,9 @@ their plugins are trusted code chosen by the operator.
   or come from the database.
 - **Config.** Each plugin entry would name the binary path and its SHA-256. go-plugin refuses a binary whose
   checksum differs (`SecureConfig`, `Options.Checksum` here, `TestChecksumMismatchRefused`); the check runs at every
-  start, so replacing a binary in place fails closed.
+  start, so replacing a binary in place fails closed (`TestChecksumMatchAccepted`). go-plugin hashes the file and
+  then executes the path: a binary swapped between the two is not caught, so the plugin directory must be writable
+  only by the operator (read-only image layer or root-owned directory).
 - **Signing.** One signature per binary and arch: `cosign sign-blob` (keyless, GitHub OIDC) in the plugin's release
   workflow, and an SBOM per binary. The installer verifies the signature and identity once, then pins the
   checksum. Angelia's own release pipeline (goreleaser, cosign) can serve as the template for plugin authors.
