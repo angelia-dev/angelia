@@ -505,3 +505,208 @@ func TestConcurrentWriters(t *testing.T) {
 		})
 	}
 }
+
+func TestLeaseDueTargets(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	for i, due := range []time.Duration{-2 * time.Minute, -time.Minute, 0, time.Minute} {
+		must(t, s.CreateTarget(ctx, store.Target{
+			ID: fmt.Sprintf("t%d", i), Kind: "pypi", Coordinates: map[string]string{"name": fmt.Sprint(i)},
+			NextCheckAt: t0.Add(due),
+		}))
+	}
+	ids := func(ts []store.Target) []string {
+		var out []string
+		for _, x := range ts {
+			out = append(out, x.ID)
+		}
+		return out
+	}
+	count := func(now time.Time) int64 {
+		t.Helper()
+		n, err := s.CountDueTargets(ctx, now)
+		must(t, err)
+		return n
+	}
+	if n := count(t0); n != 3 {
+		t.Fatalf("CountDueTargets = %d, want 3", n)
+	}
+	until := t0.Add(time.Minute)
+
+	got, err := s.LeaseDueTargets(ctx, "a", t0, until, 2)
+	must(t, err)
+	if !reflect.DeepEqual(ids(got), []string{"t0", "t1"}) { // oldest due first, limit applies
+		t.Fatalf("a leased %v", ids(got))
+	}
+	if got[0].Coordinates["name"] != "0" || !got[0].NextCheckAt.Equal(t0.Add(-2*time.Minute)) {
+		t.Errorf("target not decoded: %+v", got[0])
+	}
+	got, err = s.LeaseDueTargets(ctx, "b", t0, until, 10)
+	must(t, err)
+	if !reflect.DeepEqual(ids(got), []string{"t2"}) { // t0, t1 are leased; t3 is not due
+		t.Fatalf("b leased %v", ids(got))
+	}
+	if n := count(t0); n != 0 {
+		t.Fatalf("CountDueTargets with every due target leased = %d, want 0", n)
+	}
+	if ok, err := s.AcquireLease(ctx, store.TargetLeaseName("t0"), "b", t0, until); err != nil || ok {
+		t.Fatalf("b took a's lease: %v %v", ok, err)
+	}
+
+	// a releases t0; the leases on t1 and t2 expire at until.
+	must(t, s.ReleaseLease(ctx, store.TargetLeaseName("t0"), "a"))
+	got, err = s.LeaseDueTargets(ctx, "c", until, until.Add(time.Minute), 10)
+	must(t, err)
+	if !reflect.DeepEqual(ids(got), []string{"t0", "t1", "t2", "t3"}) {
+		t.Fatalf("c leased %v", ids(got))
+	}
+
+	if got, err := s.LeaseDueTargets(ctx, "c", t0, until, 0); err != nil || got != nil {
+		t.Errorf("limit 0: %v %v", got, err)
+	}
+	_, err = s.LeaseDueTargets(ctx, "c", t0, t0, 1)
+	wantErr(t, err, store.ErrInvalid, "until == now")
+	_, err = s.LeaseDueTargets(ctx, "", t0, until, 1)
+	wantErr(t, err, store.ErrInvalid, "empty holder")
+}
+
+// TestLeaseDueTargetsConcurrent: callers racing for the same due targets
+// never lease one twice.
+func TestLeaseDueTargetsConcurrent(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	const targets, callers = 50, 8
+	for i := range targets {
+		must(t, s.CreateTarget(ctx, store.Target{
+			ID: fmt.Sprintf("t%02d", i), Kind: "pypi", Coordinates: map[string]string{"name": fmt.Sprint(i)}, NextCheckAt: t0,
+		}))
+	}
+	var mu sync.Mutex
+	seen := map[string]string{}
+	var wg sync.WaitGroup
+	for c := range callers {
+		wg.Go(func() {
+			holder := fmt.Sprint("h", c)
+			for {
+				got, err := s.LeaseDueTargets(ctx, holder, t0, t0.Add(time.Minute), 3)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if len(got) == 0 {
+					return
+				}
+				mu.Lock()
+				for _, x := range got {
+					if prev, ok := seen[x.ID]; ok {
+						t.Errorf("%s leased by %s and %s", x.ID, prev, holder)
+					}
+					seen[x.ID] = holder
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if len(seen) != targets {
+		t.Fatalf("leased %d targets, want %d", len(seen), targets)
+	}
+}
+
+func TestHasDueTargets(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	has := func(now time.Time) bool {
+		t.Helper()
+		ok, err := s.HasDueTargets(ctx, now)
+		must(t, err)
+		return ok
+	}
+	if has(t0) {
+		t.Fatal("empty store has due targets")
+	}
+	must(t, s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "a"}, NextCheckAt: t0}))
+	if has(t0.Add(-time.Second)) || !has(t0) {
+		t.Fatal("due boundary wrong")
+	}
+	_, err := s.LeaseDueTargets(ctx, "a", t0, t0.Add(time.Minute), 1)
+	must(t, err)
+	if has(t0) {
+		t.Fatal("leased target counted as due")
+	}
+	if !has(t0.Add(time.Minute)) {
+		t.Fatal("target with an expired lease not due")
+	}
+}
+
+func TestUpdateTargetLeased(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	must(t, s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "a"}, NextCheckAt: t0}))
+	lease := store.TargetLeaseName("t1")
+	until := t0.Add(time.Minute)
+	_, err := s.LeaseDueTargets(ctx, "a", t0, until, 1)
+	must(t, err)
+	upd := func(next time.Time, holder string, now time.Time) (bool, error) {
+		return s.UpdateTargetLeased(ctx, store.Target{ID: "t1", NextCheckAt: next, ErrorCount: 2}, lease, holder, now)
+	}
+	next := func() time.Time {
+		got, err := s.GetTarget(ctx, "t1")
+		must(t, err)
+		return got.NextCheckAt
+	}
+
+	if ok, err := upd(t0.Add(time.Hour), "b", t0); err != nil || ok {
+		t.Fatalf("other holder wrote: %v %v", ok, err)
+	}
+	if ok, err := upd(t0.Add(time.Hour), "a", until); err != nil || ok {
+		t.Fatalf("expired lease wrote: %v %v", ok, err)
+	}
+	if !next().Equal(t0) {
+		t.Fatal("fenced write changed the target")
+	}
+	if ok, err := upd(t0.Add(time.Hour), "a", t0); err != nil || !ok {
+		t.Fatalf("holder could not write: %v %v", ok, err)
+	}
+	if !next().Equal(t0.Add(time.Hour)) {
+		t.Fatal("write not applied")
+	}
+	// A takeover after expiry fences out the old holder.
+	ok, err := s.AcquireLease(ctx, lease, "b", until, until.Add(time.Minute))
+	if err != nil || !ok {
+		t.Fatalf("takeover: %v %v", ok, err)
+	}
+	if ok, err := upd(t0.Add(2*time.Hour), "a", t0); err != nil || ok {
+		t.Fatalf("old holder wrote after takeover: %v %v", ok, err)
+	}
+	_, err = s.UpdateTargetLeased(ctx, store.Target{ID: "missing", NextCheckAt: t0}, lease, "b", until)
+	wantErr(t, err, store.ErrNotFound, "missing target")
+	_, err = s.UpdateTargetLeased(ctx, store.Target{ID: "t1"}, lease, "b", until)
+	wantErr(t, err, store.ErrInvalid, "zero next_check_at")
+}
+
+func TestDeleteExpiredTargetLeases(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	take := func(name string, until time.Time) {
+		t.Helper()
+		ok, err := s.AcquireLease(ctx, name, "h", t0, until)
+		if err != nil || !ok {
+			t.Fatalf("acquire %s: %v %v", name, ok, err)
+		}
+	}
+	take(store.TargetLeaseName("old"), t0.Add(time.Minute))
+	take(store.TargetLeaseName("live"), t0.Add(time.Hour))
+	take("compactor", t0.Add(time.Minute)) // not a target lease
+	n, err := s.DeleteExpiredTargetLeases(ctx, t0.Add(time.Minute))
+	must(t, err)
+	if n != 1 {
+		t.Fatalf("deleted %d leases, want 1", n)
+	}
+	// The live target lease and the other lease are still held.
+	for _, name := range []string{store.TargetLeaseName("live"), "compactor"} {
+		if ok, err := s.AcquireLease(ctx, name, "other", t0, t0.Add(time.Second)); err != nil || ok {
+			t.Errorf("%s was deleted: %v %v", name, ok, err)
+		}
+	}
+}
