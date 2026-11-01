@@ -1,0 +1,4 @@
+{
+  "kind": "hostile",
+  "allowed_hosts": ["allowed.test"]
+}
