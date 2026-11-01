@@ -43,12 +43,38 @@ func Budget(n int, per time.Duration, burst int) (Limit, error) {
 // HostLimit holds the limits for one host. A request carrying an
 // Authorization header uses Authenticated; others use Anonymous. The two
 // budgets are tracked in separate buckets.
+//
+// MaxBodyBytes caps the response body for responses served by this host,
+// overriding Config.MaxBodyBytes. Zero means the built-in cap for the host if
+// there is one (64 MiB for registry.npmjs.org, pypi.org and index.crates.io), else the
+// global cap; so an entry that only tunes rates keeps the built-in cap. The
+// body is counted after the transport's transparent gzip decoding; a caller
+// that sets Accept-Encoding itself receives, and is capped on, wire bytes.
+// The cap follows the host that actually serves the body: a redirect from a
+// host with a large cap to one without does not carry the large cap along
+// (and the reverse). It lives here, not in a context option, so that one
+// table configures everything known about a host, a caller cannot raise a cap
+// per request, and the cap stays tied to the host the SSRF guard approved.
+// A non-zero value in Config.FallbackLimit is rejected: the fallback only
+// describes rates.
 type HostLimit struct {
 	Authenticated Limit
 	Anonymous     Limit
+	MaxBodyBytes  int64
+	// Timeout bounds one attempt against this host, including reading the
+	// body, overriding Config.Timeout. Zero means the built-in timeout for
+	// the host if there is one (2 minutes for the large registries), else
+	// the global one. Like the body cap it is chosen from the hop's host.
+	Timeout time.Duration
 }
 
 func (h HostLimit) validate() error {
+	if h.MaxBodyBytes < 0 {
+		return fmt.Errorf("max body bytes must not be negative, got %d", h.MaxBodyBytes)
+	}
+	if h.Timeout < 0 {
+		return fmt.Errorf("timeout must not be negative, got %v", h.Timeout)
+	}
 	if err := h.Authenticated.validate(); err != nil {
 		return fmt.Errorf("authenticated: %w", err)
 	}
@@ -78,6 +104,56 @@ func DefaultHostLimits() map[string]HostLimit {
 			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},
 		},
 	}
+}
+
+// Built-in allowances for registry hosts that serve single documents above
+// the global 10 MiB cap: npm packuments reach 31.5 MB (next), the swc_core
+// sparse index file is 16.0 MB, and PyPI JSON responses can be large too
+// (npm and crates measured 2026-11-01). Big bodies also take longer than the
+// global 30 s attempt timeout on a slow link.
+const (
+	largeRegistryMaxBodyBytes = 64 << 20 // 64 MiB
+	largeRegistryTimeout      = 2 * time.Minute
+)
+
+// hostAllowance is the built-in body cap and per-attempt timeout of a host.
+type hostAllowance struct {
+	maxBodyBytes int64
+	timeout      time.Duration
+}
+
+// defaultHostAllowances are kept apart from the rate limits so that a custom
+// FallbackLimit still sets those hosts' rates.
+var defaultHostAllowances = map[string]hostAllowance{
+	"registry.npmjs.org": {largeRegistryMaxBodyBytes, largeRegistryTimeout},
+	"pypi.org":           {largeRegistryMaxBodyBytes, largeRegistryTimeout},
+	"index.crates.io":    {largeRegistryMaxBodyBytes, largeRegistryTimeout},
+}
+
+// maxBodyBytes returns the body cap for host: the operator's HostLimit
+// MaxBodyBytes if above zero, else the built-in cap for the host, else global.
+func (l *limiter) maxBodyBytes(host string, global int64) int64 {
+	h := normHost(host)
+	if hl, ok := l.limits[h]; ok && hl.MaxBodyBytes > 0 {
+		return hl.MaxBodyBytes
+	}
+	if a, ok := defaultHostAllowances[h]; ok {
+		return a.maxBodyBytes
+	}
+	return global
+}
+
+// timeout returns the per-attempt timeout for host, resolved like
+// maxBodyBytes: operator HostLimit.Timeout, built-in, then global.
+func (l *limiter) timeout(host string, global time.Duration) time.Duration {
+	h := normHost(host)
+	if hl, ok := l.limits[h]; ok && hl.Timeout > 0 {
+		return hl.Timeout
+	}
+	if a, ok := defaultHostAllowances[h]; ok {
+		return a.timeout
+	}
+	return global
 }
 
 // normHost returns the key used for a host: lower case, without a trailing dot.

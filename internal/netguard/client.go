@@ -37,8 +37,12 @@ type Config struct {
 	// UserAgent defaults to "angelia/<version> (+https://github.com/angelia-dev/angelia)".
 	UserAgent string
 	// Timeout bounds one attempt, including reading the body. Default 30s.
+	// A non-zero HostLimit.Timeout, or the built-in 2 minutes of the large
+	// registry hosts (see HostLimit), overrides it for that host.
 	Timeout time.Duration
-	// MaxBodyBytes caps response bodies. Default 10 MiB.
+	// MaxBodyBytes caps response bodies (after transparent gzip decoding). Default
+	// 10 MiB. A non-zero HostLimit.MaxBodyBytes, or a built-in cap for the
+	// host (registry.npmjs.org, pypi.org, index.crates.io: 64 MiB), overrides it.
 	MaxBodyBytes int64
 	// MaxAttempts is the total number of attempts for a retryable request,
 	// including the first. Default 4; 1 disables retries.
@@ -117,6 +121,9 @@ func New(cfg Config) (*Client, error) {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
+	if cfg.FallbackLimit.MaxBodyBytes != 0 {
+		return nil, errors.New("netguard: fallback limit: MaxBodyBytes must be zero (use Config.MaxBodyBytes)")
+	}
 	if err := cfg.FallbackLimit.validate(); err != nil {
 		return nil, fmt.Errorf("netguard: fallback limit: %w", err)
 	}
@@ -178,7 +185,8 @@ func (c *Client) HTTPClient() *http.Client {
 
 // RoundTrip sends one hop after the SSRF check and the hop host's rate
 // limit. Requests without a body and with an idempotent method are retried
-// on 429, 5xx and timeouts. The response body is capped at MaxBodyBytes:
+// on 429, 5xx and timeouts. The response body is capped at the serving
+// host's HostLimit.MaxBodyBytes, else its built-in cap, else Config.MaxBodyBytes:
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -200,7 +208,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 			closeRequestBody(req)
 			return nil, err
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))
 		retry, serverWait := c.inspect(ctx, attemptCtx, host, authed, resp, err)
 		wait := serverWait
@@ -216,7 +224,8 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 				cancel()
 				return nil, err
 			}
-			resp.Body = &cappedBody{rc: resp.Body, remaining: c.cfg.MaxBodyBytes, limit: c.cfg.MaxBodyBytes, cancel: cancel}
+			maxBody := c.limiter.maxBodyBytes(host, c.cfg.MaxBodyBytes)
+			resp.Body = &cappedBody{rc: resp.Body, remaining: maxBody, limit: maxBody, cancel: cancel}
 			return resp, nil
 		}
 		attrs := []any{"host", host, "attempt", attempt, "wait", wait}
