@@ -1,0 +1,19 @@
+# golangci-lint v2 configuration. Run with: golangci-lint run
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - revive
+    - staticcheck
+    - unused
+
+formatters:
+  enable:
+    - gofumpt

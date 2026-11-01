@@ -29,6 +29,21 @@ Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/pro
 | `plugin-sdk` | WASM plugin SDKs and conformance kit (later) |
 | `ui` | Web UI (later) |
 
+## Development
+
+Requires the Go toolchain pinned in [go.mod](go.mod) (Go downloads it automatically) and [golangci-lint v2](https://golangci-lint.run/). Run these from the repository root:
+
+| Command | What it does |
+|---|---|
+| `make build` | Builds `bin/angelia` with `CGO_ENABLED=0` and injects version, commit and build date via `-ldflags` |
+| `make test` | Runs `go test -race ./...` |
+| `make lint` | Runs `golangci-lint run` and the gofumpt format check (`golangci-lint fmt --diff`), config in [.golangci.yml](.golangci.yml) |
+| `make vuln` | Runs `govulncheck` (pinned version) on all packages; needs access to `vuln.go.dev` |
+| `make generate` | Runs `go generate ./...` (sqlc, oapi-codegen); commit the output |
+| `make clean` | Removes `bin/` |
+
+Print the build info with `./bin/angelia version`.
+
 ## License
 
 [Apache-2.0](LICENSE)
