@@ -1,0 +1,8 @@
+{
+  "c0000000000000000000000000000000000000a1": {"sha": "c0000000000000000000000000000000000000a1", "author": {"name": "Example Dev", "date": "2026-05-31T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-06-01T09:00:00Z"}, "message": "Synthetic commit 1"},
+  "c0000000000000000000000000000000000000a2": {"sha": "c0000000000000000000000000000000000000a2", "author": {"name": "Example Dev", "date": "2026-06-30T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-07-01T09:00:00Z"}, "message": "Synthetic commit 2"},
+  "c0000000000000000000000000000000000000a3": {"sha": "c0000000000000000000000000000000000000a3", "author": {"name": "Example Dev", "date": "2026-07-31T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-08-01T09:00:00Z"}, "message": "Synthetic commit 3"},
+  "c0000000000000000000000000000000000000a4": {"sha": "c0000000000000000000000000000000000000a4", "author": {"name": "Example Dev", "date": "2026-08-31T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-09-01T09:00:00Z"}, "message": "Synthetic commit 4"},
+  "c0000000000000000000000000000000000000a5": {"sha": "c0000000000000000000000000000000000000a5", "author": {"name": "Example Dev", "date": "2026-10-09T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-10-10T09:00:00Z"}, "message": "Synthetic commit 5"},
+  "c0000000000000000000000000000000000000a6": {"sha": "c0000000000000000000000000000000000000a6", "author": {"name": "Example Dev", "date": "2026-10-24T08:00:00Z"}, "committer": {"name": "Example Dev", "date": "2026-10-25T09:00:00Z"}, "message": "Synthetic commit 6"}
+}
