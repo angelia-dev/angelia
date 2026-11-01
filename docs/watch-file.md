@@ -1,5 +1,7 @@
 # Watch file
 
+> **Phase 0 format: approved, but may still change before 1.0; every change is recorded as a decision in this document.**
+
 Story: angelia-dev/angelia#48. Status: **format approved by the maintainer (decisions D1 to D17 in the
 last section), implemented in `internal/watchfile`.** It becomes a public contract in Phase 1
 (`angelia apply`), so names and semantics change only through a decision recorded here.
@@ -199,7 +201,8 @@ Details:
   without writing. Both return a plan of `create`, `update`, `delete` and `unchanged` lines.
 - A target's `interval_ms` is the smallest interval among the file's watches on it, kept in step with the
   file on every apply. Lowering it also pulls `next_check_at` forward to at most one interval from now. A
-  new target is due immediately. Rows created through the API on the same target keep using that value.
+  new target is due immediately. Rows created through the API on the same target keep using that value. When the file stops watching a
+  target that API watches still use, its `interval_ms` stays as the file last set it; nothing resets it.
 - `policy_json` holds the policy with every default filled in plus `scheme`; `filter_json` likewise. This
   keeps the no-op comparison exact. Watch and subscription rows are compared by value, never by text.
 - Webhook URLs are never echoed in errors. A query parameter whose name contains `token`, `secret`, `key`,
@@ -234,7 +237,7 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D2 | Top-level keys `sinks`, `watches`, `subscriptions` and `version: 1` (required) | `apiVersion`/`kind` Kubernetes style; no version key | Plain keys plus required `version`; cheap to evolve and guards against empty files |
 | D3 | Stable key is a human `name` per object | use ULID `id` in the file; name = id; derive from coordinates | `name`; ULIDs are generated, and a file author needs a key they can type |
 | D4 | `coordinates` (flat string map) as the key for source parameters | `target:` (architecture wording); per-kind typed keys such as `package:`/`repo:`; `purl` strings | `coordinates`: matches the issue, ADR 0006 and `coordinates_json`; the loader stays generic |
-| D5 | Add migration `00003` (`name`, `managed_by` on watch/sink/subscription, `interval_ms` on target) | deterministic ids derived from names (no migration); store name and interval inside `*_json` | Migration: explicit, supports the Phase 1 API coexisting with file-managed rows |
+| D5 | Add migration `00004` (`name`, `managed_by` on watch/sink/subscription, `interval_ms` on target) | deterministic ids derived from names (no migration); store name and interval inside `*_json` | Migration: explicit, supports the Phase 1 API coexisting with file-managed rows |
 | D6 | `policy` on the watch only; subscription has `filter` only | policy also on subscriptions (architecture.md 3.4) | Watch only in Phase 0; add later without breaking the format |
 | D7 | Changing source/coordinates resets the baseline; other edits keep it | never reset; always reset on any edit | As proposed, to avoid a flood of events for the new target |
 | D8 | Deleted subscription removes its pending deliveries; deleted watch only stops new events; history is kept | delete the watch's pending deliveries too; keep everything pending | As proposed (confirmed: "its future deliveries" means the pending deliveries of a removed subscription) |
