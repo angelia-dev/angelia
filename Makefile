@@ -29,7 +29,7 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate clean
+.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -62,6 +62,14 @@ vuln: ## Check for known vulnerabilities (needs access to vuln.go.dev)
 
 generate: ## Run go generate (sqlc, oapi-codegen); commit the output
 	go generate ./...
+
+bench-ordering: ## Benchmark 6: version ordering vs the committed PyPI/npm snapshots (offline)
+	go run ./bench/ordering
+
+# Needs network (pypi.org, registry.npmjs.org), Python 3 with packaging and Node.js with npm.
+bench-ordering-snapshot: ## Rebuild the benchmark 6 snapshots from the live registries
+	python3 -I bench/ordering/snapshot/pypi.py bench/ordering/packages/pypi.txt bench/ordering/testdata/pypi.jsonl.gz
+	node bench/ordering/snapshot/npm.mjs bench/ordering/packages/npm.txt bench/ordering/testdata/npm.jsonl.gz
 
 clean: ## Remove build output
 	rm -rf bin
