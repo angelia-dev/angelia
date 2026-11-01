@@ -20,8 +20,8 @@
 //	next         31.5 MB  25.7 MB
 //
 // netguard's default body cap is 10 MiB, so several popular packages exceed
-// it. netguard gives registry.npmjs.org its own 64 MiB cap
-// (netguard.HostLimit.MaxBodyBytes), so a netguard client needs no
+// it. netguard has a built-in 64 MiB cap for registry.npmjs.org
+// (overridable with netguard.HostLimit.MaxBodyBytes), so a netguard client needs no
 // configuration. A mirror on another host keeps the global cap unless the
 // client is built with a HostLimits entry for it. A response over the cap
 // makes List fail with an error wrapping netguard.ErrBodyTooLarge.
@@ -187,7 +187,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	res, err := netguard.Fetch(ctx, s.hc, req, netguard.Validators{ETag: st.ETag, LastModified: st.LastModified})
 	if errors.Is(err, netguard.ErrBodyTooLarge) {
 		return source.Result{}, fmt.Errorf("npm: fetch %s: packument over the HTTP client's body cap; "+
-			"set netguard.HostLimit.MaxBodyBytes (64 MiB suits npm) for the registry host, see the npm package documentation: %w", name, err)
+			"the body cap is per host; to raise it set netguard.HostLimit.MaxBodyBytes for this registry host, see the npm package documentation: %w", name, err)
 	}
 	if err != nil {
 		return source.Result{}, fmt.Errorf("npm: fetch %s: %w", name, err)

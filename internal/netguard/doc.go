@@ -14,7 +14,9 @@
 //   - conditional requests ([Fetch], [Validators]): a 304 is reported
 //     as [Result.NotModified] and its body is never read;
 //   - a User-Agent with the build version, per-attempt timeouts and a
-//     response size cap on the decompressed body ([ErrBodyTooLarge]): 10 MiB
+//     response size cap ([ErrBodyTooLarge]) on the body after the transport's
+//     transparent gzip decoding (a caller setting Accept-Encoding itself is
+//     capped on wire bytes): 10 MiB
 //     ([Config].MaxBodyBytes) unless the host that serves the response has
 //     its own [HostLimit].MaxBodyBytes, as registry.npmjs.org and
 //     index.crates.io do (64 MiB). A redirect does not carry a cap to the

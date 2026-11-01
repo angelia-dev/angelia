@@ -22,14 +22,11 @@ import (
 const (
 	DefaultTimeout      = 30 * time.Second
 	DefaultMaxBodyBytes = 10 << 20 // 10 MiB
-	// LargeRegistryMaxBodyBytes is the built-in cap for registry hosts known
-	// to serve documents above DefaultMaxBodyBytes (see DefaultHostLimits).
-	LargeRegistryMaxBodyBytes = 64 << 20 // 64 MiB
-	DefaultMaxAttempts        = 4
-	DefaultBaseBackoff        = 500 * time.Millisecond
-	DefaultMaxBackoff         = 30 * time.Second
-	DefaultMaxRetryWait       = 2 * time.Minute
-	maxRedirects              = 10 // net/http's own default
+	DefaultMaxAttempts  = 4
+	DefaultBaseBackoff  = 500 * time.Millisecond
+	DefaultMaxBackoff   = 30 * time.Second
+	DefaultMaxRetryWait = 2 * time.Minute
+	maxRedirects        = 10 // net/http's own default
 )
 
 // ErrBodyTooLarge is returned when reading a response body past the cap.
@@ -41,8 +38,9 @@ type Config struct {
 	UserAgent string
 	// Timeout bounds one attempt, including reading the body. Default 30s.
 	Timeout time.Duration
-	// MaxBodyBytes caps decompressed response bodies. Default 10 MiB. A
-	// HostLimit with a non-zero MaxBodyBytes overrides it for that host.
+	// MaxBodyBytes caps response bodies (after transparent gzip decoding). Default
+	// 10 MiB. A non-zero HostLimit.MaxBodyBytes, or a built-in cap for the
+	// host (registry.npmjs.org, index.crates.io: 64 MiB), overrides it.
 	MaxBodyBytes int64
 	// MaxAttempts is the total number of attempts for a retryable request,
 	// including the first. Default 4; 1 disables retries.
@@ -121,6 +119,9 @@ func New(cfg Config) (*Client, error) {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
+	if cfg.FallbackLimit.MaxBodyBytes != 0 {
+		return nil, errors.New("netguard: fallback limit: MaxBodyBytes must be zero (use Config.MaxBodyBytes)")
+	}
 	if err := cfg.FallbackLimit.validate(); err != nil {
 		return nil, fmt.Errorf("netguard: fallback limit: %w", err)
 	}
@@ -183,7 +184,7 @@ func (c *Client) HTTPClient() *http.Client {
 // RoundTrip sends one hop after the SSRF check and the hop host's rate
 // limit. Requests without a body and with an idempotent method are retried
 // on 429, 5xx and timeouts. The response body is capped at the serving
-// host's HostLimit.MaxBodyBytes, or Config.MaxBodyBytes if it has none:
+// host's HostLimit.MaxBodyBytes, else its built-in cap, else Config.MaxBodyBytes:
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {

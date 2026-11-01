@@ -162,11 +162,11 @@ func TestHostBodyCapFollowsServingHostAcrossRedirect(t *testing.T) {
 func TestDefaultHostBodyCaps(t *testing.T) {
 	limits := DefaultHostLimits()
 	for _, h := range []string{"registry.npmjs.org", "index.crates.io"} {
-		if got := limits[h].MaxBodyBytes; got != 64<<20 {
+		if got := defaultHostBodyCaps[h]; got != 64<<20 {
 			t.Errorf("%s default cap = %d, want 64 MiB", h, got)
 		}
-		if err := limits[h].validate(); err != nil {
-			t.Errorf("%s default limit invalid: %v", h, err)
+		if _, ok := limits[h]; ok {
+			t.Errorf("%s has a default rate entry; rates must come from the fallback", h)
 		}
 	}
 	if DefaultMaxBodyBytes != 10<<20 {
@@ -184,5 +184,48 @@ func TestDefaultHostBodyCaps(t *testing.T) {
 func TestNegativeHostBodyCapRejected(t *testing.T) {
 	if _, err := New(Config{HostLimits: map[string]HostLimit{"x.test": hostLimit(-1)}}); err == nil {
 		t.Fatal("New accepted a negative host body cap")
+	}
+}
+
+// Caps and rates are independent: a custom fallback sets the rate of a host
+// with a built-in cap, which keeps its cap.
+func TestBuiltinCapKeepsCustomFallbackRate(t *testing.T) {
+	fb := HostLimit{Authenticated: Limit{Rate: 7, Burst: 3}, Anonymous: Limit{Rate: 7, Burst: 3}}
+	c, _ := newTestClient(t, func(c *Config) { c.FallbackLimit = fb })
+	c.limiter.mu.Lock()
+	b := c.limiter.bucketLocked("registry.npmjs.org", false, c.clock.Now())
+	rate, burst := b.limit.Rate, b.limit.Burst
+	c.limiter.mu.Unlock()
+	if rate != 7 || burst != 3 {
+		t.Errorf("npm rate = %v burst %d, want the custom fallback 7/3", rate, burst)
+	}
+	if got := c.limiter.maxBodyBytes("registry.npmjs.org", c.cfg.MaxBodyBytes); got != 64<<20 {
+		t.Errorf("npm cap = %d, want 64 MiB", got)
+	}
+}
+
+// Resolution order: operator cap, built-in cap, global. A rates-only
+// operator entry keeps the built-in cap.
+func TestBodyCapResolutionOrder(t *testing.T) {
+	c, _ := newTestClient(t, func(c *Config) {
+		c.HostLimits = map[string]HostLimit{
+			"registry.npmjs.org": hostLimit(0),       // rates only
+			"index.crates.io":    hostLimit(1 << 20), // operator cap wins
+		}
+	})
+	if got := c.limiter.maxBodyBytes("registry.npmjs.org", 1); got != 64<<20 {
+		t.Errorf("rates-only entry: cap %d, want built-in 64 MiB", got)
+	}
+	if got := c.limiter.maxBodyBytes("index.crates.io", 1); got != 1<<20 {
+		t.Errorf("operator cap: %d, want 1 MiB", got)
+	}
+	if got := c.limiter.maxBodyBytes("other.test", 5); got != 5 {
+		t.Errorf("unknown host: cap %d, want global 5", got)
+	}
+}
+
+func TestFallbackBodyCapRejected(t *testing.T) {
+	if _, err := New(Config{FallbackLimit: hostLimit(1 << 20)}); err == nil {
+		t.Fatal("New accepted MaxBodyBytes in FallbackLimit")
 	}
 }

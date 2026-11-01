@@ -44,16 +44,19 @@ func Budget(n int, per time.Duration, burst int) (Limit, error) {
 // Authorization header uses Authenticated; others use Anonymous. The two
 // budgets are tracked in separate buckets.
 //
-// MaxBodyBytes caps the decompressed response body for responses served by
-// this host, overriding Config.MaxBodyBytes. Zero means use the global cap.
+// MaxBodyBytes caps the response body for responses served by this host,
+// overriding Config.MaxBodyBytes. Zero means the built-in cap for the host if
+// there is one (64 MiB for registry.npmjs.org and index.crates.io), else the
+// global cap; so an entry that only tunes rates keeps the built-in cap. The
+// body is counted after the transport's transparent gzip decoding; a caller
+// that sets Accept-Encoding itself receives, and is capped on, wire bytes.
 // The cap follows the host that actually serves the body: a redirect from a
 // host with a large cap to one without does not carry the large cap along
 // (and the reverse). It lives here, not in a context option, so that one
 // table configures everything known about a host, a caller cannot raise a cap
 // per request, and the cap stays tied to the host the SSRF guard approved.
-// Entries given in Config.HostLimits replace the built-in entry for the same
-// host as a whole, MaxBodyBytes included. It is ignored in
-// Config.FallbackLimit, which only describes rates.
+// A non-zero value in Config.FallbackLimit is rejected: the fallback only
+// describes rates.
 type HostLimit struct {
 	Authenticated Limit
 	Anonymous     Limit
@@ -86,16 +89,8 @@ func DefaultFallbackLimit() HostLimit {
 // api.github.com allows 5,000 requests per hour with a token and 60 without.
 // Burst + Rate*1h equals those budgets (see Budget), so the buckets never
 // exceed them over any one-hour window.
-//
-// registry.npmjs.org and index.crates.io serve single documents above the
-// global 10 MiB body cap (npm packuments up to 31.5 MB for next, the
-// swc_core sparse index file 16.0 MB on 2026-11-01), so they get a 64 MiB
-// cap. Their request rates are the fallback's.
 func DefaultHostLimits() map[string]HostLimit {
-	fb := DefaultFallbackLimit()
 	return map[string]HostLimit{
-		"registry.npmjs.org": {Authenticated: fb.Authenticated, Anonymous: fb.Anonymous, MaxBodyBytes: LargeRegistryMaxBodyBytes},
-		"index.crates.io":    {Authenticated: fb.Authenticated, Anonymous: fb.Anonymous, MaxBodyBytes: LargeRegistryMaxBodyBytes},
 		"api.github.com": {
 			Authenticated: Limit{Rate: (5000 - 10) / 3600.0, Burst: 10},
 			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},
@@ -103,11 +98,28 @@ func DefaultHostLimits() map[string]HostLimit {
 	}
 }
 
-// maxBodyBytes returns the body cap for host: its entry's MaxBodyBytes if
-// set, else global.
+// largeRegistryMaxBodyBytes is the built-in body cap for registry hosts
+// that serve single documents above the global 10 MiB cap.
+const largeRegistryMaxBodyBytes = 64 << 20 // 64 MiB
+
+// defaultHostBodyCaps are the built-in body caps, kept apart from the rate
+// limits so that a custom FallbackLimit still sets those hosts' rates.
+// npm packuments reach 31.5 MB (next) and the swc_core sparse index file is
+// 16.0 MB (both measured 2026-11-01).
+var defaultHostBodyCaps = map[string]int64{
+	"registry.npmjs.org": largeRegistryMaxBodyBytes,
+	"index.crates.io":    largeRegistryMaxBodyBytes,
+}
+
+// maxBodyBytes returns the body cap for host: the operator's HostLimit
+// MaxBodyBytes if above zero, else the built-in cap for the host, else global.
 func (l *limiter) maxBodyBytes(host string, global int64) int64 {
-	if hl, ok := l.limits[normHost(host)]; ok && hl.MaxBodyBytes > 0 {
+	h := normHost(host)
+	if hl, ok := l.limits[h]; ok && hl.MaxBodyBytes > 0 {
 		return hl.MaxBodyBytes
+	}
+	if n, ok := defaultHostBodyCaps[h]; ok {
+		return n
 	}
 	return global
 }
