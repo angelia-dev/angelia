@@ -454,3 +454,36 @@ func TestPlanStringAndDefaults(t *testing.T) {
 		}
 	}
 }
+
+// A target one watch moves to is not deleted because another watch leaves it.
+func TestSwapDoesNotDeleteTargetAWatchMovesTo(t *testing.T) {
+	doc := func(a, b string) string {
+		return base + "\nwatches:\n  - {name: a, source: pypi, coordinates: {name: " + a + "}}\n  - {name: b, source: pypi, coordinates: {name: " + b + "}}\n"
+	}
+	st := openStore(t)
+	mustApply(t, st, doc("x", "y"))
+	plan := mustApply(t, st, doc("y", "z"))
+	for _, c := range plan.Changes {
+		if c.Kind == KindTarget && c.Action == Delete {
+			if tg, _ := target(t, st, "pypi", map[string]string{"name": "y"}); c.Name == tg.ID {
+				t.Fatalf("plan deletes target y:\n%s", plan)
+			}
+		}
+	}
+	if plan.Count(KindTarget, Delete) != 1 || plan.Count(KindTarget, Create) != 1 {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	if _, err := target(t, st, "pypi", map[string]string{"name": "y"}); err != nil {
+		t.Fatalf("target y: %v", err)
+	}
+	if _, err := target(t, st, "pypi", map[string]string{"name": "x"}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("target x: %v", err)
+	}
+	// A dry run reports the same.
+	f := mustParse(t, doc("z", "y"))
+	p2, err := PlanFile(t.Context(), st, f, applyOpts())
+	mustNoErr(t, err)
+	if p2.Count(KindTarget, Delete) != 0 {
+		t.Fatalf("dry plan:\n%s", p2)
+	}
+}

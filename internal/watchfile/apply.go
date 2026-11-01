@@ -160,7 +160,7 @@ func (r *reconciler) reconcile(f *File) error {
 	if err != nil {
 		return err
 	}
-	leaving, targetsToCheck, err := r.watches(f, oldWatches)
+	targetsToCheck, wanted, err := r.watches(f, oldWatches)
 	if err != nil {
 		return err
 	}
@@ -195,7 +195,6 @@ func (r *reconciler) reconcile(f *File) error {
 		if err := r.write(func() error { return r.tx.DeleteWatch(r.ctx, w.ID) }); err != nil {
 			return err
 		}
-		leaving[w.ID] = true
 		targetsToCheck[w.TargetID] = true
 		r.add(KindWatch, w.Name, Delete, "history kept")
 	}
@@ -211,17 +210,30 @@ func (r *reconciler) reconcile(f *File) error {
 
 	// Targets no watch uses any more, with their known versions.
 	for _, id := range sortedKeys(targetsToCheck) {
+		if wanted[id] {
+			continue // a watch of the file still uses it
+		}
 		ws, err := r.tx.ListWatches(r.ctx, id)
 		if err != nil {
 			return err
 		}
-		if slices.ContainsFunc(ws, func(w store.Watch) bool { return !leaving[w.ID] }) {
+		// Watches the file owns are gone or moved away; only the others stay.
+		if slices.ContainsFunc(ws, func(w store.Watch) bool { return w.ManagedBy != store.ManagedByFile }) {
 			continue
 		}
-		if err := r.write(func() error { _, err := r.tx.DeleteTargetIfUnused(r.ctx, id); return err }); err != nil {
-			return err
+		deleted := true
+		if !r.dry {
+			if err := r.write(func() error {
+				var err error
+				deleted, err = r.tx.DeleteTargetIfUnused(r.ctx, id)
+				return err
+			}); err != nil {
+				return err
+			}
 		}
-		r.add(KindTarget, id, Delete, "no watch uses it")
+		if deleted {
+			r.add(KindTarget, id, Delete, "no watch uses it")
+		}
 	}
 	return nil
 }
@@ -282,8 +294,8 @@ type targetState struct {
 	watches  []int         // plan indexes of the file's watches on it
 }
 
-func (r *reconciler) watches(f *File, old []store.Watch) (leaving, toCheck map[string]bool, err error) {
-	leaving, toCheck = map[string]bool{}, map[string]bool{}
+func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[string]bool, err error) {
+	toCheck, wanted = map[string]bool{}, map[string]bool{}
 	byName := map[string]store.Watch{}
 	for _, w := range old {
 		byName[w.Name] = w
@@ -308,6 +320,7 @@ func (r *reconciler) watches(f *File, old []store.Watch) (leaving, toCheck map[s
 			return nil, nil, err
 		}
 		targets[k] = t
+		wanted[t.id] = true
 		order = append(order, k)
 	}
 
@@ -339,7 +352,6 @@ func (r *reconciler) watches(f *File, old []store.Watch) (leaving, toCheck map[s
 			moved := cur.TargetID != t.id
 			if moved {
 				diffs = append(diffs, "source/coordinates (baseline reset)")
-				leaving[cur.ID] = true
 				toCheck[cur.TargetID] = true
 			}
 			if !jsonEqual(cur.Policy, policy) {
@@ -381,7 +393,7 @@ func (r *reconciler) watches(f *File, old []store.Watch) (leaving, toCheck map[s
 			}
 		}
 	}
-	return leaving, toCheck, nil
+	return toCheck, wanted, nil
 }
 
 func nonNilMap(m map[string]string) map[string]string {
