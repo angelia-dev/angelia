@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
 
 // Limits and defaults of the format (docs/watch-file.md section 2).
 const (
 	Version = 1
+
+	// MaxFileSize caps the size of a watch file.
+	MaxFileSize = 4 << 20
 
 	DefaultInterval = time.Hour
 	MinInterval     = 5 * time.Minute
@@ -103,10 +108,14 @@ type policyJSON struct {
 // PolicyJSON returns the canonical JSON stored as watch.policy_json.
 func (w Watch) PolicyJSON() json.RawMessage {
 	p := w.Policy
+	scheme := w.Scheme
+	if scheme == "" { // store the default too, so the stored policy is complete
+		scheme = schemes.ForSourceKind(w.Source).Name()
+	}
 	b := marshal(policyJSON{
 		Prerelease: p.Prerelease, Include: nonNilStrings(p.Include), Exclude: nonNilStrings(p.Exclude),
 		Constraint: p.Constraint, Bump: nonNilStrings(p.Bump), Cooldown: p.Cooldown.String(),
-		Baseline: p.Baseline, Scheme: w.Scheme,
+		Baseline: p.Baseline, Scheme: scheme,
 	})
 	return b
 }

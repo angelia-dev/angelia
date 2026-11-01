@@ -81,7 +81,7 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	}
 	req := byName["pypi-requests"]
 	if req.Labels["team"] != "platform" || req.Labels["tier"] != "critical" ||
-		string(req.Policy) != `{"prerelease":"none","include":[],"exclude":[],"bump":[],"cooldown":"72h0m0s","baseline":true}` {
+		string(req.Policy) != `{"prerelease":"none","include":[],"exclude":[],"bump":[],"cooldown":"72h0m0s","baseline":true,"scheme":"pep440"}` {
 		t.Fatalf("pypi-requests: %+v %s", req, req.Policy)
 	}
 	if got := string(byName["gh-cli"].Policy); !strings.Contains(got, `"scheme":"semver"`) {

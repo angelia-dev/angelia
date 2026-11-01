@@ -52,7 +52,12 @@ type Options struct {
 
 // Load reads and validates the watch file at path.
 func Load(path string, opts Options) (*File, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the operator chooses the path
+	f, err := os.Open(path) //nolint:gosec // the operator chooses the path
+	if err != nil {
+		return nil, fmt.Errorf("read watch file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read watch file: %w", err)
 	}
@@ -64,6 +69,10 @@ func Load(path string, opts Options) (*File, error) {
 // each with its line and key path.
 func Parse(data []byte, name string, opts Options) (*File, error) {
 	p := &parser{file: name, opts: opts}
+	if len(data) > MaxFileSize {
+		p.errs = append(p.errs, Error{File: name, Msg: fmt.Sprintf("file is larger than the %d MiB limit", MaxFileSize>>20)})
+		return nil, p.errs
+	}
 	root := p.document(data)
 	var f *File
 	if root != nil {
@@ -102,7 +111,7 @@ func (p *parser) document(data []byte) *yaml.Node {
 	var doc yaml.Node
 	if err := dec.Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
-			p.errf(nil, "", "file is empty: a watch file needs at least \"version: %d\"", Version)
+			p.errs = append(p.errs, Error{File: p.file, Line: 1, Msg: fmt.Sprintf("file is empty: a watch file needs at least \"version: %d\"", Version)})
 			return nil
 		}
 		p.errs = append(p.errs, yamlError(p.file, err))
@@ -200,7 +209,7 @@ func (p *parser) boolean(n *yaml.Node, jp string) (bool, bool) {
 	return n.Value == "true", true
 }
 
-func (p *parser) duration(n *yaml.Node, jp string, lo, hi time.Duration) (time.Duration, bool) {
+func (p *parser) duration(n *yaml.Node, jp string, lo, hi time.Duration, wholeSeconds bool) (time.Duration, bool) {
 	s, ok := p.str(n, jp)
 	if !ok {
 		return 0, false
@@ -212,6 +221,10 @@ func (p *parser) duration(n *yaml.Node, jp string, lo, hi time.Duration) (time.D
 	}
 	if d < lo || d > hi {
 		p.errf(n, jp, "must be between %s and %s", lo, hi)
+		return 0, false
+	}
+	if wholeSeconds && d%time.Second != 0 {
+		p.errf(n, jp, "must be a whole number of seconds (for example 90s or 1m30s)")
 		return 0, false
 	}
 	return d, true
@@ -434,7 +447,7 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 		p.warnf(n, jp, "no secret_env: the webhook is delivered unsigned")
 	}
 	if tn := m["timeout"]; tn != nil {
-		if d, ok := p.duration(tn, jp+".timeout", MinWebhookTimeout, MaxWebhookTimeout); ok {
+		if d, ok := p.duration(tn, jp+".timeout", MinWebhookTimeout, MaxWebhookTimeout, false); ok {
 			cfg.Timeout = d.String()
 		}
 	}
@@ -461,7 +474,23 @@ func (p *parser) webhookURL(s string, n *yaml.Node, jp string) bool {
 		p.errf(n, jp, "scheme must be https")
 		return false
 	}
-	for k := range u.Query() {
+	if u.Fragment != "" || u.RawFragment != "" || strings.Contains(s, "#") {
+		p.errf(n, jp, "the URL must not have a fragment")
+		return false
+	}
+	for _, seg := range strings.Split(u.Path, "/") {
+		if config.LooksLikeToken(seg) {
+			p.errf(n, jp, "a path segment looks like a credential; use secret_env to sign instead")
+			return false
+		}
+	}
+	for k, vs := range u.Query() {
+		for _, v := range vs {
+			if config.LooksLikeToken(v) {
+				p.errf(n, jp, "a query value looks like a credential; use secret_env to sign instead")
+				return false
+			}
+		}
 		lk := strings.ToLower(k)
 		if slices.ContainsFunc(secretQueryKeys, func(s string) bool { return strings.Contains(lk, s) }) {
 			p.errf(n, jp, "the query string must not carry a secret (found parameter %q); use secret_env to sign instead", k)
@@ -498,7 +527,7 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 		}
 	}
 	if in := m["interval"]; in != nil {
-		if d, ok := p.duration(in, jp+".interval", MinInterval, MaxInterval); ok {
+		if d, ok := p.duration(in, jp+".interval", MinInterval, MaxInterval, true); ok {
 			w.Interval = d
 		}
 	}
@@ -544,6 +573,9 @@ func (p *parser) policy(n *yaml.Node, jp string, out *Policy) {
 	if v := m["constraint"]; v != nil {
 		// The syntax is checked once internal/policy exists (docs/watch-file.md 2.3).
 		if s, ok := p.str(v, jp+".constraint"); ok {
+			if strings.TrimSpace(s) == "" {
+				p.errf(v, jp+".constraint", "must not be empty (omit the key to accept any version)")
+			}
 			if strings.ContainsAny(s, "\r\n") {
 				p.errf(v, jp+".constraint", "must be a single line")
 			}
@@ -554,7 +586,7 @@ func (p *parser) policy(n *yaml.Node, jp string, out *Policy) {
 		out.Bump = p.enumList(v, jp+".bump", bumpKinds)
 	}
 	if v := m["cooldown"]; v != nil {
-		if d, ok := p.duration(v, jp+".cooldown", 0, MaxCooldown); ok {
+		if d, ok := p.duration(v, jp+".cooldown", 0, MaxCooldown, true); ok {
 			out.Cooldown = d
 		}
 	}
@@ -583,9 +615,9 @@ func (p *parser) subscription(n *yaml.Node, jp string, seen map[string]int) (Sub
 		s.Filter.Type = []string{"release.published"}
 	}
 	if tn := m["template"]; tn != nil {
-		if t, ok := p.str(tn, jp+".template"); ok {
+		if t, ok := p.secretFree(tn, jp+".template"); ok {
 			if _, err := template.New("subscription").Parse(t); err != nil {
-				p.errf(tn, jp+".template", "does not parse: %v", err)
+				p.errf(tn, jp+".template", "does not parse as a Go template") // the error would quote the template text
 			}
 			s.Template = t
 		}

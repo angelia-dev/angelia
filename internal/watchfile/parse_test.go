@@ -16,7 +16,7 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		doc  string
 		want string // substring of one error line
 	}{
-		{"empty file", "", "w.yaml: file is empty"},
+		{"empty file", "", "w.yaml: line 1: file is empty"},
 		{"no version", "watches: []\n", "w.yaml: line 1: version: missing required key"},
 		{"wrong version", "version: 2\n", "w.yaml: line 1: version: must be 1"},
 		{"version is a string", "version: \"1\"\n", "w.yaml: line 1: version: must be 1"},
@@ -56,6 +56,10 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		{"subscription to a missing sink", base + "subscriptions:\n  - name: x\n    sink: nowhere\n", `line 3: subscriptions[0].sink: no sink named "nowhere" in this file`},
 		{"bad filter type", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    filter:\n      type: [release.exploded]\n", "subscriptions[0].filter.type[0]: must be one of release.published"},
 		{"bad glob", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    filter:\n      package: '[a'\n", "subscriptions[0].filter.package: invalid glob"},
+		{"interval not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    interval: 10m0.5s\n", "line 6: watches[0].interval: must be a whole number of seconds"},
+		{"cooldown not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      cooldown: 1500ms\n", "line 7: watches[0].policy.cooldown: must be a whole number of seconds"},
+		{"empty constraint", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      constraint: ''\n", "line 7: watches[0].policy.constraint: must not be empty"},
+		{"too large", base + "# " + strings.Repeat("x", MaxFileSize) + "\n", "larger than the 4 MiB limit"},
 		{"bad template", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    template: '{{ .Foo '\n", "subscriptions[0].template: does not parse"},
 	}
 	for _, tt := range tests {
@@ -98,9 +102,13 @@ func TestTokenLikeValuesAreRejectedWithoutEcho(t *testing.T) {
 		base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    labels: {k: " + tok + "}\n",
 		base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    labels: {k: whsec_abcdef}\n",
 		base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://h.example.org/x', secret_env: " + tok + "}}\n",
+		base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://h.example.org/hooks/" + tok + "/x'}}\n",
+		base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://h.example.org/x?room=" + tok + "'}}\n",
+		base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://h.example.org/x#" + tok + "'}}\n",
+		base + "subscriptions:\n  - {name: x, sink: s, template: '" + tok + "'}\n",
 	} {
 		_, err := Parse([]byte(doc), "w.yaml", opts(t))
-		if err == nil || !strings.Contains(err.Error(), "looks like a credential") {
+		if err == nil || !(strings.Contains(err.Error(), "looks like a credential") || strings.Contains(err.Error(), "fragment")) {
 			t.Fatalf("want credential error, got %v", err)
 		}
 		if strings.Contains(err.Error(), "ghp_") || strings.Contains(err.Error(), "whsec_") {
@@ -115,7 +123,7 @@ func TestDefaultsAreApplied(t *testing.T) {
 	if w.Interval != time.Hour || w.Policy.Prerelease != "none" || !w.Policy.Baseline || w.Policy.Cooldown != 0 || len(w.Labels) != 0 {
 		t.Fatalf("defaults: %+v", w)
 	}
-	want := `{"prerelease":"none","include":[],"exclude":[],"bump":[],"cooldown":"0s","baseline":true}`
+	want := `{"prerelease":"none","include":[],"exclude":[],"bump":[],"cooldown":"0s","baseline":true,"scheme":"pep440"}`
 	if string(w.PolicyJSON()) != want {
 		t.Fatalf("policy json = %s", w.PolicyJSON())
 	}
