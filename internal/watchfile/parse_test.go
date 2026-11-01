@@ -58,6 +58,8 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		{"bad glob", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    filter:\n      package: '[a'\n", "subscriptions[0].filter.package: invalid glob"},
 		{"interval not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    interval: 10m0.5s\n", "line 6: watches[0].interval: must be a whole number of seconds"},
 		{"cooldown not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      cooldown: 1500ms\n", "line 7: watches[0].policy.cooldown: must be a whole number of seconds"},
+		{"bad constraint syntax", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      constraint: '>=>1'\n", "line 7: watches[0].policy.constraint: \">=>1\": unsupported operator"},
+		{"constraint operand the scheme cannot parse", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    scheme: semver\n    policy:\n      constraint: '>=abc'\n", "line 8: watches[0].policy.constraint: constraint operand \"abc\" is not a semver version"},
 		{"empty constraint", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      constraint: ''\n", "line 7: watches[0].policy.constraint: must not be empty"},
 		{"too large", base + "# " + strings.Repeat("x", MaxFileSize) + "\n", "larger than the 4 MiB limit"},
 		{"bad template", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    template: '{{ .Foo '\n", "subscriptions[0].template: does not parse"},
