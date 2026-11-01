@@ -1,30 +1,41 @@
 # Developer entry points. They mirror the commands in AGENTS.md.
+# Run `make` or `make help` to list the targets.
+
+.DEFAULT_GOAL := help
 
 BINARY    := angelia
 BUILDINFO := github.com/angelia-dev/angelia/internal/buildinfo
-VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS   := -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(DATE)
 
-GOVULNCHECK_VERSION := v1.7.0
+# := keeps same-named environment variables from leaking in; command-line
+# overrides such as `make VERSION=v1.0.0` still work.
+VERSION := $(shell git describe --tags --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+# Commit time of HEAD in UTC, so rebuilding the same commit gives the same date.
+DATE    := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null || echo unknown)
+LDFLAGS := -X $(BUILDINFO).version=$(VERSION) -X $(BUILDINFO).commit=$(COMMIT) -X $(BUILDINFO).date=$(DATE)
 
-.PHONY: build test lint vuln generate clean
+GOLANGCI_LINT       ?= golangci-lint
+GOVULNCHECK_VERSION := v1.9.0
 
-build: ## Build bin/angelia with CGO disabled and version info injected
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/angelia
+.PHONY: help build test lint vuln generate clean
+
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+build: ## Build bin/angelia (CGO disabled, version info injected)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/angelia
 
 test: ## Run unit tests with the race detector
 	go test -race ./...
 
-lint: ## Run golangci-lint and check gofumpt formatting (config in .golangci.yml)
-	golangci-lint run
-	golangci-lint fmt --diff
+lint: ## Run golangci-lint and the gofumpt format check
+	$(GOLANGCI_LINT) run
+	$(GOLANGCI_LINT) fmt --diff
 
-vuln: ## Check dependencies and code for known vulnerabilities
+vuln: ## Check for known vulnerabilities (needs access to vuln.go.dev)
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
-generate: ## Run go generate (sqlc, oapi-codegen); commit the result
+generate: ## Run go generate (sqlc, oapi-codegen); commit the output
 	go generate ./...
 
 clean: ## Remove build output

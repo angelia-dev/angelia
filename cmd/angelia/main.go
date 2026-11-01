@@ -2,8 +2,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -11,9 +14,19 @@ import (
 )
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
-		os.Exit(1)
+	os.Exit(run())
+}
+
+// run executes the root command. SIGINT and SIGTERM cancel the context
+// passed to subcommands so they can shut down cleanly.
+func run() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+		return 1
 	}
+	return 0
 }
 
 func newRootCmd() *cobra.Command {
