@@ -66,6 +66,11 @@ type Subscription struct {
 	PolicyJson string
 }
 
+type SubscriptionGeneration struct {
+	ID         int64
+	Generation int64
+}
+
 type Target struct {
 	ID              string
 	Kind            string

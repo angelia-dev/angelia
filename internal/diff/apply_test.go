@@ -288,6 +288,10 @@ func (f failTx) ListSubscriptions(context.Context) ([]store.Subscription, error)
 	return nil, f.err("ListSubscriptions")
 }
 
+func (f failTx) SubscriptionGeneration(context.Context) (int64, error) {
+	return 0, f.err("SubscriptionGeneration")
+}
+
 func (f failTx) DeletePendingReleasesOfWatch(context.Context, string) (int64, error) {
 	return 0, f.err("DeletePendingReleasesOfWatch")
 }

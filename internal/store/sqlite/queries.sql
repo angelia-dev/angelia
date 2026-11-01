@@ -223,3 +223,6 @@ DELETE FROM pending_release WHERE watch_id = ? AND target_id = ? AND raw = ?;
 
 -- name: DeletePendingReleasesOfWatch :execrows
 DELETE FROM pending_release WHERE watch_id = ?;
+
+-- name: SubscriptionGeneration :one
+SELECT generation FROM subscription_generation WHERE id = 1;

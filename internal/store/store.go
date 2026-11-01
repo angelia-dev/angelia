@@ -62,6 +62,11 @@ type Tx interface {
 	// ListSubscriptions returns every subscription, ordered by ID, for the
 	// match step of a check (internal/event).
 	ListSubscriptions(ctx context.Context) ([]Subscription, error)
+	// SubscriptionGeneration returns a counter the store increments on every
+	// insert, update and delete of a subscription, by whichever path or
+	// process made it. A reader that cached ListSubscriptions at generation g
+	// has the current set exactly while the counter still reads g.
+	SubscriptionGeneration(ctx context.Context) (int64, error)
 	// AppendEvent writes the event and its deliveries. A delivery with an
 	// empty EventID gets e.ID; a different EventID is ErrInvalid. An event is
 	// immutable: there is no update, an ID already written is ErrConflict and

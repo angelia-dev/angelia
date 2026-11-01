@@ -3,7 +3,6 @@ package event
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -33,6 +32,9 @@ type EmitInput struct {
 	NewID func(time.Time) string
 	// Logger receives skipped subscriptions (Error). nil discards them.
 	Logger *slog.Logger
+	// Matcher caches the compiled subscriptions between calls; nil loads
+	// them from tx on every call. The caller owns it (see MatcherCache).
+	Matcher *MatcherCache
 }
 
 // Emitted counts what Emit wrote.
@@ -68,10 +70,11 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	if newID == nil {
 		newID = ulid.New
 	}
-	matcher, policies, invalid, err := loadSubscriptions(ctx, tx, logger)
+	subs, err := in.Matcher.current(ctx, tx, logger)
 	if err != nil {
 		return n, err
 	}
+	matcher, policies, invalid := subs.matcher, subs.policies, subs.invalid
 	kind := in.Target.Kind
 	trust := policy.TrustsPublishedAt(kind)
 	var ids []string
@@ -137,37 +140,6 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	return n, nil
 }
 
-// InvalidSubscription starts the LastError of the dead delivery Emit writes
-// for a subscription whose stored filter or policy does not decode.
-const InvalidSubscription = "invalid subscription filter/policy: "
-
-type invalidSub struct{ id, reason string }
-
-// loadSubscriptions builds the matcher and the policies of every
-// subscription that decodes, and lists those that do not.
-func loadSubscriptions(ctx context.Context, tx store.Tx, logger *slog.Logger) (*subscription.Matcher, map[string]subscription.Policy, []invalidSub, error) {
-	subs, err := tx.ListSubscriptions(ctx)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("event: %w", err)
-	}
-	var valid []subscription.Subscription
-	var invalid []invalidSub
-	policies := make(map[string]subscription.Policy, len(subs))
-	for _, s := range subs {
-		f, ferr := subscription.FromJSON(s.Filter)
-		p, perr := subscription.PolicyFromJSON(s.Policy)
-		if err := errors.Join(ferr, perr); err != nil {
-			logger.ErrorContext(ctx, "invalid subscription; its deliveries of this check are dead",
-				slog.String("subscription", s.ID), slog.String("error", err.Error()))
-			invalid = append(invalid, invalidSub{id: s.ID, reason: InvalidSubscription + err.Error()})
-			continue
-		}
-		valid = append(valid, subscription.Subscription{ID: s.ID, Filter: f})
-		policies[s.ID] = p
-	}
-	return subscription.NewMatcher(valid), policies, invalid, nil
-}
-
 // Committer is the part of store.Store a check commits through.
 type Committer interface {
 	InTx(ctx context.Context, fn func(tx store.Tx) error) error
@@ -184,6 +156,11 @@ type CheckInput struct {
 	Now    time.Time
 	NewID  func(time.Time) string // nil means ulid.New
 	Logger *slog.Logger
+	// Matcher is passed to Emit. When it is set and the committer also
+	// implements SubscriptionReader (the SQLite store does), Commit brings it
+	// up to date before the transaction starts, so the write lock is not held
+	// while subscriptions are loaded.
+	Matcher *MatcherCache
 }
 
 // Commit writes everything one check found in a single transaction (the
@@ -203,6 +180,11 @@ func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
 		return Emitted{}, fmt.Errorf("event: target %s scheme: %w", in.Target.ID, err)
 	}
 	schemeFor := policy.SchemeFor(kind, logger)
+	if r, ok := st.(SubscriptionReader); ok && in.Matcher != nil {
+		if err := in.Matcher.Warm(ctx, r, logger); err != nil {
+			return Emitted{}, err
+		}
+	}
 	var n Emitted
 	err = st.InTx(ctx, func(tx store.Tx) error {
 		out, err := diff.Apply(ctx, tx, diff.Input{
@@ -220,7 +202,7 @@ func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
 		}
 		n, err = Emit(ctx, tx, rel, EmitInput{
 			Target: in.Target, Instance: in.Instance, RegistryURL: in.RegistryURL, Now: in.Now,
-			NewID: in.NewID, Logger: logger,
+			NewID: in.NewID, Logger: logger, Matcher: in.Matcher,
 		})
 		return err
 	})

@@ -139,6 +139,11 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]store.Subscription, er
 	return txOps{q: s.q}.ListSubscriptions(ctx)
 }
 
+// SubscriptionGeneration implements [store.Tx] outside a transaction.
+func (s *Store) SubscriptionGeneration(ctx context.Context) (int64, error) {
+	return txOps{q: s.q}.SubscriptionGeneration(ctx)
+}
+
 // ListPendingReleases implements [store.Tx] outside a transaction.
 func (s *Store) ListPendingReleases(ctx context.Context, targetID string) ([]store.PendingRelease, error) {
 	return txOps{q: s.q}.ListPendingReleases(ctx, targetID)
