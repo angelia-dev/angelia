@@ -19,7 +19,7 @@ func TestLiveReact(t *testing.T) {
 	// The full react packument is 7.1 MB today, under netguard's default
 	// 10 MiB cap, but other packages are not (see the package documentation);
 	// use the recommended 64 MiB cap for npm.
-	c, err := netguard.New(netguard.Config{MaxBodyBytes: 64 << 20, Timeout: 2 * time.Minute})
+	c, err := netguard.New(netguard.Config{Timeout: 2 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,74 @@
+# Example watch file for `angelia serve --watches examples/watches.yaml`.
+# Format reference: docs/watch-file.md. Check it with `angelia config check --watches examples/watches.yaml`.
+version: 1
+
+sinks:
+  - name: ci-webhook
+    kind: webhook
+    config:
+      url: https://ci.example.org/hooks/angelia
+      # Never inline: the name of the environment variable that holds the Standard Webhooks
+      # signing secret ("whsec_..."). It is read from the environment of the angelia process.
+      secret_env: CI_WEBHOOK_SECRET
+
+watches:
+  - name: pypi-requests
+    source: pypi
+    coordinates:
+      name: requests
+    interval: 1h
+    labels:
+      team: platform
+      tier: critical
+    policy:
+      prerelease: none
+      cooldown: 72h
+
+  - name: pypi-pydantic-pre
+    source: pypi
+    coordinates:
+      name: pydantic
+    interval: 30m
+    labels:
+      team: platform
+    policy:
+      prerelease: only          # test against every new pre-release
+      baseline: true            # record the current versions without emitting events
+
+  - name: npm-react
+    source: npm
+    coordinates:
+      name: react
+    interval: 2h
+    labels:
+      team: web
+    policy:
+      prerelease: none
+      constraint: ">=18 <20"
+      bump: [major, minor]
+      exclude: ['-canary', '-experimental']
+
+  - name: gh-cli
+    source: github-release
+    coordinates:
+      repo: cli/cli
+    interval: 6h
+    scheme: semver            # optional override of the default scheme for the source kind
+    labels:
+      team: tooling
+
+subscriptions:
+  # Everything from the platform team goes to CI.
+  - name: platform-to-ci
+    sink: ci-webhook
+    filter:
+      labels:
+        team: platform
+
+  # Only major and minor bumps of npm and GitHub releases, for packages matching a glob.
+  - name: web-and-tooling-bumps
+    sink: ci-webhook
+    filter:
+      source: [npm, github-release]
+      bump: [major, minor]
+      package: "re*"

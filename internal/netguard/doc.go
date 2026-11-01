@@ -13,8 +13,17 @@
 //     timeouts, for idempotent requests only;
 //   - conditional requests ([Fetch], [Validators]): a 304 is reported
 //     as [Result.NotModified] and its body is never read;
-//   - a User-Agent with the build version, per-attempt timeouts and a
-//     response size cap ([ErrBodyTooLarge]);
+//   - a User-Agent with the build version and a per-attempt timeout
+//     ([Config].Timeout, 30 s);
+//   - a response size cap ([ErrBodyTooLarge]) on the body after the
+//     transport's transparent gzip decoding (a caller setting
+//     Accept-Encoding itself is capped on wire bytes): 10 MiB
+//     ([Config].MaxBodyBytes);
+//   - per-host overrides of both ([HostLimit].MaxBodyBytes and
+//     [HostLimit].Timeout), with built-in ones for the large registries
+//     registry.npmjs.org, pypi.org and index.crates.io (64 MiB, 2 minutes).
+//     A redirect does not carry them to the next host; each hop's host
+//     decides;
 //   - a basic SSRF guard ([Guard]) that refuses loopback, private,
 //     link-local, CGNAT, multicast, broadcast and IPv4-embedding IPv6
 //     addresses unless they are allowlisted.
