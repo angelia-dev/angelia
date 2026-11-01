@@ -30,9 +30,9 @@ const (
 	defaultPageSize = 100
 	// maxPages bounds a scan of a repository with a huge number of tags.
 	maxPages = 10
-	// maxLookups bounds the commit-date requests of one List call (a first
-	// scan sees every tag as new). Tags past the bound are returned without
-	// a date and are not looked up again.
+	// maxLookups bounds the commit-date requests of one List call (many new
+	// tags at once). Tags past the bound are returned without a date and are
+	// not looked up again.
 	maxLookups = 50
 	// fullRescanEvery is how often List ignores the validators of page 1.
 	fullRescanEvery = 24 * time.Hour
@@ -212,12 +212,13 @@ type cursor struct {
 	FullAt int64    `json:"full_at"`
 }
 
-func parseCursor(c string) cursor {
-	var cur cursor
-	if c != "" && json.Unmarshal([]byte(c), &cur) != nil {
-		cur = cursor{}
+// parseCursor decodes c. ok is false for an empty or unreadable cursor, which
+// marks a first scan.
+func parseCursor(c string) (cur cursor, ok bool) {
+	if c == "" || json.Unmarshal([]byte(c), &cur) != nil {
+		return cursor{}, false
 	}
-	return cur
+	return cur, true
 }
 
 // List implements source.Source.
@@ -230,7 +231,11 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		return source.Result{}, err
 	}
 	repoRef := owner + "/" + name
-	cur := parseCursor(st.Cursor)
+	cur, haveCursor := parseCursor(st.Cursor)
+	tok, err := s.token()
+	if err != nil {
+		return source.Result{}, fmt.Errorf("github-tag %s: %w", repoRef, err)
+	}
 	now := s.now()
 	// The tags endpoint has no creation order, so a new tag can sit on a
 	// later page than the one the ETag covers. Once a day, ignore the
@@ -251,7 +256,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		if page == 1 {
 			validators = prev
 		}
-		res, err := s.get(ctx, s.tagsURL(owner, name, page), validators)
+		res, err := s.get(ctx, s.tagsURL(owner, name, page), validators, tok)
 		if err != nil {
 			return source.Result{}, fmt.Errorf("github-tag %s: page %d: %w", repoRef, page, err)
 		}
@@ -290,12 +295,19 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	for _, tg := range tags {
 		names = append(names, tg.Name)
 		v := toVersion(web, owner, name, tg)
-		if !known[tg.Name] && lookups < maxLookups && shaRe.MatchString(tg.Commit.SHA) {
+		// A first scan (no readable cursor) is a baseline (ADR 0010 section
+		// 5): its dates are arbitrary and would burn the anonymous rate limit.
+		if haveCursor && !known[tg.Name] && lookups < maxLookups && shaRe.MatchString(tg.Commit.SHA) {
 			lookups++
-			d, err := s.commitDate(ctx, owner, name, tg.Commit.SHA)
+			d, err := s.commitDate(ctx, owner, name, tg.Commit.SHA, tok)
 			if err != nil {
-				// State is not advanced: the next call retries this tag.
-				return source.Result{}, fmt.Errorf("github-tag %s: date of %s: %w", repoRef, tg.Name, err)
+				if ctx.Err() != nil || fatalLookup(err) {
+					// State is not advanced: the next call retries this tag.
+					return source.Result{}, fmt.Errorf("github-tag %s: date of %s: %w", repoRef, tg.Name, err)
+				}
+				// The tag stays undated; the error text carries no URL.
+				slog.WarnContext(ctx, "github-tag: commit date lookup failed, tag left undated",
+					"repo", repoRef, "tag", tg.Name)
 			}
 			v.PublishedAt = d
 		}
@@ -312,6 +324,26 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	return source.Result{Versions: out, State: state}, nil
 }
 
+// fatalLookup reports whether a date lookup error must fail List: a context
+// error, or a real rate limit (the server named a retry time).
+func fatalLookup(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var se *netguard.StatusError
+	return errors.As(err, &se) && !se.RetryAt.IsZero()
+}
+
+// tagPath escapes each segment of a tag name but keeps "/" (github.com
+// accepts it unescaped in /releases/tag/<name>).
+func tagPath(name string) string {
+	parts := strings.Split(name, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
+}
+
 func toVersion(web, owner, repo string, tg apiTag) source.Version {
 	md := map[string]any{"sha": tg.Commit.SHA}
 	if tg.TarballURL != "" {
@@ -319,7 +351,7 @@ func toVersion(web, owner, repo string, tg apiTag) source.Version {
 	}
 	return source.Version{
 		Raw: tg.Name,
-		URL: web + "/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases/tag/" + url.PathEscape(tg.Name),
+		URL: web + "/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases/tag/" + tagPath(tg.Name),
 		// Prerelease is nil: a tag has no upstream flag; policy decides.
 		Metadata: md,
 	}
@@ -347,9 +379,9 @@ func (s *Source) tagsURL(owner, name string, page int) string {
 
 // commitDate returns the committer date of sha (the date the tag points at).
 // A commit GitHub cannot serve (404, 409, 422) yields a zero time, not an error.
-func (s *Source) commitDate(ctx context.Context, owner, name, sha string) (time.Time, error) {
+func (s *Source) commitDate(ctx context.Context, owner, name, sha string, tok secret) (time.Time, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/git/commits/%s", s.base, url.PathEscape(owner), url.PathEscape(name), sha)
-	res, err := s.get(ctx, u, netguard.Validators{})
+	res, err := s.get(ctx, u, netguard.Validators{}, tok)
 	if err != nil {
 		var se *netguard.StatusError
 		if errors.As(err, &se) && (se.StatusCode == http.StatusNotFound || se.StatusCode == http.StatusConflict || se.StatusCode == http.StatusUnprocessableEntity) {
@@ -367,17 +399,13 @@ func (s *Source) commitDate(ctx context.Context, owner, name, sha string) (time.
 	return c.Author.Date, nil
 }
 
-func (s *Source) get(ctx context.Context, u string, v netguard.Validators) (*netguard.Result, error) {
+func (s *Source) get(ctx context.Context, u string, v netguard.Validators, tok secret) (*netguard.Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, errors.New("build request: invalid base URL")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	tok, err := s.token()
-	if err != nil {
-		return nil, err
-	}
 	if tok != "" {
 		if !tokenSafe(req.URL) {
 			return nil, errBasePlain

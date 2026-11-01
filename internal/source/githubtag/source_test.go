@@ -1,10 +1,12 @@
 package githubtag_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +32,12 @@ const (
 	commitPrefix = "/repos/example/tool/git/commits/"
 	enterprisePx = "/api/v3"
 )
+
+func fixedNow() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
+
+// earlier is the state of a previous scan that knew none of the fixture tags,
+// so every tag is new and (not being a first scan) gets a date lookup.
+var earlier = source.FetchState{Cursor: `{"tags":["v0.0.1"],"full_at":0}`}
 
 var valid = source.Target{Kind: "github-tag", Coordinates: map[string]string{"repo": "example/tool"}}
 
@@ -180,7 +188,8 @@ func TestContract(t *testing.T) {
 	sourcetest.Run(t, nil, sourcetest.Fixtures{
 		Handler: f,
 		New: func(baseURL string, c *http.Client) source.Source {
-			return githubtag.New(baseURL, c, githubtag.WithPageSize(2)) // 3 pages: paginated
+			// A fixed clock keeps the cursor (full_at) identical across calls.
+			return githubtag.New(baseURL, c, githubtag.WithPageSize(2), githubtag.WithClock(fixedNow)) // 3 pages: paginated
 		},
 		Valid: valid,
 		Invalid: []source.Target{
@@ -191,11 +200,12 @@ func TestContract(t *testing.T) {
 			{Kind: "github-tag", Coordinates: map[string]string{"repo": "-bad/x"}},
 			{Kind: "github-release", Coordinates: map[string]string{"repo": "example/tool"}},
 		},
-		Missing:        &source.Target{Kind: "github-tag", Coordinates: map[string]string{"repo": "example/missing"}},
-		WantRaw:        []string{"v2.1.0-rc.1", "v2.0.0", "v1.2.0", "v1.1.0", "v1.0.0"},
-		Conditional:    true,
-		Change:         func() { f.add(t) },
-		HasPublishedAt: true,
+		Missing:     &source.Target{Kind: "github-tag", Coordinates: map[string]string{"repo": "example/missing"}},
+		WantRaw:     []string{"v2.1.0-rc.1", "v2.0.0", "v1.2.0", "v1.1.0", "v1.0.0"},
+		Conditional: true,
+		Change:      func() { f.add(t) },
+		// The first scan is a baseline: no date lookups, so no PublishedAt.
+		HasPublishedAt: false,
 	})
 }
 
@@ -209,7 +219,7 @@ func newSource(t *testing.T, f *fakeUpstream, opts ...githubtag.Option) *githubt
 func TestMapsFields(t *testing.T) {
 	f := newFake(t, "")
 	s := newSource(t, f)
-	res, err := s.List(t.Context(), valid, source.FetchState{})
+	res, err := s.List(t.Context(), valid, earlier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,8 +253,13 @@ func TestOnlyNewTagsTriggerDateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(f.lookups()); got != 5 {
-		t.Fatalf("first scan: %d date lookups, want 5 (every tag is new)", got)
+	if got := len(f.lookups()); got != 0 {
+		t.Fatalf("first scan: %d date lookups, want 0 (a baseline)", got)
+	}
+	for _, v := range first.Versions {
+		if !v.PublishedAt.IsZero() {
+			t.Errorf("first scan: %s carries a date", v.Raw)
+		}
 	}
 
 	// Nothing changed: 304 on page 1, no lookup at all.
@@ -303,17 +318,77 @@ func TestDateLookupFailures(t *testing.T) {
 	f := newFake(t, "")
 	f.failSHA["c0000000000000000000000000000000000000a4"] = http.StatusUnprocessableEntity
 	s := newSource(t, f)
-	res, err := s.List(t.Context(), valid, source.FetchState{})
+	res, err := s.List(t.Context(), valid, earlier)
 	if err != nil {
 		t.Fatalf("422 on one commit must not fail List: %v", err)
 	}
 	if !res.Versions[1].PublishedAt.IsZero() || res.Versions[0].PublishedAt.IsZero() {
 		t.Errorf("versions = %+v, want only v2.0.0 undated", res.Versions)
 	}
+}
 
-	f.failSHA["c0000000000000000000000000000000000000a4"] = http.StatusInternalServerError
-	if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
-		t.Error("500 on a commit lookup: want an error so the tag is retried")
+// A lookup error that is not a context error or a rate limit (403 without
+// headers, 500) leaves the tag undated, logs one warning and advances.
+func TestOtherLookupErrorsLeaveTagUndated(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			f := newFake(t, "")
+			f.failSHA["c0000000000000000000000000000000000000a4"] = code
+			var logs bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(old)
+			s := newSource(t, f)
+			res, err := s.List(t.Context(), valid, earlier)
+			if err != nil {
+				t.Fatalf("List failed: %v", err)
+			}
+			if !res.Versions[1].PublishedAt.IsZero() || res.Versions[0].PublishedAt.IsZero() {
+				t.Errorf("want only v2.0.0 undated, got %+v", res.Versions)
+			}
+			if res.State.Cursor == "" || !strings.Contains(res.State.Cursor, "v2.0.0") {
+				t.Errorf("state did not advance: %+v", res.State)
+			}
+			out := logs.String()
+			if strings.Count(out, "level=WARN") != 1 || !strings.Contains(out, "example/tool") ||
+				!strings.Contains(out, "v2.0.0") || strings.Contains(out, "http") {
+				t.Errorf("log = %q, want one WARN with repo and tag and no URL", out)
+			}
+		})
+	}
+}
+
+// A real rate limit (the server names a retry time) fails List.
+func TestLookupRateLimitFailsList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/git/commits/") {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"name":"v1","commit":{"sha":"` + strings.Repeat("a", 40) + `"}}]`))
+	}))
+	defer srv.Close()
+	s := githubtag.New(srv.URL, sourcetest.Client(t, srv))
+	var se *netguard.StatusError
+	if _, err := s.List(t.Context(), valid, earlier); !errors.As(err, &se) || se.RetryAt.IsZero() {
+		t.Errorf("err = %v, want a *netguard.StatusError with RetryAt", err)
+	}
+}
+
+func TestLookupContextErrorFailsList(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/git/commits/") {
+			cancel()
+			return
+		}
+		_, _ = w.Write([]byte(`[{"name":"v1","commit":{"sha":"` + strings.Repeat("a", 40) + `"}}]`))
+	}))
+	defer srv.Close()
+	s := githubtag.New(srv.URL, sourcetest.Client(t, srv))
+	if _, err := s.List(ctx, valid, earlier); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
@@ -333,7 +408,7 @@ func TestLookupCap(t *testing.T) {
 	}))
 	defer srv.Close()
 	s := githubtag.New(srv.URL, sourcetest.Client(t, srv))
-	res, err := s.List(t.Context(), valid, source.FetchState{})
+	res, err := s.List(t.Context(), valid, earlier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,20 +501,20 @@ func TestFullRescanAfterAWindow(t *testing.T) {
 		t.Errorf("rescan looked up %v; no tag was new", f.lookups())
 	}
 
-	// A garbled cursor reads as empty: every tag is new again.
+	// A garbled cursor reads as empty: a first scan again, so no lookups.
 	f.reset()
 	if _, err := s.List(t.Context(), valid, source.FetchState{Cursor: "not json"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(f.lookups()); got != 5 {
-		t.Errorf("garbled cursor: %d lookups, want 5", got)
+	if got := len(f.lookups()); got != 0 {
+		t.Errorf("garbled cursor: %d lookups, want 0 (a first scan)", got)
 	}
 }
 
 func TestEnterpriseBaseURL(t *testing.T) {
 	f := newFake(t, enterprisePx)
 	s := newSource(t, f)
-	res, err := s.List(t.Context(), valid, source.FetchState{})
+	res, err := s.List(t.Context(), valid, earlier)
 	if err != nil {
 		t.Fatalf("GHE base URL with %s prefix: %v", enterprisePx, err)
 	}
@@ -644,7 +719,15 @@ func TestBadBodiesAreErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 			s := githubtag.New(srv.URL, sourcetest.Client(t, srv))
-			if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
+			res, err := s.List(t.Context(), valid, earlier)
+			if name == "commit" {
+				// A bad commit body is a lookup failure: the tag stays undated.
+				if err != nil || len(res.Versions) != 1 || !res.Versions[0].PublishedAt.IsZero() {
+					t.Errorf("res = %+v, err = %v; want one undated tag", res, err)
+				}
+				return
+			}
+			if err == nil {
 				t.Error("expected a decode error")
 			}
 		})
@@ -693,5 +776,39 @@ func TestDefaultBaseMapsToWebURL(t *testing.T) {
 	}
 	if got := res.Versions[1].URL; got != "https://github.com/example/tool/releases/tag/v2.0.0" {
 		t.Errorf("URL = %q", got)
+	}
+}
+
+// A tag name with "/" keeps it in the web URL; other reserved characters are
+// escaped per segment.
+func TestTagURLKeepsSlash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"name":"release/v1.0 #1","commit":{"sha":"` + strings.Repeat("a", 40) + `"}}]`))
+	}))
+	defer srv.Close()
+	s := githubtag.New(srv.URL, sourcetest.Client(t, srv))
+	res, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Versions[0].URL; !strings.HasSuffix(got, "/example/tool/releases/tag/release/v1.0%20%231") {
+		t.Errorf("URL = %q", got)
+	}
+}
+
+// The token from the environment is sent on every request of a List call.
+func TestTokenEnvWorksAcrossPages(t *testing.T) {
+	f := newFake(t, "")
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	t.Setenv("GHTAG_TEST_TOKEN", secretToken)
+	s := githubtag.New(srv.URL, sourcetest.Client(t, srv), githubtag.WithTokenEnv("GHTAG_TEST_TOKEN"), githubtag.WithPageSize(2))
+	if _, err := s.List(t.Context(), valid, earlier); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.records() {
+		if r.Auth != "Bearer "+secretToken {
+			t.Fatalf("request %s carried %q", r.Path, r.Auth)
+		}
 	}
 }
