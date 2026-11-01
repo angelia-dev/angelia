@@ -19,6 +19,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0012](0012-policy-evaluation-order-and-cooldown.md) | Policy runs in a fixed order after the diff; cooldown holds versions in a table and re-checks them on every check | Proposed | #57 |
 | [0014](0014-subscription-policy-overrides.md) | Subscriptions narrow the watch policy with `bump`, `prerelease` and `cooldown`; a per-subscription cooldown is a held delivery | Proposed | #69 |
 | [0015](0015-release-event-outbox-in-house.md) | Release events are built in-house as plain structs; the outbox is the delivery rows; events are immutable in the schema | Proposed | #106 |
+| [0016](0016-dispatcher-delivery-leases-and-retries.md) | The dispatcher leases deliveries through the lease table, retries with full-jitter backoff, and passes sinks one request struct | Proposed | #107 |
 
 ## Process
 

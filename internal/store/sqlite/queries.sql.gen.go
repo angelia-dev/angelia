@@ -432,6 +432,96 @@ func (q *Queries) FailPendingDeliveries(ctx context.Context, arg FailPendingDeli
 	return result.RowsAffected()
 }
 
+const finishLeasedDelivery = `-- name: FinishLeasedDelivery :execrows
+UPDATE delivery
+SET status = ?1, next_attempt_at = ?2, last_error = ?3
+WHERE id = ?4 AND status = 'in_flight'
+  AND EXISTS (
+    SELECT 1 FROM lease WHERE lease.name = ?5 AND lease.holder = ?6
+  )
+`
+
+type FinishLeasedDeliveryParams struct {
+	Status        string
+	NextAttemptAt sql.NullInt64
+	LastError     sql.NullString
+	ID            string
+	LeaseName     string
+	Holder        string
+}
+
+// The end of an attempt, fenced by its lease: it applies only while holder
+// still owns the lease row, expired or not. Leasing replaces the row, so a
+// holder whose delivery was taken over writes nothing.
+func (q *Queries) FinishLeasedDelivery(ctx context.Context, arg FinishLeasedDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishLeasedDelivery,
+		arg.Status,
+		arg.NextAttemptAt,
+		arg.LastError,
+		arg.ID,
+		arg.LeaseName,
+		arg.Holder,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getEvent = `-- name: GetEvent :one
+SELECT seq, id, watch_id, type, payload_json, created_at FROM event WHERE id = ?
+`
+
+func (q *Queries) GetEvent(ctx context.Context, id string) (Event, error) {
+	row := q.db.QueryRowContext(ctx, getEvent, id)
+	var i Event
+	err := row.Scan(
+		&i.Seq,
+		&i.ID,
+		&i.WatchID,
+		&i.Type,
+		&i.PayloadJson,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getSink = `-- name: GetSink :one
+SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE id = ?
+`
+
+func (q *Queries) GetSink(ctx context.Context, id string) (Sink, error) {
+	row := q.db.QueryRowContext(ctx, getSink, id)
+	var i Sink
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.ConfigJsonEncrypted,
+		&i.Name,
+		&i.ManagedBy,
+	)
+	return i, err
+}
+
+const getSubscription = `-- name: GetSubscription :one
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE id = ?
+`
+
+func (q *Queries) GetSubscription(ctx context.Context, id string) (Subscription, error) {
+	row := q.db.QueryRowContext(ctx, getSubscription, id)
+	var i Subscription
+	err := row.Scan(
+		&i.ID,
+		&i.FilterJson,
+		&i.SinkID,
+		&i.Template,
+		&i.Name,
+		&i.ManagedBy,
+		&i.PolicyJson,
+	)
+	return i, err
+}
+
 const getTarget = `-- name: GetTarget :one
 SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE id = ?
 `
@@ -494,6 +584,25 @@ func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 		&i.ManagedBy,
 	)
 	return i, err
+}
+
+const hasLeasableDueDeliveries = `-- name: HasLeasableDueDeliveries :one
+SELECT EXISTS (
+  SELECT 1 FROM delivery d
+  WHERE ((d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?1))
+         OR d.status = 'in_flight')
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+    )
+)
+`
+
+func (q *Queries) HasLeasableDueDeliveries(ctx context.Context, now sql.NullInt64) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasLeasableDueDeliveries, now)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const hasLeasableDueTargets = `-- name: HasLeasableDueTargets :one
@@ -635,6 +744,51 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLeasableDueDeliveries = `-- name: ListLeasableDueDeliveries :many
+SELECT d.id FROM delivery d
+WHERE ((d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?1))
+       OR d.status = 'in_flight')
+  AND NOT EXISTS (
+    SELECT 1 FROM lease
+    WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+  )
+ORDER BY d.next_attempt_at, d.id
+LIMIT ?2
+`
+
+type ListLeasableDueDeliveriesParams struct {
+	Now     sql.NullInt64
+	MaxRows int64
+}
+
+// Dispatcher (story #107, ADR 0016). A delivery is due when it is pending
+// and its next_attempt_at has passed (NULL counts as due), or when it is in
+// flight under no unexpired lease: its holder crashed or stalled, so it is
+// sent again (at-least-once). Oldest due first. Postgres will use
+// FOR UPDATE SKIP LOCKED here instead.
+func (q *Queries) ListLeasableDueDeliveries(ctx context.Context, arg ListLeasableDueDeliveriesParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listLeasableDueDeliveries, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -1129,6 +1283,36 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const startDeliveryAttempt = `-- name: StartDeliveryAttempt :one
+UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
+WHERE id = ?
+RETURNING id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input
+`
+
+// Every lease of a delivery counts as an attempt, so an attempt cut short
+// by a crash counts too.
+func (q *Queries) StartDeliveryAttempt(ctx context.Context, id string) (Delivery, error) {
+	row := q.db.QueryRowContext(ctx, startDeliveryAttempt, id)
+	var i Delivery
+	err := row.Scan(
+		&i.ID,
+		&i.EventID,
+		&i.SubscriptionID,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastError,
+		&i.HeldUntil,
+		&i.HoldStartedAt,
+		&i.HoldWatchCooldownMs,
+		&i.HoldPrerelease,
+		&i.HoldWatchID,
+		&i.HoldRaw,
+		&i.HoldInput,
+	)
+	return i, err
 }
 
 const targetExists = `-- name: TargetExists :one
