@@ -36,8 +36,8 @@ func TestLiveGitLabRunner(t *testing.T) {
 	}
 	t.Logf("gitlab-runner: %d releases, newest %s", len(res.Versions), res.Versions[0].Raw)
 
-	// gitlab.com does not always send an ETag for this endpoint: only check
-	// the conditional request when it did.
+	// Check the conditional request only when gitlab.com sent an ETag for
+	// this endpoint (it may not for every project).
 	if res.State.ETag != "" {
 		again, err := s.List(t.Context(), target, res.State)
 		if err != nil {

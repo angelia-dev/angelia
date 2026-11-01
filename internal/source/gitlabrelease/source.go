@@ -23,7 +23,8 @@ const Kind = "gitlab-release"
 
 // DefaultBaseURL is gitlab.com. For a self-managed instance use its root URL,
 // "https://HOST" (or "https://HOST/prefix" if GitLab is served under a
-// relative URL root). A trailing "/api/v4" is accepted and ignored.
+// relative URL root). A trailing "/api/v4" (any case) is accepted and ignored.
+// A base URL with a query or a fragment is invalid.
 const DefaultBaseURL = "https://gitlab.com"
 
 const (
@@ -32,7 +33,10 @@ const (
 	maxPages = 10
 	// fullRescanEvery is how often List ignores the validators of page 1.
 	fullRescanEvery = 24 * time.Hour
-	apiSuffix       = "/api/v4"
+	// upcomingGrace delays the rescan that reports an upcoming release, so
+	// that GitLab has flipped upcoming_release by the time it is made.
+	upcomingGrace = time.Minute
+	apiSuffix     = "/api/v4"
 )
 
 var (
@@ -138,7 +142,7 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 		baseURL = DefaultBaseURL
 	}
 	s := &Source{
-		base:     strings.TrimSuffix(strings.TrimRight(baseURL, "/"), apiSuffix),
+		base:     trimAPISuffix(strings.TrimRight(baseURL, "/")),
 		token:    func() (secret, error) { return "", nil },
 		pageSize: defaultPageSize,
 		now:      time.Now,
@@ -149,7 +153,10 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	cp := *hc
 	orig := cp.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if req.Header.Get("PRIVATE-TOKEN") != "" || req.Header.Get("Authorization") != "" {
+		// The credentials are those of the original request: net/http drops
+		// Authorization on a cross-domain hop but keeps PRIVATE-TOKEN, so
+		// req.Header says nothing about what the first request carried.
+		if h := via[0].Header; h.Get("PRIVATE-TOKEN") != "" || h.Get("Authorization") != "" {
 			if !tokenSafe(req.URL) || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
 				return fmt.Errorf("gitlab-release: refusing to follow a redirect to %s with credentials", req.URL.Host)
 			}
@@ -165,12 +172,21 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	s.hc = &cp
 	u, err := url.Parse(s.base)
 	switch {
-	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil:
-		s.cfgErr = errors.New("invalid base URL: want an absolute http(s) URL without credentials")
+	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(baseURL, "?#"):
+		s.cfgErr = errors.New("invalid base URL: want an absolute http(s) URL without credentials, query or fragment")
 	case s.tokenSet && !tokenSafe(u):
 		s.cfgErr = errBasePlain
 	}
 	return s
+}
+
+// trimAPISuffix removes a trailing "/api/v4", whatever its case.
+func trimAPISuffix(base string) string {
+	if n := len(base) - len(apiSuffix); n >= 0 && strings.EqualFold(base[n:], apiSuffix) {
+		return base[:n]
+	}
+	return base
 }
 
 // Kind implements source.Source.
@@ -222,6 +238,10 @@ type apiRelease struct {
 // cursor is the JSON kept in FetchState.Cursor.
 type cursor struct {
 	FullAt int64 `json:"full_at"` // unix seconds of the last validator-free scan
+	// MaxCreatedMs is the newest created_at (unix milliseconds) of a released
+	// (not upcoming) release seen so far. Pages are ordered by created_at, so a
+	// page whose entries are all at or below it holds nothing new.
+	MaxCreatedMs int64 `json:"max_created_at,omitempty"`
 	// UpcomingAt is the earliest released_at (unix seconds) of an upcoming
 	// release seen by the last scan, or 0. Once it has passed, the release is
 	// no longer upcoming but the ETag may not have changed, so List rescans.
@@ -255,7 +275,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	// and the ETag does not change with the clock. Once a day, and as soon as
 	// the earliest upcoming release is due, ignore the validators.
 	full := now.Unix()-cur.FullAt >= int64(fullRescanEvery/time.Second) || cur.FullAt > now.Unix() ||
-		(cur.UpcomingAt > 0 && now.Unix() >= cur.UpcomingAt)
+		(cur.UpcomingAt > 0 && now.Unix() >= cur.UpcomingAt+int64(upcomingGrace/time.Second))
 	prev := netguard.Validators{ETag: st.ETag, LastModified: st.LastModified}
 	if full {
 		prev = netguard.Validators{}
@@ -266,7 +286,16 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		seen     = map[string]bool{}
 		state    source.FetchState
 		upcoming int64
+		maxMs    = cur.MaxCreatedMs
 	)
+	known := cur.MaxCreatedMs
+	if full {
+		known = -1 // a full scan walks every page
+	}
+	if !full {
+		// Still pending: the scan may stop before the page that lists it.
+		upcoming = cur.UpcomingAt
+	}
 	for page := 1; page <= maxPages; page++ {
 		validators := netguard.Validators{}
 		if page == 1 {
@@ -288,7 +317,15 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		if err := json.Unmarshal(res.Body, &rels); err != nil {
 			return source.Result{}, fmt.Errorf("gitlab-release %s: page %d: decode: %w", project, page, err)
 		}
+		anyKnown := false
 		for _, r := range rels {
+			if !r.UpcomingRelease {
+				ms := r.CreatedAt.UnixMilli()
+				if ms <= known {
+					anyKnown = true // the order is created_at desc: all that follows is known
+				}
+				maxMs = max(maxMs, ms)
+			}
 			if r.TagName == "" || seen[r.TagName] {
 				continue
 			}
@@ -302,11 +339,15 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 			}
 			out = append(out, s.toVersion(project, r))
 		}
-		if len(rels) < s.pageSize {
+		// X-Next-Page is empty on the last page. Without the header (stripped by
+		// a proxy) fall back to a short page. An early stop needs a released
+		// entry already seen; upcoming releases say nothing about order.
+		if np, ok := res.Header["X-Next-Page"]; (ok && (len(np) == 0 || np[0] == "")) || (!ok && len(rels) < s.pageSize) ||
+			anyKnown {
 			break
 		}
 	}
-	next := cursor{FullAt: cur.FullAt, UpcomingAt: upcoming}
+	next := cursor{FullAt: cur.FullAt, UpcomingAt: upcoming, MaxCreatedMs: maxMs}
 	if full {
 		next.FullAt = now.Unix()
 	}
@@ -321,7 +362,12 @@ func (s *Source) toVersion(project string, r apiRelease) source.Version {
 	if r.ReleasedAt != nil && !r.ReleasedAt.IsZero() {
 		published = *r.ReleasedAt
 	}
+	// released_at is set by the releaser (it may be in the past or the future):
+	// created_at is when GitLab recorded the release, so it is kept too.
 	md := map[string]any{}
+	if !r.CreatedAt.IsZero() {
+		md["created_at"] = r.CreatedAt.UTC().Format(time.RFC3339)
+	}
 	if r.Name != "" {
 		md["name"] = r.Name
 	}
@@ -357,14 +403,14 @@ func (s *Source) releaseURL(project string, r apiRelease) string {
 // releasesURL URL-encodes the project path as one segment ("a/b" becomes
 // "a%2Fb"), as the GitLab API requires.
 func (s *Source) releasesURL(project string, page int) string {
-	return fmt.Sprintf("%s%s/projects/%s/releases?order_by=released_at&sort=desc&per_page=%d&page=%d",
+	return fmt.Sprintf("%s%s/projects/%s/releases?order_by=created_at&sort=desc&per_page=%d&page=%d",
 		s.base, apiSuffix, url.PathEscape(project), s.pageSize, page)
 }
 
 func (s *Source) get(ctx context.Context, u string, v netguard.Validators, tok secret) (*netguard.Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, errors.New("build request: invalid base URL")
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	if tok != "" {

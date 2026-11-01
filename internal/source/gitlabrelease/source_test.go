@@ -154,6 +154,12 @@ func (f *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lo := min((page-1)*per, len(f.releases))
 	hi := min(lo+per, len(f.releases))
 	finish(http.StatusOK)
+	// GitLab sends X-Next-Page empty on the last page.
+	next := ""
+	if hi < len(f.releases) {
+		next = strconv.Itoa(page + 1)
+	}
+	w.Header()["X-Next-Page"] = []string{next}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(f.releases[lo:hi])
 }
@@ -237,6 +243,10 @@ func TestMapsFields(t *testing.T) {
 	if want := srv.URL + "/example-group/sub/tool/-/releases/v1.1.0"; noLinkSafe.URL != want {
 		t.Errorf("fallback URL = %q, want %q", noLinkSafe.URL, want)
 	}
+	// released_at is user-settable: created_at is kept in the metadata.
+	if ga.Metadata["created_at"] != "2026-09-01T09:00:00Z" {
+		t.Errorf("created_at metadata = %v", ga.Metadata["created_at"])
+	}
 	// released_at null falls back to created_at; no name means no name key.
 	if noLink.PublishedAt.Format(time.RFC3339) != "2026-06-01T09:00:00Z" {
 		t.Errorf("PublishedAt = %v, want created_at", noLink.PublishedAt)
@@ -248,7 +258,7 @@ func TestMapsFields(t *testing.T) {
 		t.Errorf("state = %+v", res.State)
 	}
 	recs := f.records()
-	if len(recs) != 1 || recs[0].PerPage != 100 || !strings.Contains(recs[0].Query, "order_by=released_at") || !strings.Contains(recs[0].Query, "sort=desc") {
+	if len(recs) != 1 || recs[0].PerPage != 100 || !strings.Contains(recs[0].Query, "order_by=created_at") || !strings.Contains(recs[0].Query, "sort=desc") {
 		t.Errorf("requests = %+v, want one page request with per_page=100, newest first", recs)
 	}
 }
@@ -281,6 +291,7 @@ func TestSelfManagedBaseURL(t *testing.T) {
 		"relative url root":   {"/gitlab", "/gitlab"},
 		"api suffix accepted": {"", "/api/v4"},
 		"trailing slash":      {"", "/"},
+		"api suffix any case": {"", "/API/V4/"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t, c.prefix)
@@ -399,7 +410,10 @@ func TestBlankFixedTokenIsAnError(t *testing.T) {
 }
 
 func TestInvalidBaseURLIsReportedByList(t *testing.T) {
-	for _, base := range []string{"ftp://x", "://bad", "https://user:pw@host", "/relative"} {
+	for _, base := range []string{
+		"ftp://x", "://bad", "https://user:pw@host", "/relative",
+		"https://host?x=1", "https://host/?", "https://host#frag", "https://host/api/v4?x=1",
+	} {
 		s := gitlabrelease.New(base, http.DefaultClient)
 		if _, err := s.List(t.Context(), valid, source.FetchState{}); err == nil {
 			t.Errorf("base %q: want an error", base)
@@ -450,6 +464,13 @@ func TestRedirectNeverCarriesToken(t *testing.T) {
 	otherName := httptest.NewServer(redirectTo("http://localhost:" + port + "/x")) // 127.0.0.1 -> localhost
 	defer otherName.Close()
 
+	// https to https on the same IP and port but another (sub)domain: only the
+	// host comparison can refuse it. It is refused before any dial.
+	subdomain := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://api.gitlab.example.test:"+port+"/x", http.StatusFound) //nolint:gosec // G710: test server, fixed target.
+	}))
+	defer subdomain.Close()
+
 	cases := map[string]struct {
 		base string
 		hc   *http.Client
@@ -460,6 +481,8 @@ func TestRedirectNeverCarriesToken(t *testing.T) {
 		"host name changes":            {otherName.URL, &http.Client{}, nil},
 		"bearer, host name changes":    {otherName.URL, &http.Client{}, []gitlabrelease.Option{gitlabrelease.WithBearerAuth()}},
 		"bearer, same host, otherport": {sameHostOtherPort.URL, &http.Client{}, []gitlabrelease.Option{gitlabrelease.WithBearerAuth()}},
+		"https to a subdomain":         {subdomain.URL, subdomain.Client(), nil},
+		"bearer, https to a subdomain": {subdomain.URL, subdomain.Client(), []gitlabrelease.Option{gitlabrelease.WithBearerAuth()}},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -513,8 +536,8 @@ func TestPaginationAndNotModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3, 4}) {
-		t.Fatalf("pages = %v, want [1 2 3 4] (the last one is empty)", got)
+	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("pages = %v, want [1 2 3] (X-Next-Page is empty on the last)", got)
 	}
 	f.reset()
 	second, err := s.List(t.Context(), valid, first.State)
@@ -563,7 +586,12 @@ func TestUpcomingReleaseAppearsWhenDue(t *testing.T) {
 	// After it: GitLab flips the flag without changing the ETag.
 	f.release(t)
 	f.reset()
-	now = time.Date(2027, 1, 15, 0, 0, 1, 0, time.UTC)
+	now = time.Date(2027, 1, 15, 0, 0, 30, 0, time.UTC)
+	if res, err = s.List(t.Context(), valid, first.State); err != nil || !res.NotModified {
+		t.Fatalf("within the grace minute: %+v, %v; want NotModified", res, err)
+	}
+	f.reset()
+	now = time.Date(2027, 1, 15, 0, 1, 1, 0, time.UTC)
 	res, err = s.List(t.Context(), valid, first.State)
 	if err != nil || res.NotModified {
 		t.Fatalf("after due: %+v, %v; want a full, unconditional scan", res, err)
@@ -598,7 +626,7 @@ func TestFullRescanAfterAWindow(t *testing.T) {
 	if err != nil || res.NotModified {
 		t.Fatalf("after the window: %+v, %v; want a full, unconditional scan", res, err)
 	}
-	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3, 4}) || f.records()[0].IfNoneMatch != "" {
+	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3}) || f.records()[0].IfNoneMatch != "" {
 		t.Errorf("rescan pages = %v, first request %+v", got, f.records()[0])
 	}
 	if len(res.Versions) != 5 {
@@ -606,7 +634,7 @@ func TestFullRescanAfterAWindow(t *testing.T) {
 	}
 	// A garbage cursor is a first scan.
 	f.reset()
-	if _, err := s.List(t.Context(), valid, source.FetchState{Cursor: "garbage"}); err != nil || len(f.records()) != 4 {
+	if _, err := s.List(t.Context(), valid, source.FetchState{Cursor: "garbage"}); err != nil || len(f.records()) != 3 {
 		t.Errorf("garbage cursor: %v, %d requests, want a full scan", err, len(f.records()))
 	}
 }
@@ -706,4 +734,104 @@ func TestWithNetguardClient(t *testing.T) {
 	if recs := f.records(); recs[0].PrivateToken != secretToken || recs[1].Status != http.StatusNotModified {
 		t.Errorf("records = %+v", recs)
 	}
+}
+
+// Acceptance: an ETag change that adds one release fetches page 1 only (the
+// pages are ordered by created_at), while the daily full scan walks them all.
+func TestETagChangeStopsAtKnownReleases(t *testing.T) {
+	f := newFake(t, "")
+	now := fixedNow()
+	s, _ := newSource(t, f, gitlabrelease.WithPageSize(3), gitlabrelease.WithClock(func() time.Time { return now }))
+	first, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first.State.Cursor, `"max_created_at":1791622800000`) { // rc.1, 2026-10-10T09:00Z
+		t.Fatalf("cursor = %s, want max_created_at of the newest released release", first.State.Cursor)
+	}
+	f.add(t)
+	f.reset()
+	res, err := s.List(t.Context(), valid, first.State)
+	if err != nil || res.NotModified {
+		t.Fatalf("after a change: %+v, %v", res, err)
+	}
+	if got := pages(f.records()); !slices.Equal(got, []int{1}) {
+		t.Errorf("pages = %v, want only [1]", got)
+	}
+	var raws []string
+	for _, v := range res.Versions {
+		raws = append(raws, v.Raw)
+	}
+	if !slices.Contains(raws, "v2.1.0") {
+		t.Errorf("versions = %v, want the new v2.1.0", raws)
+	}
+	if !strings.Contains(res.State.Cursor, `"max_created_at":1792486800000`) || !strings.Contains(res.State.Cursor, `"upcoming_at":1799971200`) {
+		t.Errorf("cursor = %s, want the new max and the pending upcoming release kept", res.State.Cursor)
+	}
+
+	// The daily full scan ignores the early stop.
+	f.reset()
+	now = now.Add(25 * time.Hour)
+	if res, err = s.List(t.Context(), valid, res.State); err != nil || res.NotModified || len(res.Versions) != 6 {
+		t.Fatalf("full scan: %d versions, %v", len(res.Versions), err)
+	}
+	if got := pages(f.records()); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Errorf("full scan pages = %v, want [1 2 3]", got)
+	}
+}
+
+// A release backdated through released_at (a "historical" release) has a
+// recent created_at, so the early stop still reports it.
+func TestBackdatedReleaseIsFoundEarly(t *testing.T) {
+	f := newFake(t, "")
+	s, _ := newSource(t, f, gitlabrelease.WithPageSize(2), gitlabrelease.WithClock(fixedNow))
+	first, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.releases = slices.Insert(f.releases, 1, json.RawMessage(`{"tag_name":"v0.9.0","name":"old","created_at":"2026-10-30T09:00:00.000Z","released_at":"2020-01-01T00:00:00.000Z","upcoming_release":false}`))
+	f.extra++
+	f.mu.Unlock()
+	f.reset()
+	res, err := s.List(t.Context(), valid, first.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range res.Versions {
+		if v.Raw == "v0.9.0" {
+			found = true
+			if v.PublishedAt.Year() != 2020 || v.Metadata["created_at"] != "2026-10-30T09:00:00Z" {
+				t.Errorf("v0.9.0 = %+v", v)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("backdated release not reported: %+v", res.Versions)
+	}
+	if got := pages(f.records()); len(got) > 2 {
+		t.Errorf("pages = %v, want an early stop", got)
+	}
+}
+
+// The recorded release carries assets, author, evidences and more: they are
+// ignored, and the fields we use are still mapped.
+func TestRealShapedRecordIsMapped(t *testing.T) {
+	f := newFake(t, "")
+	f.add(t)
+	s, _ := newSource(t, f, gitlabrelease.WithClock(fixedNow))
+	res, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range res.Versions {
+		if v.Raw == "v2.1.0" {
+			if v.Metadata["sha"] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa7" || v.URL != "https://gitlab.com/example-group/sub/tool/-/releases/v2.1.0" {
+				t.Errorf("v2.1.0 = %+v", v)
+			}
+			return
+		}
+	}
+	t.Error("v2.1.0 not reported")
 }
