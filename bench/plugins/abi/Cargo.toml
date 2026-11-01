@@ -1,0 +1,13 @@
+[package]
+name = "angelia-plugin-abi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Draft Angelia source-plugin ABI v0: wire types and host function bindings (prototype, angelia-dev/angelia#59)"
+
+[dependencies]
+extism-pdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
