@@ -5,11 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,7 +44,7 @@ func (u *upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, err := os.ReadFile(filepath.Join("testdata", name+".json")) //nolint:gosec // G304: name is checked above and the file is a test fixture.
+	body, err := fs.ReadFile(os.DirFS("testdata"), name+".json")
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -156,11 +156,8 @@ func TestLargeAndOrder(t *testing.T) {
 		t.Logf("oldest requests version = %q", got)
 	}
 	v := byRaw(req)["2.31.0"]
-	if !strings.HasSuffix(v.URL, "/project/requests/2.31.0/") {
-		t.Errorf("URL = %q", v.URL)
-	}
-	if !strings.HasSuffix(v.Metadata["project_url"].(string), "/project/requests/") {
-		t.Errorf("project_url = %v", v.Metadata["project_url"])
+	if v.URL != "" || v.Metadata["project_url"] != nil {
+		t.Errorf("mirror base: URL = %q, project_url = %v, want both left out", v.URL, v.Metadata["project_url"])
 	}
 }
 
@@ -333,7 +330,85 @@ func TestMirrorBaseURLWithTrailingSlashAndPath(t *testing.T) {
 	if path != "/mirror/pypi/foo-bar/json" {
 		t.Errorf("path = %q", path)
 	}
-	if want := srv.URL + "/mirror/project/foo-bar/1.0/"; res.Versions[0].URL != want {
-		t.Errorf("URL = %q, want %q", res.Versions[0].URL, want)
+	if res.Versions[0].URL != "" {
+		t.Errorf("URL = %q, want empty for a mirror", res.Versions[0].URL)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDefaultBaseKeepsPyPIURLs(t *testing.T) {
+	t.Parallel()
+	var host string
+	c := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		host = r.URL.Host
+		rec := httptest.NewRecorder()
+		_, _ = rec.WriteString(`{"releases":{"1.0":[{"upload_time_iso_8601":"2020-01-01T00:00:00Z"}]}}`)
+		return rec.Result(), nil
+	})}
+	for _, base := range []string{pypi.DefaultBaseURL, "https://pypi.org/"} {
+		res, err := pypi.New(base, c).List(context.Background(), target("Foo_Bar"), source.FetchState{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := res.Versions[0]
+		if v.URL != "https://pypi.org/project/foo-bar/1.0/" || v.Metadata["project_url"] != "https://pypi.org/project/foo-bar/" {
+			t.Errorf("base %q: URL = %q, project_url = %v", base, v.URL, v.Metadata["project_url"])
+		}
+	}
+	if host != "pypi.org" {
+		t.Errorf("host = %q", host)
+	}
+}
+
+func TestBaseCredentialsUsedForRequestsOnly(t *testing.T) {
+	t.Parallel()
+	var user, pass string
+	var ok bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok = r.BasicAuth()
+		_, _ = w.Write([]byte(`{"releases":{"1.0":[{"upload_time_iso_8601":"2020-01-01T00:00:00Z"}]}}`))
+	}))
+	defer srv.Close()
+	base := strings.Replace(srv.URL, "http://", "http://user:s3cret@", 1) + "/m/"
+	res, err := pypi.New(base, srv.Client()).List(context.Background(), target("x"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || user != "user" || pass != "s3cret" {
+		t.Errorf("basic auth = %q %q %v, want the base credentials on the request", user, pass, ok)
+	}
+	if dump := fmt.Sprintf("%+v", res); strings.Contains(dump, "s3cret") || strings.Contains(dump, "user:") {
+		t.Errorf("credentials leaked into the result: %s", dump)
+	}
+}
+
+func TestInvalidConfiguration(t *testing.T) {
+	t.Parallel()
+	hc := &http.Client{}
+	cases := map[string]*pypi.Source{
+		"ftp scheme":  pypi.New("ftp://mirror/", hc),
+		"no scheme":   pypi.New("mirror/path", hc),
+		"no host":     pypi.New("https:///x", hc),
+		"query":       pypi.New("https://mirror/?a=b", hc),
+		"empty query": pypi.New("https://mirror/?", hc),
+		"fragment":    pypi.New("https://mirror/#x", hc),
+		"empty":       pypi.New("", hc),
+		"bad URL":     pypi.New("http://user:s3cret@[::1", hc),
+		"nil client":  pypi.New(pypi.DefaultBaseURL, nil),
+	}
+	for name, s := range cases {
+		_, err := s.List(context.Background(), target("x"), source.FetchState{})
+		if !errors.Is(err, pypi.ErrInvalidBase) {
+			t.Errorf("%s: err = %v, want ErrInvalidBase", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%s: error leaks credentials: %v", name, err)
+		}
+		if err := s.Validate(target("x")); err != nil {
+			t.Errorf("%s: Validate must not depend on the base: %v", name, err)
+		}
 	}
 }

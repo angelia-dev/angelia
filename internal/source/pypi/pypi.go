@@ -9,6 +9,7 @@ package pypi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,11 +35,17 @@ var (
 	sepRE  = regexp.MustCompile(`[-_.]+`)
 )
 
+// ErrInvalidBase is wrapped by the error List returns when New was given an
+// unusable base URL or client.
+var ErrInvalidBase = errors.New("pypi: invalid source configuration")
+
 // Source implements source.Source for PyPI. It is safe for concurrent use.
 type Source struct {
-	base   string
+	base   string // API base for requests, may carry userinfo; no trailing slash
+	public string // pypi.org page base for subscriber-facing URLs; "" for mirrors
 	client *http.Client
 	log    *slog.Logger
+	err    error // configuration error from New, returned by List
 }
 
 // Option configures a Source.
@@ -55,21 +62,68 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // New returns a Source that queries baseURL (for example DefaultBaseURL or a
-// mirror) with c. c is injected, normally the netguard client; it must not
-// be nil.
+// mirror) with c. c is injected, normally the netguard client.
+//
+// New never panics and has no error return, so the constructor still fits
+// the sourcetest and registry factory shape. An invalid configuration (nil
+// client, a base that is not an absolute http or https URL, or one with a
+// query or fragment) is remembered and returned by every List call wrapping
+// ErrInvalidBase. Validate is target-only and unaffected.
+//
+// The base may carry userinfo ("https://user:token@mirror/"); it is used
+// for requests only and never appears in a Version or its Metadata.
+//
+// Subscriber-facing URLs: with the default base (https://pypi.org) Version.URL
+// is the release page and Metadata["project_url"] the project page. For any
+// other base both are left out, because mirrors do not serve Warehouse
+// project pages.
 func New(baseURL string, c *http.Client, opts ...Option) *Source {
-	s := &Source{base: strings.TrimRight(baseURL, "/"), client: c, log: slog.Default()}
+	s := &Source{client: c, log: slog.Default()}
 	for _, o := range opts {
 		o(s)
 	}
+	if c == nil {
+		s.err = fmt.Errorf("%w: nil http client", ErrInvalidBase)
+		return s
+	}
+	u, err := url.Parse(baseURL)
+	switch {
+	case err != nil:
+		s.err = fmt.Errorf("%w: parse: %s", ErrInvalidBase, redactParseErr(err))
+	case u.Scheme != "http" && u.Scheme != "https":
+		s.err = fmt.Errorf("%w: scheme must be http or https", ErrInvalidBase)
+	case u.Host == "":
+		s.err = fmt.Errorf("%w: missing host", ErrInvalidBase)
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(baseURL, "#"):
+		s.err = fmt.Errorf("%w: query and fragment are not allowed", ErrInvalidBase)
+	default:
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawPath = strings.TrimRight(u.RawPath, "/")
+		s.base = u.String()
+		if u.Scheme == "https" && strings.EqualFold(u.Host, "pypi.org") && u.Path == "" && u.User == nil {
+			s.public = "https://pypi.org"
+		}
+	}
 	return s
+}
+
+// redactParseErr drops the URL that *url.Error echoes, which may hold
+// credentials.
+func redactParseErr(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return "invalid URL"
 }
 
 // Kind implements source.Source.
 func (*Source) Kind() string { return Kind }
 
 // Normalize returns the PEP 503 normalized form of a project name: lower
-// case, with each run of "-", "_" and "." replaced by a single "-".
+// case, with each run of "-", "_" and "." replaced by a single "-". It is
+// meant for building the target coalescing key, so that "Requests" and
+// "requests" count as one target.
 func Normalize(name string) string {
 	return strings.ToLower(sepRE.ReplaceAllString(name, "-"))
 }
@@ -97,6 +151,9 @@ func nameOf(t source.Target) (string, error) {
 // List implements source.Source. Versions are newest first by PEP 440 order;
 // releases whose version PEP 440 cannot parse come last, sorted by Raw.
 func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState) (source.Result, error) {
+	if s.err != nil {
+		return source.Result{}, s.err
+	}
 	name, err := nameOf(t)
 	if err != nil {
 		return source.Result{}, err
@@ -130,7 +187,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 			s.log.DebugContext(ctx, "pypi: skipping release without files", "project", name, "version", raw)
 			continue
 		}
-		versions = append(versions, s.version(name, raw, files))
+		versions = append(versions, s.version(ctx, name, raw, files))
 	}
 	sortNewestFirst(versions)
 	return source.Result{Versions: versions, State: state}, nil
@@ -143,16 +200,18 @@ type file struct {
 	YankedReason string `json:"yanked_reason"`
 }
 
-func (s *Source) version(name, raw string, files []file) source.Version {
+func (s *Source) version(ctx context.Context, name, raw string, files []file) source.Version {
 	v := source.Version{
 		Raw:    raw,
-		URL:    s.base + "/project/" + url.PathEscape(name) + "/" + url.PathEscape(raw) + "/",
 		Yanked: true,
 		Metadata: map[string]any{
-			"project":     name,
-			"project_url": s.base + "/project/" + url.PathEscape(name) + "/",
-			"files":       len(files),
+			"project": name,
+			"files":   len(files),
 		},
+	}
+	if s.public != "" {
+		v.URL = s.public + "/project/" + url.PathEscape(name) + "/" + url.PathEscape(raw) + "/"
+		v.Metadata["project_url"] = s.public + "/project/" + url.PathEscape(name) + "/"
 	}
 	var reason string
 	for _, f := range files {
@@ -163,7 +222,7 @@ func (s *Source) version(name, raw string, files []file) source.Version {
 		}
 		ts, err := time.Parse(time.RFC3339Nano, f.UploadTime)
 		if err != nil {
-			s.log.Debug("pypi: ignoring file upload time", "project", name, "version", raw, "value", f.UploadTime)
+			s.log.DebugContext(ctx, "pypi: ignoring file upload time", "project", name, "version", raw, "value", f.UploadTime)
 			continue
 		}
 		if v.PublishedAt.IsZero() || ts.Before(v.PublishedAt) {

@@ -4,10 +4,10 @@ package pypi_test
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 )
@@ -17,7 +17,11 @@ import (
 func TestLiveRequests(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	s := pypi.New(pypi.DefaultBaseURL, &http.Client{Timeout: 30 * time.Second})
+	nc, err := netguard.New(netguard.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := pypi.New(pypi.DefaultBaseURL, nc.HTTPClient())
 	res, err := s.List(ctx, target("requests"), source.FetchState{})
 	if err != nil {
 		t.Fatal(err)

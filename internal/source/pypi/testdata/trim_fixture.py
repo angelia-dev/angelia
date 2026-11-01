@@ -13,7 +13,7 @@ out = {
     "releases": {
         v: [
             {k: f[k] for k in ("upload_time_iso_8601", "yanked", "yanked_reason") if f.get(k) is not None}
-            for f in files[:2]
+            for f in files[:1]
         ]
         for v, files in d["releases"].items()
     },
