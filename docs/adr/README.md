@@ -13,6 +13,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0006](0006-source-target-and-fetchstate.md) | Source Target, FetchState and error contract | Proposed | #50 |
 | [0007](0007-version-schemes-in-house-with-lexical-fallback.md) | Version schemes are in-house, with a lexical fallback | Proposed | #54 |
 | [0008](0008-store-history-rows-and-event-cursor.md) | Store history rows have no foreign key to config; the event cursor is a commit-order sequence | Proposed | #46 |
+| [0009](0009-scheduler-target-leases-and-backoff.md) | The scheduler leases targets through the generic lease table and backs off exponentially | Proposed | #47 |
 
 ## Process
 
