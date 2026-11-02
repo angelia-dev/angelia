@@ -120,11 +120,16 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
 - `delivery:` lease rows are deleted on finish or replaced on re-lease; a row is left only while its
   delivery stays in flight, so no periodic cleanup is needed.
 
+### Maintainer decisions (2026-11-02, on #169)
+
+1. The `Sink.Deliver(ctx, Request)` signature and the idempotency key (including its `:` separator) are approved.
+2. A 3xx response is permanent: sinks do not follow redirects, which avoids SSRF through a redirect and the
+   POST-to-GET switch.
+3. A 401, 404 or 410 is dead on the first attempt; replay of dead deliveries comes later in Phase 1.
+4. Full jitter is kept as is (mean retry span about 12 h, maximum about 24.6 h); the base is not doubled.
+
 ### Open questions
 
-- The idempotency key format (`:` separator) is visible to consumers once a sink sends it; the
-  maintainer may prefer another separator before the webhook sink ships.
-- Whether full jitter's ~12 h mean matches "over ~24 h", or base/max should be doubled.
 - Worker count, timeouts and retry settings are `dispatch.Options`; exposing them in `angelia.yaml`
   changes a public contract and is left to the maintainer. Wiring the role into `angelia serve` waits for
   a first sink.
