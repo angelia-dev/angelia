@@ -17,7 +17,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0010](0010-diff-engine-known-set-and-baseline.md) | The known set never shrinks and is scheme-neutral; baseline is per watch; changes are classified per scheme | Proposed | #56 |
 | [0011](0011-wasm-plugin-host-prototype.md) | WASM source plugins on Extism, with HTTP through a netguard host function (prototype) | Proposed | #59 |
 | [0012](0012-policy-evaluation-order-and-cooldown.md) | Policy runs in a fixed order after the diff; cooldown holds versions in a table and re-checks them on every check | Proposed | #57 |
-| [0013](0013-go-plugin-subprocess-prototype.md) | Keep WASM for third-party plugins; go-plugin measured as a subprocess alternative (prototype) | Proposed | #60 |
+| [0013](0013-go-plugin-subprocess-prototype.md) | Keep WASM for third-party plugins; go-plugin measured as a subprocess alternative (prototype) | Accepted | #60 |
 
 ## Process
 

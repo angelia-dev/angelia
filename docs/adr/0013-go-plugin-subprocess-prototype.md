@@ -1,6 +1,6 @@
 # ADR 0013: Keep WASM for third-party plugins; go-plugin measured as a subprocess alternative (prototype)
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-02)
 - **Date:** 2026-11-01
 - **Story:** angelia-dev/angelia#60
 
@@ -189,11 +189,12 @@ their plugins are trusted code chosen by the operator.
 - The go-plugin numbers use a hand-written JSON codec, not generated protobuf.
 - The 1-vCPU case is not measured for either runtime.
 
-### Open questions (for the maintainer)
+### Maintainer decisions (2026-11-02)
 
-1. Accept the recommendation (WASM, no go-plugin), or ask for the 1-vCPU and protobuf measurements first?
-2. After the decision: keep `bench/plugins/goplugin` and its dependencies as a reference benchmark, or delete both?
-   Recommendation: delete them once the zero-copy ABI is measured, so `go.mod` holds only shipped dependencies.
+1. The recommendation is accepted: third-party plugins use WASM, and go-plugin is not shipped. The 1-vCPU and
+   protobuf measurements are not required before deciding.
+2. `bench/plugins/goplugin` and its dependencies stay in the repository as a reference benchmark for future
+   comparisons, rather than being deleted.
 
 ## Alternatives considered
 
