@@ -56,16 +56,48 @@ ADR 0004 left open whether the outbox is a separate table or the `delivery` rows
 - The test validator is ours to maintain; a schema change that uses a new keyword makes it panic until it is
   extended.
 - The vendored schemas must be refreshed by hand when the spec changes.
-- `Emit` reads and decodes every subscription inside the check's write transaction. Measured in review at 10,000
-  subscriptions: about 87 ms per `Emit` (about 85 ms of it loading the subscriptions), during which SQLite's
-  single write lock is held. A follow-up issue will cache the compiled matcher and invalidate it on
-  subscription writes.
+- Unless the caller passes a `MatcherCache`, `Emit` reads and decodes every subscription inside the check's write
+  transaction. Measured in review at 10,000 subscriptions: about 87 ms per `Emit` (about 85 ms of it loading the
+  subscriptions), during which SQLite's single write lock is held. See the update below.
 
 ### Open questions
 
 - oci, go-proxy and maven purls are built from `data.package`; their sources do not exist yet and may report
   digests or coordinates that change this.
 - `release.yanked` emission is not part of this story.
+
+## Update: matcher cache (story #166)
+
+`event.MatcherCache` keeps the compiled matcher and decoded subscription policies between `Emit` calls. The
+component that calls `Commit` or `Emit` owns it and passes it as `CheckInput.Matcher` or `EmitInput.Matcher`; there
+is no package-level state, and a nil cache keeps the old per-call load.
+
+- **Invalidation is in the database, not in the writers.** Migration 00008 adds a one-row `subscription_generation`
+  table and triggers that bump it on every insert, update and delete of a `subscription` row. The watch-file apply,
+  the API and a second process are covered without each having to call a bump. `store.Tx.SubscriptionGeneration`
+  reads it.
+- **Inside the transaction** `Emit` reads that counter (one row). Equal to the cached generation: the cache is exactly
+  the committed set, so no per-id existence re-check is needed (the delivery table has no foreign key to
+  `subscription`, by design). Different: it loads the set for that call only. **Rule: never cache from inside a
+  transaction.** What a transaction sees can be rolled back, and the next commit reuses the rolled-back generation
+  number, so a cached uncommitted set would be taken for a committed one. Only `MatcherCache.Warm`, which reads
+  committed data outside any transaction, fills the cache.
+- **Outside the transaction** `Commit` calls `MatcherCache.Warm` first when its committer also lists subscriptions
+  (the SQLite store does), so the load normally happens before the write lock is taken. An `Emit` called without a
+  warm cache pays the full load each time.
+- The update trigger fires only when `id`, `filter_json` or `policy_json` change, the columns the matcher and the
+  policies read; a sink, template or name edit does not invalidate the cache.
+- Invalid subscriptions are now logged (Error) once per load, not once per `Emit`; their dead deliveries are still
+  written for every event.
+- The counter restarts at 0 if migration 00008 is rolled back and re-applied or a backup is restored. The cache
+  compares for equality only, so a restart (which a restore needs anyway) is enough.
+- **Costs.** Every subscription writer now also updates the single `subscription_generation` row, so subscription
+  writers queue on one row (they already serialise on SQLite's write lock; a Postgres port would feel it as row-lock
+  contention, which is acceptable for a configuration table written by file apply and API calls). A Postgres port
+  needs the same triggers (or an explicit bump in the write path) and the same read of the counter in the check's
+  transaction.
+- Measured with 10,000 subscriptions (`BenchmarkEmit10kSubscriptions`, `TestEmitHoldsTheTransactionBriefly`): a
+  transaction holding one `Emit` takes about 1 to 2 ms with a warm cache against about 70 ms without.
 
 ## Alternatives considered
 

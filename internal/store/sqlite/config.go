@@ -301,6 +301,14 @@ func (o txOps) ListSubscriptions(ctx context.Context) ([]store.Subscription, err
 	return subscriptionsFromRows(rows), nil
 }
 
+func (o txOps) SubscriptionGeneration(ctx context.Context) (int64, error) {
+	g, err := o.q.SubscriptionGeneration(ctx)
+	if err != nil {
+		return 0, wrap(err, "subscription generation", "")
+	}
+	return g, nil
+}
+
 func subscriptionsFromRows(rows []Subscription) []store.Subscription {
 	out := make([]store.Subscription, len(rows))
 	for i, r := range rows {

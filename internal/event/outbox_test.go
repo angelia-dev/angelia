@@ -326,13 +326,13 @@ func snap(t *testing.T, st *sqlite.Store, targetID string, watches ...string) sn
 }
 
 // faultTx must intercept every write of store.Tx: a method that is not
-// List* or Get* and that faultTx does not override would reach the nil
+// List*, Get* or SubscriptionGeneration and that faultTx does not override would reach the nil
 // embedded Tx and panic instead of returning the injected crash.
 func TestFaultTxOverridesEveryWrite(t *testing.T) {
 	typ := reflect.TypeFor[store.Tx]()
 	x := reflect.ValueOf(faultTx{f: &faults{failAt: 1, seen: map[string]bool{}}})
 	for m := range typ.Methods() {
-		if strings.HasPrefix(m.Name, "List") || strings.HasPrefix(m.Name, "Get") {
+		if strings.HasPrefix(m.Name, "List") || strings.HasPrefix(m.Name, "Get") || m.Name == "SubscriptionGeneration" {
 			continue
 		}
 		t.Run(m.Name, func(t *testing.T) {

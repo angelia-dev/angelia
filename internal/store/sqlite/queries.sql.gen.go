@@ -1131,6 +1131,17 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 	return result.RowsAffected()
 }
 
+const subscriptionGeneration = `-- name: SubscriptionGeneration :one
+SELECT generation FROM subscription_generation WHERE id = 1
+`
+
+func (q *Queries) SubscriptionGeneration(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, subscriptionGeneration)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
 const targetExists = `-- name: TargetExists :one
 SELECT EXISTS (SELECT 1 FROM target WHERE id = ?)
 `
