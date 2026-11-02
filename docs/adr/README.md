@@ -17,6 +17,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0010](0010-diff-engine-known-set-and-baseline.md) | The known set never shrinks and is scheme-neutral; baseline is per watch; changes are classified per scheme | Proposed | #56 |
 | [0011](0011-wasm-plugin-host-prototype.md) | WASM source plugins on Extism, with HTTP through a netguard host function (prototype) | Proposed | #59 |
 | [0012](0012-policy-evaluation-order-and-cooldown.md) | Policy runs in a fixed order after the diff; cooldown holds versions in a table and re-checks them on every check | Proposed | #57 |
+| [0013](0013-go-plugin-subprocess-prototype.md) | Keep WASM for third-party plugins; go-plugin measured as a subprocess alternative (prototype) | Accepted | #60 |
 | [0014](0014-subscription-policy-overrides.md) | Subscriptions narrow the watch policy with `bump`, `prerelease` and `cooldown`; a per-subscription cooldown is a held delivery | Proposed | #69 |
 | [0015](0015-release-event-outbox-in-house.md) | Release events are built in-house as plain structs; the outbox is the delivery rows; events are immutable in the schema | Proposed | #106 |
 | [0016](0016-message-templates-text-template-bounded.md) | Message templates are Go `text/template` over the event JSON, with curated functions, a deadline and a size cap, checked against sample events | Proposed | #114 |
