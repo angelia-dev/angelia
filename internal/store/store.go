@@ -90,6 +90,18 @@ type Tx interface {
 	// DeletePendingRelease releases a version of targetID held by a watch
 	// (emitted or dropped). ErrNotFound when the watch does not hold it.
 	DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error
+	// GetLatestEventBySubject returns the event with the greatest Seq that
+	// the watch emitted with this CloudEvents subject (<kind>:<package>@<raw
+	// version>) and one of types (full CloudEvents types). ErrNotFound when
+	// there is none, or when types is empty.
+	GetLatestEventBySubject(ctx context.Context, watchID, subject string, types ...string) (Event, error)
+	// CancelHeldDeliveries deletes the deliveries of a version that are still
+	// held at now (pending, Hold.Until after now, Hold.WatchID and Hold.Raw
+	// equal to watchID and raw) and returns how many. A yank calls it (ADR
+	// 0014 section 4): a subscription must not receive a version the registry
+	// withdrew before the subscription was told of it. Deliveries whose hold
+	// ended, and the event, are left alone.
+	CancelHeldDeliveries(ctx context.Context, watchID, raw string, now time.Time) (int64, error)
 	// DeletePendingReleasesOfWatch forgets every version a watch holds, on
 	// any target, and returns how many rows it deleted. The watch-file apply
 	// (#48, PR #132) must call it, in the same transaction, when it moves a
@@ -304,6 +316,10 @@ type Event struct {
 	Type      string
 	Payload   json.RawMessage
 	CreatedAt time.Time
+	// RefEventID is set on a release.yanked event to the id of the event the
+	// watch emitted for the yanked version (ADR 0018); "" otherwise. Like
+	// WatchID it may name a deleted (pruned) event.
+	RefEventID string
 }
 
 // Sink is a delivery destination. ConfigEncrypted is stored as given;

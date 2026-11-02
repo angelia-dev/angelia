@@ -8,10 +8,12 @@ import (
 
 // Acceptance criterion of #106: events are never updated after insert. No
 // interface of the store offers a method that changes an event: the only
-// methods naming events append, list or prune them. A new method on events
-// must be added here on purpose.
+// methods naming events append, list, read or prune them. A new method on
+// events must be added here on purpose.
 func TestNoEventUpdateInStoreAPI(t *testing.T) {
-	allowed := map[string]bool{"AppendEvent": true, "ListEventsAfter": true}
+	// GetLatestEventBySubject (#112) is a read: a yank finds the event it
+	// references.
+	allowed := map[string]bool{"AppendEvent": true, "ListEventsAfter": true, "GetLatestEventBySubject": true}
 	for _, typ := range []reflect.Type{
 		reflect.TypeFor[Tx](), reflect.TypeFor[Store](), reflect.TypeFor[ConfigTx](),
 	} {

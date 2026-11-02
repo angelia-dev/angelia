@@ -169,7 +169,7 @@ CloudEvents 1.0, JSON structured mode. The contract lives in its own repo, [ange
 target(id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count)
 watch(id, target_id, policy_json, labels_json, baseline_done)
 version(target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)   -- known set, never shrinks (ADR 0010)
-event(seq, id ULID, watch_id, type, payload_json, created_at)                          -- immutable log
+event(seq, id ULID, watch_id, type, payload_json, created_at, ref_event_id)            -- immutable log; ref_event_id: the original of a release.yanked (ADR 0018)
 subscription(id, filter_json, sink_id, template)
 sink(id, kind, config_json_encrypted)
 delivery(id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)

@@ -105,11 +105,25 @@ WHERE id = sqlc.arg(id) AND status = 'pending' AND held_until > sqlc.arg(now);
 UPDATE delivery SET status = 'dead', last_error = sqlc.arg(reason), next_attempt_at = NULL, held_until = NULL
 WHERE id = sqlc.arg(id) AND status = 'pending' AND held_until > sqlc.arg(now);
 
+-- A yank cancels the deliveries of the version that are still held (ADR 0014
+-- section 4, ADR 0018).
+-- name: DeleteHeldDeliveriesOfVersion :execrows
+DELETE FROM delivery
+WHERE hold_watch_id = sqlc.arg(watch_id) AND hold_raw = sqlc.arg(raw)
+  AND status = 'pending' AND held_until > sqlc.arg(now);
+
 -- name: DeleteSubscription :execrows
 DELETE FROM subscription WHERE id = ?;
 
 -- name: CreateEvent :exec
-INSERT INTO event (id, watch_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?);
+INSERT INTO event (id, watch_id, type, payload_json, created_at, ref_event_id) VALUES (?, ?, ?, ?, ?, ?);
+
+-- The expression is the one of the event_watch_subject index (00009).
+-- name: GetLatestEventBySubject :one
+SELECT * FROM event
+WHERE watch_id = sqlc.arg(watch_id) AND json_extract(payload_json, '$.subject') = sqlc.arg(subject)
+  AND type IN (sqlc.slice(types))
+ORDER BY seq DESC LIMIT 1;
 
 -- name: ListEventsAfter :many
 SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?;

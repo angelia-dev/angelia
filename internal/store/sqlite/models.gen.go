@@ -32,6 +32,7 @@ type Event struct {
 	Type        string
 	PayloadJson string
 	CreatedAt   int64
+	RefEventID  sql.NullString
 }
 
 type Lease struct {

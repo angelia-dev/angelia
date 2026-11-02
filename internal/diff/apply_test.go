@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
@@ -294,6 +295,14 @@ func (f failTx) SubscriptionGeneration(context.Context) (int64, error) {
 
 func (f failTx) DeletePendingReleasesOfWatch(context.Context, string) (int64, error) {
 	return 0, f.err("DeletePendingReleasesOfWatch")
+}
+
+func (f failTx) GetLatestEventBySubject(context.Context, string, string, ...string) (store.Event, error) {
+	return store.Event{}, f.err("GetLatestEventBySubject")
+}
+
+func (f failTx) CancelHeldDeliveries(context.Context, string, string, time.Time) (int64, error) {
+	return 0, f.err("CancelHeldDeliveries")
 }
 
 func (f failTx) AppendEvent(context.Context, store.Event, []store.Delivery) error {
