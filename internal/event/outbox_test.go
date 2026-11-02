@@ -268,6 +268,13 @@ func (x faultTx) DeletePendingReleasesOfWatch(ctx context.Context, w string) (in
 	return x.Tx.DeletePendingReleasesOfWatch(ctx, w)
 }
 
+func (x faultTx) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	if err := x.f.write("CancelHeldDeliveries"); err != nil {
+		return 0, err
+	}
+	return x.Tx.CancelHeldDeliveries(ctx, eventID, now)
+}
+
 func (x faultTx) UpdateTarget(ctx context.Context, tg store.Target) error {
 	if err := x.f.write("UpdateTarget"); err != nil {
 		return err
@@ -413,17 +420,18 @@ func TestCommitAllOrNothing(t *testing.T) {
 	yank := secondCheck(tg)
 	yank.Now = check2.Add(81 * time.Hour)
 	yank.Fetched.Versions = slices.Clone(yank.Fetched.Versions)
-	yank.Fetched.Versions[2].Yanked = true // 2.32.0
+	yank.Fetched.Versions[2].Yanked = true // 2.32.0, from the baseline: no event
+	yank.Fetched.Versions[1].Yanked = true // 2.33.0, emitted by both watches: two release.yanked
 	got, n = crashEveryWrite(t, st, yank, watches)
 	maps.Copy(seen, got)
 	vs, err := st.ListVersions(ctx, tg.ID)
 	must(t, err)
 	yanked := slices.IndexFunc(vs, func(v store.Version) bool { return v.Raw == "2.32.0" && v.Yanked })
-	if n.Events != 0 || yanked < 0 {
+	if n.Events != 2 || yanked < 0 {
 		t.Fatalf("yank check: %+v, versions %+v", n, vs)
 	}
 
-	for _, op := range []string{"AddVersion", "UpdateVersion", "MarkBaselineDone", "AddPendingRelease", "DeletePendingRelease", "AppendEvent"} {
+	for _, op := range []string{"AddVersion", "UpdateVersion", "MarkBaselineDone", "AddPendingRelease", "DeletePendingRelease", "AppendEvent", "CancelHeldDeliveries"} {
 		if !seen[op] {
 			t.Errorf("no crash was injected at %s", op)
 		}

@@ -144,6 +144,16 @@ func (s *Store) SubscriptionGeneration(ctx context.Context) (int64, error) {
 	return txOps{q: s.q}.SubscriptionGeneration(ctx)
 }
 
+// GetLatestEventBySubject implements [store.Tx] outside a transaction.
+func (s *Store) GetLatestEventBySubject(ctx context.Context, watchID, subject string, types ...string) (store.Event, error) {
+	return txOps{q: s.q}.GetLatestEventBySubject(ctx, watchID, subject, types...)
+}
+
+// CancelHeldDeliveries implements [store.Tx] in its own statement.
+func (s *Store) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	return txOps{q: s.q}.CancelHeldDeliveries(ctx, eventID, now)
+}
+
 // ListPendingReleases implements [store.Tx] outside a transaction.
 func (s *Store) ListPendingReleases(ctx context.Context, targetID string) ([]store.PendingRelease, error) {
 	return txOps{q: s.q}.ListPendingReleases(ctx, targetID)
@@ -325,6 +335,7 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 	}
 	if err := o.q.CreateEvent(ctx, CreateEventParams{
 		ID: e.ID, WatchID: e.WatchID, Type: e.Type, PayloadJson: payload, CreatedAt: millis(e.CreatedAt),
+		RefEventID: sql.NullString{String: e.RefEventID, Valid: e.RefEventID != ""},
 	}); err != nil {
 		return wrap(err, "create event", e.ID)
 	}
@@ -456,9 +467,32 @@ func (s *Store) ListEventsAfter(ctx context.Context, afterSeq int64, limit int) 
 	}
 	out := make([]store.Event, len(rows))
 	for i, r := range rows {
-		out[i] = store.Event{Seq: r.Seq, ID: r.ID, WatchID: r.WatchID, Type: r.Type, Payload: json.RawMessage(r.PayloadJson), CreatedAt: fromMillis(r.CreatedAt)}
+		out[i] = eventFromRow(r)
 	}
 	return out, nil
+}
+
+func eventFromRow(r Event) store.Event {
+	return store.Event{
+		Seq: r.Seq, ID: r.ID, WatchID: r.WatchID, Type: r.Type, Payload: json.RawMessage(r.PayloadJson),
+		CreatedAt: fromMillis(r.CreatedAt), RefEventID: r.RefEventID.String,
+	}
+}
+
+func (o txOps) GetLatestEventBySubject(ctx context.Context, watchID, subject string, types ...string) (store.Event, error) {
+	if len(types) == 0 {
+		return store.Event{}, fmt.Errorf("store: latest event of watch %s: no event type: %w", watchID, store.ErrNotFound)
+	}
+	r, err := o.q.GetLatestEventBySubject(ctx, GetLatestEventBySubjectParams{WatchID: watchID, Subject: subject, Types: types})
+	if err != nil {
+		return store.Event{}, wrap(err, "latest event of watch", watchID)
+	}
+	return eventFromRow(r), nil
+}
+
+func (o txOps) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	n, err := o.q.DeleteHeldDeliveriesOfEvent(ctx, DeleteHeldDeliveriesOfEventParams{EventID: eventID, Now: nullMillis(now)})
+	return n, wrap(err, "cancel held deliveries of event", eventID)
 }
 
 // ListDeliveries implements [store.Store].

@@ -35,12 +35,45 @@ type EmitInput struct {
 	// Matcher caches the compiled subscriptions between calls; nil loads
 	// them from tx on every call. The caller owns it (see MatcherCache).
 	Matcher *MatcherCache
+
+	// subs, when set, is shared by the Emit and EmitYanks of one
+	// transaction (Commit), so the subscriptions are loaded at most once.
+	subs *lazySubs
 }
 
-// Emitted counts what Emit wrote.
+// lazySubs loads the compiled subscriptions of one transaction on first use.
+type lazySubs struct{ c *compiled }
+
+// loadSubs returns the subscriptions as tx sees them, loading them through
+// in.Matcher the first time.
+func (in EmitInput) loadSubs(ctx context.Context, tx store.Tx, logger *slog.Logger) (*compiled, error) {
+	l := in.subs
+	if l == nil {
+		l = &lazySubs{}
+	}
+	if l.c == nil {
+		c, err := in.Matcher.current(ctx, tx, logger)
+		if err != nil {
+			return nil, err
+		}
+		l.c = c
+	}
+	return l.c, nil
+}
+
+// Emitted counts what Emit and EmitYanks wrote.
 type Emitted struct {
 	// Deliveries counts every delivery written; Held and Dead are subsets.
 	Events, Deliveries, Held, Dead int
+	// Cancelled counts the held deliveries that yanks cancelled (deleted).
+	Cancelled int
+}
+
+func (e Emitted) add(o Emitted) Emitted {
+	return Emitted{
+		Events: e.Events + o.Events, Deliveries: e.Deliveries + o.Deliveries, Held: e.Held + o.Held,
+		Dead: e.Dead + o.Dead, Cancelled: e.Cancelled + o.Cancelled,
+	}
 }
 
 // Emit is the outbox step of a check, inside its transaction, after
@@ -70,11 +103,10 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	if newID == nil {
 		newID = ulid.New
 	}
-	subs, err := in.Matcher.current(ctx, tx, logger)
+	subs, err := in.loadSubs(ctx, tx, logger)
 	if err != nil {
 		return n, err
 	}
-	matcher, policies, invalid := subs.matcher, subs.policies, subs.invalid
 	kind := in.Target.Kind
 	trust := policy.TrustsPublishedAt(kind)
 	var ids []string
@@ -100,34 +132,11 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 				Type: short, Prerelease: r.Prerelease, WatchPrerelease: string(wp.Prerelease),
 				CooldownStart: r.CooldownFrom(trust), WatchCooldown: time.Duration(wp.Cooldown),
 			}
-			var ds []store.Delivery
-			ids = matcher.Match(match, ids[:0])
-			for _, subID := range ids {
-				d := store.Delivery{ID: newID(in.Now), SubscriptionID: subID, Status: store.DeliveryPending, NextAttemptAt: in.Now}
-				dec := policies[subID].Evaluate(ev, in.Now)
-				switch dec.Verdict {
-				case subscription.Drop:
-					continue
-				case subscription.Hold:
-					input, err := json.Marshal(match)
-					if err != nil {
-						return n, fmt.Errorf("event: encode filter input: %w", err)
-					}
-					d.NextAttemptAt = dec.Until
-					d.Hold = &store.Hold{
-						Until: dec.Until, StartedAt: ev.CooldownStart, WatchCooldown: ev.WatchCooldown,
-						Prerelease: r.Prerelease, WatchID: wr.Watch.ID, Raw: r.Raw, Input: input,
-					}
-					n.Held++
-				}
-				ds = append(ds, d)
+			ds, next, err := subs.route(match, ev, hold{watchID: wr.Watch.ID, raw: r.Raw}, in.Now, newID, &n, ids)
+			if err != nil {
+				return n, err
 			}
-			for _, bad := range invalid {
-				ds = append(ds, store.Delivery{
-					ID: newID(in.Now), SubscriptionID: bad.id, Status: store.DeliveryDead, LastError: bad.reason,
-				})
-				n.Dead++
-			}
+			ids = next
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: wr.Watch.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now,
 			}, ds); err != nil {
@@ -138,6 +147,50 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 		}
 	}
 	return n, nil
+}
+
+// hold identifies the version of an event, for the store.Hold of a delivery
+// that a subscription cooldown holds.
+type hold struct{ watchID, raw string }
+
+// route returns the deliveries of one event: one for every subscription whose
+// filter accepts match and whose policy does not drop ev, due at now or held
+// as the policy says, and a dead one for every subscription that does not
+// decode. It adds the held and dead ones to n. ids is scratch space, returned
+// for reuse.
+func (c *compiled) route(
+	match subscription.Input, ev subscription.Event, h hold, now time.Time,
+	newID func(time.Time) string, n *Emitted, ids []string,
+) ([]store.Delivery, []string, error) {
+	var ds []store.Delivery
+	ids = c.matcher.Match(match, ids[:0])
+	for _, subID := range ids {
+		d := store.Delivery{ID: newID(now), SubscriptionID: subID, Status: store.DeliveryPending, NextAttemptAt: now}
+		dec := c.policies[subID].Evaluate(ev, now)
+		switch dec.Verdict {
+		case subscription.Drop:
+			continue
+		case subscription.Hold:
+			input, err := json.Marshal(match)
+			if err != nil {
+				return nil, ids, fmt.Errorf("event: encode filter input: %w", err)
+			}
+			d.NextAttemptAt = dec.Until
+			d.Hold = &store.Hold{
+				Until: dec.Until, StartedAt: ev.CooldownStart, WatchCooldown: ev.WatchCooldown,
+				Prerelease: ev.Prerelease, WatchID: h.watchID, Raw: h.raw, Input: input,
+			}
+			n.Held++
+		}
+		ds = append(ds, d)
+	}
+	for _, bad := range c.invalid {
+		ds = append(ds, store.Delivery{
+			ID: newID(now), SubscriptionID: bad.id, Status: store.DeliveryDead, LastError: bad.reason,
+		})
+		n.Dead++
+	}
+	return ds, ids, nil
 }
 
 // Committer is the part of store.Store a check commits through.
@@ -165,8 +218,9 @@ type CheckInput struct {
 
 // Commit writes everything one check found in a single transaction (the
 // transactional outbox, architecture.md §2 decision 4): the known set and
-// baselines (diff.Apply), the held versions (policy.Apply), and the events
-// and deliveries (Emit). Any error rolls all of it back, so a failure at any
+// baselines (diff.Apply), the held versions (policy.Apply), the events and
+// deliveries of new releases (Emit), and those of yanks (EmitYanks). Emit
+// and EmitYanks share one load of the subscriptions. Any error rolls all of it back, so a failure at any
 // step leaves either everything or nothing. The target's fetch state and
 // schedule are the scheduler's to write.
 func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
@@ -200,10 +254,15 @@ func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
 		if err != nil {
 			return err
 		}
-		n, err = Emit(ctx, tx, rel, EmitInput{
+		ein := EmitInput{
 			Target: in.Target, Instance: in.Instance, RegistryURL: in.RegistryURL, Now: in.Now,
-			NewID: in.NewID, Logger: logger, Matcher: in.Matcher,
-		})
+			NewID: in.NewID, Logger: logger, Matcher: in.Matcher, subs: &lazySubs{},
+		}
+		if n, err = Emit(ctx, tx, rel, ein); err != nil {
+			return err
+		}
+		y, err := EmitYanks(ctx, tx, out.Watches, ein)
+		n = n.add(y)
 		return err
 	})
 	if err != nil {

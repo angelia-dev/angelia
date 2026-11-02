@@ -8,6 +8,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const acquireLease = `-- name: AcquireLease :execrows
@@ -152,7 +153,7 @@ func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) 
 }
 
 const createEvent = `-- name: CreateEvent :exec
-INSERT INTO event (id, watch_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)
+INSERT INTO event (id, watch_id, type, payload_json, created_at, ref_event_id) VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type CreateEventParams struct {
@@ -161,6 +162,7 @@ type CreateEventParams struct {
 	Type        string
 	PayloadJson string
 	CreatedAt   int64
+	RefEventID  sql.NullString
 }
 
 func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) error {
@@ -170,6 +172,7 @@ func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) error 
 		arg.Type,
 		arg.PayloadJson,
 		arg.CreatedAt,
+		arg.RefEventID,
 	)
 	return err
 }
@@ -308,6 +311,26 @@ func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64
 	return result.RowsAffected()
 }
 
+const deleteHeldDeliveriesOfEvent = `-- name: DeleteHeldDeliveriesOfEvent :execrows
+DELETE FROM delivery
+WHERE event_id = ?1 AND status = 'pending' AND held_until > ?2
+`
+
+type DeleteHeldDeliveriesOfEventParams struct {
+	EventID string
+	Now     sql.NullInt64
+}
+
+// A yank cancels the deliveries of the original event that are still held
+// (ADR 0014 section 4, ADR 0018).
+func (q *Queries) DeleteHeldDeliveriesOfEvent(ctx context.Context, arg DeleteHeldDeliveriesOfEventParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHeldDeliveriesOfEvent, arg.EventID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deletePendingRelease = `-- name: DeletePendingRelease :execrows
 DELETE FROM pending_release WHERE watch_id = ? AND target_id = ? AND raw = ?
 `
@@ -430,6 +453,47 @@ func (q *Queries) FailPendingDeliveries(ctx context.Context, arg FailPendingDeli
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getLatestEventBySubject = `-- name: GetLatestEventBySubject :one
+SELECT seq, id, watch_id, type, payload_json, created_at, ref_event_id FROM event
+WHERE watch_id = ?1 AND json_extract(payload_json, '$.subject') = ?2
+  AND type IN (/*SLICE:types*/?)
+ORDER BY seq DESC LIMIT 1
+`
+
+type GetLatestEventBySubjectParams struct {
+	WatchID string
+	Subject string
+	Types   []string
+}
+
+// The expression is the one of the event_watch_subject index (00009).
+func (q *Queries) GetLatestEventBySubject(ctx context.Context, arg GetLatestEventBySubjectParams) (Event, error) {
+	query := getLatestEventBySubject
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.WatchID)
+	queryParams = append(queryParams, arg.Subject)
+	if len(arg.Types) > 0 {
+		for _, v := range arg.Types {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:types*/?", strings.Repeat(",?", len(arg.Types))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:types*/?", "NULL", 1)
+	}
+	row := q.db.QueryRowContext(ctx, query, queryParams...)
+	var i Event
+	err := row.Scan(
+		&i.Seq,
+		&i.ID,
+		&i.WatchID,
+		&i.Type,
+		&i.PayloadJson,
+		&i.CreatedAt,
+		&i.RefEventID,
+	)
+	return i, err
 }
 
 const getTarget = `-- name: GetTarget :one
@@ -557,7 +621,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 }
 
 const listEventsAfter = `-- name: ListEventsAfter :many
-SELECT seq, id, watch_id, type, payload_json, created_at FROM event WHERE seq > ? ORDER BY seq LIMIT ?
+SELECT seq, id, watch_id, type, payload_json, created_at, ref_event_id FROM event WHERE seq > ? ORDER BY seq LIMIT ?
 `
 
 type ListEventsAfterParams struct {
@@ -581,6 +645,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 			&i.Type,
 			&i.PayloadJson,
 			&i.CreatedAt,
+			&i.RefEventID,
 		); err != nil {
 			return nil, err
 		}
