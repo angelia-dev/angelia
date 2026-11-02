@@ -192,16 +192,21 @@ func (c *Client) HTTPClient() *http.Client {
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
-	// The span has the method and host only: never the URL, which can carry
-	// a token in its path or query, nor any header (story #118).
+	// The span has the method and the host only if it is in the limits table
+	// (else "other", as for metrics): never the URL, which can carry a token
+	// in its path or query, nor any header, nor the host of a sink (story #118).
 	ctx, span := telemetry.Start(req.Context(), "angelia.http",
-		attribute.String("http.request.method", req.Method), attribute.String("server.address", normHost(req.URL.Hostname())))
+		attribute.String("http.request.method", req.Method), attribute.String("server.address", c.limiter.observedHost(req.URL.Hostname())))
 	defer span.End()
 	resp, err := c.roundTrip(req.WithContext(ctx))
 	if resp != nil {
 		span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 	}
-	telemetry.RecordError(span, err, "request failed")
+	if errors.Is(err, ErrBodyTooLarge) {
+		telemetry.RecordErrorAs(span, err, "body_too_large", "request failed")
+	} else {
+		telemetry.RecordError(span, err, "request failed")
+	}
 	return resp, err
 }
 

@@ -58,7 +58,8 @@ func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 // attributes. The real scheduler, event.Commit, dispatcher and store run end
 // to end; only the source is a fixture.
 func TestCheckTraceLinksToDeliveries(t *testing.T) {
-	rec := telemetrytest.Install(t)
+	t.Parallel()
+	rec, tp := telemetrytest.Install(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "a.db"), discard())
@@ -99,7 +100,7 @@ func TestCheckTraceLinksToDeliveries(t *testing.T) {
 		})
 		return scheduler.Outcome{}, err
 	})
-	sch, err := scheduler.New(st, checker, scheduler.Options{Holder: "sched", PollInterval: 10 * time.Millisecond, Logger: discard()})
+	sch, err := scheduler.New(st, checker, scheduler.Options{Holder: "sched", PollInterval: 10 * time.Millisecond, Logger: discard(), TracerProvider: tp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestCheckTraceLinksToDeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	disp, err := dispatch.New(st, reg, dispatch.Options{
-		Holder: "disp", PollInterval: 10 * time.Millisecond, RetryBase: time.Millisecond, RetryMax: time.Millisecond, Logger: discard(),
+		Holder: "disp", TracerProvider: tp, PollInterval: 10 * time.Millisecond, RetryBase: time.Millisecond, RetryMax: time.Millisecond, Logger: discard(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,9 +125,8 @@ func TestCheckTraceLinksToDeliveries(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the delivery did not complete")
 	}
-	// The attempt is recorded after the sink returns; wait for the roles to
-	// finish their work, so every span has ended.
-	time.Sleep(100 * time.Millisecond)
+	// Run waits for the attempts and checks in progress, so every span has
+	// ended when it returns.
 	stop()
 	for range 2 {
 		if err := <-errc; err != nil {
@@ -204,7 +204,8 @@ func TestCheckTraceLinksToDeliveries(t *testing.T) {
 
 // A failing check marks its span as failed, without the error text.
 func TestFailedCheckSpan(t *testing.T) {
-	rec := telemetrytest.Install(t)
+	t.Parallel()
+	rec, tp := telemetrytest.Install(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "a.db"), discard())
@@ -215,22 +216,19 @@ func TestFailedCheckSpan(t *testing.T) {
 	if err := st.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "x"}, NextCheckAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	var called atomic.Bool
 	checker := scheduler.CheckerFunc(func(context.Context, store.Target) (scheduler.Outcome, error) {
-		defer called.Store(true)
 		return scheduler.Outcome{}, errors.New("GET https://registry.example/x?token=" + configSecret + ": 500")
 	})
-	sch, err := scheduler.New(st, checker, scheduler.Options{Holder: "sched", PollInterval: 10 * time.Millisecond, Logger: discard()})
+	sch, err := scheduler.New(st, checker, scheduler.Options{Holder: "sched", PollInterval: 10 * time.Millisecond, Logger: discard(), TracerProvider: tp})
 	if err != nil {
 		t.Fatal(err)
 	}
 	rctx, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- sch.Run(rctx) }()
-	for !called.Load() && ctx.Err() == nil {
+	for len(rec.Ended()) == 0 && ctx.Err() == nil {
 		time.Sleep(5 * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
 	stop()
 	if err := <-done; err != nil {
 		t.Fatal(err)

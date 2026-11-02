@@ -69,5 +69,6 @@ OpenTelemetry tracing is **off by default** and is not configured in `angelia.ya
 
 - Only `http/protobuf` is supported (the OTLP default). `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` makes `serve` fail at start.
 - One trace per check (`angelia.check`, with `angelia.http` and `angelia.commit` below it). Each delivery attempt is a trace of its own (`angelia.delivery`) with a span link to the check that created it.
-- Spans hold ids, kinds, hosts, status codes and counts. They never hold a URL, a header, a sink configuration or an error message.
+- Spans hold ids, kinds, status codes and counts, and the host of a request only if it has an entry in the netguard limits table (else `other`). They never hold a URL, a header, a sink configuration or an error message.
+- When tracing is on, the final flush (at most 2 s) is taken out of `--drain-timeout`, so the drain gets 2 s less. Export failures are logged as warnings, at most one per 30 s.
 - Log lines written with a span in their context carry `trace_id` and `span_id`.

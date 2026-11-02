@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/angelia-dev/angelia/internal/telemetry"
@@ -48,18 +49,14 @@ func TestEnabled(t *testing.T) {
 }
 
 func TestSetupOffInstallsNothing(t *testing.T) {
-	before := otel.GetTracerProvider()
-	stop, err := telemetry.Setup(t.Context(), env(nil), "dev")
+	tp, stop, err := telemetry.Setup(t.Context(), env(nil), "dev", nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if otel.GetTracerProvider() != before {
-		t.Error("Setup without OTEL_* variables replaced the tracer provider")
 	}
 	if err := stop(t.Context()); err != nil {
 		t.Error(err)
 	}
-	_, span := telemetry.Start(t.Context(), "x")
+	_, span := telemetry.StartRoot(t.Context(), tp, "x", nil)
 	if span.SpanContext().IsValid() {
 		t.Error("spans are recorded while tracing is off")
 	}
@@ -67,9 +64,9 @@ func TestSetupOffInstallsNothing(t *testing.T) {
 }
 
 func TestSetupRejectsGRPC(t *testing.T) {
-	_, err := telemetry.Setup(t.Context(), env(map[string]string{
+	_, _, err := telemetry.Setup(t.Context(), env(map[string]string{
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317", "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
-	}), "dev")
+	}), "dev", nil)
 	if err == nil || !strings.Contains(err.Error(), "grpc") {
 		t.Fatalf("grpc protocol: %v, want an error naming it", err)
 	}
@@ -93,14 +90,14 @@ func TestSetupExportsOverOTLPHTTP(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-test=yes")
 	t.Setenv("OTEL_SERVICE_NAME", "angelia-test")
 
-	stop, err := telemetry.Setup(t.Context(), nil, "v1.2.3")
+	tp, stop, err := telemetry.Setup(t.Context(), nil, "v1.2.3", slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider); !ok {
-		t.Fatalf("tracer provider is %T, want the SDK's", otel.GetTracerProvider())
+	if _, ok := tp.(*sdktrace.TracerProvider); !ok {
+		t.Fatalf("tracer provider is %T, want the SDK's", tp)
 	}
-	_, span := telemetry.Start(t.Context(), "angelia.check")
+	_, span := telemetry.StartRoot(t.Context(), tp, "angelia.check", nil)
 	span.End()
 	if err := stop(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
@@ -117,14 +114,15 @@ func TestSetupExportsOverOTLPHTTP(t *testing.T) {
 }
 
 func TestTraceParentRoundTrip(t *testing.T) {
-	telemetrytest.Install(t)
-	ctx, span := telemetry.Start(t.Context(), "check")
+	t.Parallel()
+	_, tp := telemetrytest.Install(t)
+	ctx, span := telemetry.StartRoot(t.Context(), tp, "check", nil)
 	defer span.End()
-	tp := telemetry.TraceParent(ctx)
-	if tp == "" {
+	parent := telemetry.TraceParent(ctx)
+	if parent == "" {
 		t.Fatal("no traceparent for a live span")
 	}
-	links := telemetry.LinkFromTraceParent(t.Context(), tp)
+	links := telemetry.LinkFromTraceParent(t.Context(), parent)
 	if len(links) != 1 || links[0].SpanContext.TraceID() != span.SpanContext().TraceID() ||
 		links[0].SpanContext.SpanID() != span.SpanContext().SpanID() {
 		t.Fatalf("link %v does not name the span %v", links, span.SpanContext())
@@ -140,8 +138,9 @@ func TestTraceParentRoundTrip(t *testing.T) {
 }
 
 func TestRecordErrorKeepsOnlyTheType(t *testing.T) {
-	rec := telemetrytest.Install(t)
-	_, span := telemetry.Start(t.Context(), "x")
+	t.Parallel()
+	rec, tp := telemetrytest.Install(t)
+	_, span := telemetry.StartRoot(t.Context(), tp, "x", nil)
 	telemetry.RecordError(span, errors.New("Get https://h/hook/SECRET: boom"), "failed")
 	span.End()
 	dump := telemetrytest.Dump(rec.Ended())
@@ -151,10 +150,11 @@ func TestRecordErrorKeepsOnlyTheType(t *testing.T) {
 }
 
 func TestLogHandlerAddsTraceIDs(t *testing.T) {
-	telemetrytest.Install(t)
+	t.Parallel()
+	_, tp := telemetrytest.Install(t)
 	var buf bytes.Buffer
 	log := slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(&buf, nil))).With("k", "v")
-	ctx, span := telemetry.Start(t.Context(), "x")
+	ctx, span := telemetry.StartRoot(t.Context(), tp, "x", nil)
 	log.InfoContext(ctx, "inside")
 	span.End()
 	log.InfoContext(t.Context(), "outside")
@@ -165,5 +165,59 @@ func TestLogHandlerAddsTraceIDs(t *testing.T) {
 	}
 	if strings.Contains(lines[1], "trace_id") {
 		t.Errorf("line outside a span has a trace id: %s", lines[1])
+	}
+}
+
+func TestErrorClass(t *testing.T) {
+	t.Parallel()
+	rec, tp := telemetrytest.Install(t)
+	for _, err := range []error{
+		fmt.Errorf("get https://h/SECRET: %w", context.DeadlineExceeded),
+		fmt.Errorf("get https://h/SECRET: %w", context.Canceled),
+		errors.New("SECRET"),
+	} {
+		_, span := telemetry.StartRoot(t.Context(), tp, "x", nil)
+		telemetry.RecordError(span, err, "failed")
+		span.End()
+	}
+	_, span := telemetry.StartRoot(t.Context(), tp, "x", nil)
+	telemetry.RecordErrorAs(span, errors.New("SECRET"), "permanent", "failed")
+	span.End()
+	var got []string
+	for _, s := range rec.Ended() {
+		for _, a := range s.Attributes() {
+			got = append(got, a.Value.AsString())
+		}
+	}
+	want := []string{"timeout", "canceled", "*errors.errorString", "permanent"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("error.type = %v, want %v", got, want)
+	}
+}
+
+// OpenTelemetry errors (an unreachable collector) become slog warnings, at
+// most one per interval with a count of the ones dropped.
+func TestErrorHandlerRateLimits(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	h := telemetry.NewErrorHandlerForTest(slog.New(slog.NewJSONHandler(&buf, nil)), 30*time.Second, func() time.Time { return now })
+	h.Handle(errors.New("first"))
+	now = now.Add(time.Second)
+	h.Handle(errors.New("second"))
+	h.Handle(errors.New("third"))
+	now = now.Add(31 * time.Second)
+	h.Handle(errors.New("fourth"))
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("%d log lines, want 2:\n%s", len(lines), buf.String())
+	}
+	for i, want := range []string{`"error":"first"`, `"error":"fourth"`} {
+		if !strings.Contains(lines[i], want) || !strings.Contains(lines[i], `"msg":"telemetry export failed"`) || !strings.Contains(lines[i], `"level":"WARN"`) {
+			t.Errorf("line %d = %s, want %s", i, lines[i], want)
+		}
+	}
+	if !strings.Contains(lines[0], `"dropped":0`) || !strings.Contains(lines[1], `"dropped":2`) {
+		t.Errorf("dropped counts: %s", buf.String())
 	}
 }

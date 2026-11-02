@@ -15,6 +15,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Defaults for zero Options fields.
@@ -141,6 +142,9 @@ type Options struct {
 	Rand    func() float64 // in [0, 1); nil means math/rand/v2
 	Logger  *slog.Logger
 	Metrics Metrics
+	// TracerProvider starts the root span of every check; spans below it
+	// (fetch, commit) inherit it through the context. Nil records nothing.
+	TracerProvider trace.TracerProvider
 }
 
 // Scheduler is the "scheduler" role: it leases due targets from the store,
@@ -376,7 +380,7 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 	lease := store.TargetLeaseName(t.ID)
 	// One trace per check (story #118): this span is its root, whatever
 	// context the poll loop runs in. Deliveries made by the check link to it.
-	ctx, span := telemetry.StartRoot(ctx, "angelia.check", nil,
+	ctx, span := telemetry.StartRoot(ctx, s.opts.TracerProvider, "angelia.check", nil,
 		attribute.String("angelia.target.id", t.ID), attribute.String("angelia.source.kind", t.Kind))
 	defer span.End()
 	log := s.log.With("target", t.ID, "kind", t.Kind)

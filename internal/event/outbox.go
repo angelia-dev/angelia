@@ -112,6 +112,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	}
 	kind := in.Target.Kind
 	trust := policy.TrustsPublishedAt(kind)
+	tp := telemetry.TraceParent(ctx)
 	var ids []string
 	for _, wr := range rel {
 		wp := wr.Policy
@@ -140,7 +141,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 				return n, err
 			}
 			ids = next
-			stampTrace(ctx, ds)
+			stampTrace(tp, ds)
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: wr.Watch.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now,
 			}, ds); err != nil {
@@ -155,8 +156,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 
 // stampTrace records the trace context of ctx on the deliveries, so the
 // dispatcher can link its delivery spans to the check that wrote them.
-func stampTrace(ctx context.Context, ds []store.Delivery) {
-	tp := telemetry.TraceParent(ctx)
+func stampTrace(tp string, ds []store.Delivery) {
 	if tp == "" {
 		return
 	}

@@ -51,7 +51,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	log := newLogger(cmd.ErrOrStderr(), cfg.Log)
 	// Tracing is off unless the standard OTEL_* variables enable an OTLP
 	// exporter (ADR 0020). It is not part of angelia.yaml.
-	stopTracing, err := telemetry.Setup(cmd.Context(), os.Getenv, buildinfo.Version())
+	tracerProvider, stopTracing, err := telemetry.Setup(cmd.Context(), os.Getenv, buildinfo.Version(), log)
 	if err != nil {
 		return fmt.Errorf("tracing: %w", err)
 	}
@@ -60,6 +60,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			log.Warn("flush traces", "error", err)
 		}
 	}()
+	// The final flush comes out of the drain budget, so that drain plus flush
+	// stays within --drain-timeout (and the Kubernetes grace period).
+	if telemetry.Enabled(os.Getenv) && drain > 2*telemetry.FlushTimeout {
+		drain -= telemetry.FlushTimeout
+	}
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
@@ -79,6 +84,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("--roles: %w", err)
 	}
+	// TODO: pass tracerProvider as Options.TracerProvider of the scheduler and
+	// dispatcher roles when serve wires them in place of the stubs.
+	_ = tracerProvider
 	s := &supervisor.Supervisor{
 		Roles:        roles,
 		Listen:       cfg.Listen,

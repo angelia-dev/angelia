@@ -6,20 +6,18 @@ import (
 	"strings"
 	"testing"
 
-	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"go.opentelemetry.io/otel/trace/noop"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// Install makes the global tracer provider record every span in memory until
-// the test ends. Tests that call it must not run in parallel.
-func Install(t testing.TB) *tracetest.SpanRecorder {
+// Install returns a tracer provider that records every span in memory, and
+// the recorder. Pass the provider to the role under test; nothing is global,
+// so tests may run in parallel.
+func Install(t testing.TB) (*tracetest.SpanRecorder, trace.TracerProvider) {
 	t.Helper()
 	rec := tracetest.NewSpanRecorder()
-	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
-	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
-	return rec
+	return rec, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 }
 
 // Dump renders everything a span exports (name, attributes, events, links,
