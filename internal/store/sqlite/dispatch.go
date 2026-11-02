@@ -95,6 +95,19 @@ func (s *Store) HasDueDeliveries(ctx context.Context, now time.Time) (bool, erro
 	return ok, wrap(err, "check due deliveries", "")
 }
 
+// CountDeliveriesByStatus implements [store.Store].
+func (s *Store) CountDeliveriesByStatus(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.q.CountDeliveriesByStatus(ctx)
+	if err != nil {
+		return nil, wrap(err, "count deliveries by status", "")
+	}
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.Status] = r.N
+	}
+	return out, nil
+}
+
 // FinishDelivery implements [store.Store].
 func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, holder string) (bool, error) {
 	p := FinishLeasedDeliveryParams{

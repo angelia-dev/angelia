@@ -75,6 +75,19 @@ type Config struct {
 	Clock Clock
 	// Logger defaults to a logger that discards everything.
 	Logger *slog.Logger
+	// Observer receives measurements for metrics. Nil discards them.
+	Observer Observer
+}
+
+// Observer receives netguard measurements. Phase 1 exports them to
+// Prometheus (internal/metrics). Methods must be safe for concurrent use and
+// must not block.
+type Observer interface {
+	// RateLimitWait is how long one attempt to host waited for the per-host
+	// rate limit before it was sent, zero when it did not wait. It is called
+	// once per attempt, after the wait ended; a wait cut short by the
+	// context is not reported.
+	RateLimitWait(host string, d time.Duration)
 }
 
 // Client is the shared HTTP transport: an http.RoundTripper that applies
@@ -204,9 +217,13 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	canRetry := isIdempotent(r.Method) && (r.Body == nil || r.Body == http.NoBody)
 
 	for attempt := 1; ; attempt++ {
+		waitStart := c.clock.Now()
 		if err := c.limiter.wait(ctx, host, authed); err != nil {
 			closeRequestBody(req)
 			return nil, err
+		}
+		if c.cfg.Observer != nil {
+			c.cfg.Observer.RateLimitWait(host, max(0, c.clock.Now().Sub(waitStart)))
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))
