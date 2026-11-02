@@ -42,8 +42,8 @@ func TestObserverRateLimitWait(t *testing.T) {
 	if len(obs.waits) != 2 {
 		t.Fatalf("observed %d waits, want 2: %v", len(obs.waits), obs.waits)
 	}
-	if obs.hosts[0] != "127.0.0.1" {
-		t.Errorf("host = %q, want 127.0.0.1", obs.hosts[0])
+	if obs.hosts[0] != OtherHost {
+		t.Errorf("host = %q, want %q: an unlisted host must not reach the observer", obs.hosts[0], OtherHost)
 	}
 	if obs.waits[0] != 0 {
 		t.Errorf("first wait = %v, want 0 (inside the burst)", obs.waits[0])
@@ -66,5 +66,24 @@ func TestObserverNotCalledWhenGuardRefuses(t *testing.T) {
 	}
 	if len(obs.waits) != 0 {
 		t.Fatalf("observed %v for a refused request", obs.waits)
+	}
+}
+
+// Hosts of the limits table (defaults and Config.HostLimits) are reported by
+// name, in lower case; every other host is "other".
+func TestObserverHostsFromLimitsTableOnly(t *testing.T) {
+	l := newLimiter(newFakeClock(true), DefaultFallbackLimit(), map[string]HostLimit{
+		"api.github.com": DefaultHostLimits()["api.github.com"],
+		"mirror.corp":    DefaultFallbackLimit(),
+	})
+	for host, want := range map[string]string{
+		"API.GitHub.com":         "api.github.com",
+		"mirror.corp.":           "mirror.corp",
+		"abc123.m.pipedream.net": OtherHost,
+		"hooks.example":          OtherHost,
+	} {
+		if got := l.observedHost(host); got != want {
+			t.Errorf("observedHost(%q) = %q, want %q", host, got, want)
+		}
 	}
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,7 +71,7 @@ func gather(t *testing.T, m *Metrics) []*dto.MetricFamily {
 // AC: names follow Prometheus conventions (promlint) and every angelia
 // metric is documented (has help text and appears in docs/operations/metrics.md).
 func TestNamesFollowConventions(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.Source(fakeSource{kind: "pypi"})
 	m.RegisterDeliveryCounts(fakeCounts{})
 	m.DueBacklog(1)
@@ -98,10 +100,13 @@ func TestNamesFollowConventions(t *testing.T) {
 // AC: cardinality is bounded. Only the documented labels exist, and no
 // label carries a package, watch or target name, however many are seen.
 func TestCardinalityBounded(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.Source(fakeSource{kind: "pypi"})
-	for i := range 500 {
-		m.RateLimitWait(fmt.Sprintf("host%d.example", i), time.Millisecond)
+	// netguard folds hosts outside its limits table into "other" before the
+	// observer sees them (TestObserverHostsFromLimitsTableOnly); what reaches
+	// here is a small configured set.
+	for _, h := range []string{"api.github.com", "pypi.org", "other", "API.GitHub.com"} {
+		m.RateLimitWait(h, time.Millisecond)
 	}
 	allowed := map[string]bool{"source": true, "result": true, "host": true, "outcome": true, "status": true, "version": true, "le": true}
 	series := 0
@@ -118,32 +123,13 @@ func TestCardinalityBounded(t *testing.T) {
 			}
 		}
 	}
-	hosts := map[string]bool{}
-	for _, f := range gather(t, m) {
-		if f.GetName() != "angelia_netguard_rate_limit_wait_seconds" {
-			continue
-		}
-		for _, mm := range f.GetMetric() {
-			for _, l := range mm.GetLabel() {
-				if l.GetName() == "host" {
-					hosts[l.GetValue()] = true
-				}
-			}
-		}
-	}
-	if len(hosts) != maxHosts+1 {
-		t.Errorf("distinct host label values = %d, want %d (the cap plus \"other\")", len(hosts), maxHosts+1)
-	}
-	if !hosts[otherHost] {
-		t.Errorf("hosts past the cap are not folded into %q", otherHost)
-	}
-	if series > 2000 {
-		t.Errorf("%d angelia series after 500 hosts, want a bounded count", series)
+	if series > 200 {
+		t.Errorf("%d angelia series with four hosts, want a bounded count", series)
 	}
 }
 
 func TestSchedulerMetrics(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.DueBacklog(7)
 	m.CheckLag(90 * time.Second)
 	m.CheckLag(2 * time.Second)
@@ -160,7 +146,7 @@ func TestSchedulerMetrics(t *testing.T) {
 }
 
 func TestDispatchMetrics(t *testing.T) {
-	m := New()
+	m := New(nil)
 	for _, o := range []string{dispatch.OutcomeDelivered, dispatch.OutcomeDelivered, dispatch.OutcomeRetry, dispatch.OutcomeDead, "bogus"} {
 		m.AttemptFinished(o)
 	}
@@ -173,7 +159,7 @@ func TestDispatchMetrics(t *testing.T) {
 }
 
 func TestRateLimitWait(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.RateLimitWait("API.GitHub.com", 0)
 	m.RateLimitWait("api.github.com", 3*time.Second)
 	mustHave(t, scrape(t, m),
@@ -198,7 +184,7 @@ func (f fakeSource) List(context.Context, source.Target, source.FetchState) (sou
 // not_modified / (ok + not_modified). The wrapper passes results and
 // errors through unchanged.
 func TestSourceFetchResults(t *testing.T) {
-	m := New()
+	m := New(nil)
 	cases := []struct {
 		name string
 		src  fakeSource
@@ -237,10 +223,10 @@ func TestSourceFetchResults(t *testing.T) {
 	)
 }
 
-// A source that is wrapped twice, or whose kind is registered after the
-// first scrape, still yields one series per (source, result).
+// A source that is wrapped but has not fetched yet has no series: series
+// appear on use, so a registered kind costs nothing until it is checked.
 func TestSourceKindsBecomeSeriesOnUse(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.Source(fakeSource{kind: "pypi"})
 	body := scrape(t, m)
 	if strings.Contains(body, `source="pypi"`) {
@@ -260,7 +246,7 @@ func (f fakeCounts) CountDeliveriesByStatus(context.Context) (map[string]int64, 
 // AC: deliveries by status and the DLQ size come from the store at scrape
 // time, with all four statuses present even at zero.
 func TestDeliveryCounts(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.RegisterDeliveryCounts(fakeCounts{m: map[string]int64{store.DeliveryPending: 3, store.DeliveryDead: 5}})
 	mustHave(t, scrape(t, m),
 		`angelia_deliveries{status="pending"} 3`,
@@ -283,8 +269,9 @@ func TestDeliveryCountsCachedAndFailureIsolated(t *testing.T) {
 			return map[string]int64{store.DeliveryDead: int64(calls)}, nil
 		}),
 		now: func() time.Time { return now },
+		log: slog.New(slog.DiscardHandler),
 	}
-	m := New()
+	m := New(nil)
 	m.reg.MustRegister(c)
 	mustHave(t, scrape(t, m), "angelia_dlq_size 1")
 	now = now.Add(time.Second)
@@ -299,6 +286,12 @@ func TestDeliveryCountsCachedAndFailureIsolated(t *testing.T) {
 	if strings.Contains(body, "angelia_dlq_size") {
 		t.Error("a failed store query still reported a DLQ size")
 	}
+	// The failure is cached for the TTL: a busy database is not hit again.
+	now = now.Add(time.Second)
+	scrape(t, m)
+	if calls != 2 {
+		t.Errorf("store queried %d times, want 2 (one success, one cached failure)", calls)
+	}
 }
 
 type countFunc func(context.Context) (map[string]int64, error)
@@ -308,7 +301,7 @@ func (f countFunc) CountDeliveriesByStatus(ctx context.Context) (map[string]int6
 }
 
 func TestHandlerServesTextAndProcessMetrics(t *testing.T) {
-	m := New()
+	m := New(nil)
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 	resp, err := http.Get(srv.URL)
@@ -329,9 +322,43 @@ func TestHandlerServesTextAndProcessMetrics(t *testing.T) {
 
 // Two instances do not share state: nothing registers globally.
 func TestNoGlobalState(t *testing.T) {
-	a, b := New(), New()
+	a, b := New(nil), New(nil)
 	a.DueBacklog(9)
 	if strings.Contains(scrape(t, b), "angelia_scheduler_due_targets 9") {
 		t.Error("instances share state")
 	}
+}
+
+// A failed scrape is logged, not silent.
+func TestScrapeErrorsAreLogged(t *testing.T) {
+	var buf strings.Builder
+	m := New(slog.New(slog.NewTextHandler(&buf, nil)))
+	m.RegisterDeliveryCounts(fakeCounts{err: errors.New("db down")})
+	scrape(t, m)
+	if !strings.Contains(buf.String(), "db down") {
+		t.Errorf("failure not logged: %q", buf.String())
+	}
+}
+
+// Observers are called from many goroutines while Prometheus scrapes.
+func TestConcurrentUseUnderRace(t *testing.T) {
+	m := New(nil)
+	src := m.Source(fakeSource{kind: "pypi"})
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for range 200 {
+				m.RateLimitWait([]string{"pypi.org", "other", "api.github.com"}[i%3], time.Millisecond)
+				m.AttemptFinished(dispatch.OutcomeRetry)
+				m.DueBacklog(int64(i))
+				m.CheckLag(time.Second)
+				_, _ = src.List(t.Context(), source.Target{}, source.FetchState{})
+			}
+		})
+	}
+	for range 20 {
+		scrape(t, m)
+	}
+	wg.Wait()
+	mustHave(t, scrape(t, m), `angelia_delivery_attempts_total{outcome="retry"} 1600`)
 }

@@ -15,7 +15,7 @@ import (
 // full returns a Metrics on which every angelia metric has a sample.
 func full(t *testing.T) *Metrics {
 	t.Helper()
-	m := New()
+	m := New(nil)
 	_, _ = m.Source(fakeSource{kind: "pypi"}).List(t.Context(), source.Target{}, source.FetchState{})
 	m.RegisterDeliveryCounts(fakeCounts{})
 	m.DueBacklog(1)

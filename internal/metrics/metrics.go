@@ -9,7 +9,8 @@
 //
 // Cardinality is bounded by design. The only labels are source kind,
 // fetch result, delivery outcome and status, and the host of an upstream
-// registry (at most maxHosts distinct values, then "other"). No label ever
+// registry listed in the netguard limits table (any other host is "other",
+// because sinks share the client and their hosts can be secret). No label ever
 // carries a package, watch, target, subscription or sink name.
 // docs/operations/metrics.md documents every metric.
 package metrics
@@ -17,9 +18,10 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,13 +32,6 @@ import (
 	"github.com/angelia-dev/angelia/internal/dispatch"
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
-)
-
-const (
-	// maxHosts caps the distinct values of the host label; further hosts
-	// are reported as otherHost.
-	maxHosts  = 64
-	otherHost = "other"
 )
 
 // Fetch results, the values of the result label of angelia_source_fetches_total.
@@ -58,14 +53,21 @@ type Metrics struct {
 	fetches    *prometheus.CounterVec
 	rateWait   *prometheus.HistogramVec
 	attempts   *prometheus.CounterVec
-	hostsMu    sync.Mutex
-	hostsSeen  map[string]struct{}
+	log        *slog.Logger
 }
 
 // New returns Metrics with its own registry, which also carries the Go
-// runtime and process collectors.
-func New() *Metrics {
-	m := &Metrics{reg: prometheus.NewRegistry(), hostsSeen: map[string]struct{}{}}
+// runtime and process collectors. Scrape errors are logged to log (nil
+// means slog.Default()).
+//
+// Pass the result to scheduler.Options, dispatch.Options and netguard.Config
+// only as a non-nil *Metrics: a typed nil pointer stored in their interface
+// fields is not a nil interface and would panic on the first call.
+func New(log *slog.Logger) *Metrics {
+	if log == nil {
+		log = slog.Default()
+	}
+	m := &Metrics{reg: prometheus.NewRegistry(), log: log}
 	m.dueTargets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "angelia_scheduler_due_targets",
 		Help: "Targets due for a check and not leased, as seen by the last scheduler poll.",
@@ -107,10 +109,16 @@ func New() *Metrics {
 // of the scrape; the rest is still served.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{
+		ErrorLog:            errorLog{m.log},
 		ErrorHandling:       promhttp.ContinueOnError,
 		MaxRequestsInFlight: 4,
 	})
 }
+
+// errorLog adapts slog to promhttp.Logger.
+type errorLog struct{ log *slog.Logger }
+
+func (e errorLog) Println(v ...any) { e.log.Warn("metrics scrape", "error", fmt.Sprint(v...)) }
 
 // DueBacklog implements scheduler.Metrics.
 func (m *Metrics) DueBacklog(n int64) { m.dueTargets.Set(float64(n)) }
@@ -129,24 +137,11 @@ func (m *Metrics) AttemptFinished(outcome string) {
 	m.attempts.WithLabelValues(outcome).Inc()
 }
 
-// RateLimitWait implements netguard.Observer.
+// RateLimitWait implements netguard.Observer. netguard already folds hosts
+// outside its limits table into "other", so the label set is bounded by
+// configuration; host is lower-cased here only as a safeguard.
 func (m *Metrics) RateLimitWait(host string, d time.Duration) {
-	m.rateWait.WithLabelValues(m.hostLabel(host)).Observe(max(0, d).Seconds())
-}
-
-// hostLabel lower-cases host and folds hosts beyond maxHosts into otherHost.
-func (m *Metrics) hostLabel(host string) string {
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	m.hostsMu.Lock()
-	defer m.hostsMu.Unlock()
-	if _, ok := m.hostsSeen[host]; ok {
-		return host
-	}
-	if len(m.hostsSeen) >= maxHosts {
-		return otherHost
-	}
-	m.hostsSeen[host] = struct{}{}
-	return host
+	m.rateWait.WithLabelValues(strings.ToLower(host)).Observe(max(0, d).Seconds())
 }
 
 // Source wraps src so that every List is counted by result in

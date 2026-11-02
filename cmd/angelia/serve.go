@@ -71,7 +71,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
 		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and
 		// netguard client when those roles replace their stubs (ADR 0019).
-		roles = append(roles, metrics.New().Role())
+		roles = append(roles, metrics.New(log).Role())
 	}
 	s := &supervisor.Supervisor{
 		Roles:        roles,

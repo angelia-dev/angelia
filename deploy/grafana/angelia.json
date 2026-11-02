@@ -52,7 +52,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(angelia_dlq_size)",
+          "expr": "max(angelia_dlq_size)",
           "refId": "A"
         }
       ],

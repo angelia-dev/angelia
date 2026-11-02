@@ -83,10 +83,17 @@ type Config struct {
 // Prometheus (internal/metrics). Methods must be safe for concurrent use and
 // must not block.
 type Observer interface {
-	// RateLimitWait is how long one attempt to host waited for the per-host
-	// rate limit before it was sent, zero when it did not wait. It is called
-	// once per attempt, after the wait ended; a wait cut short by the
-	// context is not reported.
+	// RateLimitWait is how long one attempt (each retry and each redirect
+	// hop is an attempt) waited for the per-host rate limit before it was
+	// sent, zero when it did not wait. It is called once per attempt, after
+	// the wait ended; a wait cut short by the context is not reported.
+	//
+	// host is a host of the limits table (DefaultHostLimits plus
+	// Config.HostLimits), lower case, or "other" for any other host. Sinks
+	// share this client, and their hosts can carry secrets (webhook URLs),
+	// so they never reach an observer. Implementations must not be a typed
+	// nil pointer stored in the interface: that is not a nil Observer and
+	// would panic on the first call.
 	RateLimitWait(host string, d time.Duration)
 }
 
@@ -223,7 +230,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 		if c.cfg.Observer != nil {
-			c.cfg.Observer.RateLimitWait(host, max(0, c.clock.Now().Sub(waitStart)))
+			c.cfg.Observer.RateLimitWait(c.limiter.observedHost(host), max(0, c.clock.Now().Sub(waitStart)))
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))

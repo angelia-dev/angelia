@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -28,7 +29,7 @@ type DeliveryCounter interface {
 // read from the store at scrape time (at most once per 10 s). Call it once,
 // when the process has a store.
 func (m *Metrics) RegisterDeliveryCounts(c DeliveryCounter) {
-	m.reg.MustRegister(&deliveryCollector{src: c, now: time.Now})
+	m.reg.MustRegister(&deliveryCollector{src: c, now: time.Now, log: m.log})
 }
 
 var (
@@ -47,9 +48,12 @@ type deliveryCollector struct {
 	src DeliveryCounter
 	now func() time.Time
 
+	log *slog.Logger
+
 	mu     sync.Mutex
 	at     time.Time
 	counts map[string]int64
+	err    error // the last failure, kept for the TTL like a success
 }
 
 func (c *deliveryCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -60,6 +64,7 @@ func (c *deliveryCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *deliveryCollector) Collect(ch chan<- prometheus.Metric) {
 	counts, err := c.load()
 	if err != nil {
+		c.log.Warn("count deliveries for metrics", "error", err)
 		ch <- prometheus.NewInvalidMetric(deliveriesDesc, err)
 		return
 	}
@@ -72,18 +77,26 @@ func (c *deliveryCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *deliveryCollector) load() (map[string]int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now := c.now(); c.counts != nil && now.Sub(c.at) < deliveryCountTTL {
-		return c.counts, nil
+	if now := c.now(); (c.counts != nil || c.err != nil) && now.Sub(c.at) < deliveryCountTTL {
+		return c.counts, c.err
 	}
+	// Scrapes are not tied to one request's context (the result is shared
+	// by all scrapers for the TTL), hence Background with its own timeout.
+	// The mutex is held on purpose: concurrent scrapes wait for this one
+	// query instead of each running their own.
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryCountTimeout)
 	defer cancel()
 	counts, err := c.src.CountDeliveriesByStatus(ctx)
+	c.at = c.now()
 	if err != nil {
+		// Cached too, so that a struggling database is not queried by
+		// every scrape.
+		c.counts, c.err = nil, err
 		return nil, err
 	}
 	if counts == nil {
 		counts = map[string]int64{}
 	}
-	c.counts, c.at = counts, c.now()
+	c.counts, c.err = counts, nil
 	return counts, nil
 }

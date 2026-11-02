@@ -26,8 +26,8 @@ A Grafana dashboard is in [`deploy/grafana/angelia.json`](../../deploy/grafana/a
 | `angelia_scheduler_due_targets` | gauge | none | Targets due for a check and not leased, at the last scheduler poll. A backlog that keeps growing means the scheduler cannot keep up. |
 | `angelia_check_lag_seconds` | histogram | none | How late each check started: lease time minus the time the target was due. The Phase 0 target is P95 below 2 minutes. |
 | `angelia_source_fetches_total` | counter | `source`, `result` | Source fetches. `source` is the source kind (`pypi`, `npm`, `github-release`, ...). `result` is `ok` (new data), `not_modified` (the server answered 304), `rate_limited` (429, or a rate limit with a reset time), `canceled` (shutdown, not a failure of the source) or `error`. |
-| `angelia_netguard_rate_limit_wait_seconds` | histogram | `host` | Time an outgoing request waited for the per-host rate limit before it was sent; observed for every request, zero when it did not wait. `host` is the upstream host, at most 64 distinct values, then `other`. |
-| `angelia_delivery_attempts_total` | counter | `outcome` | Delivery attempts by outcome: `delivered`, `retry` (failed, due again later) or `dead` (gave up). Counted by the dispatcher process that made the attempt. |
+| `angelia_netguard_rate_limit_wait_seconds` | histogram | `host` | Time an outgoing attempt waited for the per-host rate limit before it was sent; observed for every attempt (each retry and each redirect hop counts, not each request), zero when it did not wait. `host` is a host of the rate-limit table (the built-in hosts such as `api.github.com` and `crates.io`, plus any host limits configured on the client), lower case; every other host, including webhook and sink hosts, is `other`. |
+| `angelia_delivery_attempts_total` | counter | `outcome` | Delivery attempts by outcome: `delivered`, `retry` (failed, due again later) or `dead` (gave up, including a delivery whose earlier attempt never finished and that is given up on without being sent again). Counted by the dispatcher process that made the attempt. |
 | `angelia_deliveries` | gauge | `status` | Delivery rows in the store: `pending`, `in_flight`, `delivered`, `dead`. Read from the store at scrape time (cached for 10 s), so it is the same on every process that shares the database. Delivered and dead rows disappear with their event when history is pruned. |
 | `angelia_dlq_size` | gauge | none | The dead-letter size: deliveries that gave up and are still in the store. Same value as `angelia_deliveries{status="dead"}`. |
 
@@ -58,10 +58,12 @@ Share of requests that waited for a rate limit, per host:
 )
 ```
 
-Alert ideas: `angelia_dlq_size > 0` for 15 minutes, `histogram_quantile(0.95, ...) > 120`, `angelia_scheduler_due_targets` rising for 30 minutes.
+`angelia_deliveries` and `angelia_dlq_size` come from the shared database, so every process reports the same value: aggregate with `max`, never `sum`. If the database cannot be counted, they are missing from the scrape (a warning is logged) and the failure is remembered for 10 s.
+
+Alert ideas: `max(angelia_dlq_size) > 0` for 15 minutes, `histogram_quantile(0.95, ...) > 120`, `angelia_scheduler_due_targets` rising for 30 minutes.
 
 ## Cardinality
 
-The label sets are closed: `source` is a registered source kind, `result`, `outcome` and `status` are fixed lists, `host` is capped at 64 values plus `other`. No label carries a package, repository, watch, target, subscription or sink name, and there is no setting to add one: per-package series would grow with the watch list (tens of thousands of series for 10,000 watches). Use the API or the logs to look at one package.
+The label sets are closed: `source` is a registered source kind, `result`, `outcome` and `status` are fixed lists, `host` comes from the rate-limit table plus `other`, so sink and webhook hosts (which can contain secrets) never appear. No label carries a package, repository, watch, target, subscription or sink name, and there is no setting to add one: per-package series would grow with the watch list (tens of thousands of series for 10,000 watches). Use the API or the logs to look at one package.
 
 A source kind that has never fetched has no series yet; use `absent()` or `or vector(0)` in alerts accordingly.

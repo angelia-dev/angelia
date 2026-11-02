@@ -38,12 +38,12 @@ glues scheduler, sources and diff is not merged, and `serve` still starts stub r
    defines one.
 5. **Closed label sets.** `source` (registered kinds), `result` (ok, not_modified, rate_limited,
    canceled, error), `outcome` (delivered, retry, dead, other), `status` (pending, in_flight,
-   delivered, dead), `host` (first 64 distinct hosts, then `other`). No package, watch, target,
+   delivered, dead), `host` (only hosts of the netguard rate-limit table, `DefaultHostLimits` plus `Config.HostLimits`, else `other`; sinks share the netguard client and webhook hosts can carry secrets, so netguard folds unlisted hosts before the observer sees them). No package, watch, target,
    subscription or sink name is ever a label.
 6. **Store-backed gauges.** `angelia_deliveries{status}` and `angelia_dlq_size` are read at scrape time
-   with `Store.CountDeliveriesByStatus` (one `GROUP BY status` query, new sqlc query, no migration),
-   cached for 10 s, bounded by a 5 s timeout. A failed query leaves those metrics out of the scrape
-   and does not fail it.
+   with `Store.CountDeliveriesByStatus` (one `GROUP BY status` query that reads only the status index, new sqlc query, no migration),
+   cached for 10 s, failures included, bounded by a 5 s timeout. A failed query leaves those metrics out of the scrape
+   and does not fail it; the failure is logged. The values come from the shared database, so dashboards aggregate them with `max`.
 7. **ETag hit rate** is a query (`not_modified / (ok + not_modified)` over
    `angelia_source_fetches_total`), not a metric.
 
@@ -59,7 +59,7 @@ glues scheduler, sources and diff is not merged, and `serve` still starts stub r
 ### Negative
 
 - `/metrics` is open to whoever can reach `listen`, as are the probes.
-- Seven new transitive modules.
+- `go.mod` gains nine modules (two direct, seven indirect). `go.yaml.in/yaml/v2` and `google.golang.org/protobuf` are linked into the binary, which grows by about 3.7 MB (23.4 to 27.1 MB).
 - A binary running only `--roles=api` still reports `angelia_scheduler_*` metrics at zero or absent;
   dashboards must tolerate that.
 - `Store` gains a method (internal interface), so every implementation (Postgres, later) must add it.
