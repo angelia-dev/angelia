@@ -32,6 +32,7 @@ type Event struct {
 	Type        string
 	PayloadJson string
 	CreatedAt   int64
+	RefEventID  sql.NullString
 }
 
 type Lease struct {
@@ -64,6 +65,11 @@ type Subscription struct {
 	Name       sql.NullString
 	ManagedBy  string
 	PolicyJson string
+}
+
+type SubscriptionGeneration struct {
+	ID         int64
+	Generation int64
 }
 
 type Target struct {

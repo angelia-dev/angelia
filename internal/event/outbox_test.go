@@ -268,6 +268,13 @@ func (x faultTx) DeletePendingReleasesOfWatch(ctx context.Context, w string) (in
 	return x.Tx.DeletePendingReleasesOfWatch(ctx, w)
 }
 
+func (x faultTx) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	if err := x.f.write("CancelHeldDeliveries"); err != nil {
+		return 0, err
+	}
+	return x.Tx.CancelHeldDeliveries(ctx, eventID, now)
+}
+
 func (x faultTx) UpdateTarget(ctx context.Context, tg store.Target) error {
 	if err := x.f.write("UpdateTarget"); err != nil {
 		return err
@@ -326,13 +333,13 @@ func snap(t *testing.T, st *sqlite.Store, targetID string, watches ...string) sn
 }
 
 // faultTx must intercept every write of store.Tx: a method that is not
-// List* or Get* and that faultTx does not override would reach the nil
+// List*, Get* or SubscriptionGeneration and that faultTx does not override would reach the nil
 // embedded Tx and panic instead of returning the injected crash.
 func TestFaultTxOverridesEveryWrite(t *testing.T) {
 	typ := reflect.TypeFor[store.Tx]()
 	x := reflect.ValueOf(faultTx{f: &faults{failAt: 1, seen: map[string]bool{}}})
 	for m := range typ.Methods() {
-		if strings.HasPrefix(m.Name, "List") || strings.HasPrefix(m.Name, "Get") {
+		if strings.HasPrefix(m.Name, "List") || strings.HasPrefix(m.Name, "Get") || m.Name == "SubscriptionGeneration" {
 			continue
 		}
 		t.Run(m.Name, func(t *testing.T) {
@@ -413,17 +420,18 @@ func TestCommitAllOrNothing(t *testing.T) {
 	yank := secondCheck(tg)
 	yank.Now = check2.Add(81 * time.Hour)
 	yank.Fetched.Versions = slices.Clone(yank.Fetched.Versions)
-	yank.Fetched.Versions[2].Yanked = true // 2.32.0
+	yank.Fetched.Versions[2].Yanked = true // 2.32.0, from the baseline: no event
+	yank.Fetched.Versions[1].Yanked = true // 2.33.0, emitted by both watches: two release.yanked
 	got, n = crashEveryWrite(t, st, yank, watches)
 	maps.Copy(seen, got)
 	vs, err := st.ListVersions(ctx, tg.ID)
 	must(t, err)
 	yanked := slices.IndexFunc(vs, func(v store.Version) bool { return v.Raw == "2.32.0" && v.Yanked })
-	if n.Events != 0 || yanked < 0 {
+	if n.Events != 2 || yanked < 0 {
 		t.Fatalf("yank check: %+v, versions %+v", n, vs)
 	}
 
-	for _, op := range []string{"AddVersion", "UpdateVersion", "MarkBaselineDone", "AddPendingRelease", "DeletePendingRelease", "AppendEvent"} {
+	for _, op := range []string{"AddVersion", "UpdateVersion", "MarkBaselineDone", "AddPendingRelease", "DeletePendingRelease", "AppendEvent", "CancelHeldDeliveries"} {
 		if !seen[op] {
 			t.Errorf("no crash was injected at %s", op)
 		}
