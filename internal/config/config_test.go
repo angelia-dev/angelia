@@ -34,7 +34,8 @@ func TestDefaultsWithoutFile(t *testing.T) {
 	}
 	if cfg.Listen != ":8080" || cfg.Database.DSN != "sqlite:///var/lib/angelia/angelia.db" ||
 		!reflect.DeepEqual(cfg.Roles, []string{"all"}) || cfg.Log.Level != "info" ||
-		cfg.Log.Format != "json" || !strings.HasPrefix(cfg.HTTP.UserAgent, "angelia/") {
+		cfg.Log.Format != "json" || !strings.HasPrefix(cfg.HTTP.UserAgent, "angelia/") ||
+		cfg.Instance.Name != "angelia" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -49,6 +50,8 @@ func TestEmptyFileKeepsDefaults(t *testing.T) {
 func TestFileOverridesDefaults(t *testing.T) {
 	p := writeFile(t, `
 listen: 127.0.0.1:9000
+instance:
+  name: prod.eu-1
 database:
   dsn: postgres://u@h/db
 roles: [api, worker]
@@ -70,7 +73,8 @@ sources:
 	}
 	if cfg.Listen != "127.0.0.1:9000" || cfg.Database.DSN != "postgres://u@h/db" ||
 		!reflect.DeepEqual(cfg.Roles, []string{"api", "worker"}) || cfg.Secrets.KeyFile != "/run/key" ||
-		cfg.Log.Level != "debug" || cfg.Log.Format != "text" || cfg.HTTP.UserAgent != "test/1" {
+		cfg.Log.Level != "debug" || cfg.Log.Format != "text" || cfg.HTTP.UserAgent != "test/1" ||
+		cfg.Instance.Name != "prod.eu-1" {
 		t.Fatalf("unexpected: %+v", cfg)
 	}
 	if cfg.SourceToken("github-release") != "s3cret" {
@@ -124,6 +128,7 @@ func TestEnvOverrides(t *testing.T) {
 	p := writeFile(t, "listen: :1\nsources:\n  github-release:\n    base_url: https://old.example.com\n")
 	cfg, err := load(t, p,
 		"ANGELIA_LISTEN=:2",
+		"ANGELIA_INSTANCE_NAME=env-name",
 		"ANGELIA_DATABASE_DSN=sqlite:///tmp/x.db",
 		"ANGELIA_ROLES=api, worker",
 		"ANGELIA_SECRETS_KEY_FILE=/k",
@@ -140,7 +145,8 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Listen != ":2" || cfg.Database.DSN != "sqlite:///tmp/x.db" ||
 		!reflect.DeepEqual(cfg.Roles, []string{"api", "worker"}) || cfg.Secrets.KeyFile != "/k" ||
-		cfg.Log.Level != "warn" || cfg.Log.Format != "text" || cfg.HTTP.UserAgent != "ua/2" {
+		cfg.Log.Level != "warn" || cfg.Log.Format != "text" || cfg.HTTP.UserAgent != "ua/2" ||
+		cfg.Instance.Name != "env-name" {
 		t.Fatalf("unexpected: %+v", cfg)
 	}
 	if cfg.Sources["github-release"].BaseURL != "https://new.example.com" {
@@ -214,6 +220,12 @@ func TestValidation(t *testing.T) {
 		"allmixed":  "roles: [all, api]",
 		"pgnohost":  "database:\n  dsn: postgres:///db",
 		"sqlnopath": "database:\n  dsn: sqlite://",
+		"instname":  "instance:\n  name: Prod",
+		"instempty": "instance:\n  name: ''",
+		"instdash":  "instance:\n  name: -a",
+		"instlong":  "instance:\n  name: " + strings.Repeat("a", 64),
+		"instunder": "instance:\n  name: my_instance",
+		"instslash": "instance:\n  name: a/b",
 		"badkind":   "sources:\n  Py_PI:\n    base_url: https://x.example.com",
 	}
 	for name, y := range cases {
@@ -328,5 +340,30 @@ func TestUnknownKeyMessageHasNoGoTypeNames(t *testing.T) {
 	_, err := load(t, writeFile(t, "bogus: 1\n"))
 	if err == nil || !strings.Contains(err.Error(), `unknown key "bogus"`) || strings.Contains(err.Error(), "config.Config") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// AC: instance.name accepts the envelope pattern ^[a-z0-9][a-z0-9.-]{0,62}$.
+func TestInstanceNameValid(t *testing.T) {
+	for _, n := range []string{"a", "0", "my-instance", "a.b-c", "9x", strings.Repeat("a", 63)} {
+		t.Run(n, func(t *testing.T) {
+			cfg, err := load(t, "", "ANGELIA_INSTANCE_NAME="+n)
+			if err != nil || cfg.Instance.Name != n {
+				t.Fatalf("name=%q cfg=%+v err=%v", n, cfg, err)
+			}
+		})
+	}
+}
+
+// AC: an invalid instance.name gives a clear error naming the key and the pattern.
+func TestInstanceNameInvalidMessage(t *testing.T) {
+	for _, n := range []string{"", "Prod", ".a", "-a", "a b", "a_b", "a/b", "a\n", strings.Repeat("a", 64)} {
+		t.Run(n, func(t *testing.T) {
+			_, err := load(t, "", "ANGELIA_INSTANCE_NAME="+n)
+			if err == nil || !strings.Contains(err.Error(), "instance.name") ||
+				!strings.Contains(err.Error(), `^[a-z0-9][a-z0-9.-]{0,62}$`) {
+				t.Fatalf("got %v", err)
+			}
+		})
 	}
 }

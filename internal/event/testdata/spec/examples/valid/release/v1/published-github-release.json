@@ -1,0 +1,33 @@
+{
+  "source": "github-release",
+  "package": "cli/cli",
+  "version": "v2.62.0",
+  "normalized_version": "2.62.0",
+  "previous_version": "v2.61.0",
+  "scheme": "semver",
+  "bump": "minor",
+  "backport": false,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": "2026-10-29T16:20:00Z",
+  "detected_at": "2026-10-29T16:30:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": "https://github.com/cli/cli/releases/tag/v2.62.0",
+    "changelog": "https://github.com/cli/cli/releases/tag/v2.62.0",
+    "artifact": null
+  },
+  "notes": {
+    "format": "markdown",
+    "body": "## What's changed\n\n- Synthetic example entry\n",
+    "truncated": false
+  },
+  "watch": {
+    "id": "01JBX4C5D6E7F8G9H0J1K2M3N4",
+    "name": "gh-cli",
+    "labels": {
+      "team": "tooling"
+    }
+  },
+  "purl": "pkg:github/cli/cli@v2.62.0"
+}

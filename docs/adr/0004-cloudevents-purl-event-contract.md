@@ -50,6 +50,8 @@ requirement ([prd.md §7](../prd.md#7-non-functional-requirements)); see also G3
 - **Public field names** of `data` (for example `ecosystem`, `bump`, `cooldown_satisfied_at`, `purl`) appear in the draft example only. AGENTS.md requires the maintainer to name public schema fields; the example is not frozen by this ADR.
 - Which `data` fields are required versus optional is not stated.
 - Whether the `source` URI form `angelia://<instance>/watches/<ecosystem>/<name>` is final.
+
+> **Resolved (2026-11-01):** the field names, their required-ness and the `source` form (`angelia://<instance>/watches/<watch_id>`) were settled by the maintainer in angelia-dev/spec proposal 0001 and the release event v1 schema (angelia-dev/spec#6). See [architecture.md §4](../architecture.md#4-the-event-contract-the-product).
 - Versioning rules for the `v1` type suffix and the `spec` repo SemVer are not defined; the spec freeze is a Phase 3 exit criterion ([prd.md §9](../prd.md#9-roadmap)).
 - `release.yanked` and `release.prerelease`: payloads and emission rules are not specified.
 - Exact outbox mechanics (a separate outbox table, or the `delivery` rows themselves) are not specified; §2 and §5 imply the `delivery` rows.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,16 +62,20 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Count(KindSink, Create) != 1 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 2 || plan.Count(KindTarget, Create) != 4 {
+	if plan.Count(KindSink, Create) != 2 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 3 || plan.Count(KindTarget, Create) != 4 {
 		t.Fatalf("plan:\n%s", plan)
 	}
 
 	s := snap(t, st, store.ManagedByFile)
-	if len(s.sinks) != 1 || s.sinks[0].Name != "ci-webhook" || s.sinks[0].Kind != "webhook" ||
-		string(s.sinks[0].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
+	sinkIDs := map[string]string{}
+	for _, k := range s.sinks {
+		sinkIDs[k.Name] = k.ID
+	}
+	if len(s.sinks) != 2 || s.sinks[1].Name != "ci-webhook" || s.sinks[1].Kind != "webhook" ||
+		string(s.sinks[1].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
 		t.Fatalf("sinks: %+v", s.sinks)
 	}
-	if len(s.watches) != 4 || len(s.subs) != 2 {
+	if len(s.watches) != 4 || len(s.subs) != 3 {
 		t.Fatalf("watches=%d subs=%d", len(s.watches), len(s.subs))
 	}
 	byName := map[string]store.Watch{}
@@ -113,7 +118,11 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	sub := map[string]store.Subscription{}
 	for _, x := range s.subs {
 		sub[x.Name] = x
-		if x.SinkID != s.sinks[0].ID {
+		want := sinkIDs["ci-webhook"]
+		if x.Name == "platform-to-chat-minors" {
+			want = sinkIDs["chat-webhook"]
+		}
+		if x.SinkID != want {
 			t.Fatalf("subscription %s points at %s", x.Name, x.SinkID)
 		}
 	}
@@ -122,6 +131,9 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	}
 	if got := string(sub["web-and-tooling-bumps"].Filter); got != `{"source":["npm","github-release"],"labels":{},"bump":["major","minor"],"package":"re*","type":["release.published"]}` {
 		t.Fatalf("filter: %s", got)
+	}
+	if got := string(sub["platform-to-chat-minors"].Policy); got != `{"prerelease":"none","cooldown":"72h0m0s"}` {
+		t.Fatalf("policy: %s", got)
 	}
 
 	// Idempotent: a second run changes nothing.
@@ -209,8 +221,9 @@ func TestRemovingFromTheFile(t *testing.T) {
 	if _, err := target(t, st, "pypi", map[string]string{"name": "django"}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("django target should be gone: %v", err)
 	}
-	// Pending deliveries of the removed subscription are gone; in-flight and
-	// delivered stay; the kept subscription's pending delivery is still queued.
+	// Pending deliveries of the removed subscription become dead with a reason
+	// (D8); in-flight and delivered stay; the kept subscription's pending
+	// delivery is still queued.
 	status := func(eventID string) []string {
 		ds, err := st.ListDeliveries(ctx, eventID)
 		if err != nil {
@@ -222,8 +235,14 @@ func TestRemovingFromTheFile(t *testing.T) {
 		}
 		return out
 	}
-	if got := status("e1"); len(got) != 1 || got[0] != subs["all"]+":pending" {
+	if got := status("e1"); len(got) != 2 || got[0] != subs["all"]+":pending" && got[1] != subs["all"]+":pending" ||
+		!slices.Contains(got, subs["teamb"]+":dead") {
 		t.Fatalf("e1 deliveries: %v", got)
+	}
+	if ds, _ := st.ListDeliveries(ctx, "e1"); !slices.ContainsFunc(ds, func(d store.Delivery) bool {
+		return d.SubscriptionID == subs["teamb"] && d.LastError == DeadOnDelete && d.NextAttemptAt.IsZero()
+	}) {
+		t.Fatalf("dead delivery lacks its reason: %+v", ds)
 	}
 	if got := status("e2"); len(got) != 1 || !strings.HasSuffix(got[0], ":delivered") {
 		t.Fatalf("e2 deliveries: %v", got)

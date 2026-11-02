@@ -109,18 +109,26 @@ func (q *Queries) CountLeasableDueTargets(ctx context.Context, now int64) (int64
 }
 
 const createDelivery = `-- name: CreateDelivery :exec
-INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
+                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateDeliveryParams struct {
-	ID             string
-	EventID        string
-	SubscriptionID string
-	Status         string
-	Attempts       int64
-	NextAttemptAt  sql.NullInt64
-	LastError      sql.NullString
+	ID                  string
+	EventID             string
+	SubscriptionID      string
+	Status              string
+	Attempts            int64
+	NextAttemptAt       sql.NullInt64
+	LastError           sql.NullString
+	HeldUntil           sql.NullInt64
+	HoldStartedAt       sql.NullInt64
+	HoldWatchCooldownMs sql.NullInt64
+	HoldPrerelease      sql.NullInt64
+	HoldWatchID         sql.NullString
+	HoldRaw             sql.NullString
+	HoldInput           sql.NullString
 }
 
 func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) error {
@@ -132,6 +140,13 @@ func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) 
 		arg.Attempts,
 		arg.NextAttemptAt,
 		arg.LastError,
+		arg.HeldUntil,
+		arg.HoldStartedAt,
+		arg.HoldWatchCooldownMs,
+		arg.HoldPrerelease,
+		arg.HoldWatchID,
+		arg.HoldRaw,
+		arg.HoldInput,
 	)
 	return err
 }
@@ -183,7 +198,7 @@ func (q *Queries) CreateSink(ctx context.Context, arg CreateSinkParams) error {
 }
 
 const createSubscription = `-- name: CreateSubscription :exec
-INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by) VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by, policy_json) VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateSubscriptionParams struct {
@@ -193,6 +208,7 @@ type CreateSubscriptionParams struct {
 	Template   string
 	Name       sql.NullString
 	ManagedBy  string
+	PolicyJson string
 }
 
 func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscriptionParams) error {
@@ -203,6 +219,7 @@ func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscription
 		arg.Template,
 		arg.Name,
 		arg.ManagedBy,
+		arg.PolicyJson,
 	)
 	return err
 }
@@ -285,18 +302,6 @@ DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= ?
 
 func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredTargetLeases, expiresAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const deletePendingDeliveries = `-- name: DeletePendingDeliveries :execrows
-DELETE FROM delivery WHERE subscription_id = ? AND status = 'pending'
-`
-
-func (q *Queries) DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deletePendingDeliveries, subscriptionID)
 	if err != nil {
 		return 0, err
 	}
@@ -390,6 +395,43 @@ func (q *Queries) DeleteWatch(ctx context.Context, id string) (int64, error) {
 	return result.RowsAffected()
 }
 
+const failHeldDelivery = `-- name: FailHeldDelivery :execrows
+UPDATE delivery SET status = 'dead', last_error = ?1, next_attempt_at = NULL, held_until = NULL
+WHERE id = ?2 AND status = 'pending' AND held_until > ?3
+`
+
+type FailHeldDeliveryParams struct {
+	Reason sql.NullString
+	ID     string
+	Now    sql.NullInt64
+}
+
+func (q *Queries) FailHeldDelivery(ctx context.Context, arg FailHeldDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failHeldDelivery, arg.Reason, arg.ID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failPendingDeliveries = `-- name: FailPendingDeliveries :execrows
+UPDATE delivery SET status = 'dead', last_error = ?, next_attempt_at = NULL
+WHERE subscription_id = ? AND status = 'pending'
+`
+
+type FailPendingDeliveriesParams struct {
+	LastError      sql.NullString
+	SubscriptionID string
+}
+
+func (q *Queries) FailPendingDeliveries(ctx context.Context, arg FailPendingDeliveriesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failPendingDeliveries, arg.LastError, arg.SubscriptionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getTarget = `-- name: GetTarget :one
 SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE id = ?
 `
@@ -473,7 +515,7 @@ func (q *Queries) HasLeasableDueTargets(ctx context.Context, now int64) (bool, e
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error FROM delivery WHERE event_id = ? ORDER BY id
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery WHERE event_id = ? ORDER BY id
 `
 
 func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error) {
@@ -493,6 +535,13 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 			&i.Attempts,
 			&i.NextAttemptAt,
 			&i.LastError,
+			&i.HeldUntil,
+			&i.HoldStartedAt,
+			&i.HoldWatchCooldownMs,
+			&i.HoldPrerelease,
+			&i.HoldWatchID,
+			&i.HoldRaw,
+			&i.HoldInput,
 		); err != nil {
 			return nil, err
 		}
@@ -532,6 +581,56 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 			&i.Type,
 			&i.PayloadJson,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHeldDeliveries = `-- name: ListHeldDeliveries :many
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery
+WHERE subscription_id = ? AND status = 'pending' AND held_until > ?
+ORDER BY id
+`
+
+type ListHeldDeliveriesParams struct {
+	SubscriptionID string
+	HeldUntil      sql.NullInt64
+}
+
+// A held delivery is pending and held_until is still ahead.
+func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveriesParams) ([]Delivery, error) {
+	rows, err := q.db.QueryContext(ctx, listHeldDeliveries, arg.SubscriptionID, arg.HeldUntil)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Delivery
+	for rows.Next() {
+		var i Delivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.SubscriptionID,
+			&i.Status,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastError,
+			&i.HeldUntil,
+			&i.HoldStartedAt,
+			&i.HoldWatchCooldownMs,
+			&i.HoldPrerelease,
+			&i.HoldWatchID,
+			&i.HoldRaw,
+			&i.HoldInput,
 		); err != nil {
 			return nil, err
 		}
@@ -681,8 +780,43 @@ func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]S
 	return items, nil
 }
 
+const listSubscriptions = `-- name: ListSubscriptions :many
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription ORDER BY id
+`
+
+func (q *Queries) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+			&i.PolicyJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSubscriptionsManagedBy = `-- name: ListSubscriptionsManagedBy :many
-SELECT id, filter_json, sink_id, template, name, managed_by FROM subscription WHERE managed_by = ? ORDER BY name
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE managed_by = ? ORDER BY name
 `
 
 func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy string) ([]Subscription, error) {
@@ -701,6 +835,7 @@ func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy stri
 			&i.Template,
 			&i.Name,
 			&i.ManagedBy,
+			&i.PolicyJson,
 		); err != nil {
 			return nil, err
 		}
@@ -914,6 +1049,25 @@ func (q *Queries) PruneEvents(ctx context.Context, arg PruneEventsParams) (int64
 	return result.RowsAffected()
 }
 
+const releaseHeldDelivery = `-- name: ReleaseHeldDelivery :execrows
+UPDATE delivery SET held_until = NULL, next_attempt_at = ?1
+WHERE id = ?2 AND status = 'pending' AND held_until > ?1
+`
+
+type ReleaseHeldDeliveryParams struct {
+	Now sql.NullInt64
+	ID  string
+}
+
+// The held queries only touch a delivery that is still held at now.
+func (q *Queries) ReleaseHeldDelivery(ctx context.Context, arg ReleaseHeldDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, releaseHeldDelivery, arg.Now, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const releaseLease = `-- name: ReleaseLease :exec
 DELETE FROM lease WHERE name = ? AND holder = ?
 `
@@ -926,6 +1080,25 @@ type ReleaseLeaseParams struct {
 func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) error {
 	_, err := q.db.ExecContext(ctx, releaseLease, arg.Name, arg.Holder)
 	return err
+}
+
+const rescheduleHeldDelivery = `-- name: RescheduleHeldDelivery :execrows
+UPDATE delivery SET held_until = ?1, next_attempt_at = ?1
+WHERE id = ?2 AND status = 'pending' AND held_until > ?3
+`
+
+type RescheduleHeldDeliveryParams struct {
+	Until sql.NullInt64
+	ID    string
+	Now   sql.NullInt64
+}
+
+func (q *Queries) RescheduleHeldDelivery(ctx context.Context, arg RescheduleHeldDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rescheduleHeldDelivery, arg.Until, arg.ID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const resetWatchBaseline = `-- name: ResetWatchBaseline :execrows
@@ -958,6 +1131,17 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 	return result.RowsAffected()
 }
 
+const subscriptionGeneration = `-- name: SubscriptionGeneration :one
+SELECT generation FROM subscription_generation WHERE id = 1
+`
+
+func (q *Queries) SubscriptionGeneration(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, subscriptionGeneration)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
 const targetExists = `-- name: TargetExists :one
 SELECT EXISTS (SELECT 1 FROM target WHERE id = ?)
 `
@@ -988,13 +1172,14 @@ func (q *Queries) UpdateSink(ctx context.Context, arg UpdateSinkParams) (int64, 
 }
 
 const updateSubscription = `-- name: UpdateSubscription :execrows
-UPDATE subscription SET filter_json = ?, sink_id = ?, template = ? WHERE id = ?
+UPDATE subscription SET filter_json = ?, sink_id = ?, template = ?, policy_json = ? WHERE id = ?
 `
 
 type UpdateSubscriptionParams struct {
 	FilterJson string
 	SinkID     string
 	Template   string
+	PolicyJson string
 	ID         string
 }
 
@@ -1003,6 +1188,7 @@ func (q *Queries) UpdateSubscription(ctx context.Context, arg UpdateSubscription
 		arg.FilterJson,
 		arg.SinkID,
 		arg.Template,
+		arg.PolicyJson,
 		arg.ID,
 	)
 	if err != nil {

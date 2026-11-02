@@ -1,0 +1,30 @@
+{
+  "source": "pypi",
+  "package": "requests",
+  "version": "2.33.0",
+  "normalized_version": "2.33.0",
+  "previous_version": "2.32.5",
+  "scheme": "pep440",
+  "bump": "minor",
+  "backport": false,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": "2026-10-27T14:02:11Z",
+  "detected_at": "2026-10-27T14:15:00Z",
+  "cooldown_satisfied_at": "2026-10-30T14:02:11Z",
+  "urls": {
+    "release": "https://pypi.org/project/requests/2.33.0/",
+    "changelog": "https://github.com/psf/requests/blob/main/HISTORY.md",
+    "artifact": null
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX1Z3M4N5P6Q7R8S9T0V1W2",
+    "name": "requests",
+    "labels": {
+      "team": "platform",
+      "repo": "api"
+    }
+  },
+  "purl": "pypi/requests@2.33.0"
+}

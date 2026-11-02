@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 	"time"
 	"unicode"
 
@@ -22,7 +21,9 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/policy"
+	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
@@ -651,7 +652,7 @@ func (p *parser) policy(n *yaml.Node, jp string, out *Policy) {
 
 func (p *parser) subscription(n *yaml.Node, jp string, seen map[string]int) (Subscription, bool) {
 	before := len(p.errs)
-	m := p.mapping(n, jp, "name", "sink", "filter", "template")
+	m := p.mapping(n, jp, "name", "sink", "filter", "policy", "template")
 	if m == nil {
 		return Subscription{}, false
 	}
@@ -666,15 +667,55 @@ func (p *parser) subscription(n *yaml.Node, jp string, seen map[string]int) (Sub
 	if len(s.Filter.Type) == 0 {
 		s.Filter.Type = []string{"release.published"}
 	}
+	if pn := m["policy"]; pn != nil && !isNull(pn) {
+		s.Policy = p.subscriptionPolicy(pn, jp+".policy")
+	}
 	if tn := m["template"]; tn != nil {
-		if t, ok := p.secretFree(tn, jp+".template"); ok {
-			if _, err := template.New("subscription").Parse(t); err != nil {
-				p.errf(tn, jp+".template", "does not parse as a Go template") // the error would quote the template text
+		if t, ok := p.secretFree(tn, jp+".template"); ok && t != "" {
+			// Compiled and run on the sample events (docs/templates.md). Render
+			// errors give a position and a reason, never the template text.
+			tm, err := render.Compile(t, render.Limits{})
+			switch {
+			case errors.Is(err, render.ErrParse):
+				p.errf(tn, jp+".template", "does not parse as a Go template: %v", err)
+			case err != nil:
+				p.errf(tn, jp+".template", "%v", err)
+			default:
+				if err := tm.Check(); err != nil {
+					p.errf(tn, jp+".template", "%v", err)
+				}
 			}
 			s.Template = t
 		}
 	}
 	return s, len(p.errs) == before
+}
+
+// subscriptionPolicy parses the narrowing keys of a subscription. Only syntax
+// is checked: a value that widens or does nothing is not an error, because
+// the subscription may match watches for which it is useful, and Evaluate
+// always intersects it with the watch (ADR 0014). Out-of-range cooldowns are
+// clamped and cut to whole seconds.
+func (p *parser) subscriptionPolicy(n *yaml.Node, jp string) subscription.Policy {
+	var out subscription.Policy
+	m := p.mapping(n, jp, "prerelease", "cooldown")
+	if m == nil {
+		return out
+	}
+	if v := m["prerelease"]; v != nil {
+		out.Prerelease = p.enum(v, jp+".prerelease", prereleaseModes)
+	}
+	if v := m["cooldown"]; v != nil {
+		if s, ok := p.str(v, jp+".cooldown"); ok {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				p.errf(v, jp+".cooldown", "invalid duration (use Go syntax such as 30m or 72h)")
+			} else {
+				out.Cooldown = d.Truncate(time.Second)
+			}
+		}
+	}
+	return out.Clamp()
 }
 
 func (p *parser) filter(n *yaml.Node, jp string) Filter {

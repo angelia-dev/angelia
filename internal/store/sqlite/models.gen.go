@@ -9,13 +9,20 @@ import (
 )
 
 type Delivery struct {
-	ID             string
-	EventID        string
-	SubscriptionID string
-	Status         string
-	Attempts       int64
-	NextAttemptAt  sql.NullInt64
-	LastError      sql.NullString
+	ID                  string
+	EventID             string
+	SubscriptionID      string
+	Status              string
+	Attempts            int64
+	NextAttemptAt       sql.NullInt64
+	LastError           sql.NullString
+	HeldUntil           sql.NullInt64
+	HoldStartedAt       sql.NullInt64
+	HoldWatchCooldownMs sql.NullInt64
+	HoldPrerelease      sql.NullInt64
+	HoldWatchID         sql.NullString
+	HoldRaw             sql.NullString
+	HoldInput           sql.NullString
 }
 
 type Event struct {
@@ -56,6 +63,12 @@ type Subscription struct {
 	Template   string
 	Name       sql.NullString
 	ManagedBy  string
+	PolicyJson string
+}
+
+type SubscriptionGeneration struct {
+	ID         int64
+	Generation int64
 }
 
 type Target struct {
