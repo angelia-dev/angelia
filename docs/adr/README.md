@@ -21,6 +21,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0014](0014-subscription-policy-overrides.md) | Subscriptions narrow the watch policy with `bump`, `prerelease` and `cooldown`; a per-subscription cooldown is a held delivery | Proposed | #69 |
 | [0015](0015-release-event-outbox-in-house.md) | Release events are built in-house as plain structs; the outbox is the delivery rows; events are immutable in the schema | Proposed | #106 |
 | [0016](0016-message-templates-text-template-bounded.md) | Message templates are Go `text/template` over the event JSON, with curated functions, a deadline and a size cap, checked against sample events | Proposed | #114 |
+| [0017](0017-dispatcher-delivery-leases-and-retries.md) | The dispatcher leases deliveries through the lease table, retries with full-jitter backoff, and passes sinks one request struct | Accepted | #107 |
 | [0018](0018-yank-events-reference-the-original.md) | A yank of an emitted version is a `release.yanked` event that repeats the stored payload and references the original event in the store | Proposed | #112 |
 
 ## Process

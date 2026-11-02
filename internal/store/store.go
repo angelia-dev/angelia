@@ -175,7 +175,54 @@ type Store interface {
 	// that expired at or before now, left by crashed holders, and returns
 	// how many it deleted.
 	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
+	// LeaseDueDeliveries atomically leases up to limit due deliveries for
+	// holder (ADR 0017): pending ones whose NextAttemptAt has passed (zero
+	// counts as due), and in-flight ones whose lease expired (a crashed or
+	// stalled holder), that no unexpired lease named DeliveryLeaseName(id)
+	// covers, oldest due first. Each is set in flight, its Attempts counts
+	// this attempt, and it is leased to holder until the given time. A
+	// LeasedDelivery whose subscription or sink no longer exists has a nil
+	// Subscription or Sink. On Postgres this becomes SELECT ... FOR UPDATE
+	// SKIP LOCKED.
+	LeaseDueDeliveries(ctx context.Context, holder string, now, until time.Time, limit int) ([]LeasedDelivery, error)
+	// HasDueDeliveries reports whether LeaseDueDeliveries would return
+	// anything, with a read only, so that idle polls take no write lock.
+	HasDueDeliveries(ctx context.Context, now time.Time) (bool, error)
+	// FinishDelivery records the end of an attempt and releases its lease,
+	// fenced by it: it writes only while the delivery is in flight at
+	// attempt f.Attempt and holder still owns its lease row (even expired:
+	// no one took it over), and reports false, writing nothing, otherwise. ErrInvalid for a status
+	// other than pending, delivered or dead, or a pending one without
+	// NextAttemptAt.
+	FinishDelivery(ctx context.Context, f DeliveryFinish, holder string) (bool, error)
 	Close() error
+}
+
+// DeliveryLeaseName is the name of the lease a dispatcher holds on a
+// delivery while it sends it. The SQLite due-delivery query relies on this
+// format.
+func DeliveryLeaseName(deliveryID string) string { return "delivery:" + deliveryID }
+
+// LeasedDelivery is a delivery leased to a dispatcher, with what sending it
+// needs. Subscription and Sink are nil when the row no longer exists.
+type LeasedDelivery struct {
+	Delivery     Delivery
+	Event        Event
+	Subscription *Subscription
+	Sink         *Sink
+}
+
+// DeliveryFinish is how a leased attempt ended.
+type DeliveryFinish struct {
+	ID string
+	// Attempt is the leased Delivery.Attempts of the attempt that ended.
+	Attempt int64
+	// Status is DeliveryPending (retry at NextAttemptAt), DeliveryDelivered
+	// or DeliveryDead.
+	Status        string
+	NextAttemptAt time.Time
+	// LastError is the attempt's error; empty clears it.
+	LastError string
 }
 
 // Owners of config rows. A file apply reads and changes only rows it owns.
