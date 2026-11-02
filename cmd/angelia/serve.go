@@ -10,8 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/supervisor"
+	"github.com/angelia-dev/angelia/internal/telemetry"
 )
 
 func newServeCmd() *cobra.Command {
@@ -47,6 +49,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	drain, _ := cmd.Flags().GetDuration("drain-timeout")
 
 	log := newLogger(cmd.ErrOrStderr(), cfg.Log)
+	// Tracing is off unless the standard OTEL_* variables enable an OTLP
+	// exporter (ADR 0020). It is not part of angelia.yaml.
+	stopTracing, err := telemetry.Setup(cmd.Context(), os.Getenv, buildinfo.Version())
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		if err := stopTracing(cmd.Context()); err != nil {
+			log.Warn("flush traces", "error", err)
+		}
+	}()
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
@@ -94,7 +107,7 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 	}
 	opts := &slog.HandlerOptions{Level: lvl}
 	if c.Format == "text" {
-		return slog.New(slog.NewTextHandler(w, opts))
+		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(w, opts)))
 	}
-	return slog.New(slog.NewJSONHandler(w, opts))
+	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(w, opts)))
 }

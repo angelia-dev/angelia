@@ -17,6 +17,8 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Defaults for zero Options fields.
@@ -324,6 +326,14 @@ func (d *Dispatcher) storeOK(ctx context.Context) {
 // attempt sends one leased delivery and records how it ended.
 func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 	del := ld.Delivery
+	// A delivery is its own trace, linked to the check that created it.
+	ctx, span := telemetry.StartRoot(ctx, "angelia.delivery", telemetry.LinkFromTraceParent(ctx, del.TraceParent),
+		attribute.String("angelia.delivery.id", del.ID), attribute.String("angelia.event.id", ld.Event.ID),
+		attribute.String("angelia.subscription.id", del.SubscriptionID), attribute.Int64("angelia.delivery.attempt", del.Attempts))
+	defer span.End()
+	if ld.Sink != nil {
+		span.SetAttributes(attribute.String("angelia.sink.kind", ld.Sink.Kind))
+	}
 	log := d.log.With("delivery", del.ID, "event", ld.Event.ID, "subscription", del.SubscriptionID, "attempt", del.Attempts)
 	f := store.DeliveryFinish{ID: del.ID, Attempt: del.Attempts}
 	if del.Attempts > d.opts.MaxAttempts {
@@ -332,6 +342,7 @@ func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 		// (a poison delivery), so stop here.
 		f.Status = store.DeliveryDead
 		f.LastError = fmt.Sprintf("giving up after %d attempts (previous attempt did not finish)", del.Attempts-1)
+		span.SetAttributes(attribute.String("angelia.delivery.outcome", f.Status))
 		log.ErrorContext(ctx, "delivery dead: attempts exhausted, the last one did not finish")
 		d.finish(ctx, f, log)
 		return
@@ -360,6 +371,11 @@ func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 		f.Status, f.NextAttemptAt, f.LastError = store.DeliveryPending, now.Add(wait), truncate(msg)
 		log.WarnContext(ctx, "delivery failed, will retry", "error", msg, "next_attempt_at", f.NextAttemptAt)
 	}
+	span.SetAttributes(attribute.String("angelia.delivery.outcome", f.Status))
+	if res.StatusCode != 0 {
+		span.SetAttributes(attribute.Int("http.response.status_code", res.StatusCode))
+	}
+	telemetry.RecordError(span, err, "delivery failed")
 	d.finish(ctx, f, log)
 }
 

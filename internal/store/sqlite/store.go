@@ -343,6 +343,7 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 		p := CreateDeliveryParams{
 			ID: d.ID, EventID: e.ID, SubscriptionID: d.SubscriptionID, Status: d.Status, Attempts: d.Attempts,
 			NextAttemptAt: nullMillis(d.NextAttemptAt), LastError: sql.NullString{String: d.LastError, Valid: d.LastError != ""},
+			Traceparent: sql.NullString{String: d.TraceParent, Valid: d.TraceParent != ""},
 		}
 		if h := d.Hold; h != nil {
 			if h.Until.IsZero() || h.StartedAt.IsZero() || d.Status != store.DeliveryPending {
@@ -510,6 +511,7 @@ func deliveriesFromRows(rows []Delivery) []store.Delivery {
 		out[i] = store.Delivery{
 			ID: r.ID, EventID: r.EventID, SubscriptionID: r.SubscriptionID, Status: r.Status, Attempts: r.Attempts,
 			NextAttemptAt: fromNullMillis(r.NextAttemptAt), LastError: r.LastError.String,
+			TraceParent: r.Traceparent.String,
 		}
 		if r.HoldStartedAt.Valid {
 			out[i].Hold = &store.Hold{

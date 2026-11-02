@@ -184,6 +184,7 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			if err != nil {
 				return n, err
 			}
+			stampTrace(ctx, ds)
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: w.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now, RefEventID: orig.ID,
 			}, ds); err != nil {

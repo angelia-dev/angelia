@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Defaults for zero Options fields.
@@ -372,6 +374,11 @@ func (s *Scheduler) pruneLeases(ctx context.Context, now time.Time) {
 // the lease. leasedUntil is when the lease taken by poll expires.
 func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.Time) {
 	lease := store.TargetLeaseName(t.ID)
+	// One trace per check (story #118): this span is its root, whatever
+	// context the poll loop runs in. Deliveries made by the check link to it.
+	ctx, span := telemetry.StartRoot(ctx, "angelia.check", nil,
+		attribute.String("angelia.target.id", t.ID), attribute.String("angelia.source.kind", t.Kind))
+	defer span.End()
 	log := s.log.With("target", t.ID, "kind", t.Kind)
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
@@ -399,6 +406,7 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 	// for the next holder and does not count as an error. A check that
 	// completed before shutdown is still recorded.
 	if lost := errors.Is(context.Cause(cctx), errLeaseLost); lost || (err != nil && ctx.Err() != nil) {
+		span.SetAttributes(attribute.Bool("angelia.check.abandoned", true), attribute.Bool("angelia.check.lease_lost", lost))
 		log.InfoContext(ctx, "check abandoned", "lease_lost", lost, "error", err)
 		return
 	}
@@ -410,6 +418,8 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 			err = fmt.Errorf("%w after %v: %w", errCheckTimeout, s.opts.CheckTimeout, err)
 		}
 		next.ErrorCount++
+		telemetry.RecordError(span, err, "check failed")
+		span.SetAttributes(attribute.Bool("angelia.check.timed_out", timedOut), attribute.Int64("angelia.check.errors", int64(next.ErrorCount)))
 		// Cap first, then jitter, so targets at the cap do not all land on
 		// exactly BackoffMax.
 		next.NextCheckAt = now.Add(s.jitter(Backoff(next.ErrorCount, s.opts.BackoffBase, s.opts.BackoffMax)))

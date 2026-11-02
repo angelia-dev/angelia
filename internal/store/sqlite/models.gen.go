@@ -23,6 +23,7 @@ type Delivery struct {
 	HoldWatchID         sql.NullString
 	HoldRaw             sql.NullString
 	HoldInput           sql.NullString
+	Traceparent         sql.NullString
 }
 
 type Event struct {

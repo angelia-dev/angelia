@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/buildinfo"
+	"github.com/angelia-dev/angelia/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Defaults applied by New to zero Config fields.
@@ -190,6 +192,20 @@ func (c *Client) HTTPClient() *http.Client {
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The span has the method and host only: never the URL, which can carry
+	// a token in its path or query, nor any header (story #118).
+	ctx, span := telemetry.Start(req.Context(), "angelia.http",
+		attribute.String("http.request.method", req.Method), attribute.String("server.address", normHost(req.URL.Hostname())))
+	defer span.End()
+	resp, err := c.roundTrip(req.WithContext(ctx))
+	if resp != nil {
+		span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	}
+	telemetry.RecordError(span, err, "request failed")
+	return resp, err
+}
+
+func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
 	r := req.Clone(ctx)
 	if r.Header.Get("User-Agent") == "" {
