@@ -292,6 +292,12 @@ func TestDeliverTimeout(t *testing.T) {
 // parallel. Four dispatchers, each with its own connection pool on one
 // database file (as four processes would be), drain 200 deliveries; the
 // sink checks that no idempotency key is ever being sent twice at once.
+//
+// The test stops the dispatchers only once every outcome is recorded: the sink
+// returning is not enough, as the dispatcher records the outcome afterwards and
+// cancelling in between would leave that delivery in_flight. The pools also
+// poll gently: four SQLite pools leasing every 2 ms starve FinishDelivery of the
+// single write lock until it exceeds writeTimeout, and the outcome is lost.
 func TestConcurrentDispatchersNeverOverlap(t *testing.T) {
 	st, path := newStore(t)
 	const n = 200
@@ -304,15 +310,18 @@ func TestConcurrentDispatchersNeverOverlap(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 4)
+	var finished atomic.Int32
+	allFinished := make(chan struct{})
 	for i := range 4 {
-		d := newDispatcher(t, openStore(t, path), sinks, Options{
-			Holder: fmt.Sprintf("d%d", i), Workers: 4, PollInterval: 2 * time.Millisecond,
+		d := newDispatcher(t, &finishCounter{Store: openStore(t, path), count: &finished, want: n, done: allFinished}, sinks, Options{
+			Holder: fmt.Sprintf("d%d", i), Workers: 2, PollInterval: 20 * time.Millisecond,
 		})
 		go func() { done <- d.Run(ctx) }()
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for len(ts.requests()) < n && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-allFinished:
+	case <-time.After(30 * time.Second):
+		t.Error("timed out waiting for every outcome to be recorded")
 	}
 	cancel()
 	for range 4 {
@@ -470,6 +479,23 @@ func TestWorkersBoundLeasing(t *testing.T) {
 	if got := pollWait(t, d); got != 2 {
 		t.Errorf("poll after the workers freed started %d", got)
 	}
+}
+
+// finishCounter counts the outcomes recorded through any wrapper sharing count
+// and closes done, once, when want of them have been recorded.
+type finishCounter struct {
+	Store
+	count *atomic.Int32
+	want  int32
+	done  chan struct{}
+}
+
+func (f *finishCounter) FinishDelivery(ctx context.Context, fin store.DeliveryFinish, holder string) (bool, error) {
+	ok, err := f.Store.FinishDelivery(ctx, fin, holder)
+	if err == nil && ok && f.count.Add(1) == f.want {
+		close(f.done)
+	}
+	return ok, err
 }
 
 // failingStore fails every call.
