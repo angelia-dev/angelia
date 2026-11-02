@@ -98,7 +98,7 @@ type Sink interface {
 - At-least-once delivery. Each delivery carries `idempotency-key = event.id + subscription.id`.
 - Retries with exponential backoff and jitter (default 8 attempts over ~24h), then **dead-letter** state, visible in the API and replayable.
 - Webhooks are signed following the **Standard Webhooks** spec (`webhook-id`, `webhook-timestamp`, `webhook-signature` HMAC-SHA256).
-- Templating: Go `text/template` (or CEL) for message bodies. Default payload = CloudEvents JSON.
+- Templating: Go `text/template` over the event JSON for message bodies, with a curated function set, a timeout and an output cap ([templates.md](templates.md), [ADR 0016](adr/0016-message-templates-text-template-bounded.md)). Default payload = CloudEvents JSON.
 - Built-in for v1: `webhook`, `github-dispatch` (`repository_dispatch` / `workflow_dispatch`), `gitlab-pipeline-trigger`, `apprise` (via an `apprise-api` sidecar, which gives 100+ services at once), `shoutrrr` (Go-native: Slack, Discord, Telegram, ntfy, Gotify, SMTP, …), `nats`, `mqtt`, `exec`.
 
 ### 3.6 Third-party plugins
