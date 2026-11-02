@@ -311,22 +311,20 @@ func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64
 	return result.RowsAffected()
 }
 
-const deleteHeldDeliveriesOfVersion = `-- name: DeleteHeldDeliveriesOfVersion :execrows
+const deleteHeldDeliveriesOfEvent = `-- name: DeleteHeldDeliveriesOfEvent :execrows
 DELETE FROM delivery
-WHERE hold_watch_id = ?1 AND hold_raw = ?2
-  AND status = 'pending' AND held_until > ?3
+WHERE event_id = ?1 AND status = 'pending' AND held_until > ?2
 `
 
-type DeleteHeldDeliveriesOfVersionParams struct {
-	WatchID sql.NullString
-	Raw     sql.NullString
+type DeleteHeldDeliveriesOfEventParams struct {
+	EventID string
 	Now     sql.NullInt64
 }
 
-// A yank cancels the deliveries of the version that are still held (ADR 0014
-// section 4, ADR 0018).
-func (q *Queries) DeleteHeldDeliveriesOfVersion(ctx context.Context, arg DeleteHeldDeliveriesOfVersionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteHeldDeliveriesOfVersion, arg.WatchID, arg.Raw, arg.Now)
+// A yank cancels the deliveries of the original event that are still held
+// (ADR 0014 section 4, ADR 0018).
+func (q *Queries) DeleteHeldDeliveriesOfEvent(ctx context.Context, arg DeleteHeldDeliveriesOfEventParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHeldDeliveriesOfEvent, arg.EventID, arg.Now)
 	if err != nil {
 		return 0, err
 	}

@@ -63,10 +63,15 @@ field for it, and v1 allows no extension attribute from the producer.
    stored `bump`, the current labels); `subscription.Policy.Evaluate` admits yanks unconditionally, so
    `policy.prerelease` and `policy.cooldown` do not drop or hold them. A subscription that does not
    decode gets a dead delivery, as in `Emit` (ADR 0015 decision 2). `Emit` and `EmitYanks` share this
-   step (`compiled.route`).
-6. **Held deliveries.** Before the event is looked up, `store.Tx.CancelHeldDeliveries(watch, raw,
-   now)` deletes the deliveries with that `hold_watch_id` and `hold_raw` that are still held
-   (pending, `held_until` after now), as ADR 0014 section 4 says ("delete"). A hold that already
+   step (`compiled.route`), and in `Commit` they share one load of the subscriptions per transaction.
+6. **Held deliveries.** Once the original event of decision 2 is found,
+   `store.Tx.CancelHeldDeliveries(original event id, now)` deletes that event's deliveries that are
+   still held (pending, `held_until` after now), as ADR 0014 section 4 says ("delete"). When there
+   is no original nothing is cancelled: only an emitted event can have held deliveries. The key is
+   the event, not ADR 0014's (`hold_watch_id`, `hold_raw`): after a watch moves to another target, a
+   yank of the same version string on the new target must not cancel holds of the previous
+   package's version (test). The `delivery_hold_version` index of 00006 is therefore not used by
+   this step; the lookup uses the `UNIQUE (event_id, subscription_id)` index. A hold that already
    ended is an ordinary queued delivery and is sent. The original event stays.
 7. **One event per watch per yank.** Every watch that emitted the version gets its own event,
    referencing its own original. The diff reports a yank once, so later checks add nothing. A version
@@ -99,16 +104,27 @@ field for it, and v1 allows no extension attribute from the producer.
 
 ### Open questions
 
-- **Original event id in the payload.** The AC says "referencing the original event id". The v1
-  payload has no such field. Options: (a) store only (this ADR); (b) an additive optional
-  `data.yanked_event_id` (or similar) in a spec minor release, which needs a spec PR and a maintainer
-  decision on the name; (c) a CloudEvents extension attribute, which v1 forbids producers to emit.
-  Recommendation: (a) now, (b) if a consumer asks for it.
-- **Re-yank after un-yank.** Decision 7 emits again. The alternative, at most one `release.yanked`
-  per watch and version ever, needs a lookup of `ref_event_id`; it is a one-line change if preferred.
-- **Cancelled holds and the yank.** Decision 5 sends the yank to a subscription whose held delivery
-  was cancelled. The alternative is to skip those subscriptions, which makes `policy.cooldown`
-  influence yank routing, against the maintainer's rule.
+For the maintainer:
+
+1. **Original event id in the payload.** The AC says "referencing the original event id". The v1
+   payload has no such field. Options: (a) store only (this ADR); (b) an additive optional
+   `data.yanked_event_id` (or similar) in a spec minor release, which needs a spec PR and a
+   maintainer decision on the name; (c) a CloudEvents extension attribute, which v1 forbids
+   producers to emit. Recommendation: (a) now, (b) if a consumer asks for it.
+2. **Re-yank after un-yank.** Decision 7 emits again. The alternative, at most one `release.yanked`
+   per watch and version ever, needs a lookup of `ref_event_id`; a small change if preferred.
+   Recommendation: keep.
+3. **Yank to subscriptions that were never told of the version.** Decision 5 sends the yank to every
+   matching subscription: one whose held delivery the yank cancelled, and one whose `policy.*`
+   dropped the original or that did not exist when it was emitted. Skipping them would make
+   `policy.*` influence yank routing, against the maintainer's rule. Recommendation: keep.
+4. **Delete or dead for cancelled holds.** Decision 6 deletes, as ADR 0014 section 4 says. Marking
+   them `dead` with a reason (`yanked while held`) would keep them visible in delivery listings.
+   Recommendation: delete, unless visibility is wanted.
+5. **Original pruned by retention.** A yank of a version whose original event retention already
+   deleted (default 90 days) finds nothing and emits no event (Info log). The alternative is to
+   rebuild the classification from the known set, which the spec does not describe.
+   Recommendation: accept.
 
 ## Alternatives considered
 

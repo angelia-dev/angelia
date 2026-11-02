@@ -301,7 +301,7 @@ func (f failTx) GetLatestEventBySubject(context.Context, string, string, ...stri
 	return store.Event{}, f.err("GetLatestEventBySubject")
 }
 
-func (f failTx) CancelHeldDeliveries(context.Context, string, string, time.Time) (int64, error) {
+func (f failTx) CancelHeldDeliveries(context.Context, string, time.Time) (int64, error) {
 	return 0, f.err("CancelHeldDeliveries")
 }
 

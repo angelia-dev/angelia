@@ -268,11 +268,11 @@ func (x faultTx) DeletePendingReleasesOfWatch(ctx context.Context, w string) (in
 	return x.Tx.DeletePendingReleasesOfWatch(ctx, w)
 }
 
-func (x faultTx) CancelHeldDeliveries(ctx context.Context, w, raw string, now time.Time) (int64, error) {
+func (x faultTx) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
 	if err := x.f.write("CancelHeldDeliveries"); err != nil {
 		return 0, err
 	}
-	return x.Tx.CancelHeldDeliveries(ctx, w, raw, now)
+	return x.Tx.CancelHeldDeliveries(ctx, eventID, now)
 }
 
 func (x faultTx) UpdateTarget(ctx context.Context, tg store.Target) error {

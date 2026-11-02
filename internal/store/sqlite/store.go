@@ -150,8 +150,8 @@ func (s *Store) GetLatestEventBySubject(ctx context.Context, watchID, subject st
 }
 
 // CancelHeldDeliveries implements [store.Tx] in its own statement.
-func (s *Store) CancelHeldDeliveries(ctx context.Context, watchID, raw string, now time.Time) (int64, error) {
-	return txOps{q: s.q}.CancelHeldDeliveries(ctx, watchID, raw, now)
+func (s *Store) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	return txOps{q: s.q}.CancelHeldDeliveries(ctx, eventID, now)
 }
 
 // ListPendingReleases implements [store.Tx] outside a transaction.
@@ -490,11 +490,9 @@ func (o txOps) GetLatestEventBySubject(ctx context.Context, watchID, subject str
 	return eventFromRow(r), nil
 }
 
-func (o txOps) CancelHeldDeliveries(ctx context.Context, watchID, raw string, now time.Time) (int64, error) {
-	n, err := o.q.DeleteHeldDeliveriesOfVersion(ctx, DeleteHeldDeliveriesOfVersionParams{
-		WatchID: sql.NullString{String: watchID, Valid: true}, Raw: sql.NullString{String: raw, Valid: true}, Now: nullMillis(now),
-	})
-	return n, wrap(err, "cancel held deliveries of watch", watchID)
+func (o txOps) CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error) {
+	n, err := o.q.DeleteHeldDeliveriesOfEvent(ctx, DeleteHeldDeliveriesOfEventParams{EventID: eventID, Now: nullMillis(now)})
+	return n, wrap(err, "cancel held deliveries of event", eventID)
 }
 
 // ListDeliveries implements [store.Store].

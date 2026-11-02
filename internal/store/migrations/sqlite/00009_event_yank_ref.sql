@@ -10,6 +10,10 @@
 -- event_watch_subject finds the event a watch emitted for a version (its
 -- CloudEvents subject, <kind>:<package>@<raw version>) without scanning the
 -- watch's events. The query must use the same expression to use the index.
+--
+-- TODO(postgres, #85): the Postgres engine needs the jsonb equivalent,
+-- CREATE INDEX event_watch_subject ON event (watch_id, (payload_json->>'subject')),
+-- and the lookup query written with the same expression.
 
 -- +goose Up
 ALTER TABLE event ADD COLUMN ref_event_id TEXT;

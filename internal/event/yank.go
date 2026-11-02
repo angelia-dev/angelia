@@ -96,22 +96,24 @@ func BuildYank(in YankInput) (Envelope, error) {
 // diff.Apply (ADR 0018). For each version that a watch's changes report as
 // yanked (diff.KindYanked) it:
 //
-//  1. cancels the deliveries of that version the watch's events still hold
-//     for a subscription cooldown (store.Tx.CancelHeldDeliveries, ADR 0014);
-//  2. finds the release.published or release.prerelease event the watch
-//     emitted for it (same subject). When there is none (a version known
-//     from the baseline, dropped by the policy, yanked while the watch held
-//     it, or emitted before the watch was moved to another target) it writes
-//     nothing more and logs at Info: release.yanked is only for versions the
-//     watch emitted;
-//  3. otherwise writes one release.yanked event (BuildYank) whose
+//  1. finds the release.published or release.prerelease event the watch
+//     emitted for it (same subject, so on the watch's current target). When
+//     there is none (a version known from the baseline, dropped by the
+//     policy, yanked while the watch held it, or emitted before the watch was
+//     moved to another target) it writes nothing and logs at Info:
+//     release.yanked is only for versions the watch emitted, and only such an
+//     event can have held deliveries;
+//  2. cancels the deliveries of that event still held for a subscription
+//     cooldown (store.Tx.CancelHeldDeliveries, ADR 0014);
+//  3. writes one release.yanked event (BuildYank) whose
 //     store.Event.RefEventID is that event's id, with one delivery per
 //     subscription whose filter matches it. Subscription policies do not
 //     apply to it (subscription.Policy.Evaluate admits it); a subscription
 //     that does not decode gets a dead delivery, as in Emit.
 //
 // Un-yanks (diff.KindUnyanked) are logged at Info: v1 has no event for them.
-// Errors are returned and the caller must roll back.
+// Errors are returned with what was counted so far, as Emit does; the caller
+// must roll back.
 func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in EmitInput) (Emitted, error) {
 	var n Emitted
 	logger := in.Logger
@@ -124,7 +126,6 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 	}
 	kind := in.Target.Kind
 	pkg := Package(kind, in.Target.Coordinates)
-	var subs *compiled
 	var ids []string
 	for _, wc := range watches {
 		w := wc.Watch
@@ -139,15 +140,6 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			default:
 				continue
 			}
-			cancelled, err := tx.CancelHeldDeliveries(ctx, w.ID, c.Raw, in.Now)
-			if err != nil {
-				return Emitted{}, fmt.Errorf("event: %w", err)
-			}
-			n.Cancelled += int(cancelled)
-			if cancelled > 0 {
-				logger.InfoContext(ctx, "held deliveries of a yanked version cancelled",
-					slog.String("watch", w.ID), slog.String("version", raw), slog.Int64("count", cancelled))
-			}
 			orig, err := tx.GetLatestEventBySubject(ctx, w.ID, kind+":"+pkg+"@"+c.Raw, TypePublished, TypePrerelease)
 			if errors.Is(err, store.ErrNotFound) {
 				logger.InfoContext(ctx, "version yanked upstream that this watch never emitted; no event",
@@ -155,20 +147,28 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 				continue
 			}
 			if err != nil {
-				return Emitted{}, fmt.Errorf("event: %w", err)
+				return n, fmt.Errorf("event: %w", err)
+			}
+			cancelled, err := tx.CancelHeldDeliveries(ctx, orig.ID, in.Now)
+			if err != nil {
+				return n, fmt.Errorf("event: %w", err)
+			}
+			n.Cancelled += int(cancelled)
+			if cancelled > 0 {
+				logger.InfoContext(ctx, "held deliveries of a yanked version cancelled",
+					slog.String("watch", w.ID), slog.String("version", raw), slog.Int64("count", cancelled))
 			}
 			env, err := BuildYank(YankInput{ID: newID(in.Now), Instance: in.Instance, Watch: w, Original: orig.Payload, Time: in.Now})
 			if err != nil {
-				return Emitted{}, fmt.Errorf("event: watch %s yank of %q: %w", w.ID, raw, err)
+				return n, fmt.Errorf("event: watch %s yank of %q: %w", w.ID, raw, err)
 			}
 			payload, err := json.Marshal(env)
 			if err != nil {
-				return Emitted{}, fmt.Errorf("event: encode %s: %w", env.ID, err)
+				return n, fmt.Errorf("event: encode %s: %w", env.ID, err)
 			}
-			if subs == nil {
-				if subs, err = in.Matcher.current(ctx, tx, logger); err != nil {
-					return Emitted{}, err
-				}
+			subs, err := in.loadSubs(ctx, tx, logger)
+			if err != nil {
+				return n, err
 			}
 			bump := ""
 			if env.Data.Bump != nil {
@@ -182,12 +182,12 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			var ds []store.Delivery
 			ds, ids, err = subs.route(match, ev, hold{watchID: w.ID, raw: c.Raw}, in.Now, newID, &n, ids)
 			if err != nil {
-				return Emitted{}, err
+				return n, err
 			}
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: w.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now, RefEventID: orig.ID,
 			}, ds); err != nil {
-				return Emitted{}, fmt.Errorf("event: %w", err)
+				return n, fmt.Errorf("event: %w", err)
 			}
 			n.Events++
 			n.Deliveries += len(ds)

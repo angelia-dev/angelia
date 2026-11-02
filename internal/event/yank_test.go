@@ -280,12 +280,23 @@ func TestYankOfPrereleaseAndUnyank(t *testing.T) {
 }
 
 // A yank of a version a watch emitted while it watched another target is not
-// a yank of that watch's current package: the subject differs, no event.
+// a yank of that watch's current package: the subject differs, no event, and
+// the holds of the previous package's version (same raw string) are kept.
 func TestYankMatchesTheSubjectNotOnlyTheVersion(t *testing.T) {
 	st, tg := fixture(t)
 	ctx := t.Context()
 	_, err := Commit(ctx, st, secondCheck(tg))
 	must(t, err)
+	var orig store.Event
+	for _, e := range eventsAfter(t, st, 0) {
+		if e.Type == TypePublished && e.WatchID == wNow {
+			orig = e
+		}
+	}
+	// s-cool holds requests 2.33.0 until published+24h (check2+22h).
+	if d := deliveriesBySub(t, st, orig.ID)["s-cool"]; d.Hold == nil {
+		t.Fatalf("s-cool delivery of requests 2.33.0 is not held: %+v", d)
+	}
 	other := store.Target{ID: "t-other", Kind: "pypi", Coordinates: map[string]string{"name": "other"}, NextCheckAt: check1}
 	must(t, st.CreateTarget(ctx, other))
 	w, err := st.GetWatch(ctx, wNow)
@@ -308,11 +319,37 @@ func TestYankMatchesTheSubjectNotOnlyTheVersion(t *testing.T) {
 	in.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	n, err = Commit(ctx, st, in)
 	must(t, err)
-	if n.Events != 0 {
+	if n != (Emitted{}) {
 		t.Fatalf("yank on the new target emitted %+v", n)
 	}
 	if !strings.Contains(logs.String(), "never emitted") {
 		t.Errorf("logs: %s", logs.String())
+	}
+	if d := deliveriesBySub(t, st, orig.ID)["s-cool"]; d.Hold == nil || d.Status != store.DeliveryPending {
+		t.Fatalf("yank of other 2.33.0 cancelled the hold of requests 2.33.0: %+v", d)
+	}
+}
+
+// Commit loads the subscriptions at most once per transaction, even when it
+// emits both releases and yanks and the cache is cold (nil Matcher).
+func TestCommitLoadsSubscriptionsOncePerTransaction(t *testing.T) {
+	st, tg := fixture(t)
+	ctx := t.Context()
+	cs := &countingStore{Store: st}
+	in := secondCheck(tg)
+	_, err := Commit(ctx, cs, in)
+	must(t, err)
+	// A check that both emits (wCool's 2.33.0 after its cooldown) and yanks
+	// (wNow's 2.34.0rc1).
+	in = yankOf(tg, check2.Add(80*time.Hour), "2.34.0rc1")
+	cs.inside.Store(0)
+	n, err := Commit(ctx, cs, in)
+	must(t, err)
+	if n.Events != 2 {
+		t.Fatalf("emitted %+v, want a release and a yank", n)
+	}
+	if got := cs.inside.Load(); got != 1 {
+		t.Fatalf("subscriptions listed %d times in the transaction, want 1", got)
 	}
 }
 
@@ -380,7 +417,7 @@ type errYankTx struct {
 	cancel, get error
 }
 
-func (x errYankTx) CancelHeldDeliveries(context.Context, string, string, time.Time) (int64, error) {
+func (x errYankTx) CancelHeldDeliveries(context.Context, string, time.Time) (int64, error) {
 	return 0, x.cancel
 }
 
@@ -417,7 +454,7 @@ type origTx struct {
 	orig store.Event
 }
 
-func (origTx) CancelHeldDeliveries(context.Context, string, string, time.Time) (int64, error) {
+func (origTx) CancelHeldDeliveries(context.Context, string, time.Time) (int64, error) {
 	return 0, nil
 }
 

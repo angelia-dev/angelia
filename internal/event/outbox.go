@@ -35,6 +35,30 @@ type EmitInput struct {
 	// Matcher caches the compiled subscriptions between calls; nil loads
 	// them from tx on every call. The caller owns it (see MatcherCache).
 	Matcher *MatcherCache
+
+	// subs, when set, is shared by the Emit and EmitYanks of one
+	// transaction (Commit), so the subscriptions are loaded at most once.
+	subs *lazySubs
+}
+
+// lazySubs loads the compiled subscriptions of one transaction on first use.
+type lazySubs struct{ c *compiled }
+
+// loadSubs returns the subscriptions as tx sees them, loading them through
+// in.Matcher the first time.
+func (in EmitInput) loadSubs(ctx context.Context, tx store.Tx, logger *slog.Logger) (*compiled, error) {
+	l := in.subs
+	if l == nil {
+		l = &lazySubs{}
+	}
+	if l.c == nil {
+		c, err := in.Matcher.current(ctx, tx, logger)
+		if err != nil {
+			return nil, err
+		}
+		l.c = c
+	}
+	return l.c, nil
 }
 
 // Emitted counts what Emit and EmitYanks wrote.
@@ -79,7 +103,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	if newID == nil {
 		newID = ulid.New
 	}
-	subs, err := in.Matcher.current(ctx, tx, logger)
+	subs, err := in.loadSubs(ctx, tx, logger)
 	if err != nil {
 		return n, err
 	}
@@ -135,7 +159,8 @@ type hold struct{ watchID, raw string }
 // decode. It adds the held and dead ones to n. ids is scratch space, returned
 // for reuse.
 func (c *compiled) route(
-	match subscription.Input, ev subscription.Event, h hold, now time.Time, newID func(time.Time) string, n *Emitted, ids []string,
+	match subscription.Input, ev subscription.Event, h hold, now time.Time,
+	newID func(time.Time) string, n *Emitted, ids []string,
 ) ([]store.Delivery, []string, error) {
 	var ds []store.Delivery
 	ids = c.matcher.Match(match, ids[:0])
@@ -194,7 +219,8 @@ type CheckInput struct {
 // Commit writes everything one check found in a single transaction (the
 // transactional outbox, architecture.md §2 decision 4): the known set and
 // baselines (diff.Apply), the held versions (policy.Apply), the events and
-// deliveries of new releases (Emit), and those of yanks (EmitYanks). Any error rolls all of it back, so a failure at any
+// deliveries of new releases (Emit), and those of yanks (EmitYanks). Emit
+// and EmitYanks share one load of the subscriptions. Any error rolls all of it back, so a failure at any
 // step leaves either everything or nothing. The target's fetch state and
 // schedule are the scheduler's to write.
 func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
@@ -230,7 +256,7 @@ func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
 		}
 		ein := EmitInput{
 			Target: in.Target, Instance: in.Instance, RegistryURL: in.RegistryURL, Now: in.Now,
-			NewID: in.NewID, Logger: logger, Matcher: in.Matcher,
+			NewID: in.NewID, Logger: logger, Matcher: in.Matcher, subs: &lazySubs{},
 		}
 		if n, err = Emit(ctx, tx, rel, ein); err != nil {
 			return err

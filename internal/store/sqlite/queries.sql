@@ -105,12 +105,11 @@ WHERE id = sqlc.arg(id) AND status = 'pending' AND held_until > sqlc.arg(now);
 UPDATE delivery SET status = 'dead', last_error = sqlc.arg(reason), next_attempt_at = NULL, held_until = NULL
 WHERE id = sqlc.arg(id) AND status = 'pending' AND held_until > sqlc.arg(now);
 
--- A yank cancels the deliveries of the version that are still held (ADR 0014
--- section 4, ADR 0018).
--- name: DeleteHeldDeliveriesOfVersion :execrows
+-- A yank cancels the deliveries of the original event that are still held
+-- (ADR 0014 section 4, ADR 0018).
+-- name: DeleteHeldDeliveriesOfEvent :execrows
 DELETE FROM delivery
-WHERE hold_watch_id = sqlc.arg(watch_id) AND hold_raw = sqlc.arg(raw)
-  AND status = 'pending' AND held_until > sqlc.arg(now);
+WHERE event_id = sqlc.arg(event_id) AND status = 'pending' AND held_until > sqlc.arg(now);
 
 -- name: DeleteSubscription :execrows
 DELETE FROM subscription WHERE id = ?;

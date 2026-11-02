@@ -95,13 +95,15 @@ type Tx interface {
 	// version>) and one of types (full CloudEvents types). ErrNotFound when
 	// there is none, or when types is empty.
 	GetLatestEventBySubject(ctx context.Context, watchID, subject string, types ...string) (Event, error)
-	// CancelHeldDeliveries deletes the deliveries of a version that are still
-	// held at now (pending, Hold.Until after now, Hold.WatchID and Hold.Raw
-	// equal to watchID and raw) and returns how many. A yank calls it (ADR
-	// 0014 section 4): a subscription must not receive a version the registry
-	// withdrew before the subscription was told of it. Deliveries whose hold
-	// ended, and the event, are left alone.
-	CancelHeldDeliveries(ctx context.Context, watchID, raw string, now time.Time) (int64, error)
+	// CancelHeldDeliveries deletes the deliveries of event eventID that are
+	// still held at now (pending, Hold.Until after now) and returns how many.
+	// A yank calls it with the event the watch emitted for the yanked version
+	// (ADR 0014 section 4, ADR 0018): a subscription must not receive a
+	// version the registry withdrew before the subscription was told of it.
+	// Keying on the event, not on (watch, raw version), keeps a watch moved to
+	// another target from cancelling holds of its previous package. Deliveries
+	// whose hold ended, and the event, are left alone.
+	CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error)
 	// DeletePendingReleasesOfWatch forgets every version a watch holds, on
 	// any target, and returns how many rows it deleted. The watch-file apply
 	// (#48, PR #132) must call it, in the same transaction, when it moves a

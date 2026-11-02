@@ -86,7 +86,9 @@ func TestGetLatestEventBySubject(t *testing.T) {
 }
 
 // The lookup runs once per yank inside the check's transaction: it must use
-// the event_watch_subject index, not scan the watch's events.
+// the event_watch_subject index, not scan the watch's events. The test
+// expands sqlc's `/*SLICE:types*/?` placeholder by hand, so it depends on the
+// form sqlc generates for sqlc.slice; regenerate and adjust if it changes.
 func TestGetLatestEventBySubjectUsesTheIndex(t *testing.T) {
 	s, _ := openTest(t)
 	rows, err := s.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+strings.Replace(getLatestEventBySubject, "/*SLICE:types*/?", "?,?", 1),
@@ -106,36 +108,34 @@ func TestGetLatestEventBySubjectUsesTheIndex(t *testing.T) {
 	}
 }
 
-// AC (ADR 0014 section 4): a yank cancels the deliveries of that version that
-// are still held, and nothing else.
+// AC (ADR 0014 section 4): a yank cancels the deliveries of the original
+// event that are still held, and nothing else: not a hold that ended, not a
+// plain pending delivery, not the holds of another event even when they name
+// the same watch and raw version (a watch moved to another target).
 func TestCancelHeldDeliveries(t *testing.T) {
 	s, _ := openTest(t)
 	seed(t, s)
 	ctx := t.Context()
 	until := t0.Add(72 * time.Hour)
-	other := heldDelivery("d-other-raw", "s1", until)
-	other.Hold.Raw = "1.3.0"
-	otherWatch := heldDelivery("d-other-watch", "s2", until)
-	otherWatch.Hold.WatchID = "w2"
 	ended := heldDelivery("d-ended", "s2", t0) // its hold ended at t0
-	must(t, s.AppendEvent(ctx, event("e1"), []store.Delivery{heldDelivery("d1", "s1", until), ended, pending("s3")}))
-	must(t, s.AppendEvent(ctx, event("e2"), []store.Delivery{heldDelivery("d2", "s2", until), other}))
-	must(t, s.AppendEvent(ctx, event("e3"), []store.Delivery{otherWatch}))
+	must(t, s.AppendEvent(ctx, event("e1"), []store.Delivery{heldDelivery("d1", "s1", until), heldDelivery("d2", "s4", until), ended, pending("s3")}))
+	// Same watch and raw version in the hold, another event.
+	must(t, s.AppendEvent(ctx, event("e2"), []store.Delivery{heldDelivery("d-other-event", "s1", until)}))
 
-	n, err := s.CancelHeldDeliveries(ctx, "w1", "1.2.0", t0.Add(time.Hour))
+	n, err := s.CancelHeldDeliveries(ctx, "e1", t0.Add(time.Hour))
 	must(t, err)
 	if n != 2 {
 		t.Fatalf("cancelled %d, want 2", n)
 	}
 	left := map[string]bool{}
-	for _, e := range []string{"e1", "e2", "e3"} {
+	for _, e := range []string{"e1", "e2"} {
 		ds, err := s.ListDeliveries(ctx, e)
 		must(t, err)
 		for _, d := range ds {
 			left[d.ID] = true
 		}
 	}
-	for _, id := range []string{"d-ended", "d-s3", "d-other-raw", "d-other-watch"} {
+	for _, id := range []string{"d-ended", "d-s3", "d-other-event"} {
 		if !left[id] {
 			t.Errorf("%s was cancelled", id)
 		}
@@ -147,10 +147,10 @@ func TestCancelHeldDeliveries(t *testing.T) {
 	}
 	evs, err := s.ListEventsAfter(ctx, 0, 0)
 	must(t, err)
-	if len(evs) != 3 {
-		t.Fatalf("events after cancel = %d, want 3 (events are kept)", len(evs))
+	if len(evs) != 2 {
+		t.Fatalf("events after cancel = %d, want 2 (events are kept)", len(evs))
 	}
-	if n, err := s.CancelHeldDeliveries(ctx, "w1", "1.2.0", t0.Add(time.Hour)); err != nil || n != 0 {
+	if n, err := s.CancelHeldDeliveries(ctx, "e1", t0.Add(time.Hour)); err != nil || n != 0 {
 		t.Fatalf("second cancel = %d, %v", n, err)
 	}
 }
