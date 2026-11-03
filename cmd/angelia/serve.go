@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/supervisor"
 )
 
@@ -23,6 +24,7 @@ func newServeCmd() *cobra.Command {
 	}
 	cmd.Flags().String("roles", "", "comma-separated roles: api,scheduler,worker,dispatcher or all (default from config, else all)")
 	cmd.Flags().String("watches", "", watchesFlagHelp)
+	cmd.Flags().Bool("metrics", true, "serve Prometheus metrics on /metrics of the listen address")
 	cmd.Flags().Duration("drain-timeout", supervisor.DefaultDrainTimeout, "how long to wait for in-flight work on shutdown")
 	return cmd
 }
@@ -65,6 +67,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	roles, err := supervisor.Select(roleNames, supervisor.NewStub)
 	if err != nil {
 		return fmt.Errorf("--roles: %w", err)
+	}
+	if on, _ := cmd.Flags().GetBool("metrics"); on {
+		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and
+		// netguard client when those roles replace their stubs (ADR 0019).
+		roles = append(roles, metrics.New(log).Role())
 	}
 	s := &supervisor.Supervisor{
 		Roles:        roles,

@@ -188,6 +188,11 @@ type Store interface {
 	// HasDueDeliveries reports whether LeaseDueDeliveries would return
 	// anything, with a read only, so that idle polls take no write lock.
 	HasDueDeliveries(ctx context.Context, now time.Time) (bool, error)
+	// CountDeliveriesByStatus returns how many delivery rows have each
+	// status (pending, in_flight, delivered, dead). Statuses with no rows
+	// are absent. Metrics read it; delivered and dead rows go with their
+	// event when history is pruned, so the counts are bounded by retention.
+	CountDeliveriesByStatus(ctx context.Context) (map[string]int64, error)
 	// FinishDelivery records the end of an attempt and releases its lease,
 	// fenced by it: it writes only while the delivery is in flight at
 	// attempt f.Attempt and holder still owns its lease row (even expired:

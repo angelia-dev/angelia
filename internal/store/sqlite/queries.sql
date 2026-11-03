@@ -296,5 +296,8 @@ WHERE id = sqlc.arg(id) AND status = 'in_flight' AND attempts = sqlc.arg(attempt
     SELECT 1 FROM lease WHERE lease.name = sqlc.arg(lease_name) AND lease.holder = sqlc.arg(holder)
   );
 
+-- name: CountDeliveriesByStatus :many
+SELECT status, count(*) AS n FROM delivery GROUP BY status;
+
 -- name: SubscriptionGeneration :one
 SELECT generation FROM subscription_generation WHERE id = 1;

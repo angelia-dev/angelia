@@ -163,6 +163,20 @@ func (l *limiter) timeout(host string, global time.Duration) time.Duration {
 	return global
 }
 
+// OtherHost is the host reported to an Observer for hosts without an entry
+// in the limits table.
+const OtherHost = "other"
+
+// observedHost returns host if it has an entry in the limits table, else
+// OtherHost, so that metrics never carry the host of a sink or a mirror.
+func (l *limiter) observedHost(host string) string {
+	h := normHost(host)
+	if _, ok := l.limits[h]; ok {
+		return h
+	}
+	return OtherHost
+}
+
 // normHost returns the key used for a host: lower case, without a trailing dot.
 func normHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(h), ".")

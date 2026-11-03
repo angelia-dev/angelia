@@ -93,6 +93,38 @@ func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, 
 	return result.RowsAffected()
 }
 
+const countDeliveriesByStatus = `-- name: CountDeliveriesByStatus :many
+SELECT status, count(*) AS n FROM delivery GROUP BY status
+`
+
+type CountDeliveriesByStatusRow struct {
+	Status string
+	N      int64
+}
+
+func (q *Queries) CountDeliveriesByStatus(ctx context.Context) ([]CountDeliveriesByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, countDeliveriesByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountDeliveriesByStatusRow
+	for rows.Next() {
+		var i CountDeliveriesByStatusRow
+		if err := rows.Scan(&i.Status, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countLeasableDueTargets = `-- name: CountLeasableDueTargets :one
 SELECT count(*) FROM target
 WHERE next_check_at <= ?1
