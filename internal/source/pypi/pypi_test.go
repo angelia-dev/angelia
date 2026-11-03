@@ -123,6 +123,20 @@ func TestYanked(t *testing.T) {
 	}
 }
 
+// The purl of a pypi event is built from the project name as PyPI reports
+// it (info.name), not from the PEP 503 form the source requests (#106).
+func TestProjectNameAsPyPIReportsIt(t *testing.T) {
+	t.Parallel()
+	for pkg, want := range map[string]string{"django": "Django", "requests": "requests"} {
+		for _, v := range list(t, pkg).Versions {
+			if v.Metadata["project_name"] != want || v.Metadata["project"] != pkg {
+				t.Fatalf("%s %s: project_name = %v, project = %v; want %q, %q",
+					pkg, v.Raw, v.Metadata["project_name"], v.Metadata["project"], want, pkg)
+			}
+		}
+	}
+}
+
 func TestPrereleasesListedWithNilFlag(t *testing.T) {
 	t.Parallel()
 	vs := byRaw(list(t, "django"))
@@ -189,6 +203,9 @@ func TestPublishedAtIsEarliestFile(t *testing.T) {
 	}
 	if !vs["junk"].PublishedAt.IsZero() {
 		t.Error("unparseable time must leave PublishedAt zero")
+	}
+	if _, ok := vs["1.0"].Metadata["project_name"]; ok {
+		t.Error("project_name set although the response has no info.name")
 	}
 	var order []string
 	for _, v := range res.Versions {

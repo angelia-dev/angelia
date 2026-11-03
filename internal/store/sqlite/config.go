@@ -255,8 +255,13 @@ func (o txOps) CreateSubscription(ctx context.Context, sub store.Subscription) e
 	if err != nil {
 		return fmt.Errorf("store: subscription %s filter: %w", sub.ID, err)
 	}
+	policy, err := rawJSON(sub.Policy, false)
+	if err != nil {
+		return fmt.Errorf("store: subscription %s policy: %w", sub.ID, err)
+	}
 	return wrap(o.q.CreateSubscription(ctx, CreateSubscriptionParams{
 		ID: sub.ID, FilterJson: filter, SinkID: sub.SinkID, Template: sub.Template, Name: nullName(sub.Name), ManagedBy: owner(sub.ManagedBy),
+		PolicyJson: policy,
 	}), "create subscription", sub.ID)
 }
 
@@ -265,7 +270,13 @@ func (o txOps) UpdateSubscription(ctx context.Context, sub store.Subscription) e
 	if err != nil {
 		return fmt.Errorf("store: subscription %s filter: %w", sub.ID, err)
 	}
-	n, err := o.q.UpdateSubscription(ctx, UpdateSubscriptionParams{FilterJson: filter, SinkID: sub.SinkID, Template: sub.Template, ID: sub.ID})
+	policy, err := rawJSON(sub.Policy, false)
+	if err != nil {
+		return fmt.Errorf("store: subscription %s policy: %w", sub.ID, err)
+	}
+	n, err := o.q.UpdateSubscription(ctx, UpdateSubscriptionParams{
+		FilterJson: filter, SinkID: sub.SinkID, Template: sub.Template, PolicyJson: policy, ID: sub.ID,
+	})
 	return deleted(n, err, "update subscription", sub.ID)
 }
 
@@ -279,19 +290,64 @@ func (o txOps) ListManagedSubscriptions(ctx context.Context, managedBy string) (
 	if err != nil {
 		return nil, wrap(err, "list subscriptions managed by", managedBy)
 	}
+	return subscriptionsFromRows(rows), nil
+}
+
+func (o txOps) ListSubscriptions(ctx context.Context) ([]store.Subscription, error) {
+	rows, err := o.q.ListSubscriptions(ctx)
+	if err != nil {
+		return nil, wrap(err, "list subscriptions", "")
+	}
+	return subscriptionsFromRows(rows), nil
+}
+
+func (o txOps) SubscriptionGeneration(ctx context.Context) (int64, error) {
+	g, err := o.q.SubscriptionGeneration(ctx)
+	if err != nil {
+		return 0, wrap(err, "subscription generation", "")
+	}
+	return g, nil
+}
+
+func subscriptionsFromRows(rows []Subscription) []store.Subscription {
 	out := make([]store.Subscription, len(rows))
 	for i, r := range rows {
 		out[i] = store.Subscription{
 			ID: r.ID, Filter: json.RawMessage(r.FilterJson), SinkID: r.SinkID, Template: r.Template,
-			Name: r.Name.String, ManagedBy: r.ManagedBy,
+			Policy: json.RawMessage(r.PolicyJson), Name: r.Name.String, ManagedBy: r.ManagedBy,
 		}
 	}
-	return out, nil
+	return out
 }
 
-func (o txOps) DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error) {
-	n, err := o.q.DeletePendingDeliveries(ctx, subscriptionID)
-	return n, wrap(err, "delete pending deliveries", subscriptionID)
+func (o txOps) FailPendingDeliveries(ctx context.Context, subscriptionID, reason string) (int64, error) {
+	n, err := o.q.FailPendingDeliveries(ctx, FailPendingDeliveriesParams{
+		LastError: sql.NullString{String: reason, Valid: true}, SubscriptionID: subscriptionID,
+	})
+	return n, wrap(err, "fail pending deliveries", subscriptionID)
+}
+
+func (o txOps) ListHeldDeliveries(ctx context.Context, subscriptionID string, now time.Time) ([]store.Delivery, error) {
+	rows, err := o.q.ListHeldDeliveries(ctx, ListHeldDeliveriesParams{SubscriptionID: subscriptionID, HeldUntil: sql.NullInt64{Int64: millis(now), Valid: true}})
+	if err != nil {
+		return nil, wrap(err, "list held deliveries", subscriptionID)
+	}
+	return deliveriesFromRows(rows), nil
+}
+
+func (o txOps) ReleaseHeldDelivery(ctx context.Context, id string, now time.Time) error {
+	n, err := o.q.ReleaseHeldDelivery(ctx, ReleaseHeldDeliveryParams{Now: nullMillis(now), ID: id})
+	return deleted(n, err, "release held delivery", id)
+}
+
+func (o txOps) RescheduleHeldDelivery(ctx context.Context, id string, until, now time.Time) error {
+	n, err := o.q.RescheduleHeldDelivery(ctx, RescheduleHeldDeliveryParams{Until: nullMillis(until), ID: id, Now: nullMillis(now)})
+	return deleted(n, err, "reschedule held delivery", id)
+}
+
+func (o txOps) FailHeldDelivery(ctx context.Context, id, reason string, now time.Time) error {
+	n, err := o.q.FailHeldDelivery(ctx, FailHeldDeliveryParams{Reason: sql.NullString{String: reason, Valid: true}, ID: id, Now: nullMillis(now)})
+	return deleted(n, err, "fail held delivery", id)
 }
 
 var _ store.ConfigTx = txOps{}

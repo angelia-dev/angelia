@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/angelia-dev/spec/schemas/release/envelope/v1.json",
+  "title": "Angelia release event envelope, v1 (draft, pre-1.0)",
+  "description": "Angelia's profile of a CloudEvents 1.0 event in JSON structured mode for the release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. The three types share one data schema (schemas/release/v1.json). DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.",
+  "$comment": "DRAFT (spec 0.x). Profile: docs/proposals/0001-release-event-v1-fields.md section 2 (Accepted). Per-attribute docs: docs/release-event-v1.md.",
+  "type": "object",
+  "required": [
+    "specversion",
+    "type",
+    "source",
+    "id",
+    "subject",
+    "time",
+    "datacontenttype",
+    "dataschema",
+    "data"
+  ],
+  "patternProperties": {
+    "^[a-z0-9]{1,20}$": {
+      "$comment": "CloudEvents extension attributes (CloudEvents 1.0 attribute naming: lower-case a-z and 0-9, at most 20 characters recommended). Allowed and ignored by consumers; v1 producers emit none."
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "specversion": {
+      "description": "CloudEvents specification version.",
+      "const": "1.0"
+    },
+    "type": {
+      "description": "Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v1 suffix; it is what subscription filters use.",
+      "enum": [
+        "dev.angelia.release.published.v1",
+        "dev.angelia.release.yanked.v1",
+        "dev.angelia.release.prerelease.v1"
+      ]
+    },
+    "source": {
+      "description": "The watch that produced the event: angelia://<instance>/watches/<watch_id>, where <instance> is the instance name from the instance configuration and <watch_id> equals data.watch.id.",
+      "type": "string",
+      "pattern": "^angelia://[a-z0-9][a-z0-9.-]{0,62}/watches/[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "examples": ["angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2"]
+    },
+    "id": {
+      "description": "Event id: a ULID (26 characters, Crockford base32, upper case) generated once when the event is written. Every delivery attempt, retry and replay of the event carries the same id; consumers deduplicate on it. source + id is globally unique.",
+      "$ref": "../v1.json#/$defs/ulid",
+      "examples": ["01JBX2A7C8D9E0F1G2H3J4K5M6"]
+    },
+    "subject": {
+      "description": "<source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version). Lets brokers and routers filter without parsing data.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}:.+@.+$",
+      "examples": ["pypi:requests@2.33.0", "npm:@angular/core@17.3.0", "github-release:cli/cli@v2.62.0"]
+    },
+    "time": {
+      "description": "When the event was emitted (the end of the check that emitted it): RFC 3339, UTC, Z suffix, at most millisecond precision. With a cooldown this is later than data.detected_at.",
+      "$ref": "../v1.json#/$defs/timestamp",
+      "examples": ["2026-10-30T17:00:02.512Z"]
+    },
+    "datacontenttype": {
+      "description": "Always JSON.",
+      "const": "application/json"
+    },
+    "dataschema": {
+      "description": "URI of the data schema: the $id of schemas/release/v1.json. An identifier, not promised to be fetchable.",
+      "const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"
+    },
+    "data": {
+      "description": "The release event payload.",
+      "$ref": "../v1.json"
+    }
+  }
+}

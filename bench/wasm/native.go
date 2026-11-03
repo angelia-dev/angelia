@@ -1,6 +1,7 @@
 // Package wasm is benchmark 4 of architecture.md section 6: the overhead of
-// a WASM source plugin per List call, against a native Go implementation of
-// the same crates.io source. See overhead_test.go.
+// a WASM source plugin (ADR 0011) and of a go-plugin subprocess (ADR 0013)
+// per List call, against a native Go implementation of the same crates.io
+// source. See overhead_test.go.
 package wasm
 
 import (

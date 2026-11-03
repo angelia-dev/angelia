@@ -10,6 +10,11 @@ sinks:
       # Never inline: the name of the environment variable that holds the Standard Webhooks
       # signing secret ("whsec_..."). It is read from the environment of the angelia process.
       secret_env: CI_WEBHOOK_SECRET
+  - name: chat-webhook
+    kind: webhook
+    config:
+      url: https://chat.example.org/hooks/angelia
+      secret_env: CHAT_WEBHOOK_SECRET
 
 watches:
   - name: pypi-requests
@@ -72,3 +77,15 @@ subscriptions:
       source: [npm, github-release]
       bump: [major, minor]
       package: "re*"
+
+  # The same platform events for chat, but only minors, final versions, and not before they are
+  # 72 h old. A subscription can only receive less, later, than the watch policy admits.
+  - name: platform-to-chat-minors
+    sink: chat-webhook
+    filter:
+      labels:
+        team: platform
+      bump: [minor]
+    policy:
+      prerelease: none
+      cooldown: 72h

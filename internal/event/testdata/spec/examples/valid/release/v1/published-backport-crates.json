@@ -1,0 +1,27 @@
+{
+  "source": "crates",
+  "package": "example-crate",
+  "version": "1.9.4",
+  "normalized_version": "1.9.4",
+  "previous_version": "1.9.3",
+  "scheme": "semver",
+  "bump": "patch",
+  "backport": true,
+  "prerelease": false,
+  "yanked": false,
+  "published_at": "2026-10-31T09:00:00Z",
+  "detected_at": "2026-10-31T09:10:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": "https://crates.io/crates/example-crate/1.9.4",
+    "changelog": null,
+    "artifact": "https://static.crates.io/crates/example-crate/example-crate-1.9.4.crate"
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX8G9H0J1K2M3N4P5Q6R7S8",
+    "name": "example-crate",
+    "labels": {}
+  },
+  "purl": "pkg:cargo/example-crate@1.9.4"
+}

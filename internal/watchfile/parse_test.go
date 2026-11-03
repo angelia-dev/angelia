@@ -9,6 +9,54 @@ import (
 
 const base = "version: 1\n"
 
+// subWith is a sink and a subscription using template (a YAML scalar),
+// whose template key is on line 7 after base.
+func subWith(template string) string {
+	return "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    template: " + template + "\n"
+}
+
+// A template that renders both sample events is accepted and stored as
+// written; an empty one means the default CloudEvents body.
+func TestTemplateAccepted(t *testing.T) {
+	for _, tmpl := range []string{
+		`'{{.data.package}} {{.data.version}}{{with .data.previous_version}} (was {{.}}){{end}}'`,
+		`''`,
+	} {
+		f, err := Parse([]byte(base+subWith(tmpl)), "w.yaml", opts(t))
+		if err != nil {
+			t.Fatalf("%s: %v", tmpl, err)
+		}
+		if want := strings.Trim(tmpl, "'"); f.Subscriptions[0].Template != want {
+			t.Errorf("template %q, want %q", f.Subscriptions[0].Template, want)
+		}
+	}
+}
+
+// Template errors never echo the template text.
+func TestTemplateErrorsDoNotEcho(t *testing.T) {
+	const marker = "SECRET"
+	for _, tmpl := range []string{
+		`'{{"SECRET_TEXT" | .data.nosuch}}'`,
+		`'{{ "SECRET_TEXT" '`,
+		`'{{"SECRET_TEXT"}}{{template "a"}}'`,
+		`'{{index "x>: SECRETAKIA" 99}}'`,
+		`'{{ghp_SECRETTOKENabc}}'`,
+		`'{{$SECRETVAR}}'`,
+		`'{{.data.package SECRET}}'`,
+		`'{{ ''SECRET'' }}'`,
+		`'{{end SECRET}}'`,
+		`'{{.data.SECRETFIELD}}'`,
+		`'{{da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
+		`'{{$da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
+		`'{{.data.da39a3ee5e6b4b0d3255bfef95601890afd80709}}'`,
+	} {
+		_, err := Parse([]byte(base+subWith(tmpl)), "w.yaml", opts(t))
+		if err == nil || strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "da39a3ee") {
+			t.Errorf("%s: %v", tmpl, err)
+		}
+	}
+}
+
 // AC: invalid entries fail with path and line.
 func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 	tests := []struct {
@@ -58,9 +106,16 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		{"bad glob", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    filter:\n      package: '[a'\n", "subscriptions[0].filter.package: invalid glob"},
 		{"interval not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    interval: 10m0.5s\n", "line 6: watches[0].interval: must be a whole number of seconds"},
 		{"cooldown not whole seconds", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      cooldown: 1500ms\n", "line 7: watches[0].policy.cooldown: must be a whole number of seconds"},
+		{"bad constraint syntax", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      constraint: '>=>1'\n", "line 7: watches[0].policy.constraint: \">=>1\": unsupported operator"},
+		{"constraint operand the scheme cannot parse", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    scheme: semver\n    policy:\n      constraint: '>=abc'\n", "line 8: watches[0].policy.constraint: constraint operand \"abc\" is not a semver version"},
 		{"empty constraint", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      constraint: ''\n", "line 7: watches[0].policy.constraint: must not be empty"},
 		{"too large", base + "# " + strings.Repeat("x", MaxFileSize) + "\n", "larger than the 4 MiB limit"},
-		{"bad template", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    template: '{{ .Foo '\n", "subscriptions[0].template: does not parse"},
+		{"bad template", base + "sinks:\n  - {name: s, kind: webhook, config: {url: 'https://hook.example.org/x'}}\nsubscriptions:\n  - name: x\n    sink: s\n    template: '{{ .Foo '\n", "subscriptions[0].template: does not parse as a Go template: line 1: unclosed action"},
+		{"template with a misspelt field", base + subWith(`'{{.data.pakage}}'`), `line 7: subscriptions[0].template: on the full sample event: line 1, column 7: unknown key "pakage"`},
+		{"template not guarding a null field", base + subWith(`'{{.data.notes.body}}'`), "subscriptions[0].template: on the sparse sample event: line 1, column 7: cannot read field \"body\" of a null value"},
+		{"template with an unknown function", base + subWith(`'{{env "HOME"}}'`), `subscriptions[0].template: does not parse as a Go template: line 1: unknown function "env"`},
+		{"template with define", base + subWith(`'{{define "a"}}x{{end}}'`), "subscriptions[0].template: define and block are not allowed"},
+		{"template over the output cap", base + subWith(`'{{range 300}}{{printf "%1000s" ""}}{{end}}'`), "subscriptions[0].template: on the full sample event: output larger than 262144 bytes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

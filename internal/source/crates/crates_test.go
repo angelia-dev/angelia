@@ -254,6 +254,28 @@ func TestIndexPaths(t *testing.T) {
 	}
 }
 
+// The crate name as published, in its case, is kept for the event purl
+// (#106); the index path and target key stay lower case.
+func TestCrateNameAsPublished(t *testing.T) {
+	up := &upstream{docs: map[string][]byte{
+		"/in/fl/inflector": []byte(`{"name":"Inflector","vers":"0.11.4","cksum":"aa","yanked":false}` + "\n" +
+			`{"vers":"0.11.5","cksum":"bb","yanked":false}` + "\n"),
+		"/api/v1/crates/inflector/versions": []byte(`{"versions":[]}`),
+	}}
+	s, _ := newSource(t, up)
+	res, err := s.List(context.Background(), target("Inflector"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs := byRaw(res.Versions)
+	if got := vs["0.11.4"].Metadata["crate_name"]; got != "Inflector" {
+		t.Errorf("crate_name = %v, want Inflector", got)
+	}
+	if _, ok := vs["0.11.5"].Metadata["crate_name"]; ok {
+		t.Error("crate_name set for an index line without a name")
+	}
+}
+
 func TestVersionDetails(t *testing.T) {
 	up := newUpstream(t)
 	s, _ := newSource(t, up, crates.WithPageURL("https://pages.example/c/"))

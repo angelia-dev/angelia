@@ -34,6 +34,8 @@ type Input struct {
 // WatchReleases is what one watch emits from a check.
 type WatchReleases struct {
 	Watch store.Watch
+	// Policy is the watch's decoded policy, as evaluated.
+	Policy Policy
 	// Releases to emit, in order (see Decision.Emit).
 	Releases []Release
 }
@@ -115,7 +117,7 @@ func Apply(ctx context.Context, tx store.Tx, out diff.Outcome, in Input) ([]Watc
 		}
 		logDecision(ctx, wlog, d)
 		if len(d.Emit) > 0 {
-			res = append(res, WatchReleases{Watch: w, Releases: d.Emit})
+			res = append(res, WatchReleases{Watch: w, Policy: e.Policy(), Releases: d.Emit})
 		}
 	}
 	return res, nil

@@ -59,8 +59,19 @@ type Tx interface {
 	// MarkBaselineDone sets the watch's BaselineDone. Marking a watch twice
 	// is not an error; ErrNotFound when the watch does not exist.
 	MarkBaselineDone(ctx context.Context, watchID string) error
+	// ListSubscriptions returns every subscription, ordered by ID, for the
+	// match step of a check (internal/event).
+	ListSubscriptions(ctx context.Context) ([]Subscription, error)
+	// SubscriptionGeneration returns a counter the store increments on every
+	// insert, update and delete of a subscription, by whichever path or
+	// process made it. A reader that cached ListSubscriptions at generation g
+	// has the current set exactly while the counter still reads g.
+	SubscriptionGeneration(ctx context.Context) (int64, error)
 	// AppendEvent writes the event and its deliveries. A delivery with an
-	// empty EventID gets e.ID; a different EventID is ErrInvalid.
+	// empty EventID gets e.ID; a different EventID is ErrInvalid. An event is
+	// immutable: there is no update, an ID already written is ErrConflict and
+	// the stored row is left as it was, and the SQL schema rejects an UPDATE
+	// of an event row. Only PruneHistory deletes events.
 	AppendEvent(ctx context.Context, e Event, ds []Delivery) error
 	// UpdateTarget stores FetchState, LastCheckedAt, NextCheckAt and
 	// ErrorCount of t. Kind and Coordinates are immutable.
@@ -79,6 +90,20 @@ type Tx interface {
 	// DeletePendingRelease releases a version of targetID held by a watch
 	// (emitted or dropped). ErrNotFound when the watch does not hold it.
 	DeletePendingRelease(ctx context.Context, watchID, targetID, raw string) error
+	// GetLatestEventBySubject returns the event with the greatest Seq that
+	// the watch emitted with this CloudEvents subject (<kind>:<package>@<raw
+	// version>) and one of types (full CloudEvents types). ErrNotFound when
+	// there is none, or when types is empty.
+	GetLatestEventBySubject(ctx context.Context, watchID, subject string, types ...string) (Event, error)
+	// CancelHeldDeliveries deletes the deliveries of event eventID that are
+	// still held at now (pending, Hold.Until after now) and returns how many.
+	// A yank calls it with the event the watch emitted for the yanked version
+	// (ADR 0014 section 4, ADR 0018): a subscription must not receive a
+	// version the registry withdrew before the subscription was told of it.
+	// Keying on the event, not on (watch, raw version), keeps a watch moved to
+	// another target from cancelling holds of its previous package. Deliveries
+	// whose hold ended, and the event, are left alone.
+	CancelHeldDeliveries(ctx context.Context, eventID string, now time.Time) (int64, error)
 	// DeletePendingReleasesOfWatch forgets every version a watch holds, on
 	// any target, and returns how many rows it deleted. The watch-file apply
 	// (#48, PR #132) must call it, in the same transaction, when it moves a
@@ -150,7 +175,59 @@ type Store interface {
 	// that expired at or before now, left by crashed holders, and returns
 	// how many it deleted.
 	DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error)
+	// LeaseDueDeliveries atomically leases up to limit due deliveries for
+	// holder (ADR 0017): pending ones whose NextAttemptAt has passed (zero
+	// counts as due), and in-flight ones whose lease expired (a crashed or
+	// stalled holder), that no unexpired lease named DeliveryLeaseName(id)
+	// covers, oldest due first. Each is set in flight, its Attempts counts
+	// this attempt, and it is leased to holder until the given time. A
+	// LeasedDelivery whose subscription or sink no longer exists has a nil
+	// Subscription or Sink. On Postgres this becomes SELECT ... FOR UPDATE
+	// SKIP LOCKED.
+	LeaseDueDeliveries(ctx context.Context, holder string, now, until time.Time, limit int) ([]LeasedDelivery, error)
+	// HasDueDeliveries reports whether LeaseDueDeliveries would return
+	// anything, with a read only, so that idle polls take no write lock.
+	HasDueDeliveries(ctx context.Context, now time.Time) (bool, error)
+	// CountDeliveriesByStatus returns how many delivery rows have each
+	// status (pending, in_flight, delivered, dead). Statuses with no rows
+	// are absent. Metrics read it; delivered and dead rows go with their
+	// event when history is pruned, so the counts are bounded by retention.
+	CountDeliveriesByStatus(ctx context.Context) (map[string]int64, error)
+	// FinishDelivery records the end of an attempt and releases its lease,
+	// fenced by it: it writes only while the delivery is in flight at
+	// attempt f.Attempt and holder still owns its lease row (even expired:
+	// no one took it over), and reports false, writing nothing, otherwise. ErrInvalid for a status
+	// other than pending, delivered or dead, or a pending one without
+	// NextAttemptAt.
+	FinishDelivery(ctx context.Context, f DeliveryFinish, holder string) (bool, error)
 	Close() error
+}
+
+// DeliveryLeaseName is the name of the lease a dispatcher holds on a
+// delivery while it sends it. The SQLite due-delivery query relies on this
+// format.
+func DeliveryLeaseName(deliveryID string) string { return "delivery:" + deliveryID }
+
+// LeasedDelivery is a delivery leased to a dispatcher, with what sending it
+// needs. Subscription and Sink are nil when the row no longer exists.
+type LeasedDelivery struct {
+	Delivery     Delivery
+	Event        Event
+	Subscription *Subscription
+	Sink         *Sink
+}
+
+// DeliveryFinish is how a leased attempt ended.
+type DeliveryFinish struct {
+	ID string
+	// Attempt is the leased Delivery.Attempts of the attempt that ended.
+	Attempt int64
+	// Status is DeliveryPending (retry at NextAttemptAt), DeliveryDelivered
+	// or DeliveryDead.
+	Status        string
+	NextAttemptAt time.Time
+	// LastError is the attempt's error; empty clears it.
+	LastError string
 }
 
 // Owners of config rows. A file apply reads and changes only rows it owns.
@@ -191,12 +268,30 @@ type ConfigTx interface {
 	UpdateSink(ctx context.Context, s Sink) error
 	DeleteSink(ctx context.Context, id string) error
 	CreateSubscription(ctx context.Context, s Subscription) error
-	// UpdateSubscription stores Filter, SinkID and Template.
+	// UpdateSubscription stores Filter, Policy, SinkID and Template. An empty
+	// Policy resets the stored policy to "{}".
 	UpdateSubscription(ctx context.Context, s Subscription) error
 	DeleteSubscription(ctx context.Context, id string) error
-	// DeletePendingDeliveries deletes the pending deliveries of a
-	// subscription and returns how many. In-flight, delivered and dead rows stay.
-	DeletePendingDeliveries(ctx context.Context, subscriptionID string) (int64, error)
+	// FailPendingDeliveries sets every pending delivery of a subscription to
+	// dead with LastError reason and returns how many (watch-file.md D8: a
+	// removed subscription's queue is kept visible, not deleted). In-flight,
+	// delivered and dead rows are left alone.
+	FailPendingDeliveries(ctx context.Context, subscriptionID, reason string) (int64, error)
+	// ListHeldDeliveries returns the deliveries of a subscription that are
+	// pending and still held at now (Hold.Until after now), ordered by ID.
+	ListHeldDeliveries(ctx context.Context, subscriptionID string, now time.Time) ([]Delivery, error)
+	// ReleaseHeldDelivery clears the end of the hold of a pending delivery
+	// that is still held at now and makes it due at now. ErrNotFound when it
+	// is not one (including a hold that already ended).
+	ReleaseHeldDelivery(ctx context.Context, id string, now time.Time) error
+	// RescheduleHeldDelivery moves the end of the hold (and NextAttemptAt) of
+	// a pending delivery still held at now to until. ErrNotFound when it is
+	// not one.
+	RescheduleHeldDelivery(ctx context.Context, id string, until, now time.Time) error
+	// FailHeldDelivery sets a pending delivery still held at now to dead with
+	// LastError reason and clears the end of its hold. ErrNotFound when it is
+	// not one.
+	FailHeldDelivery(ctx context.Context, id, reason string, now time.Time) error
 }
 
 // TargetLeaseName is the name of the lease a scheduler holds on a target
@@ -275,6 +370,10 @@ type Event struct {
 	Type      string
 	Payload   json.RawMessage
 	CreatedAt time.Time
+	// RefEventID is set on a release.yanked event to the id of the event the
+	// watch emitted for the yanked version (ADR 0018); "" otherwise. Like
+	// WatchID it may name a deleted (pruned) event.
+	RefEventID string
 }
 
 // Sink is a delivery destination. ConfigEncrypted is stored as given;
@@ -289,10 +388,13 @@ type Sink struct {
 
 // Subscription routes matching events to a sink.
 type Subscription struct {
-	ID        string
-	Filter    json.RawMessage
-	SinkID    string
-	Template  string
+	ID       string
+	Filter   json.RawMessage
+	SinkID   string
+	Template string
+	// Policy is the narrowing policy (prerelease, cooldown) of the
+	// subscription, opaque to the store; empty means "{}" (ADR 0014).
+	Policy    json.RawMessage
 	Name      string // see Watch.Name
 	ManagedBy string
 }
@@ -307,4 +409,33 @@ type Delivery struct {
 	Attempts       int64
 	NextAttemptAt  time.Time // zero: not scheduled
 	LastError      string
+	// TraceParent is the W3C traceparent of the span active when the
+	// delivery was created, empty when there was none. The dispatcher links
+	// its delivery spans to it (ADR 0020). Ids only, never a secret.
+	TraceParent string
+	// Hold is set when the delivery was ever held by a subscription cooldown
+	// (ADR 0014); nil otherwise. Hold.Until is zero once an edit released the
+	// hold or failed the delivery. Currently held iff Status is pending and
+	// Hold.Until is after now; then NextAttemptAt equals Hold.Until, so the
+	// dispatcher needs no special case.
+	Hold *Hold
+}
+
+// Hold records why and until when a delivery waits, and what is needed to
+// decide again when its subscription is edited.
+type Hold struct {
+	// Until is when the hold ends; AppendEvent copies it to NextAttemptAt.
+	Until time.Time
+	// StartedAt is the instant the cooldowns count from (the watch policy's
+	// cooldown start).
+	StartedAt time.Time
+	// WatchCooldown is the watch cooldown the version already waited.
+	WatchCooldown time.Duration
+	// Prerelease tells whether the version is a pre-release.
+	Prerelease bool
+	// WatchID and Raw identify the version, so a yank can cancel the hold.
+	WatchID, Raw string
+	// Input is the filter input (JSON, opaque to the store) the delivery was
+	// matched with, so that an edited filter can be applied to it again.
+	Input json.RawMessage
 }

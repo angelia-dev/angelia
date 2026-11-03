@@ -1,8 +1,10 @@
 package watchfile
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,16 +62,20 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Count(KindSink, Create) != 1 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 2 || plan.Count(KindTarget, Create) != 4 {
+	if plan.Count(KindSink, Create) != 2 || plan.Count(KindWatch, Create) != 4 || plan.Count(KindSubscription, Create) != 3 || plan.Count(KindTarget, Create) != 4 {
 		t.Fatalf("plan:\n%s", plan)
 	}
 
 	s := snap(t, st, store.ManagedByFile)
-	if len(s.sinks) != 1 || s.sinks[0].Name != "ci-webhook" || s.sinks[0].Kind != "webhook" ||
-		string(s.sinks[0].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
+	sinkIDs := map[string]string{}
+	for _, k := range s.sinks {
+		sinkIDs[k.Name] = k.ID
+	}
+	if len(s.sinks) != 2 || s.sinks[1].Name != "ci-webhook" || s.sinks[1].Kind != "webhook" ||
+		string(s.sinks[1].ConfigEncrypted) != `{"url":"https://ci.example.org/hooks/angelia","secret_env":"CI_WEBHOOK_SECRET","timeout":"10s"}` {
 		t.Fatalf("sinks: %+v", s.sinks)
 	}
-	if len(s.watches) != 4 || len(s.subs) != 2 {
+	if len(s.watches) != 4 || len(s.subs) != 3 {
 		t.Fatalf("watches=%d subs=%d", len(s.watches), len(s.subs))
 	}
 	byName := map[string]store.Watch{}
@@ -112,7 +118,11 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	sub := map[string]store.Subscription{}
 	for _, x := range s.subs {
 		sub[x.Name] = x
-		if x.SinkID != s.sinks[0].ID {
+		want := sinkIDs["ci-webhook"]
+		if x.Name == "platform-to-chat-minors" {
+			want = sinkIDs["chat-webhook"]
+		}
+		if x.SinkID != want {
 			t.Fatalf("subscription %s points at %s", x.Name, x.SinkID)
 		}
 	}
@@ -121,6 +131,9 @@ func TestExampleFileProducesExpectedRows(t *testing.T) {
 	}
 	if got := string(sub["web-and-tooling-bumps"].Filter); got != `{"source":["npm","github-release"],"labels":{},"bump":["major","minor"],"package":"re*","type":["release.published"]}` {
 		t.Fatalf("filter: %s", got)
+	}
+	if got := string(sub["platform-to-chat-minors"].Policy); got != `{"prerelease":"none","cooldown":"72h0m0s"}` {
+		t.Fatalf("policy: %s", got)
 	}
 
 	// Idempotent: a second run changes nothing.
@@ -208,8 +221,9 @@ func TestRemovingFromTheFile(t *testing.T) {
 	if _, err := target(t, st, "pypi", map[string]string{"name": "django"}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("django target should be gone: %v", err)
 	}
-	// Pending deliveries of the removed subscription are gone; in-flight and
-	// delivered stay; the kept subscription's pending delivery is still queued.
+	// Pending deliveries of the removed subscription become dead with a reason
+	// (D8); in-flight and delivered stay; the kept subscription's pending
+	// delivery is still queued.
 	status := func(eventID string) []string {
 		ds, err := st.ListDeliveries(ctx, eventID)
 		if err != nil {
@@ -221,8 +235,14 @@ func TestRemovingFromTheFile(t *testing.T) {
 		}
 		return out
 	}
-	if got := status("e1"); len(got) != 1 || got[0] != subs["all"]+":pending" {
+	if got := status("e1"); len(got) != 2 || got[0] != subs["all"]+":pending" && got[1] != subs["all"]+":pending" ||
+		!slices.Contains(got, subs["teamb"]+":dead") {
 		t.Fatalf("e1 deliveries: %v", got)
+	}
+	if ds, _ := st.ListDeliveries(ctx, "e1"); !slices.ContainsFunc(ds, func(d store.Delivery) bool {
+		return d.SubscriptionID == subs["teamb"] && d.LastError == DeadOnDelete && d.NextAttemptAt.IsZero()
+	}) {
+		t.Fatalf("dead delivery lacks its reason: %+v", ds)
 	}
 	if got := status("e2"); len(got) != 1 || !strings.HasSuffix(got[0], ":delivered") {
 		t.Fatalf("e2 deliveries: %v", got)
@@ -307,7 +327,10 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	// the baseline; the old target goes with its known set.
 	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
 		_, err := tx.AddVersion(ctx, store.Version{TargetID: req.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock})
-		return err
+		if err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: req.ID, TargetID: req.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
 	}))
 	plan = mustApply(t, st, strings.Replace(twoWatches, "coordinates: {name: requests}", "coordinates: {name: httpx}", 1))
 	if plan.Count(KindTarget, Create) != 1 || plan.Count(KindTarget, Delete) != 1 {
@@ -323,6 +346,62 @@ func TestUpdateKeepsIdAndBaselineUnlessTargetChanges(t *testing.T) {
 	}
 	if vs, _ := st.ListVersions(ctx, req.TargetID); len(vs) != 0 {
 		t.Fatalf("old versions kept: %v", vs)
+	}
+	// (The held release on the old target goes with it through the foreign
+	// key cascade; TestMovedWatchDropsHeldReleasesOfSharedTarget covers the
+	// explicit delete.)
+}
+
+func heldOn(t *testing.T, st store.Store, target string) int {
+	t.Helper()
+	ps, err := st.ListPendingReleases(t.Context(), target)
+	mustNoErr(t, err)
+	return len(ps)
+}
+
+// An update that does not move the watch keeps what it holds.
+func TestUpdateWithoutMoveKeepsHeldReleases(t *testing.T) {
+	st := openStore(t)
+	shared := "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}}\n"
+	mustApply(t, st, shared)
+	ctx := t.Context()
+	a := snap(t, st, store.ManagedByFile).watches[0]
+	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: a.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock}); err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: a.ID, TargetID: a.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
+	}))
+	mustApply(t, st, "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}, labels: {x: y}, policy: {cooldown: 1h}}\n")
+	if n := heldOn(t, st, a.TargetID); n != 1 {
+		t.Fatalf("held releases after a policy and labels update: %d, want 1", n)
+	}
+}
+
+// Moving a watch drops what it held even when the old target stays, because
+// another watch still uses it.
+func TestMovedWatchDropsHeldReleasesOfSharedTarget(t *testing.T) {
+	st := openStore(t)
+	shared := "version: 1\nwatches:\n  - {name: a, source: pypi, coordinates: {name: requests}}\n  - {name: b, source: pypi, coordinates: {name: requests}}\n"
+	mustApply(t, st, shared)
+	ctx := t.Context()
+	var a store.Watch
+	for _, w := range snap(t, st, store.ManagedByFile).watches {
+		if w.Name == "a" {
+			a = w
+		}
+	}
+	mustNoErr(t, st.InTx(ctx, func(tx store.Tx) error {
+		if _, err := tx.AddVersion(ctx, store.Version{TargetID: a.TargetID, Raw: "1.0", Normalized: "1.0", FirstSeenAt: clock}); err != nil {
+			return err
+		}
+		return tx.AddPendingRelease(ctx, store.PendingRelease{WatchID: a.ID, TargetID: a.TargetID, Raw: "1.0", HeldAt: clock, Release: json.RawMessage(`{}`)})
+	}))
+	mustApply(t, st, strings.Replace(shared, "{name: a, source: pypi, coordinates: {name: requests}}", "{name: a, source: pypi, coordinates: {name: httpx}}", 1))
+	// Moving back would bring a surviving row back into view.
+	mustApply(t, st, shared)
+	if n := heldOn(t, st, a.TargetID); n != 0 {
+		t.Fatalf("held releases came back after moving away and back: %d", n)
 	}
 }
 

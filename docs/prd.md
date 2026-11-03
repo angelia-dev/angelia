@@ -80,7 +80,7 @@ Nobody offers a **self-hosted, multi-ecosystem service that emits a structured, 
 | F3 | Version schemes: SemVer, PEP 440, Maven, calver, lexical fallback | Must |
 | F4 | Policies: include/exclude regex, pre-release mode, constraint ranges, bump filter, cooldown, baseline on first run | Must |
 | F5 | Events: `release.published`, `release.yanked`, `release.prerelease`; immutable log with cursor | Must |
-| F6 | Subscriptions: filter (ecosystem, labels, bump, package glob) → sink + template | Must |
+| F6 | Subscriptions: filter (source kind, labels, bump, package glob) → sink + template | Must |
 | F7 | Sinks: webhook (Standard Webhooks signing), github-dispatch, gitlab-trigger, shoutrrr, apprise, exec | Must |
 | F8 | Sinks: NATS, MQTT, Kafka | Should |
 | F9 | Delivery retries, DLQ, replay by event or time range | Must |

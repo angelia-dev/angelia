@@ -10,8 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/supervisor"
+	"github.com/angelia-dev/angelia/internal/telemetry"
 )
 
 func newServeCmd() *cobra.Command {
@@ -23,6 +26,7 @@ func newServeCmd() *cobra.Command {
 	}
 	cmd.Flags().String("roles", "", "comma-separated roles: api,scheduler,worker,dispatcher or all (default from config, else all)")
 	cmd.Flags().String("watches", "", watchesFlagHelp)
+	cmd.Flags().Bool("metrics", true, "serve Prometheus metrics on /metrics of the listen address")
 	cmd.Flags().Duration("drain-timeout", supervisor.DefaultDrainTimeout, "how long to wait for in-flight work on shutdown")
 	return cmd
 }
@@ -47,6 +51,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	drain, _ := cmd.Flags().GetDuration("drain-timeout")
 
 	log := newLogger(cmd.ErrOrStderr(), cfg.Log)
+	// Tracing is off unless the standard OTEL_* variables enable an OTLP
+	// exporter (ADR 0020). It is not part of angelia.yaml.
+	tracerProvider, stopTracing, err := telemetry.Setup(cmd.Context(), os.Getenv, buildinfo.Version(), log)
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		if err := stopTracing(cmd.Context()); err != nil {
+			log.Warn("flush traces", "error", err)
+		}
+	}()
+	// The final flush comes out of the drain budget, so that drain plus flush
+	// stays within --drain-timeout (and the Kubernetes grace period).
+	if telemetry.Enabled(os.Getenv) && drain > 2*telemetry.FlushTimeout {
+		drain -= telemetry.FlushTimeout
+	}
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
@@ -65,6 +85,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	roles, err := supervisor.Select(roleNames, supervisor.NewStub)
 	if err != nil {
 		return fmt.Errorf("--roles: %w", err)
+	}
+	// TODO: pass tracerProvider as Options.TracerProvider of the scheduler and
+	// dispatcher roles when serve wires them in place of the stubs.
+	_ = tracerProvider
+	if on, _ := cmd.Flags().GetBool("metrics"); on {
+		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and
+		// netguard client when those roles replace their stubs (ADR 0019).
+		roles = append(roles, metrics.New(log).Role())
 	}
 	s := &supervisor.Supervisor{
 		Roles:        roles,
@@ -94,7 +122,7 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 	}
 	opts := &slog.HandlerOptions{Level: lvl}
 	if c.Format == "text" {
-		return slog.New(slog.NewTextHandler(w, opts))
+		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(w, opts)))
 	}
-	return slog.New(slog.NewJSONHandler(w, opts))
+	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(w, opts)))
 }

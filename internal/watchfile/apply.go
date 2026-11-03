@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/subscription"
 )
 
 // Action is what apply does, or would do, to one object.
@@ -32,6 +33,10 @@ const (
 	KindSubscription = "subscription"
 	KindTarget       = "target"
 )
+
+// DeadOnDelete is the LastError of the pending deliveries of a subscription the
+// file stopped declaring (docs/watch-file.md D8).
+const DeadOnDelete = "subscription removed"
 
 // Change is one line of a Plan.
 type Change struct {
@@ -175,7 +180,7 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 		var pending int64
 		if !r.dry {
-			if pending, err = r.tx.DeletePendingDeliveries(r.ctx, s.ID); err != nil {
+			if pending, err = r.tx.FailPendingDeliveries(r.ctx, s.ID, DeadOnDelete); err != nil {
 				return err
 			}
 		}
@@ -184,7 +189,7 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 		detail := ""
 		if pending > 0 {
-			detail = fmt.Sprintf("%d pending deliveries removed", pending)
+			detail = fmt.Sprintf("%d pending deliveries set to dead", pending)
 		}
 		r.add(KindSubscription, s.Name, Delete, detail)
 	}
@@ -370,6 +375,10 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 					return err
 				}
 				if moved {
+					// Held versions of the old target must not come back if the watch moves back.
+					if _, err := r.tx.DeletePendingReleasesOfWatch(r.ctx, cur.ID); err != nil {
+						return err
+					}
 					return r.tx.ResetWatchBaseline(r.ctx, cur.ID)
 				}
 				return nil
@@ -420,6 +429,13 @@ func jsonEqual(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(x, y)
 }
 
+// samePolicy compares a stored subscription policy with the file's by value, so
+// the '{}' that rows have before the policy keys existed equals "no policy".
+func samePolicy(stored json.RawMessage, p subscription.Policy) bool {
+	cur, err := subscription.PolicyFromJSON(stored)
+	return err == nil && cur == p.Clamp()
+}
+
 func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs map[string]string) error {
 	byName := map[string]store.Subscription{}
 	for _, s := range old {
@@ -427,26 +443,36 @@ func (r *reconciler) subscriptions(f *File, old []store.Subscription, sinkIDs ma
 	}
 	for _, d := range f.Subscriptions {
 		sinkID := sinkIDs[d.Sink]
-		filter := d.FilterJSON()
+		filter, policy := d.FilterJSON(), d.PolicyJSON()
 		cur, ok := byName[d.Name]
 		switch {
 		case !ok:
 			id := r.newID()
 			if err := r.write(func() error {
 				return r.tx.CreateSubscription(r.ctx, store.Subscription{
-					ID: id, Filter: filter, SinkID: sinkID, Template: d.Template, Name: d.Name, ManagedBy: store.ManagedByFile,
+					ID: id, Filter: filter, Policy: policy, SinkID: sinkID, Template: d.Template, Name: d.Name, ManagedBy: store.ManagedByFile,
 				})
 			}); err != nil {
 				return err
 			}
 			r.add(KindSubscription, d.Name, Create, "sink "+d.Sink)
-		case cur.SinkID != sinkID || cur.Template != d.Template || !jsonEqual(cur.Filter, filter):
+		case cur.SinkID != sinkID || cur.Template != d.Template || !jsonEqual(cur.Filter, filter) || !samePolicy(cur.Policy, d.Policy):
 			if err := r.write(func() error {
-				return r.tx.UpdateSubscription(r.ctx, store.Subscription{ID: cur.ID, Filter: filter, SinkID: sinkID, Template: d.Template})
+				return r.tx.UpdateSubscription(r.ctx, store.Subscription{ID: cur.ID, Filter: filter, Policy: policy, SinkID: sinkID, Template: d.Template})
 			}); err != nil {
 				return err
 			}
-			r.add(KindSubscription, d.Name, Update, "")
+			detail := ""
+			if !samePolicy(cur.Policy, d.Policy) || !jsonEqual(cur.Filter, filter) {
+				f, err := subscription.FromJSON(filter)
+				if err != nil {
+					return err
+				}
+				if detail, err = r.reevaluateHeld(cur.ID, f, d.Policy); err != nil {
+					return err
+				}
+			}
+			r.add(KindSubscription, d.Name, Update, detail)
 		default:
 			r.add(KindSubscription, d.Name, Unchanged, "")
 		}

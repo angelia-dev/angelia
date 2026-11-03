@@ -1,0 +1,27 @@
+{
+  "source": "pypi",
+  "package": "example-lib",
+  "version": "0.4.1",
+  "normalized_version": "0.4.1",
+  "previous_version": "0.4.0",
+  "scheme": "pep440",
+  "bump": "patch",
+  "backport": false,
+  "prerelease": false,
+  "yanked": true,
+  "published_at": "2026-10-20T08:00:00Z",
+  "detected_at": "2026-10-31T12:00:00Z",
+  "cooldown_satisfied_at": null,
+  "urls": {
+    "release": "https://pypi.org/project/example-lib/0.4.1/",
+    "changelog": null,
+    "artifact": null
+  },
+  "notes": null,
+  "watch": {
+    "id": "01JBX5D6E7F8G9H0J1K2M3N4P5",
+    "name": "example-lib",
+    "labels": {}
+  },
+  "purl": "pkg:pypi/example-lib@0.4.1"
+}

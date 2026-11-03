@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/angelia-dev/spec/schemas/release/v1.json",
+  "title": "Angelia release event data, v1 (draft, pre-1.0)",
+  "description": "The CloudEvents `data` payload shared by the three release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. DRAFT: while the spec repository is at version 0.x this schema may still change in a breaking way in any 0.x minor release, without a new .v<major> type; it is frozen at spec 1.0.0. Every documented field is always present: a field with no value is null, never omitted. The objects are open: producers emit only the documented fields, and consumers must ignore fields they do not know (a new optional field is a minor change). The values of `source`, `scheme` and `notes.format` are open sets: consumers must accept values that are not in the documented list. Rules that depend on the event type (for example `yanked` is true only on release.yanked) are documented in docs/release-event-v1.md, because `data` does not carry the type.",
+  "$comment": "DRAFT (spec 0.x). Field names and semantics: docs/proposals/0001-release-event-v1-fields.md (Accepted). Per-field docs: docs/release-event-v1.md.",
+  "type": "object",
+  "required": [
+    "source",
+    "package",
+    "version",
+    "normalized_version",
+    "previous_version",
+    "scheme",
+    "bump",
+    "backport",
+    "prerelease",
+    "yanked",
+    "published_at",
+    "detected_at",
+    "cooldown_satisfied_at",
+    "urls",
+    "notes",
+    "watch",
+    "purl"
+  ],
+  "properties": {
+    "source": {
+      "description": "Source kind of the watch that produced the event. Known values: pypi, npm, crates, github-release, github-tag, gitlab-release, oci, go-proxy, maven, http-json, http-regex; a plugin may add its own kind. Open set: consumers must accept unknown values. Not to be confused with the CloudEvents `source` attribute (a URI).",
+      "$ref": "#/$defs/openToken",
+      "examples": ["pypi"]
+    },
+    "package": {
+      "description": "Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven).",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "examples": ["requests"]
+    },
+    "version": {
+      "description": "The raw upstream version string, exactly as the registry or forge lists it (a tag stays `v2.62.0`). This is what a consumer installs, pins or checks out.",
+      "type": "string",
+      "minLength": 1,
+      "examples": ["2.33.0"]
+    },
+    "normalized_version": {
+      "description": "The version in the classifying scheme's normalised form (PEP 440 `1.0-RC1` gives `1.0rc1`). Equals `version` for the lexical fallback.",
+      "type": "string",
+      "minLength": 1,
+      "examples": ["2.33.0"]
+    },
+    "previous_version": {
+      "description": "Raw string of the version this one was classified against: the greatest earlier version of the same scheme (for the backport 1.9.4 after 2.0.0 it is 1.9.3). Null when there is nothing to compare with (first version, or the lexical fallback).",
+      "type": ["string", "null"],
+      "minLength": 1,
+      "examples": ["2.32.5"]
+    },
+    "scheme": {
+      "description": "Name of the version scheme that classified the version. Known values: semver, pep440, calver, lexical; maven later. Open set: consumers must accept unknown values.",
+      "$ref": "#/$defs/openToken",
+      "examples": ["pep440"]
+    },
+    "bump": {
+      "description": "Change from `previous_version` to `version`: major, minor, patch, prerelease (between pre-releases of the same core version) or other (equal precedence, not greater, or across schemes). Null when `previous_version` is null.",
+      "enum": ["major", "minor", "patch", "prerelease", "other", null],
+      "examples": ["minor"]
+    },
+    "backport": {
+      "description": "True when a greater version of the same scheme was already known, and not removed, when this one was detected (1.9.4 after 2.0.0).",
+      "type": "boolean",
+      "examples": [false]
+    },
+    "prerelease": {
+      "description": "Whether the version is a pre-release: the upstream flag when the source gives one, otherwise the watch's scheme's opinion. False on release.published, true on release.prerelease, as emitted on release.yanked.",
+      "type": "boolean",
+      "examples": [false]
+    },
+    "yanked": {
+      "description": "Whether the version is yanked, unpublished or withdrawn upstream at the time of the event. Always false on release.published and release.prerelease; always true on release.yanked.",
+      "type": "boolean",
+      "examples": [false]
+    },
+    "published_at": {
+      "description": "Upstream publish date as the registry or forge reports it. Null when the source gives none. Not trustworthy for every kind: github-tag gives the committer date and oci the image's own `created` field, both set by the publisher.",
+      "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "examples": ["2026-10-27T14:02:11Z"]
+    },
+    "detected_at": {
+      "description": "Time of the check that first saw the version; on release.yanked, the check that first saw the yank.",
+      "$ref": "#/$defs/timestamp",
+      "examples": ["2026-10-30T17:00:00Z"]
+    },
+    "cooldown_satisfied_at": {
+      "description": "When the version passed the watch's cooldown (cooldown start + cooldown). Null when the watch has no cooldown. Always null on release.yanked.",
+      "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "examples": ["2026-10-30T14:02:11Z"]
+    },
+    "urls": {
+      "description": "Links about the release. Each key is always present and null when unknown.",
+      "type": "object",
+      "required": ["release", "changelog", "artifact"],
+      "properties": {
+        "release": {
+          "description": "Release page (GitHub release, PyPI project version page, npm version page).",
+          "$ref": "#/$defs/urlOrNull",
+          "examples": ["https://pypi.org/project/requests/2.33.0/"]
+        },
+        "changelog": {
+          "description": "Release notes or changelog page.",
+          "$ref": "#/$defs/urlOrNull",
+          "examples": ["https://github.com/psf/requests/blob/main/HISTORY.md"]
+        },
+        "artifact": {
+          "description": "Downloadable artifact when there is exactly one obvious one (npm tarball, crate download). Null for PyPI, forges and OCI.",
+          "$ref": "#/$defs/urlOrNull",
+          "examples": ["https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"]
+        }
+      }
+    },
+    "notes": {
+      "description": "Release notes text. Null until notes enrichment exists (PRD F12): no source fetches a notes body yet.",
+      "type": ["object", "null"],
+      "required": ["format", "body", "truncated"],
+      "properties": {
+        "format": {
+          "description": "Format of `body`. Known values: markdown, text (HTML is converted or sent as text, never passed through). Open set: consumers must accept unknown values.",
+          "$ref": "#/$defs/openToken",
+          "examples": ["markdown"]
+        },
+        "body": {
+          "description": "Notes text, at most 16384 bytes of UTF-8, cut at a character boundary. JSON Schema counts characters, not bytes, so maxLength only enforces the weaker bound of 16384 characters; producers must enforce the byte limit.",
+          "type": "string",
+          "maxLength": 16384,
+          "examples": ["## 2.33.0\n\n- Fix ..."]
+        },
+        "truncated": {
+          "description": "True when `body` was cut to the limit; the full text is at `urls.changelog` or `urls.release`.",
+          "type": "boolean",
+          "examples": [true]
+        }
+      }
+    },
+    "watch": {
+      "description": "The watch that produced the event.",
+      "type": "object",
+      "required": ["id", "name", "labels"],
+      "properties": {
+        "id": {
+          "description": "Watch id: a ULID, as the store generates it. Stable across edits of the watch (including a change of source or coordinates); a renamed or recreated watch gets a new id.",
+          "$ref": "#/$defs/ulid",
+          "examples": ["01JBX1Z3M4N5P6Q7R8S9T0V1W2"]
+        },
+        "name": {
+          "description": "The watch's `name` from the watch file. Null for watches created through the API without a name.",
+          "type": ["string", "null"],
+          "minLength": 1,
+          "examples": ["requests"]
+        },
+        "labels": {
+          "description": "The watch's labels, an object of string to string; {} when it has none, never null. At most 32 entries; values at most 253 characters, without control characters (U+0000 to U+001F, U+007F).",
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 253,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]*$"
+          },
+          "examples": [{ "team": "platform", "repo": "api" }]
+        }
+      }
+    },
+    "purl": {
+      "description": "Package URL of this version (purl specification), built per source kind as docs/release-event-v1.md describes. Null for kinds without a purl type (http-json, http-regex, plugins) and when the identity cannot be built.",
+      "type": ["string", "null"],
+      "pattern": "^pkg:[a-z][a-z0-9.+-]*/",
+      "examples": ["pkg:pypi/requests@2.33.0"]
+    }
+  },
+  "$defs": {
+    "openToken": {
+      "$comment": "Open set of lower-case identifiers: a documented list of known values, not a closed enum.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,3})?Z$"
+    },
+    "ulid": {
+      "description": "ULID: 26 characters, Crockford base32, upper case.",
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "urlOrNull": {
+      "description": "An absolute https URL (an http URL from a private registry is passed as given) with a non-empty host and no whitespace, or null when unknown.",
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://[^\\s/?#]+([/?#]\\S*)?$"
+        },
+        { "type": "null" }
+      ]
+    }
+  }
+}

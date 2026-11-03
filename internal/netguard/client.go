@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/buildinfo"
+	"github.com/angelia-dev/angelia/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Defaults applied by New to zero Config fields.
@@ -75,6 +77,26 @@ type Config struct {
 	Clock Clock
 	// Logger defaults to a logger that discards everything.
 	Logger *slog.Logger
+	// Observer receives measurements for metrics. Nil discards them.
+	Observer Observer
+}
+
+// Observer receives netguard measurements. Phase 1 exports them to
+// Prometheus (internal/metrics). Methods must be safe for concurrent use and
+// must not block.
+type Observer interface {
+	// RateLimitWait is how long one attempt (each retry and each redirect
+	// hop is an attempt) waited for the per-host rate limit before it was
+	// sent, zero when it did not wait. It is called once per attempt, after
+	// the wait ended; a wait cut short by the context is not reported.
+	//
+	// host is a host of the limits table (DefaultHostLimits plus
+	// Config.HostLimits), lower case, or "other" for any other host. Sinks
+	// share this client, and their hosts can carry secrets (webhook URLs),
+	// so they never reach an observer. Implementations must not be a typed
+	// nil pointer stored in the interface: that is not a nil Observer and
+	// would panic on the first call.
+	RateLimitWait(host string, d time.Duration)
 }
 
 // Client is the shared HTTP transport: an http.RoundTripper that applies
@@ -190,6 +212,25 @@ func (c *Client) HTTPClient() *http.Client {
 // reading past the cap returns an error wrapping ErrBodyTooLarge. As with
 // any RoundTripper, a non-2xx status is not an error.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The span has the method and the host only if it is in the limits table
+	// (else "other", as for metrics): never the URL, which can carry a token
+	// in its path or query, nor any header, nor the host of a sink (story #118).
+	ctx, span := telemetry.Start(req.Context(), "angelia.http",
+		attribute.String("http.request.method", req.Method), attribute.String("server.address", c.limiter.observedHost(req.URL.Hostname())))
+	defer span.End()
+	resp, err := c.roundTrip(req.WithContext(ctx))
+	if resp != nil {
+		span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	}
+	if errors.Is(err, ErrBodyTooLarge) {
+		telemetry.RecordErrorAs(span, err, "body_too_large", "request failed")
+	} else {
+		telemetry.RecordError(span, err, "request failed")
+	}
+	return resp, err
+}
+
+func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
 	r := req.Clone(ctx)
 	if r.Header.Get("User-Agent") == "" {
@@ -204,9 +245,13 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	canRetry := isIdempotent(r.Method) && (r.Body == nil || r.Body == http.NoBody)
 
 	for attempt := 1; ; attempt++ {
+		waitStart := c.clock.Now()
 		if err := c.limiter.wait(ctx, host, authed); err != nil {
 			closeRequestBody(req)
 			return nil, err
+		}
+		if c.cfg.Observer != nil {
+			c.cfg.Observer.RateLimitWait(c.limiter.observedHost(host), max(0, c.clock.Now().Sub(waitStart)))
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))

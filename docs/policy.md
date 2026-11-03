@@ -94,7 +94,9 @@ For every check of a target, after the diff engine and in the same transaction:
 1. **Held versions** of the watch: dropped if yanked; kept if removed upstream; dropped if the current
    filters (steps 5 to 9 below) reject them; emitted if their cooldown is over.
 2. Only **new** versions are candidates. Yank, un-yank, removal and return of known versions are not
-   `release.published` events (yank events: #112).
+   `release.published` events. The yank of a version the watch emitted is a `release.yanked` event,
+   whatever the current policy says, and cancels the deliveries of that version still held by a
+   subscription cooldown ([ADR 0018](adr/0018-yank-events-reference-the-original.md)).
 3. A new version already **yanked** when first seen is dropped.
 4. **Aliases** are dropped: a new version with the same precedence as an existing one (`v1.2.0` after
    `1.2.0`, `1.0.0` after `1.0` in PEP 440, `1.2.0+b` after `1.2.0+a`), so one release is announced
@@ -111,8 +113,16 @@ new versions are logged at `DEBUG`, drops of held versions at `INFO`.
 Emitted releases are ordered: formerly held versions first (oldest detection first, then version
 order), then new versions in version order.
 
+## Subscription policy
+
+A subscription can narrow the watch's policy ([watch-file.md §2.6](watch-file.md),
+[ADR 0014](adr/0014-subscription-policy-overrides.md)) with `filter.bump` and `policy.prerelease` /
+`policy.cooldown`. It is applied after this policy, when the event's deliveries are created, to the
+events this policy admitted, so it can only receive **less, later**: the pre-release mode is
+intersected with the watch's, the cooldown is `max(watch, subscription)` counted from the same start
+as the watch's, and a bump the watch drops never arrives. Useless values are clamped, not rejected.
+`release.yanked` events ignore `policy.*`. Code: `subscription.Policy.Evaluate`.
+
 ## Not in Phase 0
 
-- Policy on subscriptions (architecture.md §3.4 says "per watch or subscription"); subscriptions have
-  a `filter` instead.
 - `baseline: false`.
