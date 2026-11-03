@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/angelia-dev/angelia/internal/diff"
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/subscription"
+	"github.com/angelia-dev/angelia/internal/telemetry"
 	"github.com/angelia-dev/angelia/internal/ulid"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
@@ -109,6 +112,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 	}
 	kind := in.Target.Kind
 	trust := policy.TrustsPublishedAt(kind)
+	tp := telemetry.TraceParent(ctx)
 	var ids []string
 	for _, wr := range rel {
 		wp := wr.Policy
@@ -137,6 +141,7 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 				return n, err
 			}
 			ids = next
+			stampTrace(tp, ds)
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: wr.Watch.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now,
 			}, ds); err != nil {
@@ -147,6 +152,17 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 		}
 	}
 	return n, nil
+}
+
+// stampTrace records the trace context of ctx on the deliveries, so the
+// dispatcher can link its delivery spans to the check that wrote them.
+func stampTrace(tp string, ds []store.Delivery) {
+	if tp == "" {
+		return
+	}
+	for i := range ds {
+		ds[i].TraceParent = tp
+	}
 }
 
 // hold identifies the version of an event, for the store.Hold of a delivery
@@ -223,15 +239,24 @@ type CheckInput struct {
 // and EmitYanks share one load of the subscriptions. Any error rolls all of it back, so a failure at any
 // step leaves either everything or nothing. The target's fetch state and
 // schedule are the scheduler's to write.
-func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
+func Commit(ctx context.Context, st Committer, in CheckInput) (n Emitted, err error) {
+	ctx, span := telemetry.Start(ctx, "angelia.commit",
+		attribute.String("angelia.target.id", in.Target.ID), attribute.String("angelia.source.kind", in.Target.Kind))
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("angelia.events", n.Events), attribute.Int("angelia.deliveries", n.Deliveries),
+			attribute.Int("angelia.deliveries.held", n.Held), attribute.Int("angelia.deliveries.dead", n.Dead))
+		telemetry.RecordError(span, err, "commit failed")
+		span.End()
+	}()
 	logger := in.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	kind := in.Target.Kind
-	def, err := schemes.Select(kind, "", logger)
-	if err != nil {
-		return Emitted{}, fmt.Errorf("event: target %s scheme: %w", in.Target.ID, err)
+	def, serr := schemes.Select(kind, "", logger)
+	if serr != nil {
+		return Emitted{}, fmt.Errorf("event: target %s scheme: %w", in.Target.ID, serr)
 	}
 	schemeFor := policy.SchemeFor(kind, logger)
 	if r, ok := st.(SubscriptionReader); ok && in.Matcher != nil {
@@ -239,7 +264,6 @@ func Commit(ctx context.Context, st Committer, in CheckInput) (Emitted, error) {
 			return Emitted{}, err
 		}
 	}
-	var n Emitted
 	err = st.InTx(ctx, func(tx store.Tx) error {
 		out, err := diff.Apply(ctx, tx, diff.Input{
 			TargetID: in.Target.ID, Fetched: in.Fetched, Scheme: def, SchemeFor: schemeFor, Now: in.Now, Logger: logger,

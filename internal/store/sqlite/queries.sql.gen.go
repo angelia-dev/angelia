@@ -143,8 +143,9 @@ func (q *Queries) CountLeasableDueTargets(ctx context.Context, now int64) (int64
 
 const createDelivery = `-- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
-                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input,
+                      traceparent)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateDeliveryParams struct {
@@ -162,6 +163,7 @@ type CreateDeliveryParams struct {
 	HoldWatchID         sql.NullString
 	HoldRaw             sql.NullString
 	HoldInput           sql.NullString
+	Traceparent         sql.NullString
 }
 
 func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) error {
@@ -180,6 +182,7 @@ func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) 
 		arg.HoldWatchID,
 		arg.HoldRaw,
 		arg.HoldInput,
+		arg.Traceparent,
 	)
 	return err
 }
@@ -726,7 +729,7 @@ func (q *Queries) HasLeasableDueTargets(ctx context.Context, now int64) (bool, e
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery WHERE event_id = ? ORDER BY id
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery WHERE event_id = ? ORDER BY id
 `
 
 func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error) {
@@ -753,6 +756,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 			&i.HoldWatchID,
 			&i.HoldRaw,
 			&i.HoldInput,
+			&i.Traceparent,
 		); err != nil {
 			return nil, err
 		}
@@ -808,7 +812,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 }
 
 const listHeldDeliveries = `-- name: ListHeldDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input FROM delivery
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery
 WHERE subscription_id = ? AND status = 'pending' AND held_until > ?
 ORDER BY id
 `
@@ -843,6 +847,7 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 			&i.HoldWatchID,
 			&i.HoldRaw,
 			&i.HoldInput,
+			&i.Traceparent,
 		); err != nil {
 			return nil, err
 		}
@@ -1393,7 +1398,7 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 const startDeliveryAttempt = `-- name: StartDeliveryAttempt :one
 UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
 WHERE id = ?
-RETURNING id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input
+RETURNING id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent
 `
 
 // Every lease of a delivery counts as an attempt, so an attempt cut short
@@ -1416,6 +1421,7 @@ func (q *Queries) StartDeliveryAttempt(ctx context.Context, id string) (Delivery
 		&i.HoldWatchID,
 		&i.HoldRaw,
 		&i.HoldInput,
+		&i.Traceparent,
 	)
 	return i, err
 }

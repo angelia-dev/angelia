@@ -129,8 +129,9 @@ SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?;
 
 -- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
-                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                      held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input,
+                      traceparent)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListDeliveries :many
 SELECT * FROM delivery WHERE event_id = ? ORDER BY id;

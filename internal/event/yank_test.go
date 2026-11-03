@@ -19,6 +19,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/telemetry/telemetrytest"
 	"github.com/angelia-dev/angelia/internal/ulid"
 	"github.com/angelia-dev/angelia/internal/version"
 )
@@ -460,4 +461,37 @@ func (origTx) CancelHeldDeliveries(context.Context, string, time.Time) (int64, e
 
 func (x origTx) GetLatestEventBySubject(context.Context, string, string, ...string) (store.Event, error) {
 	return x.orig, nil
+}
+
+// Story #118: the deliveries of a yank event record the trace of the check
+// that saw the yank, like those of a release (ADR 0020).
+func TestYankDeliveriesRecordTheTraceParent(t *testing.T) {
+	st, tg := fixture(t)
+	ctx := t.Context()
+	s := store.Subscription{ID: "s-yank", SinkID: "k", Filter: json.RawMessage(`{"type":["release.yanked"]}`)}
+	must(t, st.CreateSubscription(ctx, s))
+	_, err := Commit(ctx, st, secondCheck(tg))
+	must(t, err)
+	seen := len(eventsAfter(t, st, 0))
+
+	_, tp := telemetrytest.Install(t)
+	tctx, span := tp.Tracer("test").Start(ctx, "check")
+	_, err = Commit(tctx, st, yankOf(tg, check2.Add(time.Hour), "2.33.0"))
+	span.End()
+	must(t, err)
+
+	var yanks int
+	for _, e := range eventsAfter(t, st, 0)[seen:] {
+		if !strings.HasSuffix(e.Type, "yanked.v1") {
+			continue
+		}
+		yanks++
+		d, ok := deliveriesBySub(t, st, e.ID)["s-yank"]
+		if !ok || !strings.Contains(d.TraceParent, span.SpanContext().TraceID().String()) {
+			t.Errorf("yank delivery %+v: traceparent does not name trace %s", d, span.SpanContext().TraceID())
+		}
+	}
+	if yanks == 0 {
+		t.Fatal("no yank event")
+	}
 }

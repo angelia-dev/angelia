@@ -409,6 +409,10 @@ type Delivery struct {
 	Attempts       int64
 	NextAttemptAt  time.Time // zero: not scheduled
 	LastError      string
+	// TraceParent is the W3C traceparent of the span active when the
+	// delivery was created, empty when there was none. The dispatcher links
+	// its delivery spans to it (ADR 0020). Ids only, never a secret.
+	TraceParent string
 	// Hold is set when the delivery was ever held by a subscription cooldown
 	// (ADR 0014); nil otherwise. Hold.Until is zero once an edit released the
 	// hold or failed the delivery. Currently held iff Status is pending and

@@ -55,3 +55,21 @@ Check a configuration with `angelia config check [--config FILE]`.
   - `/readyz` returns 503 until the instance is ready (database reachable, migrations applied) and again as soon as shutdown starts, so load balancers stop sending new work.
 - The same address serves Prometheus metrics at `/metrics` (see [operations/metrics.md](operations/metrics.md)); `--metrics=false` turns it off.
 - On SIGTERM or SIGINT the roles are cancelled and get `--drain-timeout` (default 25s) in total to finish or release in-flight work, then the process exits 0. If they do not stop in time, or a role fails or exits on its own, the process exits non-zero. Keep the drain timeout below the Kubernetes `terminationGracePeriodSeconds` (30s by default).
+
+## Tracing
+
+OpenTelemetry tracing is **off by default** and is not configured in `angelia.yaml`. `angelia serve` turns it on when the standard OpenTelemetry environment variables ask for an OTLP exporter ([ADR 0020](adr/0020-opentelemetry-traces-link-checks-to-deliveries.md)):
+
+| Variable | Effect |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Enables tracing and names the collector. Without one, nothing is exported. |
+| `OTEL_TRACES_EXPORTER` | Empty or `otlp` keeps it on; `none` (or anything else) turns it off. |
+| `OTEL_SDK_DISABLED=true` | Turns it off. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, `_INSECURE` (and the `_TRACES_` variants) | Read by the exporter. |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER[_ARG]` | Read by the SDK; the service name defaults to `angelia`. |
+
+- Only `http/protobuf` is supported (the OTLP default). `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` makes `serve` fail at start.
+- One trace per check (`angelia.check`, with `angelia.http` and `angelia.commit` below it). Each delivery attempt is a trace of its own (`angelia.delivery`) with a span link to the check that created it.
+- Spans hold ids, kinds, status codes and counts, and the host of a request only if it has an entry in the netguard limits table (else `other`). They never hold a URL, a header, a sink configuration or an error message.
+- When tracing is on, the final flush (at most 2 s) is taken out of `--drain-timeout`, so the drain gets 2 s less. Export failures are logged as warnings, at most one per 30 s.
+- Log lines written with a span in their context carry `trace_id` and `span_id`.

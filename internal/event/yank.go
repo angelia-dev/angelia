@@ -12,6 +12,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/diff"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/subscription"
+	"github.com/angelia-dev/angelia/internal/telemetry"
 	"github.com/angelia-dev/angelia/internal/ulid"
 	"github.com/angelia-dev/angelia/internal/version"
 )
@@ -126,6 +127,7 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 	}
 	kind := in.Target.Kind
 	pkg := Package(kind, in.Target.Coordinates)
+	tp := telemetry.TraceParent(ctx)
 	var ids []string
 	for _, wc := range watches {
 		w := wc.Watch
@@ -184,6 +186,7 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			if err != nil {
 				return n, err
 			}
+			stampTrace(tp, ds)
 			if err := tx.AppendEvent(ctx, store.Event{
 				ID: env.ID, WatchID: w.ID, Type: env.Type, Payload: payload, CreatedAt: in.Now, RefEventID: orig.ID,
 			}, ds); err != nil {
