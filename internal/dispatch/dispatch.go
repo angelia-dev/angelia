@@ -55,6 +55,22 @@ const (
 	ReasonSinkDeleted         = "sink deleted"
 )
 
+// Outcomes of an attempt, as reported to Metrics.
+const (
+	OutcomeDelivered = store.DeliveryDelivered
+	OutcomeRetry     = "retry" // failed, due again later
+	OutcomeDead      = store.DeliveryDead
+)
+
+// Metrics receives dispatcher observations. Phase 1 exports them to
+// Prometheus (internal/metrics); a nil Metrics discards them.
+type Metrics interface {
+	// AttemptFinished is called once an attempt's outcome (OutcomeDelivered,
+	// OutcomeRetry or OutcomeDead) is recorded in the store. An attempt that
+	// lost its lease, or whose result could not be written, is not reported.
+	AttemptFinished(outcome string)
+}
+
 // Store is the part of store.Store the dispatcher uses.
 type Store interface {
 	LeaseDueDeliveries(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.LeasedDelivery, error)
@@ -128,6 +144,8 @@ type Options struct {
 	// configuration; nil passes it through (encryption at rest is not
 	// implemented yet, maintainer decision on #107).
 	DecryptConfig func([]byte) ([]byte, error)
+	// Metrics receives attempt outcomes; nil discards them.
+	Metrics Metrics
 }
 
 // Dispatcher is the "dispatcher" role: it leases due deliveries from the
@@ -399,6 +417,14 @@ func (d *Dispatcher) finish(ctx context.Context, f store.DeliveryFinish, log *sl
 		log.ErrorContext(wctx, "record delivery attempt", "error", err)
 	case !held:
 		log.WarnContext(wctx, "lease lost before the attempt was recorded; leaving the delivery to its new holder")
+	default:
+		if d.opts.Metrics != nil {
+			outcome := f.Status
+			if outcome == store.DeliveryPending {
+				outcome = OutcomeRetry
+			}
+			d.opts.Metrics.AttemptFinished(outcome)
+		}
 	}
 }
 

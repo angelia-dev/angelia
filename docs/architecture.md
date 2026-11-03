@@ -205,7 +205,7 @@ Proposed stack [P0]:
 - Plugins: `extism/go-sdk` on `wazero`.
 - Shipped transitively for tracing: `go.opentelemetry.io/otel`, `otel/trace`, `otel/sdk` and the OTLP/HTTP exporter `otlptracehttp` (Apache-2.0) link `google.golang.org/grpc`, `grpc-gateway/v2` and `genproto/googleapis/api` into the binary through the OTLP protobuf packages (accepted by the maintainer for #118; modules listed in [ADR 0020](adr/0020-opentelemetry-traces-link-checks-to-deliveries.md)). Code under `internal/` and `cmd/` must not import grpc directly.
 - Spike-only, not shipped: direct deps `hashicorp/go-plugin` (MPL-2.0), `hashicorp/go-hclog` (MIT) and `google.golang.org/grpc` (Apache-2.0), with their transitive deps (`hashicorp/yamux`, `oklog/run`, `fatih/color`, …; MPL-2.0, Apache-2.0, MIT, BSD; `google.golang.org/protobuf` was already indirect), for the go-plugin prototype of #60 under `bench/plugins/goplugin` only. Nothing under `internal/` or `cmd/` may import them unless [ADR 0013](adr/0013-go-plugin-subprocess-prototype.md) is accepted with go-plugin as the choice.
-- Observability: OpenTelemetry traces, Prometheus `/metrics`, `slog` JSON logs.
+- Observability: OpenTelemetry traces, Prometheus `/metrics` through `prometheus/client_golang` (Apache-2.0; accepted with [ADR 0019](adr/0019-prometheus-metrics-on-the-listen-address.md), which lists its transitive modules), `slog` JSON logs.
 - UI (later): SvelteKit or React, static build served by the binary. Separate repo.
 
 **Phase 0 benchmarks (pass/fail):**

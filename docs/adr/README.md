@@ -23,6 +23,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0016](0016-message-templates-text-template-bounded.md) | Message templates are Go `text/template` over the event JSON, with curated functions, a deadline and a size cap, checked against sample events | Proposed | #114 |
 | [0017](0017-dispatcher-delivery-leases-and-retries.md) | The dispatcher leases deliveries through the lease table, retries with full-jitter backoff, and passes sinks one request struct | Accepted | #107 |
 | [0018](0018-yank-events-reference-the-original.md) | A yank of an emitted version is a `release.yanked` event that repeats the stored payload and references the original event in the store | Proposed | #112 |
+| [0019](0019-prometheus-metrics-on-the-listen-address.md) | Prometheus metrics are served on the listen address, from a private registry, with closed label sets | Proposed | #117 |
 | [0020](0020-opentelemetry-traces-link-checks-to-deliveries.md) | Traces are OpenTelemetry over OTLP/HTTP, enabled only by `OTEL_*` variables; a check is one trace and each delivery attempt a linked trace, joined through `delivery.traceparent` | Proposed | #118 |
 
 ## Process
