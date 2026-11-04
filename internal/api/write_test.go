@@ -232,36 +232,112 @@ func TestSinkRedaction(t *testing.T) {
 			t.Errorf("%s list: %v", tc.tok, got)
 		}
 	}
-	if s := redactURLs("not a url://x"); s != "[redacted]" {
-		t.Errorf("redactURLs = %v", s)
-	}
 }
 
-// A kind's config_schema marks keys x-angelia-secret: the API refuses them in
-// a PUT and masks them for every caller.
+// A kind's config_schema marks values x-angelia-secret at any depth: the API
+// refuses them in a PUT and masks them for every caller.
 func TestSecretKeys(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"token":{"type":"string","x-angelia-secret":true}}}`)
+	schema := json.RawMessage(`{"type":"object","properties":{
+		"url":{"type":"string"},
+		"token":{"type":"string","x-angelia-secret":true},
+		"auth":{"type":"object","properties":{"password":{"type":"string","x-angelia-secret":true},"user":{"type":"string"}}},
+		"targets":{"type":"array","items":{"type":"object","properties":{"key":{"x-angelia-secret":true}}}},
+		"extra":{"allOf":[{"properties":{"pin":{"x-angelia-secret":true}}}]}}}`)
 	e := newEnv(t, func(o *Options) {
 		o.Plugins = append(o.Plugins, PluginInfo{Kind: "vault-hook", Interface: "sink", Runtime: "wasm", Version: "1.0.0", ConfigSchema: schema})
-		// The webhook schema of the built-in sink marks no key.
 	})
 	k := store.Sink{
 		ID: "01JBX2A7C8D9E0F1G2H3J4K5M6", Name: "v", Kind: "vault-hook", ManagedBy: store.ManagedByFile,
-		ConfigEncrypted: []byte(`{"url":"https://v.example.com/x","token":"s3cr3t"}`),
+		ConfigEncrypted: []byte(`{"url":"https://v.example.com/x","token":"s3cr3t","auth":{"user":"bot","password":"s3cr3t"},
+			"targets":[{"key":"s3cr3t"},{"key":"s3cr3t"}],"extra":{"pin":"s3cr3t"}}`),
 	}
+	want := "auth.password,extra.pin,targets.0.key,targets.1.key,token"
 	for _, sc := range []Scope{ScopeRead, ScopeAdmin} {
-		j := e.srv.sinkJSONOf(k, sc)
-		if j.Config["token"] != Masked || len(j.MaskedFields) != 1 || j.MaskedFields[0] != "token" {
-			t.Errorf("%s: %+v", sc, j)
+		j, err := e.srv.sinkJSONOf(k, sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(j.MaskedFields, ","); got != want {
+			t.Errorf("%s: masked %s, want %s", sc, got, want)
 		}
 		b, _ := json.Marshal(j)
-		if strings.Contains(string(b), "s3cr3t") {
-			t.Errorf("%s leaks the secret: %s", sc, b)
+		if strings.Contains(string(b), "s3cr3t") || !strings.Contains(string(b), `"user":"bot"`) {
+			t.Errorf("%s: %s", sc, b)
 		}
 	}
-	invalid, env := e.srv.checkSinkConfig("vault-hook", map[string]any{"token": "x", "token_env": "CI_WEBHOOK_SECRET"}) //nolint:gosec // synthetic
-	if len(invalid) != 1 || invalid[0].Pointer != "/config/token" || len(env) != 0 {
+	invalid, env := e.srv.checkSinkConfig("vault-hook", map[string]any{ //nolint:gosec // synthetic values
+		"token": "x", "auth": map[string]any{"password": "x"}, "token_env": "CI_WEBHOOK_SECRET",
+	})
+	if len(invalid) != 2 || invalid[0].Pointer != "/config/auth/password" || invalid[1].Pointer != "/config/token" || len(env) != 0 {
 		t.Errorf("checkSinkConfig: %v %v", invalid, env)
+	}
+	// A stored configuration that is not JSON is an error, not an empty one.
+	k.ConfigEncrypted = []byte("{")
+	if _, err := e.srv.sinkJSONOf(k, ScopeAdmin); err == nil {
+		t.Error("a broken configuration was read")
+	}
+}
+
+// Masking fails closed: below admin, a kind without a config_schema has every
+// string masked except *_env names, and a non-http(s) URL keeps only its
+// scheme. The built-in webhook kind gets the spec's schema.
+func TestMaskingFailsClosed(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.Plugins = append(o.Plugins, PluginInfo{Kind: "chat", Interface: "sink", Runtime: "wasm", Version: "1.0.0"})
+	})
+	k := store.Sink{
+		ID: "01JBX2A7C8D9E0F1G2H3J4K5M6", Name: "c", Kind: "chat", ManagedBy: store.ManagedByFile,
+		ConfigEncrypted: []byte(`{"url":"slack://hook:s3cr3t@T0/B0/X","token":"s3cr3t","secret_env":"CI_WEBHOOK_SECRET","n":3,"opts":{"room":"ops"}}`),
+	}
+	j, err := e.srv.sinkJSONOf(k, ScopeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(j.MaskedFields, ","); got != "opts.room,token,url" {
+		t.Errorf("masked %s", got)
+	}
+	if b, _ := json.Marshal(j.Config); string(b) != `{"n":3,"opts":{"room":"[REDACTED]"},"secret_env":"CI_WEBHOOK_SECRET","token":"[REDACTED]","url":"[REDACTED]"}` {
+		t.Errorf("config %s", b)
+	}
+	if j, _ = e.srv.sinkJSONOf(k, ScopeAdmin); j.Config["token"] != "s3cr3t" || len(j.MaskedFields) != 0 {
+		t.Errorf("admin: %+v", j)
+	}
+	for in, want := range map[string]string{
+		"slack://hook:s3cr3t@T0/B0/X":            "slack://",
+		"smtp://u:p@mail.example.com:25/?to=x":   "smtp://",
+		"https://u:p@ci.example.com/hooks/x?k=v": "https://ci.example.com",
+		"not a url://x":                          "[redacted]",
+		"plain":                                  "plain",
+	} {
+		if got := redactURLs(in); got != want {
+			t.Errorf("redactURLs(%q) = %v, want %s", in, got, want)
+		}
+	}
+	sch, _ := json.Marshal(e.srv.configSchema("webhook"))
+	if !strings.Contains(string(sch), `"secret_env"`) || strings.Contains(string(sch), "$ref") {
+		t.Errorf("webhook config_schema: %s", sch)
+	}
+}
+
+// Every *_env key is checked against the allowlist at any depth, and must be
+// a string.
+func TestEnvAllowlistNested(t *testing.T) {
+	e := newEnv(t)
+	invalid, env := e.srv.checkSinkConfig("webhook", map[string]any{ //nolint:gosec // variable names, not secrets
+		"secret_env": "CI_WEBHOOK_SECRET",
+		"auth":       map[string]any{"token_env": "ANGELIA_DATABASE_DSN"},
+		"list":       []any{map[string]any{"key_env": "HOME"}},
+		"bad_env":    42,
+	})
+	var ptrs []string
+	for _, f := range env {
+		ptrs = append(ptrs, f.Pointer)
+	}
+	if strings.Join(ptrs, ",") != "/config/auth/token_env,/config/list/0/key_env" {
+		t.Errorf("env: %v", env)
+	}
+	if len(invalid) != 1 || invalid[0].Pointer != "/config/bad_env" {
+		t.Errorf("invalid: %v", invalid)
 	}
 }
 

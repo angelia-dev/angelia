@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/angelia-dev/angelia/internal/store"
@@ -15,60 +18,163 @@ import (
 // Masked is the value of a configuration key the kind marks secret.
 const Masked = "[REDACTED]"
 
-// secretKeys returns the configuration keys a sink kind's config_schema marks
-// with x-angelia-secret: true (spec docs/api.md decision 26).
-func (s *Server) secretKeys(kind string) []string {
+// configSchema returns the parsed config_schema of a sink kind, nil when the
+// kind is unknown or publishes none (or an unreadable one). A built-in kind
+// that publishes none has the one the specification documents.
+func (s *Server) configSchema(kind string) map[string]any {
 	pl, ok := s.plugin("sink", kind)
-	if !ok || len(pl.ConfigSchema) == 0 {
+	switch {
+	case !ok:
+		return nil
+	case len(pl.ConfigSchema) == 0 && pl.Runtime == "builtin":
+		return s.spec.kindConfig(kind)
+	case len(pl.ConfigSchema) == 0:
 		return nil
 	}
-	var sch struct {
-		Properties map[string]map[string]any `json:"properties"`
-	}
+	var sch map[string]any
 	if json.Unmarshal(pl.ConfigSchema, &sch) != nil {
 		return nil
 	}
-	var out []string
-	for k, p := range sch.Properties {
-		if b, _ := p["x-angelia-secret"].(bool); b {
-			out = append(out, k)
+	return sch
+}
+
+// secretPaths returns the paths of the configuration values a schema marks
+// with x-angelia-secret: true (spec docs/api.md decision 26), at any depth:
+// under properties, and "*" for every item of an array or every value of an
+// additionalProperties map.
+func secretPaths(sch any, prefix []string, depth int) [][]string {
+	m, ok := sch.(map[string]any)
+	if !ok || depth > 32 {
+		return nil
+	}
+	if b, _ := m["x-angelia-secret"].(bool); b && len(prefix) > 0 {
+		return [][]string{slices.Clone(prefix)}
+	}
+	var out [][]string
+	if props, ok := m["properties"].(map[string]any); ok {
+		keys := slices.Sorted(maps.Keys(props))
+		for _, k := range keys {
+			out = append(out, secretPaths(props[k], append(prefix, k), depth+1)...)
 		}
 	}
-	slices.Sort(out)
+	for _, key := range []string{"items", "additionalProperties"} {
+		out = append(out, secretPaths(m[key], append(prefix, "*"), depth+1)...)
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		if subs, ok := m[key].([]any); ok {
+			for _, sub := range subs {
+				out = append(out, secretPaths(sub, prefix, depth+1)...)
+			}
+		}
+	}
 	return out
 }
 
-// sinkJSONOf builds the response of a sink for a caller with the given scope:
-// below admin every URL in the configuration is cut to scheme://host, and for
-// every caller the keys the kind marks secret are masked.
-func (s *Server) sinkJSONOf(k store.Sink, scope Scope) sinkJSON {
-	cfg := map[string]any{}
-	_ = json.Unmarshal(k.ConfigEncrypted, &cfg) // TODO(#75): decrypt here once sinks are encrypted at rest
-	out := sinkJSON{Name: k.Name, ID: k.ID, ManagedBy: ownerOf(k), Kind: k.Kind, Config: cfg, MaskedFields: []string{}}
-	for _, key := range s.secretKeys(k.Kind) {
-		if _, ok := cfg[key]; ok {
-			cfg[key] = Masked
-			out.MaskedFields = append(out.MaskedFields, key)
+// eachAt calls fn for every value of v at path ("*" matches every key or
+// index), with the path it was found at.
+func eachAt(v any, path, at []string, fn func(at []string, set func(any))) {
+	if len(path) == 0 {
+		return
+	}
+	visit := func(key string, child any, set func(any)) {
+		next := append(slices.Clone(at), key)
+		if len(path) == 1 {
+			fn(next, set)
+			return
 		}
+		eachAt(child, path[1:], next, fn)
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			if path[0] == "*" || path[0] == k {
+				visit(k, x[k], func(n any) { x[k] = n })
+			}
+		}
+	case []any:
+		for i := range x {
+			if path[0] == "*" || path[0] == strconv.Itoa(i) {
+				visit(strconv.Itoa(i), x[i], func(n any) { x[i] = n })
+			}
+		}
+	}
+}
+
+// sinkJSONOf builds the response of a sink for a caller with the given scope.
+// For every caller, the values the kind's config_schema marks secret are
+// masked. Below admin every URL is cut (redactURLs) and, when the kind
+// publishes no config_schema, every string value not under a *_env key is
+// masked too: without a schema the server cannot tell a secret from the rest.
+func (s *Server) sinkJSONOf(k store.Sink, scope Scope) (sinkJSON, error) {
+	cfg := map[string]any{}
+	// TODO(#75): decrypt here once sinks are encrypted at rest.
+	if err := json.Unmarshal(k.ConfigEncrypted, &cfg); err != nil {
+		return sinkJSON{}, fmt.Errorf("sink %s: stored configuration: %w", k.ID, err)
+	}
+	out := sinkJSON{Name: k.Name, ID: k.ID, ManagedBy: ownerOf(k), Kind: k.Kind, Config: cfg, MaskedFields: []string{}}
+	masked := map[string]bool{}
+	mask := func(at []string, set func(any)) {
+		set(Masked)
+		masked[strings.Join(at, ".")] = true
+	}
+	sch := s.configSchema(k.Kind)
+	for _, p := range secretPaths(sch, nil, 0) {
+		eachAt(any(cfg), p, nil, mask)
 	}
 	if scope < ScopeAdmin {
 		out.URLRedacted = true
+		if sch == nil {
+			maskStrings(cfg, nil, mask)
+		}
 		for key, v := range cfg {
 			cfg[key] = redactURLs(v)
 		}
 	}
-	return out
+	out.MaskedFields = append([]string{}, slices.Sorted(maps.Keys(masked))...)
+	return out, nil
 }
 
-// redactURLs cuts every absolute URL in a configuration value to
-// scheme://host.
+// maskStrings masks every string value of v that is not under a key ending
+// in _env, which names a variable and is never a secret.
+func maskStrings(v any, at []string, mask func([]string, func(any))) {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			if strings.HasSuffix(k, "_env") {
+				continue
+			}
+			next := append(slices.Clone(at), k)
+			if _, ok := x[k].(string); ok {
+				mask(next, func(n any) { x[k] = n })
+				continue
+			}
+			maskStrings(x[k], next, mask)
+		}
+	case []any:
+		for i := range x {
+			next := append(slices.Clone(at), strconv.Itoa(i))
+			if _, ok := x[i].(string); ok {
+				mask(next, func(n any) { x[i] = n })
+				continue
+			}
+			maskStrings(x[i], next, mask)
+		}
+	}
+}
+
+// redactURLs cuts every URL in a configuration value: an http(s) URL to
+// scheme://host, any other scheme to scheme:// alone, because URLs such as
+// shoutrrr's carry credentials in the host part.
 func redactURLs(v any) any {
 	switch x := v.(type) {
 	case string:
-		if u, err := url.Parse(x); err == nil && u.Scheme != "" && u.Host != "" {
+		u, err := url.Parse(x)
+		switch {
+		case err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "":
 			return u.Scheme + "://" + u.Host
-		}
-		if strings.Contains(x, "://") {
+		case err == nil && u.Scheme != "" && strings.Contains(x, "://"):
+			return u.Scheme + "://"
+		case strings.Contains(x, "://"):
 			return "[redacted]"
 		}
 		return x
@@ -86,30 +192,51 @@ func redactURLs(v any) any {
 	return v
 }
 
-// checkSinkConfig applies the API's own rules to a sink configuration: no key
-// the kind marks secret, and every *_env name on the allowlist
-// api.allowed_env (names starting with ANGELIA_ never).
+// checkSinkConfig applies the API's own rules to a sink configuration: no
+// value the kind marks secret, and every *_env key, at any depth, a string
+// naming a variable on the allowlist api.allowed_env (names starting with
+// ANGELIA_ never).
 func (s *Server) checkSinkConfig(kind string, cfg map[string]any) (invalid, env []fieldError) {
-	for _, key := range s.secretKeys(kind) {
-		if _, ok := cfg[key]; ok {
-			invalid = append(invalid, fieldError{Pointer: pointerJoin("/config", key), Detail: "is a secret value and cannot be set through the API"})
+	for _, p := range secretPaths(s.configSchema(kind), nil, 0) {
+		eachAt(any(cfg), p, nil, func(at []string, _ func(any)) {
+			invalid = append(invalid, fieldError{Pointer: configPointer(at), Detail: "is a secret value and cannot be set through the API"})
+		})
+	}
+	var walk func(v any, at []string)
+	walk = func(v any, at []string) {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, k := range slices.Sorted(maps.Keys(x)) {
+				next := append(slices.Clone(at), k)
+				if !strings.HasSuffix(k, "_env") {
+					walk(x[k], next)
+					continue
+				}
+				name, ok := x[k].(string)
+				switch {
+				case !ok:
+					invalid = append(invalid, fieldError{Pointer: configPointer(next), Detail: "must be a string naming an environment variable"})
+				case !s.opts.API.AllowsEnv(name):
+					env = append(env, fieldError{Pointer: configPointer(next), Detail: "not allowed by api.allowed_env"})
+				}
+			}
+		case []any:
+			for i, e := range x {
+				walk(e, append(slices.Clone(at), strconv.Itoa(i)))
+			}
 		}
 	}
-	keys := make([]string, 0, len(cfg))
-	for k := range cfg {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
-		name, ok := cfg[k].(string)
-		if !strings.HasSuffix(k, "_env") || !ok {
-			continue
-		}
-		if !s.opts.API.AllowsEnv(name) {
-			env = append(env, fieldError{Pointer: pointerJoin("/config", k), Detail: "not allowed by api.allowed_env"})
-		}
-	}
+	walk(cfg, nil)
 	return invalid, env
+}
+
+// configPointer is the JSON Pointer of a configuration path in a sink body.
+func configPointer(at []string) string {
+	p := "/config"
+	for _, k := range at {
+		p = pointerJoin(p, k)
+	}
+	return p
 }
 
 // GetSink implements StrictServerInterface.
@@ -118,7 +245,11 @@ func (s *Server) GetSink(ctx context.Context, req GetSinkRequestObject) (GetSink
 	if k, err = readByName(k, err, "sink", req.Name); err != nil {
 		return nil, err
 	}
-	return jsonOK(s.sinkJSONOf(k, principalFrom(ctx).Scope)), nil
+	body, err := s.sinkJSONOf(k, principalFrom(ctx).Scope)
+	if err != nil {
+		return nil, err
+	}
+	return jsonOK(body), nil
 }
 
 // ListSinks implements StrictServerInterface.
@@ -143,7 +274,11 @@ func (s *Server) ListSinks(ctx context.Context, req ListSinksRequestObject) (Lis
 	scope := principalFrom(ctx).Scope
 	page := pageJSON[sinkJSON]{Items: make([]sinkJSON, 0, len(items)), NextCursor: next}
 	for _, k := range items {
-		page.Items = append(page.Items, s.sinkJSONOf(k, scope))
+		body, err := s.sinkJSONOf(k, scope)
+		if err != nil {
+			return nil, err
+		}
+		page.Items = append(page.Items, body)
 	}
 	return jsonOK(page), nil
 }
@@ -204,8 +339,8 @@ func (s *Server) PutSink(ctx context.Context, req PutSinkRequestObject) (PutSink
 			row.ID = cur.ID
 			change = ChangeUnchanged
 		}
-		body = s.sinkJSONOf(row, principalFrom(ctx).Scope)
-		return nil
+		body, err = s.sinkJSONOf(row, principalFrom(ctx).Scope)
+		return err
 	})
 	if err != nil {
 		return nil, err

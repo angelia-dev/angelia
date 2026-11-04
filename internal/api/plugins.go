@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/angelia-dev/angelia/internal/supervisor"
 )
@@ -32,6 +33,54 @@ type PluginHostInfo struct {
 	Host            string
 	Origin          string // "manifest" or "operator"
 	CredentialPorts []int
+}
+
+// kindConfig returns the configuration schema the specification documents
+// for a built-in sink kind (SinkConfig's x-angelia-kind-config), with its
+// references inlined, or nil.
+func (d *specDoc) kindConfig(kind string) map[string]any {
+	kc, _ := d.lookup("#/components/schemas/SinkConfig/x-angelia-kind-config").(map[string]any)
+	sch, ok := kc[kind]
+	if !ok {
+		return nil
+	}
+	m, _ := d.inline(sch, 0).(map[string]any)
+	return m
+}
+
+// inline replaces every local $ref in v by a copy of what it points to.
+func (d *specDoc) inline(v any, depth int) any {
+	if depth > 32 {
+		return nil
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		if ref, ok := x["$ref"].(string); ok && strings.HasPrefix(ref, "#/") {
+			target, _ := d.lookup(ref).(map[string]any)
+			merged := map[string]any{}
+			for k, e := range target {
+				merged[k] = e
+			}
+			for k, e := range x { // siblings of $ref (description, default) win
+				if k != "$ref" {
+					merged[k] = e
+				}
+			}
+			return d.inline(merged, depth+1)
+		}
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = d.inline(e, depth+1)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = d.inline(e, depth+1)
+		}
+		return out
+	}
+	return v
 }
 
 func (s *Server) plugin(iface, kind string) (PluginInfo, bool) {
