@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -137,6 +138,21 @@ func Normalize(name string) string {
 func (*Source) Validate(t source.Target) error {
 	_, err := nameOf(t)
 	return err
+}
+
+// Canonical implements source.Canonicalizer: the "name" coordinate becomes
+// its PEP 503 normalized form, so "Requests", "requests" and " requests "
+// share one target. PyPI itself treats those spellings as one project
+// (https://peps.python.org/pep-0503/#normalized-names). Other coordinates
+// are kept as they are. See ADR 0021.
+func (*Source) Canonical(t source.Target) (source.Target, error) {
+	name, err := nameOf(t)
+	if err != nil {
+		return source.Target{}, err
+	}
+	coords := maps.Clone(t.Coordinates)
+	coords["name"] = name
+	return source.Target{Kind: t.Kind, Coordinates: coords}, nil
 }
 
 func nameOf(t source.Target) (string, error) {

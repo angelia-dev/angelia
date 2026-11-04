@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -64,6 +65,11 @@ type Fixtures struct {
 	// HasPublishedAt is true when the fake upstream provides publication
 	// dates; every version must then carry a non-zero PublishedAt.
 	HasPublishedAt bool
+	// Aliases are other spellings of Valid (different case, say) that name
+	// the same upstream object, and every alias must have the canonical
+	// target of Valid. They are required when the source implements
+	// source.Canonicalizer and not allowed when it does not. See ADR 0021.
+	Aliases []source.Target
 }
 
 // Run executes the contract suite as subtests of t. Pass src directly for a
@@ -92,6 +98,9 @@ func Run(t *testing.T, src source.Source, fx Fixtures) {
 		{"ValidateRejects", checkValidateRejects},
 		{"ValidateNoRequests", func(ctx context.Context, s source.Source, f Fixtures) error {
 			return checkNoRequests(ctx, s, f, client)
+		}},
+		{"Canonical", func(ctx context.Context, s source.Source, f Fixtures) error {
+			return checkCanonical(ctx, s, f, client)
 		}},
 		{"ListDeterministic", checkDeterministic},
 		{"ListConcurrent", checkConcurrent},
@@ -268,6 +277,80 @@ func checkNoRequests(_ context.Context, src source.Source, fx Fixtures, c *http.
 		return fmt.Errorf("Validate sent %d HTTP request(s); it must do no I/O", n)
 	}
 	return nil
+}
+
+// checkCanonical checks a source.Canonicalizer: the canonical target of
+// Valid and of each alias keeps the kind, passes Validate, is a fixed point
+// (canonicalizing it again changes nothing), is the same for every alias and
+// costs no request. A Canonicalizer must come with Aliases, so the suite
+// sees it coalesce something; a source without Canonicalizer passes unless
+// the fixtures list Aliases.
+func checkCanonical(_ context.Context, src source.Source, fx Fixtures, c *http.Client) error {
+	cz, ok := src.(source.Canonicalizer)
+	if !ok {
+		if len(fx.Aliases) > 0 {
+			return errors.New("fixtures list Aliases but the source does not implement source.Canonicalizer")
+		}
+		return nil
+	}
+	if len(fx.Aliases) == 0 {
+		return errors.New("the source implements source.Canonicalizer but the fixtures list no Aliases")
+	}
+	before := 0
+	if c != nil {
+		before = Requests(c)
+	}
+	want, err := canonicalOf(cz, src, fx.Valid)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, alias := range fx.Aliases {
+		if err := src.Validate(alias); err != nil {
+			errs = append(errs, fmt.Errorf("Validate rejects alias %v: %w", alias, err))
+			continue
+		}
+		got, err := canonicalOf(cz, src, alias)
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+		case !reflect.DeepEqual(got, want):
+			errs = append(errs, fmt.Errorf("Canonical(%v) = %v, want %v (the canonical target of Valid)", alias, got, want))
+		}
+	}
+	if c != nil {
+		if n := Requests(c) - before; n != 0 {
+			errs = append(errs, fmt.Errorf("Canonical sent %d HTTP request(s); it must do no I/O", n))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// canonicalOf returns cz.Canonical(t) after checking that it keeps the kind,
+// passes Validate, is a fixed point and leaves t unchanged.
+func canonicalOf(cz source.Canonicalizer, src source.Source, t source.Target) (source.Target, error) {
+	arg := source.Target{Kind: t.Kind, Coordinates: maps.Clone(t.Coordinates)} // the fixture stays intact
+	got, err := cz.Canonical(arg)
+	if err != nil {
+		return got, fmt.Errorf("Canonical(%v): %w", t, err)
+	}
+	if !reflect.DeepEqual(arg, t) {
+		return got, fmt.Errorf("Canonical(%v) mutated its argument to %v", t, arg)
+	}
+	if got.Kind != t.Kind {
+		return got, fmt.Errorf("Canonical(%v) changed the kind to %q", t, got.Kind)
+	}
+	if err := src.Validate(got); err != nil {
+		return got, fmt.Errorf("Validate rejects Canonical(%v) = %v: %w", t, got, err)
+	}
+	again, err := cz.Canonical(got)
+	if err != nil {
+		return got, fmt.Errorf("Canonical(%v) (second pass): %w", got, err)
+	}
+	if !reflect.DeepEqual(again, got) {
+		return got, fmt.Errorf("Canonical is not idempotent: %v, then %v", got, again)
+	}
+	return got, nil
 }
 
 func checkConcurrent(ctx context.Context, src source.Source, fx Fixtures) error {

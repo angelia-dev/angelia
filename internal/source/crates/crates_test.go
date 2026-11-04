@@ -134,6 +134,22 @@ func rawOf(vs []source.Version) []string {
 	return out
 }
 
+func TestCanonical(t *testing.T) {
+	s := crates.New(crates.DefaultIndexURL, &http.Client{})
+	for in, want := range map[string]string{"Serde": "serde", "serde_json": "serde_json", "Serde-JSON": "serde-json"} {
+		got, err := s.Canonical(source.Target{Kind: crates.Kind, Coordinates: map[string]string{"name": in, "extra": "Kept"}})
+		if err != nil {
+			t.Fatalf("Canonical(%q): %v", in, err)
+		}
+		if got.Kind != crates.Kind || got.Coordinates["name"] != want || got.Coordinates["extra"] != "Kept" {
+			t.Errorf("Canonical(%q) = %v, want name %q and other coordinates kept", in, got, want)
+		}
+	}
+	if _, err := s.Canonical(target("a/b")); !errors.Is(err, source.ErrInvalidTarget) {
+		t.Errorf("Canonical of an invalid name: err = %v, want ErrInvalidTarget", err)
+	}
+}
+
 func TestContract(t *testing.T) {
 	up := newUpstream(t)
 	missing := target("angelia-test-nope")
@@ -159,6 +175,7 @@ func TestContract(t *testing.T) {
 			{Kind: "npm", Coordinates: map[string]string{"name": "serde"}},
 		},
 		Missing:        &missing,
+		Aliases:        []source.Target{target("Angelia-Test-Widget"), target("ANGELIA-TEST-WIDGET")},
 		WantRaw:        []string{"1.1.0-rc.1", "1.0.0", "0.2.0", "0.1.0"},
 		Conditional:    true,
 		HasPublishedAt: true,

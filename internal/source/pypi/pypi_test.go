@@ -74,6 +74,7 @@ func TestContract(t *testing.T) {
 				Valid:   target(pkg),
 				Invalid: []source.Target{{Kind: "pypi"}, target(""), target("a/b"), target("-x"), target("x y"), {Kind: "npm", Coordinates: map[string]string{"name": "requests"}}},
 				Missing: func() *source.Target { m := target("does-not-exist"); return &m }(),
+				Aliases: []source.Target{target(strings.ToUpper(pkg)), target(" " + pkg + " ")},
 
 				Conditional:    true,
 				Change:         func() { up.rev.Add(1) },
@@ -243,6 +244,25 @@ func TestReleaseWithoutFilesSkippedAndLoggedAtDebug(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("info-level log = %q, want empty", buf.String())
+	}
+}
+
+func TestCanonical(t *testing.T) {
+	t.Parallel()
+	s := pypi.New(pypi.DefaultBaseURL, &http.Client{})
+	for in, want := range map[string]string{
+		"Requests": "requests", "requests": "requests", " Foo_Bar ": "foo-bar", "ZOPE.interface": "zope-interface",
+	} {
+		got, err := s.Canonical(source.Target{Kind: pypi.Kind, Coordinates: map[string]string{"name": in, "extra": "Kept"}})
+		if err != nil {
+			t.Fatalf("Canonical(%q): %v", in, err)
+		}
+		if got.Kind != pypi.Kind || got.Coordinates["name"] != want || got.Coordinates["extra"] != "Kept" {
+			t.Errorf("Canonical(%q) = %v, want name %q and other coordinates kept", in, got, want)
+		}
+	}
+	if _, err := s.Canonical(target("a/b")); !errors.Is(err, source.ErrInvalidTarget) {
+		t.Errorf("Canonical of an invalid name: err = %v, want ErrInvalidTarget", err)
 	}
 }
 

@@ -9,6 +9,8 @@ package source
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"time"
 )
 
@@ -28,6 +30,41 @@ type Source interface {
 	// nothing changed (ETag, Last-Modified, cursor) it returns a Result with
 	// NotModified set and no Versions.
 	List(ctx context.Context, t Target, s FetchState) (Result, error)
+}
+
+// Canonicalizer is an optional interface a Source implements when one
+// upstream object can be spelled several ways in its coordinates ("Requests"
+// and "requests" on PyPI). Canonical returns the one spelling the core stores
+// and uses as the coalescing key, so that every spelling shares one target
+// and one fetch. See ADR 0021, which amends ADR 0006.
+//
+// Canonical is called only on a target that Validate accepted. It does no
+// I/O, keeps the Kind, is idempotent (Canonical of its result returns the
+// result unchanged) and its result passes Validate. It must not mutate t. A
+// Source whose coordinates are already canonical as written does not
+// implement it.
+type Canonicalizer interface {
+	Canonical(t Target) (Target, error)
+}
+
+// Canonical returns the canonical form of t for src: src.Canonical(t) when
+// src implements Canonicalizer, otherwise a copy of t. The result never
+// shares its Coordinates map with t. It rejects a Canonicalizer that changes
+// the Kind.
+func Canonical(src Source, t Target) (Target, error) {
+	c, ok := src.(Canonicalizer)
+	if !ok {
+		return Target{Kind: t.Kind, Coordinates: maps.Clone(t.Coordinates)}, nil
+	}
+	out, err := c.Canonical(Target{Kind: t.Kind, Coordinates: maps.Clone(t.Coordinates)})
+	if err != nil {
+		return Target{}, fmt.Errorf("canonical target for %q: %w", t.Kind, err)
+	}
+	if out.Kind != t.Kind {
+		return Target{}, fmt.Errorf("canonical target for %q: source changed the kind to %q", t.Kind, out.Kind)
+	}
+	out.Coordinates = maps.Clone(out.Coordinates)
+	return out, nil
 }
 
 // Target identifies one upstream object (target.kind and
