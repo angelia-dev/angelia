@@ -8,3 +8,7 @@ generate:
   models: true
   chi-server: true
   strict-server: true
+output-options:
+  # Drops the per-status response types: see strict-interface.tmpl.
+  user-templates:
+    strict/strict-interface.tmpl: strict-interface.tmpl
