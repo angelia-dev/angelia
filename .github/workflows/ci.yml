@@ -134,12 +134,71 @@ jobs:
     steps:
       - uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4.8.2
 
+  # Path filter for bench/plugins/**. A job-level filter (not `on.paths`) so the
+  # workflow always runs and CI OK always reports. No third-party action: it
+  # diffs the commit range itself. When the range cannot be determined (new
+  # branch, force push) it errs on the side of running the check.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      plugins: ${{ steps.filter.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect changes under bench/plugins/
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE" head="$PR_HEAD"
+          else
+            base="$PUSH_BEFORE" head="$PUSH_AFTER"
+          fi
+          if ! files="$(git diff --name-only "$base" "$head" -- 2>/dev/null)"; then
+            echo "cannot diff $base..$head; running the plugin check"
+            echo "plugins=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -q '^bench/plugins/' <<<"$files"; then
+            echo "plugins=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "plugins=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The committed .wasm plugins of benchmark 4 must match a fresh build byte for
+  # byte (bench/plugins/build.sh). Toolchain: bench/plugins/rust-toolchain.toml.
+  wasm-repro:
+    name: wasm-repro
+    needs: changes
+    if: needs.changes.outputs.plugins == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain and wasm32 target
+        working-directory: bench/plugins
+        run: rustup toolchain install
+      - name: Rebuild and compare the committed .wasm files
+        run: bench/plugins/build.sh --check
+
   # Single required check. Fails unless every job above succeeded; the only
-  # allowed skip is dependency-review on push events, where it does not run.
+  # allowed skips are dependency-review on push events, where it does not run,
+  # and wasm-repro when the changes job found nothing under bench/plugins/.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [build, lint, test, bench-ordering, govulncheck, codeql, dependency-review]
+    needs: [build, lint, test, bench-ordering, govulncheck, codeql, dependency-review, changes, wasm-repro]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -151,6 +210,9 @@ jobs:
       GOVULNCHECK: ${{ needs.govulncheck.result }}
       CODEQL: ${{ needs.codeql.result }}
       DEPENDENCY_REVIEW: ${{ needs.dependency-review.result }}
+      CHANGES: ${{ needs.changes.result }}
+      PLUGINS_CHANGED: ${{ needs.changes.outputs.plugins }}
+      WASM_REPRO: ${{ needs.wasm-repro.result }}
     steps:
       - name: Check job results
         run: |
@@ -183,5 +245,12 @@ jobs:
             check dependency-review "$DEPENDENCY_REVIEW" no
           else
             check dependency-review "$DEPENDENCY_REVIEW" yes
+          fi
+          check changes "$CHANGES" no
+          # wasm-repro may be skipped only when the path filter did not match.
+          if [[ "$PLUGINS_CHANGED" == true ]]; then
+            check wasm-repro "$WASM_REPRO" no
+          else
+            check wasm-repro "$WASM_REPRO" yes
           fi
           exit "$failed"
