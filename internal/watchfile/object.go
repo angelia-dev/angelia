@@ -61,7 +61,7 @@ func (p *parser) object(data []byte, name string) *yaml.Node {
 		p.errf(root, "", "must be an object")
 		return nil
 	}
-	content := make([]*yaml.Node, 0, len(root.Content)+2)
+	content := make([]*yaml.Node, 0, len(root.Content))
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value != "name" {
 			content = append(content, root.Content[i], root.Content[i+1])
