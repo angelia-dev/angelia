@@ -9,6 +9,8 @@ generate:
   chi-server: true
   strict-server: true
 output-options:
-  # Drops the per-status response types: see strict-interface.tmpl.
+  # Drops the per-status response types: see strict-interface.tmpl, a
+  # trimmed copy of v2.8.2's template. Upgrading oapi-codegen (generate.go)
+  # needs a re-diff of that template against the new release.
   user-templates:
     strict/strict-interface.tmpl: strict-interface.tmpl
