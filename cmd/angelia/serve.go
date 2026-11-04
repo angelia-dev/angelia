@@ -82,7 +82,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	roles, err := supervisor.Select(roleNames, supervisor.NewStub)
+	factory := supervisor.NewStub
+	if hasAPIRole(roleNames) {
+		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, log)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		factory = func(name string) supervisor.Role {
+			if name == "api" {
+				return srv.Role()
+			}
+			return supervisor.NewStub(name)
+		}
+	}
+	roles, err := supervisor.Select(roleNames, factory)
 	if err != nil {
 		return fmt.Errorf("--roles: %w", err)
 	}
