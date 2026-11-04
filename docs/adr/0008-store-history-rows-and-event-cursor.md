@@ -68,3 +68,7 @@ and the maintainer answered them on PR #128:
 
 - PR angelia-dev/angelia#128 (maintainer's answers), story #46.
 - [architecture.md §3.1, §5](../architecture.md#31-api), [ADR 0004](0004-cloudevents-purl-event-contract.md).
+
+## Amendment (2026-11-04, #186)
+
+The Postgres question under "Open questions" is still open: no commit-ordered cursor is chosen yet, so the no-skip guarantee above holds on SQLite only. The pull API relies on it: its `after` cursor and `next_after` are `seq` (OpenAPI spec, `docs/api.md`, item 11), so the API's no-skip promise is not yet met on Postgres.

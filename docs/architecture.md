@@ -45,7 +45,7 @@ The initial proposal was: a core API, verifier batches, an event "batch" that fa
 ### 3.1 API
 - REST + JSON, contract-first with **OpenAPI 3.1**; the CLI and UI are generated clients.
 - Resources: `watches`, `versions` (read-only, per watch), `events`, `subscriptions`, `sinks`, `deliveries`, `plugins`.
-- `GET /v1/events?after=<cursor>&watch=…&kind=…`: the pull API. Cursors are a monotonic integer sequence assigned in commit order (`event.seq`), so a consumer can resume after downtime without skipping an event; the ULID stays the public event id ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)).
+- `GET /v1/events?after=<seq>&watch=…&type=…&source=…`: the pull API, with the filters and responses of the [OpenAPI spec](https://github.com/angelia-dev/spec/blob/main/docs/api.md) (`type` takes short types such as `release.published`, `source` takes source kinds). Cursors are a monotonic integer sequence assigned in commit order (`event.seq`), so a consumer can resume after downtime without skipping an event; the ULID stays the public event id ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)).
 - `GET /v1/events/stream`: SSE, same filters.
 - **MCP server** (stdio and streamable HTTP) exposing tools such as `list_watches`, `latest_version`, `events_since`, `add_watch`, `ack_event`. This is the agent surface.
 - Auth: API tokens with scopes (read / write / admin). OIDC later.
