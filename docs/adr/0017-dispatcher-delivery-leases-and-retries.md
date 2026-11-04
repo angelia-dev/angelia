@@ -134,6 +134,20 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
   changes a public contract and is left to the maintainer. Wiring the role into `angelia serve` waits for
   a first sink.
 
+## Amendment (2026-11-04, #176)
+
+This amendment supersedes the figures in rules 2 and 5: the default `DeliverTimeout` is now 15 s (was
+20 s) and the final write timeout 8 s (was 4 s). The rules' text above is left as accepted. Reasons:
+SQLite's `busy_timeout` is 5 s, and deliver + write must stay below the 25 s drain timeout.
+
+The final write of an attempt (rule 5) was bounded at 4 s, below SQLite's 5 s `busy_timeout`
+(`sqlite.BusyTimeout`). Under write contention the record could time out after the sink had already
+accepted the delivery, leaving it `in_flight` and sent again after the lease: a duplicate. The write
+timeout is now 8 s, above the busy timeout (a test ties the two), so a busy database delays the record
+instead of dropping it. To keep `DeliverTimeout` + write timeout (15 s + 8 s) below the supervisor's 25 s
+drain timeout, the default `DeliverTimeout` goes from 20 s to 15 s. Rule 2 still holds: 15 s is far below
+`LeaseTTL − 30 s`, and deliver + write + margin (53 s) fits in the 2 min lease.
+
 ## Alternatives considered
 
 - **A `leased_by`/`lease_until` column on `delivery`.** Simpler queries, but needs a migration and

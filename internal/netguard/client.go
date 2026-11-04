@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ type Config struct {
 	BaseBackoff time.Duration
 	MaxBackoff  time.Duration
 	// MaxRetryWait is the longest server-requested wait (Retry-After or a
-	// GitHub rate limit reset) the client sleeps through before retrying.
+	// rate limit reset, X-RateLimit-* or RateLimit-*) the client sleeps through before retrying.
 	// A longer wait, or one past the context deadline, ends the call with
 	// the last response; the host stays paused. Default 2m.
 	MaxRetryWait time.Duration
@@ -62,6 +63,16 @@ type Config struct {
 	HostLimits map[string]HostLimit
 	// FallbackLimit applies to other hosts. Default DefaultFallbackLimit().
 	FallbackLimit HostLimit
+	// ExtraAuthHeaders names request headers, besides Authorization and
+	// PRIVATE-TOKEN, whose presence (non-empty value) makes the limiter use a
+	// host's Authenticated bucket. Only presence is read; values are never
+	// logged. Go-level option: it has no YAML key.
+	//
+	// net/http forwards custom credential headers on cross-host redirects
+	// (it strips only Authorization), so a caller that sends one must guard
+	// redirects itself (see apiclient.GuardRedirects, which stops
+	// Authorization and PRIVATE-TOKEN but not custom headers).
+	ExtraAuthHeaders []string
 	// Allow lists prefixes the SSRF guard accepts even though they are
 	// loopback, private or link-local. Empty by default.
 	Allow []netip.Prefix
@@ -149,6 +160,7 @@ func New(cfg Config) (*Client, error) {
 	if err := cfg.FallbackLimit.validate(); err != nil {
 		return nil, fmt.Errorf("netguard: fallback limit: %w", err)
 	}
+	cfg.ExtraAuthHeaders = slices.Clone(cfg.ExtraAuthHeaders)
 	limits := DefaultHostLimits()
 	for h, l := range cfg.HostLimits {
 		if err := l.validate(); err != nil {
@@ -241,7 +253,7 @@ func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	host := normHost(r.URL.Hostname())
-	authed := r.Header.Get("Authorization") != ""
+	authed := c.isAuthenticated(r.Header)
 	canRetry := isIdempotent(r.Method) && (r.Body == nil || r.Body == http.NoBody)
 
 	for attempt := 1; ; attempt++ {
@@ -296,6 +308,24 @@ func closeRequestBody(req *http.Request) {
 	}
 }
 
+// isAuthenticated reports whether h carries a credential header.
+func (c *Client) isAuthenticated(h http.Header) bool {
+	for k, v := range h {
+		if len(v) == 0 || v[0] == "" {
+			continue
+		}
+		if IsCredentialHeader(k) {
+			return true
+		}
+		for _, n := range c.cfg.ExtraAuthHeaders {
+			if strings.EqualFold(k, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // inspect applies rate limit headers to the limiter and decides whether the
 // outcome is worth a retry, and after how long the server asked us to wait.
 func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bool, resp *http.Response, err error) (retry bool, serverWait time.Duration) {
@@ -328,20 +358,40 @@ func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bo
 }
 
 // retryAt returns when the server allows the next request, from
-// Retry-After or from GitHub's X-RateLimit-Remaining: 0 plus
-// X-RateLimit-Reset. It returns the zero time if the server set no limit.
+// Retry-After or from a rate limit header pair: X-RateLimit-Remaining: 0
+// plus X-RateLimit-Reset (GitHub), or the unprefixed RateLimit-Remaining and
+// RateLimit-Reset (GitLab). Both Reset headers are read as a Unix timestamp
+// in seconds, which is what GitHub and GitLab send. A Reset in delta seconds
+// (the IETF draft meaning) reads as a time in the past and is ignored: only
+// Retry-After or the backoff applies then. Remaining is read as an integer
+// (any suffix such as Docker's "0;w=60" is dropped) and 0 or less counts as
+// exhausted.
+// The X- pair takes precedence if both are present. It returns the zero time
+// if the server set no limit.
 func retryAt(h http.Header, now time.Time) time.Time {
 	if d := parseRetryAfter(h.Get("Retry-After"), now); d > 0 {
 		return now.Add(d)
 	}
-	if h.Get("X-RateLimit-Remaining") == "0" {
-		if reset, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+	for _, p := range [][2]string{{"X-RateLimit-Remaining", "X-RateLimit-Reset"}, {"RateLimit-Remaining", "RateLimit-Reset"}} {
+		if n, ok := leadingInt(h.Get(p[0])); !ok || n > 0 {
+			continue
+		}
+		if reset, err := strconv.ParseInt(h.Get(p[1]), 10, 64); err == nil {
 			if t := time.Unix(reset, 0); t.After(now) {
 				return t
 			}
 		}
 	}
 	return time.Time{}
+}
+
+// leadingInt parses the integer at the start of v, ignoring parameters after
+// a ';' or space.
+func leadingInt(v string) (int64, bool) {
+	v, _, _ = strings.Cut(strings.TrimSpace(v), ";")
+	v, _, _ = strings.Cut(v, " ")
+	n, err := strconv.ParseInt(v, 10, 64)
+	return n, err == nil
 }
 
 // parseRetryAfter reads a Retry-After value in seconds or as an HTTP date,
