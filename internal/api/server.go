@@ -430,6 +430,12 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	if !rec.wrote {
 		status = http.StatusOK
 	}
+	clientErr := r.Context().Err()
+	if clientErr != nil && !rec.wrote {
+		// The client went away before anything was written: 499, as nginx
+		// logs it. A stream that ends this way keeps its 200.
+		status = StatusClientClosed
+	}
 	attrs := []slog.Attr{
 		slog.String("request_id", st.id),
 		slog.String("method", r.Method),
@@ -442,13 +448,8 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	if p.ID != "" {
 		attrs = append(attrs, slog.String("principal", p.ID), slog.String("scope", p.Scope.String()))
 	}
-	if err := r.Context().Err(); err != nil {
-		// The client went away. Nothing written: 499, as nginx logs it; a
-		// stream that ends this way keeps its 200.
-		if !rec.wrote {
-			attrs[4] = slog.Int("status", StatusClientClosed)
-		}
-		attrs = append(attrs, slog.String("client_error", err.Error()))
+	if clientErr != nil {
+		attrs = append(attrs, slog.String("client_error", clientErr.Error()))
 	}
 	s.log.LogAttrs(r.Context(), slog.LevelInfo, "api request", attrs...)
 }

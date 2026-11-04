@@ -18,33 +18,126 @@ import (
 // Masked is the value of a configuration key the kind marks secret.
 const Masked = "[REDACTED]"
 
-// configSchema returns the parsed config_schema of a sink kind, nil when the
-// kind is unknown or publishes none (or an unreadable one). A built-in kind
-// that publishes none has the one the specification documents.
-func (s *Server) configSchema(kind string) map[string]any {
+// configSchema returns the config_schema of a sink kind with its local
+// references inlined, nil when the kind is unknown or publishes none (or an
+// unreadable one). A built-in kind that publishes none has the one the
+// specification documents. complete is false when the schema holds a
+// construct secretPaths cannot follow (unclassifiable): the caller then
+// masks as if there were no schema, on top of the secrets it found.
+func (s *Server) configSchema(kind string) (sch map[string]any, complete bool) {
 	pl, ok := s.plugin("sink", kind)
 	switch {
 	case !ok:
-		return nil
+		return nil, false
 	case len(pl.ConfigSchema) == 0 && pl.Runtime == "builtin":
-		return s.spec.kindConfig(kind)
+		sch = s.spec.kindConfig(kind)
+		return sch, sch != nil
 	case len(pl.ConfigSchema) == 0:
-		return nil
+		return nil, false
 	}
-	var sch map[string]any
 	if json.Unmarshal(pl.ConfigSchema, &sch) != nil {
+		return nil, false
+	}
+	r := &schemaResolver{root: sch, complete: true}
+	resolved, _ := r.inline(sch, 0).(map[string]any)
+	return resolved, r.complete && resolved != nil
+}
+
+// unclassifiable are the keywords that can make a value secret in ways
+// secretPaths does not follow.
+var unclassifiable = []string{
+	"if", "then", "else", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems",
+	"$dynamicRef", "$recursiveRef", "prefixItems",
+}
+
+// schemaResolver inlines the local references of a plugin's config_schema
+// (#, #/$defs/..., #/definitions/...) and notes what it cannot classify.
+type schemaResolver struct {
+	root     map[string]any
+	complete bool
+}
+
+func (r *schemaResolver) inline(v any, depth int) any {
+	if depth > 32 { // a reference cycle, or a schema too deep to trust
+		r.complete = false
 		return nil
 	}
-	return sch
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range unclassifiable {
+			if _, ok := x[k]; ok {
+				r.complete = false
+			}
+		}
+		if ref, ok := x["$ref"].(string); ok {
+			target, ok := r.lookup(ref)
+			if !ok {
+				r.complete = false
+				return nil
+			}
+			merged := maps.Clone(target)
+			for k, e := range x { // siblings of $ref apply too
+				if k != "$ref" {
+					merged[k] = e
+				}
+			}
+			delete(merged, "$ref")
+			if inner, ok := target["$ref"]; ok {
+				merged["$ref"] = inner // a reference to a reference
+			}
+			return r.inline(merged, depth+1)
+		}
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			if k == "$defs" || k == "definitions" {
+				continue // reached through references only
+			}
+			out[k] = r.inline(e, depth+1)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = r.inline(e, depth+1)
+		}
+		return out
+	}
+	return v
 }
+
+// lookup resolves a local reference against the schema's root.
+func (r *schemaResolver) lookup(ref string) (map[string]any, bool) {
+	if ref == "#" {
+		return r.root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false // another document: not followed
+	}
+	var cur any = r.root
+	for _, tok := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur = m[tok]
+	}
+	m, ok := cur.(map[string]any)
+	return m, ok
+}
+
+// patternStep marks a path element that is a patternProperties regex.
+const patternStep = "\x00re:"
 
 // secretPaths returns the paths of the configuration values a schema marks
 // with x-angelia-secret: true (spec docs/api.md decision 26), at any depth:
-// under properties, and "*" for every item of an array or every value of an
-// additionalProperties map.
+// under properties, under patternProperties (each key its regex matches),
+// and "*" for every item of an array or every value of an
+// additionalProperties map. The schema has its references inlined
+// (configSchema).
 func secretPaths(sch any, prefix []string, depth int) [][]string {
 	m, ok := sch.(map[string]any)
-	if !ok || depth > 32 {
+	if !ok || depth > 64 {
 		return nil
 	}
 	if b, _ := m["x-angelia-secret"].(bool); b && len(prefix) > 0 {
@@ -52,13 +145,17 @@ func secretPaths(sch any, prefix []string, depth int) [][]string {
 	}
 	var out [][]string
 	if props, ok := m["properties"].(map[string]any); ok {
-		keys := slices.Sorted(maps.Keys(props))
-		for _, k := range keys {
-			out = append(out, secretPaths(props[k], append(prefix, k), depth+1)...)
+		for _, k := range slices.Sorted(maps.Keys(props)) {
+			out = append(out, secretPaths(props[k], append(slices.Clone(prefix), k), depth+1)...)
 		}
 	}
-	for _, key := range []string{"items", "additionalProperties"} {
-		out = append(out, secretPaths(m[key], append(prefix, "*"), depth+1)...)
+	if pats, ok := m["patternProperties"].(map[string]any); ok {
+		for _, p := range slices.Sorted(maps.Keys(pats)) {
+			out = append(out, secretPaths(pats[p], append(slices.Clone(prefix), patternStep+p), depth+1)...)
+		}
+	}
+	for _, key := range []string{"items", "additionalProperties", "contains"} {
+		out = append(out, secretPaths(m[key], append(slices.Clone(prefix), "*"), depth+1)...)
 	}
 	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
 		if subs, ok := m[key].([]any); ok {
@@ -70,8 +167,22 @@ func secretPaths(sch any, prefix []string, depth int) [][]string {
 	return out
 }
 
-// eachAt calls fn for every value of v at path ("*" matches every key or
-// index), with the path it was found at.
+// stepMatches reports whether a path element matches a key: "*" matches
+// every key, a patternStep a key its regex matches (a regex that does not
+// compile matches every key: masking fails closed).
+func stepMatches(step, key string) bool {
+	if step == "*" || step == key {
+		return true
+	}
+	if p, ok := strings.CutPrefix(step, patternStep); ok {
+		re, err := compilePattern(p)
+		return err != nil || re.MatchString(key)
+	}
+	return false
+}
+
+// eachAt calls fn for every value of v at path (see stepMatches), with the
+// path it was found at.
 func eachAt(v any, path, at []string, fn func(at []string, set func(any))) {
 	if len(path) == 0 {
 		return
@@ -87,13 +198,13 @@ func eachAt(v any, path, at []string, fn func(at []string, set func(any))) {
 	switch x := v.(type) {
 	case map[string]any:
 		for _, k := range slices.Sorted(maps.Keys(x)) {
-			if path[0] == "*" || path[0] == k {
+			if stepMatches(path[0], k) {
 				visit(k, x[k], func(n any) { x[k] = n })
 			}
 		}
 	case []any:
 		for i := range x {
-			if path[0] == "*" || path[0] == strconv.Itoa(i) {
+			if stepMatches(path[0], strconv.Itoa(i)) {
 				visit(strconv.Itoa(i), x[i], func(n any) { x[i] = n })
 			}
 		}
@@ -103,8 +214,9 @@ func eachAt(v any, path, at []string, fn func(at []string, set func(any))) {
 // sinkJSONOf builds the response of a sink for a caller with the given scope.
 // For every caller, the values the kind's config_schema marks secret are
 // masked. Below admin every URL is cut (redactURLs) and, when the kind
-// publishes no config_schema, every string value not under a *_env key is
-// masked too: without a schema the server cannot tell a secret from the rest.
+// publishes no config_schema or one secretPaths cannot fully follow, every
+// string value not under a *_env key is masked too: without a schema the
+// server cannot tell a secret from the rest.
 func (s *Server) sinkJSONOf(k store.Sink, scope Scope) (sinkJSON, error) {
 	cfg := map[string]any{}
 	// TODO(#75): decrypt here once sinks are encrypted at rest.
@@ -117,13 +229,13 @@ func (s *Server) sinkJSONOf(k store.Sink, scope Scope) (sinkJSON, error) {
 		set(Masked)
 		masked[strings.Join(at, ".")] = true
 	}
-	sch := s.configSchema(k.Kind)
+	sch, complete := s.configSchema(k.Kind)
 	for _, p := range secretPaths(sch, nil, 0) {
 		eachAt(any(cfg), p, nil, mask)
 	}
 	if scope < ScopeAdmin {
 		out.URLRedacted = true
-		if sch == nil {
+		if !complete {
 			maskStrings(cfg, nil, mask)
 		}
 		for key, v := range cfg {
@@ -172,6 +284,8 @@ func redactURLs(v any) any {
 		switch {
 		case err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "":
 			return u.Scheme + "://" + u.Host
+		case strings.HasPrefix(x, "//"): // scheme-relative: the host may be a secret too
+			return "[redacted]"
 		case err == nil && u.Scheme != "" && strings.Contains(x, "://"):
 			return u.Scheme + "://"
 		case strings.Contains(x, "://"):
@@ -197,7 +311,8 @@ func redactURLs(v any) any {
 // naming a variable on the allowlist api.allowed_env (names starting with
 // ANGELIA_ never).
 func (s *Server) checkSinkConfig(kind string, cfg map[string]any) (invalid, env []fieldError) {
-	for _, p := range secretPaths(s.configSchema(kind), nil, 0) {
+	sch, _ := s.configSchema(kind)
+	for _, p := range secretPaths(sch, nil, 0) {
 		eachAt(any(cfg), p, nil, func(at []string, _ func(any)) {
 			invalid = append(invalid, fieldError{Pointer: configPointer(at), Detail: "is a secret value and cannot be set through the API"})
 		})

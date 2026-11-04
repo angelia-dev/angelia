@@ -314,7 +314,11 @@ func TestMaskingFailsClosed(t *testing.T) {
 			t.Errorf("redactURLs(%q) = %v, want %s", in, got, want)
 		}
 	}
-	sch, _ := json.Marshal(e.srv.configSchema("webhook"))
+	webhook, complete := e.srv.configSchema("webhook")
+	sch, _ := json.Marshal(webhook)
+	if !complete {
+		t.Error("the webhook schema is not complete")
+	}
 	if !strings.Contains(string(sch), `"secret_env"`) || strings.Contains(string(sch), "$ref") {
 		t.Errorf("webhook config_schema: %s", sch)
 	}
@@ -436,5 +440,80 @@ func TestTruncateKeepsCharacters(t *testing.T) {
 	r := newEnv(t).do("GET", "/v1/watches?"+strings.Repeat("é", 40)+"=1", tokRead, nil)
 	if r.Status != 400 || !utf8.Valid(r.Body) || strings.Contains(string(r.Body), `�`) {
 		t.Errorf("%d %s", r.Status, r.Body)
+	}
+}
+
+func sinkKindEnv(t *testing.T, kind, schema string) *env {
+	t.Helper()
+	return newEnv(t, func(o *Options) {
+		o.Plugins = append(o.Plugins, PluginInfo{Kind: kind, Interface: "sink", Runtime: "wasm", Version: "1", ConfigSchema: json.RawMessage(schema)})
+	})
+}
+
+// A secret reached through a local $ref or a patternProperties entry is
+// masked for every caller and refused in a PUT (review of #71).
+func TestSecretThroughRefAndPattern(t *testing.T) {
+	e := sinkKindEnv(t, "vault-hook", `{"type":"object",
+		"$defs":{"cred":{"type":"string","x-angelia-secret":true},"box":{"$ref":"#/definitions/inner"}},
+		"definitions":{"inner":{"type":"object","properties":{"pin":{"$ref":"#/$defs/cred"}}}},
+		"properties":{"url":{"type":"string"},"token":{"$ref":"#/$defs/cred"},"vault":{"$ref":"#/$defs/box"},
+			"auth":{"type":"object","patternProperties":{"^p":{"type":"string","x-angelia-secret":true}}}}}`)
+	k := store.Sink{
+		ID: "01JBX2A7C8D9E0F1G2H3J4K5M6", Name: "v", Kind: "vault-hook", ManagedBy: store.ManagedByFile,
+		ConfigEncrypted: []byte(`{"url":"https://v.example.com/x","token":"s3cr3tREF","vault":{"pin":"s3cr3tDEEP"},"auth":{"pw":"s3cr3tPAT","user":"bot"}}`),
+	}
+	for _, sc := range []Scope{ScopeRead, ScopeAdmin} {
+		j, err := e.srv.sinkJSONOf(k, sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(j)
+		if strings.Contains(string(b), "s3cr3t") || !strings.Contains(string(b), `"user":"bot"`) {
+			t.Errorf("%s: %s", sc, b)
+		}
+		if got := strings.Join(j.MaskedFields, ","); got != "auth.pw,token,vault.pin" {
+			t.Errorf("%s: masked %s", sc, got)
+		}
+	}
+	invalid, _ := e.srv.checkSinkConfig("vault-hook", map[string]any{"token": "x", "auth": map[string]any{"pw": "y", "user": "z"}})
+	var ptrs []string
+	for _, f := range invalid {
+		ptrs = append(ptrs, f.Pointer)
+	}
+	if strings.Join(ptrs, ",") != "/config/auth/pw,/config/token" {
+		t.Errorf("PUT check: %v", invalid)
+	}
+}
+
+// A schema with a construct the masking cannot follow, or a reference it
+// cannot resolve, counts as unknown below admin: every string except *_env
+// values is masked.
+func TestUnclassifiableSchemaFailsClosed(t *testing.T) {
+	for name, schema := range map[string]string{
+		"if/then":     `{"properties":{"mode":{"type":"string"}},"if":{"properties":{"mode":{"const":"a"}}},"then":{"properties":{"key":{"x-angelia-secret":true}}}}`,
+		"remote ref":  `{"properties":{"key":{"$ref":"https://schemas.example.com/cred.json"}}}`,
+		"missing ref": `{"properties":{"key":{"$ref":"#/$defs/nothing"}}}`,
+		"cycle":       `{"$defs":{"a":{"properties":{"next":{"$ref":"#/$defs/a"}}}},"properties":{"key":{"$ref":"#/$defs/a"}}}`,
+		"unevaluated": `{"properties":{"mode":{"type":"string"}},"unevaluatedProperties":{"x-angelia-secret":true}}`,
+		"dependent":   `{"dependentSchemas":{"mode":{"properties":{"key":{"x-angelia-secret":true}}}}}`,
+	} {
+		e := sinkKindEnv(t, "odd", schema)
+		if _, complete := e.srv.configSchema("odd"); complete {
+			t.Errorf("%s: complete", name)
+		}
+		k := store.Sink{
+			ID: "01JBX2A7C8D9E0F1G2H3J4K5M6", Name: "o", Kind: "odd", ManagedBy: store.ManagedByFile,
+			ConfigEncrypted: []byte(`{"mode":"a","key":"s3cr3t","key_env":"CI_WEBHOOK_SECRET"}`),
+		}
+		j, err := e.srv.sinkJSONOf(k, ScopeRead)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.Config["key"] != Masked || j.Config["mode"] != Masked || j.Config["key_env"] != "CI_WEBHOOK_SECRET" {
+			t.Errorf("%s: %v", name, j.Config)
+		}
+	}
+	if got := redactURLs("//h.example.com/secret"); got != "[redacted]" {
+		t.Errorf("scheme-relative: %v", got)
 	}
 }
