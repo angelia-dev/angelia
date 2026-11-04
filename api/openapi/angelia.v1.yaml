@@ -1,0 +1,2631 @@
+openapi: 3.1.0
+info:
+  title: Angelia API
+  version: 0.1.0
+  summary: REST API of Angelia, the self-hosted release event bus.
+  description: |
+    REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
+    known versions of a watch, pull or stream release events, and inspect and replay deliveries.
+
+    **Draft (spec 0.x).** This document may still change, including in a breaking way, in any
+    0.x minor release of the spec repository. The `/v1` path prefix names the major version that
+    is frozen at spec 1.0.0. Conventions (naming, pagination, errors, auth, versioning):
+    [docs/api.md](https://github.com/angelia-dev/spec/blob/main/docs/api.md).
+
+    - Every resource that the watch file manages (watches, sinks, subscriptions) is addressed by
+      its `name` and written with an idempotent `PUT`, so `angelia apply` can upsert through the API.
+    - Release events are the CloudEvents envelopes of
+      [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
+      returned unchanged.
+    - Errors are RFC 9457 problem details (`application/problem+json`).
+    - Every operation needs a bearer token with the scope it names (`read` < `write` < `admin`).
+  contact:
+    name: Angelia maintainers
+    url: https://github.com/angelia-dev/spec/issues
+  license:
+    name: Apache-2.0 OR CC-BY-4.0
+    identifier: Apache-2.0 OR CC-BY-4.0
+servers:
+  - url: http://localhost:8080
+    description: A local instance on the default `listen` address.
+security:
+  - bearerAuth: [read]
+tags:
+  - name: watches
+    description: What to watch upstream. Mirrors `watches[]` of the watch file.
+  - name: versions
+    description: The known versions of a watch's target (read-only).
+  - name: events
+    description: The immutable release event log, by cursor or as a stream.
+  - name: sinks
+    description: Where deliveries go. Mirrors `sinks[]` of the watch file.
+  - name: subscriptions
+    description: Which events go to which sink. Mirrors `subscriptions[]` of the watch file.
+  - name: deliveries
+    description: One delivery per event and matching subscription, with its retry state, the dead-letter view and replay.
+  - name: plugins
+    description: Installed source and sink kinds (read-only).
+
+paths:
+  /v1/watches:
+    get:
+      operationId: listWatches
+      summary: List watches
+      description: Watches in ascending `name` order, one page at a time.
+      tags: [watches]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/SourceFilter'
+        - $ref: '#/components/parameters/LabelFilter'
+      responses:
+        '200':
+          description: One page of watches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/WatchPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/watches/{name}:
+    parameters:
+      - $ref: '#/components/parameters/WatchName'
+    get:
+      operationId: getWatch
+      summary: Get a watch
+      description: The watch with every default filled in, so that sending it back with `PUT` changes nothing.
+      tags: [watches]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The watch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Watch'
+              examples:
+                watch:
+                  $ref: '#/components/examples/Watch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: putWatch
+      summary: Create or replace a watch
+      description: |
+        Idempotent upsert keyed by `name` (the apply operation). The body replaces the whole watch;
+        omitted optional keys take their defaults. Sending the same body twice changes nothing the
+        second time (`Angelia-Change: unchanged`).
+
+        Changing `source` or `coordinates` points the watch at another target and resets its
+        baseline; changing only `labels`, `policy`, `scheme` or `interval` keeps it. Coordinates are
+        stored in the source's canonical form, so the response may spell them differently
+        (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
+        used by a watch from the watch file is refused with `409 managed-by-file`.
+      tags: [watches]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchWrite'
+            examples:
+              watch:
+                $ref: '#/components/examples/WatchPut'
+      responses:
+        '200':
+          description: The watch existed; it was updated, or was already identical.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Watch'
+              examples:
+                watch:
+                  $ref: '#/components/examples/Watch'
+        '201':
+          description: The watch was created.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Watch'
+              examples:
+                watch:
+                  $ref: '#/components/examples/WatchCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteWatch
+      summary: Delete a watch
+      description: |
+        No new events or deliveries are created for the watch. Its events and deliveries are kept
+        as history until retention prunes them. The target and its known versions are deleted
+        when no other watch uses them.
+      tags: [watches]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      responses:
+        '204':
+          description: The watch was deleted (or, with `dry_run=true`, would be).
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/watches/{name}/versions:
+    parameters:
+      - $ref: '#/components/parameters/WatchName'
+    get:
+      operationId: listWatchVersions
+      summary: List the known versions of a watch
+      description: |
+        The versions the instance knows for the watch's target, greatest first in the order of the
+        watch's version scheme. The known set never shrinks: a version that disappeared upstream
+        has `removed_at` set. The watch's policy is not applied: this is what upstream has, not
+        what was emitted (use `GET /v1/events?watch=` for that).
+      tags: [versions]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: prerelease
+          in: query
+          description: Only pre-releases (`true`) or only final releases (`false`). Absent means both.
+          schema:
+            type: boolean
+          example: false
+        - name: yanked
+          in: query
+          description: Only yanked versions (`true`) or only versions that are not yanked (`false`). Absent means both.
+          schema:
+            type: boolean
+          example: false
+      responses:
+        '200':
+          description: One page of versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/VersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/events:
+    get:
+      operationId: listEvents
+      summary: Pull events after a cursor
+      description: |
+        The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
+        To resume after downtime, pass the `next_after` of the previous page: no committed event is
+        skipped. `next_after` is the highest `seq` scanned, so filters that skip many events do
+        not make the client scan them again. The scan per request is bounded: a page may be empty
+        with `has_more` true.
+
+        Events older than the retention period (90 days by default) are pruned. A non-zero `after`
+        below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
+        `after=0` always starts at the oldest event kept.
+      tags: [events]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/EventLimit'
+        - $ref: '#/components/parameters/WatchFilter'
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/SourceFilter'
+      responses:
+        '200':
+          description: The events after the cursor, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/EventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '410':
+          $ref: '#/components/responses/CursorExpired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/events/stream:
+    get:
+      operationId: streamEvents
+      summary: Stream events (server-sent events)
+      description: |
+        The same events as `GET /v1/events`, with the same filters, as a
+        [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream.
+        The server first sends the events after the cursor, then each new event as it is committed.
+
+        - The stream starts with `retry: 5000` (reconnect after 5 seconds).
+        - Each event is one SSE message: `id` is the event's `seq`, `data` is the same
+          `EventRecord` as in `GET /v1/events` (`seq`, `event`, `ref_event_id`) as one line of
+          JSON. There is no `event` field (the message type is the default `message`).
+        - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
+          cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
+          not a stream).
+        - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
+        - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
+          cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
+          checked again at least every 60 seconds: once it is revoked, the server closes the
+          stream.
+      tags: [events]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/After'
+        - $ref: '#/components/parameters/WatchFilter'
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/SourceFilter'
+        - name: Last-Event-ID
+          in: header
+          description: The `seq` of the last event the client received. Takes precedence over `after`.
+          schema:
+            $ref: '#/components/schemas/Seq'
+          example: 4182
+      responses:
+        '200':
+          description: An open event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE messages, each with `id` (the event's `seq`) and `data` (an `EventRecord` as one line of JSON).
+              examples:
+                stream:
+                  $ref: '#/components/examples/EventStream'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '410':
+          $ref: '#/components/responses/CursorExpired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/events/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The event id (the CloudEvents `id`, a ULID).
+        schema:
+          $ref: '#/components/schemas/Ulid'
+        example: 01JBX2A7C8D9E0F1G2H3J4K5M6
+    get:
+      operationId: getEvent
+      summary: Get an event
+      description: One event by its CloudEvents id.
+      tags: [events]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventRecord'
+              examples:
+                event:
+                  $ref: '#/components/examples/EventRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/sinks:
+    get:
+      operationId: listSinks
+      summary: List sinks
+      description: Sinks in ascending `name` order, redacted as described in the `Sink` schema (URLs cut to `scheme://host` below `admin`).
+      tags: [sinks]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: kind
+          in: query
+          description: Only sinks of these kinds.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/Kind'
+          example: [webhook]
+      responses:
+        '200':
+          description: One page of sinks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SinkPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/SinkPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/sinks/{name}:
+    parameters:
+      - $ref: '#/components/parameters/SinkName'
+    get:
+      operationId: getSink
+      summary: Get a sink
+      description: The sink with every default filled in. Below the `admin` scope its URLs are cut to `scheme://host` (`url_redacted`); keys the kind marks secret are masked for every caller.
+      tags: [sinks]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The sink.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sink'
+              examples:
+                admin:
+                  $ref: '#/components/examples/Sink'
+                readScope:
+                  $ref: '#/components/examples/SinkRedacted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: putSink
+      summary: Create or replace a sink
+      description: |
+        Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
+        the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
+        key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
+        names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
+        secrets and decides where the instance sends requests. The next delivery attempt uses the
+        new configuration.
+      tags: [sinks]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SinkWrite'
+            examples:
+              webhook:
+                $ref: '#/components/examples/SinkPut'
+      responses:
+        '200':
+          description: The sink existed; it was updated, or was already identical.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sink'
+              examples:
+                sink:
+                  $ref: '#/components/examples/Sink'
+        '201':
+          description: The sink was created.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sink'
+              examples:
+                sink:
+                  $ref: '#/components/examples/Sink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteSink
+      summary: Delete a sink
+      description: |
+        Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
+        the subscriptions first. Deliveries already recorded are kept as history.
+      tags: [sinks]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      responses:
+        '204':
+          description: The sink was deleted (or, with `dry_run=true`, would be).
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/subscriptions:
+    get:
+      operationId: listSubscriptions
+      summary: List subscriptions
+      description: Subscriptions in ascending `name` order.
+      tags: [subscriptions]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: sink
+          in: query
+          description: Only subscriptions that deliver to this sink (by name).
+          schema:
+            $ref: '#/components/schemas/Name'
+          example: ci-webhook
+      responses:
+        '200':
+          description: One page of subscriptions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/SubscriptionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/subscriptions/{name}:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionName'
+    get:
+      operationId: getSubscription
+      summary: Get a subscription
+      description: The subscription with every default filled in.
+      tags: [subscriptions]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+              examples:
+                subscription:
+                  $ref: '#/components/examples/Subscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: putSubscription
+      summary: Create or replace a subscription
+      description: |
+        Idempotent upsert keyed by `name`. `sink` names an existing sink with the same
+        `managed_by` (an API subscription on a sink from the watch file is refused with
+        `409 cross-owner-reference`: removing that sink from the file would otherwise make the
+        startup apply fail). Editing `filter` or
+        `policy` decides the subscription's held deliveries again (queued ones are not touched): a
+        held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
+        one whose new hold has passed is released, and one whose hold is still ahead is moved.
+      tags: [subscriptions]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionWrite'
+            examples:
+              subscription:
+                $ref: '#/components/examples/SubscriptionPut'
+      responses:
+        '200':
+          description: The subscription existed; it was updated, or was already identical.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+              examples:
+                subscription:
+                  $ref: '#/components/examples/Subscription'
+        '201':
+          description: The subscription was created.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+              examples:
+                subscription:
+                  $ref: '#/components/examples/Subscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteSubscription
+      summary: Delete a subscription
+      description: |
+        Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
+        removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+      tags: [subscriptions]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      responses:
+        '204':
+          description: The subscription was deleted (or, with `dry_run=true`, would be).
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/deliveries:
+    get:
+      operationId: listDeliveries
+      summary: List deliveries
+      description: |
+        Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
+        its subscription: `subscription_name` is `null` once the subscription was deleted.
+      tags: [deliveries]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          description: Only deliveries in these states.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/DeliveryStatus'
+          example: [dead]
+        - name: subscription
+          in: query
+          description: Only deliveries of this subscription, by name (current subscriptions) or by id (also deleted ones).
+          schema:
+            $ref: '#/components/schemas/NameOrId'
+          example: platform-ci
+        - name: event
+          in: query
+          description: Only deliveries of this event, by event id.
+          schema:
+            $ref: '#/components/schemas/Ulid'
+          example: 01JBX2A7C8D9E0F1G2H3J4K5M6
+      responses:
+        '200':
+          description: One page of deliveries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryPage'
+              examples:
+                deadLetters:
+                  $ref: '#/components/examples/DeliveryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/deliveries/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DeliveryId'
+    get:
+      operationId: getDelivery
+      summary: Get a delivery
+      description: One delivery by id.
+      tags: [deliveries]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The delivery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+              examples:
+                dead:
+                  $ref: '#/components/examples/DeliveryDead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/deliveries/{id}/replay:
+    parameters:
+      - $ref: '#/components/parameters/DeliveryId'
+    post:
+      operationId: replayDelivery
+      summary: Replay a delivery
+      description: |
+        Queues a `dead` or `delivered` delivery again, due now, with the same event and idempotency
+        key. `attempts` keeps counting (a replay does not reset it); the retry budget starts again
+        from the replay. Refused with `409` (`not-replayable`) while it is `pending` or `in_flight`,
+        or when its subscription or sink no longer exists. The replay is recorded in the audit log.
+
+        A receiver that deduplicates on the idempotency key or the event id may drop a replayed
+        delivery it already accepted: replaying a `delivered` delivery is for receivers that lost
+        it.
+      tags: [deliveries]
+      security:
+        - bearerAuth: [write]
+      requestBody:
+        required: false
+        description: No body is needed; an empty JSON object is accepted.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+            examples:
+              empty:
+                summary: No options
+                value: {}
+      responses:
+        '200':
+          description: The delivery, queued again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+              examples:
+                queued:
+                  $ref: '#/components/examples/DeliveryReplayed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/replays:
+    post:
+      operationId: createReplay
+      summary: Replay deliveries in bulk
+      description: |
+        Queues again, as `POST /v1/deliveries/{id}/replay` does, every delivery that matches the
+        selector: the deliveries of one event, or the deliveries of one subscription whose event
+        `time` is in `[since, until)`. Only deliveries in one of `status` (default `dead`) are
+        replayed; `pending` and `in_flight` ones are never touched, and neither are deliveries whose
+        subscription or sink no longer exists. With `dry_run` nothing is queued and the response
+        says what would be. The replay is recorded in the audit log.
+      tags: [deliveries]
+      security:
+        - bearerAuth: [write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+            examples:
+              byEvent:
+                $ref: '#/components/examples/ReplayByEvent'
+              bySubscriptionAndTime:
+                $ref: '#/components/examples/ReplayBySubscription'
+      responses:
+        '200':
+          description: What was replayed (or, with `dry_run`, what would be).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayResult'
+              examples:
+                result:
+                  $ref: '#/components/examples/ReplayResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/plugins:
+    get:
+      operationId: listPlugins
+      summary: List plugins
+      description: Every source and sink kind this instance can use, built-in or installed, in ascending `kind` order.
+      tags: [plugins]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: interface
+          in: query
+          description: Only source kinds or only sink kinds.
+          schema:
+            $ref: '#/components/schemas/PluginInterface'
+          example: source
+      responses:
+        '200':
+          description: One page of plugins.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/PluginPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/plugins/{interface}/{kind}:
+    parameters:
+      - name: interface
+        in: path
+        required: true
+        description: '`source` or `sink`: a source and a sink may share a kind name.'
+        schema:
+          $ref: '#/components/schemas/PluginInterface'
+        example: source
+      - name: kind
+        in: path
+        required: true
+        description: The kind.
+        schema:
+          $ref: '#/components/schemas/Kind'
+        example: crates
+    get:
+      operationId: getPlugin
+      summary: Get a plugin
+      description: One source or sink kind.
+      tags: [plugins]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The plugin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+              examples:
+                wasm:
+                  $ref: '#/components/examples/PluginWasm'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
+        ordered, and a token satisfies an operation whose scope is at or below its own:
+        `read` (every `GET`), `write` (watches, subscriptions, replays), `admin` (sinks, and
+        everything else). The scope an operation needs is listed in its `security` requirement.
+        The token and its scope are checked before anything else, so a `401` or `403` never
+        reveals whether a resource exists.
+
+  headers:
+    AngeliaChange:
+      description: What the request changed (or, with `dry_run=true`, would change).
+      schema:
+        type: string
+        enum: [created, updated, unchanged, deleted]
+      example: unchanged
+    Location:
+      description: The URL of the created resource.
+      schema:
+        type: string
+        format: uri-reference
+      example: /v1/watches/requests
+    WwwAuthenticate:
+      description: The bearer challenge (RFC 6750), with `error="invalid_token"` when a token was sent but is unknown, revoked or malformed.
+      schema:
+        type: string
+      example: Bearer realm="angelia", error="invalid_token"
+
+  parameters:
+    WatchName:
+      name: name
+      in: path
+      required: true
+      description: The watch's name.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: requests
+    SinkName:
+      name: name
+      in: path
+      required: true
+      description: The sink's name.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: ci-webhook
+    SubscriptionName:
+      name: name
+      in: path
+      required: true
+      description: The subscription's name.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: platform-ci
+    DeliveryId:
+      name: id
+      in: path
+      required: true
+      description: The delivery id (a ULID).
+      schema:
+        $ref: '#/components/schemas/Ulid'
+      example: 01JBX2A9QWERTY0123456789AB
+    Limit:
+      name: limit
+      in: query
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+      example: 100
+    Cursor:
+      name: cursor
+      in: query
+      description: The opaque `next_cursor` of the previous page. Absent for the first page.
+      schema:
+        $ref: '#/components/schemas/Cursor'
+      example: eyJuIjoicmVxdWVzdHMifQ
+    DryRun:
+      name: dry_run
+      in: query
+      description: Validate and compute the result, without writing anything. The response is the one the request would get.
+      schema:
+        type: boolean
+        default: false
+      example: false
+    After:
+      name: after
+      in: query
+      description: Return the events whose `seq` is greater than this. `0` (the default) starts at the oldest event kept.
+      schema:
+        $ref: '#/components/schemas/Seq'
+      example: 4180
+    EventLimit:
+      name: limit
+      in: query
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+      example: 100
+    WatchFilter:
+      name: watch
+      in: query
+      description: |
+        Only events of these watches, each given by name or by id. A name (always lower case)
+        means the watch's current id; an id (a ULID, always upper case) also matches events of a
+        watch that was deleted or renamed.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/NameOrId'
+      example: [requests]
+    TypeFilter:
+      name: type
+      in: query
+      description: Only events of these short types (as in a subscription filter).
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/ShortEventType'
+      example: [release.published, release.yanked]
+    SourceFilter:
+      name: source
+      in: query
+      description: Only watches (or events of watches) with these source kinds.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/Kind'
+      example: [pypi]
+    LabelFilter:
+      name: label
+      in: query
+      description: Only watches that carry this label with this value, as `key=value`. Repeat to require several.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}=.{0,253}$'
+      example: [team=platform]
+
+  responses:
+    BadRequest:
+      description: The request is malformed (bad JSON, an unknown query parameter, an invalid cursor).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            badCursor:
+              $ref: '#/components/examples/ProblemBadRequest'
+    Unauthorized:
+      description: No token, or a token that is unknown, revoked or malformed.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unauthorized:
+              $ref: '#/components/examples/ProblemUnauthorized'
+    Forbidden:
+      description: The token's scope is below the one the operation needs.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            insufficientScope:
+              $ref: '#/components/examples/ProblemForbidden'
+    NotFound:
+      description: No resource with this name or id.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            notFound:
+              $ref: '#/components/examples/ProblemNotFound'
+    Conflict:
+      description: The request conflicts with the current state (`managed-by-file`, `cross-owner-reference`, `sink-in-use`, `not-replayable`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            managedByFile:
+              $ref: '#/components/examples/ProblemManagedByFile'
+            crossOwnerReference:
+              $ref: '#/components/examples/ProblemCrossOwnerReference'
+            sinkInUse:
+              $ref: '#/components/examples/ProblemSinkInUse'
+            notReplayable:
+              $ref: '#/components/examples/ProblemNotReplayable'
+    UnsupportedMediaType:
+      description: The request body is not `application/json`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unsupported:
+              $ref: '#/components/examples/ProblemUnsupportedMediaType'
+    ValidationFailed:
+      description: The body is well-formed JSON but breaks the resource's rules (`validation-failed`, every error listed in `errors`), or names an environment variable the instance does not allow (`env-not-allowed`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            validation:
+              $ref: '#/components/examples/ProblemValidation'
+            envNotAllowed:
+              $ref: '#/components/examples/ProblemEnvNotAllowed'
+    InternalError:
+      description: An unexpected server error. The detail never carries configuration or secrets.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            internal:
+              $ref: '#/components/examples/ProblemInternal'
+    CursorExpired:
+      description: The cursor points into events that retention already pruned.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            cursorExpired:
+              $ref: '#/components/examples/ProblemCursorExpired'
+    PayloadTooLarge:
+      description: The request body is larger than the server accepts (1 MiB).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            tooLarge:
+              $ref: '#/components/examples/ProblemPayloadTooLarge'
+    Unavailable:
+      description: The instance is starting, shutting down or draining, or its database is unreachable. Retry later.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 1
+          example: 5
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unavailable:
+              $ref: '#/components/examples/ProblemUnavailable'
+
+  schemas:
+    Name:
+      description: The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+      type: string
+      pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+    Ulid:
+      description: 'ULID: 26 characters, Crockford base32, upper case.'
+      type: string
+      pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
+    NameOrId:
+      description: A name (lower case) or a ULID id (upper case). The two never overlap.
+      type: string
+      pattern: '^([a-z0-9][a-z0-9._-]{0,62}|[0-7][0-9A-HJKMNP-TV-Z]{25})$'
+    Kind:
+      description: A source or sink kind (`pypi`, `github-release`, `webhook`, a plugin's kind, ...).
+      type: string
+      pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+    Timestamp:
+      description: RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+      type: string
+      format: date-time
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$'
+      examples: ['2026-10-30T17:00:02.512Z']
+    Duration:
+      description: A Go duration (`30m`, `6h`, `1h30m`, `0`). The range depends on the field; the server keeps whole seconds and cuts any fraction.
+      type: string
+      pattern: '^[-+]?(0|([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$'
+    Labels:
+      description: String labels. At most 32; keys `^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`, values at most 253 characters with no control characters.
+      type: object
+      maxProperties: 32
+      propertyNames:
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$'
+      additionalProperties:
+        type: string
+        maxLength: 253
+        pattern: '^[^\x00-\x1F\x7F]*$'
+      examples:
+        - team: platform
+    Cursor:
+      description: An opaque page cursor. Clients pass it back unchanged and must not parse it.
+      type: string
+      minLength: 1
+      maxLength: 512
+      examples: [eyJuIjoicmVxdWVzdHMifQ]
+    Seq:
+      description: An event's position in the log, assigned in commit order (`event.seq`). Strictly increasing; there may be gaps.
+      type: integer
+      format: int64
+      minimum: 0
+      examples: [4182]
+    ManagedBy:
+      description: |
+        Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
+        created from a watch file loaded with `angelia serve --watches`; the API reads it but
+        refuses to change or delete it (`409 managed-by-file`).
+      type: string
+      enum: [api, file]
+    ShortEventType:
+      description: An event type without the `dev.angelia.` prefix and the `.v<major>` suffix.
+      type: string
+      enum: [release.published, release.yanked, release.prerelease]
+    Bump:
+      type: string
+      enum: [major, minor, patch]
+    PrereleaseMode:
+      description: '`none`: drop pre-releases. `only`: keep only pre-releases. `include`: keep both.'
+      type: string
+      enum: [none, only, include]
+
+    WatchWrite:
+      description: |
+        The body of `PUT /v1/watches/{name}`: the keys of `watches[]` in the watch file. Omitted
+        optional keys take their defaults.
+      type: object
+      required: [source, coordinates]
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: Optional; when given it must equal the name in the path.
+        source:
+          $ref: '#/components/schemas/Kind'
+          description: A registered source kind (`GET /v1/plugins?interface=source`).
+        coordinates:
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+        interval:
+          $ref: '#/components/schemas/Duration'
+          description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
+          default: 1h
+        scheme:
+          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+        labels:
+          $ref: '#/components/schemas/Labels'
+          default: {}
+        policy:
+          $ref: '#/components/schemas/WatchPolicy'
+    Watch:
+      description: |
+        A watch as the server returns it: the write keys with every default filled in, plus
+        response-only fields. Sending the write keys back with `PUT` changes nothing.
+      type: object
+      required: [name, id, managed_by, source, coordinates, interval, scheme, labels, policy, status]
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated when the watch is created; kept across updates. Equals `data.watch.id` in its events.
+        managed_by:
+          $ref: '#/components/schemas/ManagedBy'
+        source:
+          $ref: '#/components/schemas/Kind'
+          description: A registered source kind (`GET /v1/plugins?interface=source`).
+        coordinates:
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+        interval:
+          $ref: '#/components/schemas/Duration'
+          description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
+          default: 1h
+        scheme:
+          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+        labels:
+          $ref: '#/components/schemas/Labels'
+          default: {}
+        policy:
+          $ref: '#/components/schemas/WatchPolicy'
+        status:
+          $ref: '#/components/schemas/WatchStatus'
+    WatchPolicy:
+      description: Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
+      type: object
+      additionalProperties: false
+      properties:
+        prerelease:
+          $ref: '#/components/schemas/PrereleaseMode'
+          default: none
+        include:
+          description: RE2 regexes on the raw version; a version must match one. Empty means all. At most 16.
+          type: array
+          maxItems: 16
+          items:
+            type: string
+          default: []
+        exclude:
+          description: RE2 regexes on the raw version; a match drops the version. Wins over `include`. At most 16.
+          type: array
+          maxItems: 16
+          items:
+            type: string
+          default: []
+        constraint:
+          description: A version range such as `>=2 <3`, checked by the watch's scheme. Empty means any.
+          type: string
+          default: ''
+        bump:
+          description: Keep only these bumps. Empty means all.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Bump'
+          default: []
+        cooldown:
+          $ref: '#/components/schemas/Duration'
+          description: Emit a version only once it is this old, and drop it if it is yanked in between. `0` to `8760h`; a negative value is an error.
+          default: '0'
+        baseline:
+          description: When true, the versions known at the first check are recorded without events.
+          type: boolean
+          default: true
+    WatchStatus:
+      description: Scheduling state of the watch and its target.
+      type: object
+      required: [baseline_done, effective_interval, last_checked_at, next_check_at, error_count]
+      properties:
+        baseline_done:
+          description: Whether the first check (the baseline) has run.
+          type: boolean
+        effective_interval:
+          $ref: '#/components/schemas/Duration'
+          description: The interval the target is checked at, the smallest `interval` among the watches that share it.
+        last_checked_at:
+          description: The end of the last check of the target, or `null` before the first.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        next_check_at:
+          description: When the target is next due, or `null` while unscheduled.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        error_count:
+          description: Consecutive failed checks of the target (drives the backoff).
+          type: integer
+          minimum: 0
+    WatchPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Watch'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    Version:
+      description: One upstream version of a watch's target, from the known set.
+      type: object
+      required: [version, normalized_version, prerelease, yanked, published_at, first_seen_at, removed_at]
+      properties:
+        version:
+          description: The raw upstream version string (`data.version` in events).
+          type: string
+          examples: [2.33.0]
+        normalized_version:
+          description: The version in the scheme's normalised form (`data.normalized_version` in events).
+          type: string
+          examples: [2.33.0]
+        prerelease:
+          description: Whether the scheme (or the upstream flag) classifies it as a pre-release.
+          type: boolean
+        yanked:
+          description: Whether upstream marks it yanked (as of the last check).
+          type: boolean
+        published_at:
+          description: When upstream published it, or `null` when the source does not say.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        first_seen_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When this instance first saw it.
+        removed_at:
+          description: When it disappeared upstream, or `null` while it is listed.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+    VersionPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Version'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    EventRecord:
+      description: One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered.
+      type: object
+      required: [seq, event, ref_event_id]
+      properties:
+        seq:
+          $ref: '#/components/schemas/Seq'
+        event:
+          $ref: '../schemas/release/envelope/v1.json'
+          # Code generators: the server returns the stored envelope byte for
+          # byte, so Go keeps it raw instead of a struct generated from the
+          # external schema (oapi-codegen cannot walk its $defs).
+          x-go-type: json.RawMessage
+        ref_event_id:
+          description: For a `release.yanked` event, the id of the event it yanks (the earlier `release.published` or `release.prerelease` of the same watch); `null` for other types.
+          oneOf:
+            - $ref: '#/components/schemas/Ulid'
+            - type: 'null'
+    EventPage:
+      type: object
+      required: [items, next_after, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventRecord'
+        next_after:
+          $ref: '#/components/schemas/Seq'
+          description: The cursor for the next request, the highest `seq` the server scanned, which can be beyond the last item when the filters skipped events, or the request's `after` when nothing was scanned.
+        has_more:
+          description: Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`.
+          type: boolean
+
+    SinkWrite:
+      description: |
+        The body of `PUT /v1/sinks/{name}`: the keys of `sinks[]` in the watch file. It carries no
+        secret values: a secret is named by a `*_env` key of `config`.
+      type: object
+      required: [kind, config]
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: Optional; when given it must equal the name in the path.
+        kind:
+          $ref: '#/components/schemas/Kind'
+          description: A registered sink kind (`GET /v1/plugins?interface=sink`).
+        config:
+          $ref: '#/components/schemas/SinkConfig'
+    Sink:
+      description: |
+        A sink as the server returns it, with every default filled in. Below the `admin` scope,
+        every URL in `config` is cut to `scheme://host` and `url_redacted` is true. For every
+        caller, a key the kind's `config_schema` marks `x-angelia-secret: true` is replaced by
+        `[REDACTED]` and listed in `masked_fields`.
+      type: object
+      required: [name, id, managed_by, kind, config, url_redacted, masked_fields]
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated when the sink is created; kept across updates.
+        managed_by:
+          $ref: '#/components/schemas/ManagedBy'
+        kind:
+          $ref: '#/components/schemas/Kind'
+          description: A registered sink kind (`GET /v1/plugins?interface=sink`).
+        config:
+          $ref: '#/components/schemas/SinkConfig'
+        url_redacted:
+          description: Whether the URLs in `config` were cut to `scheme://host` because the token's scope is below `admin`.
+          type: boolean
+        masked_fields:
+          description: The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
+          type: array
+          items:
+            type: string
+    SinkConfig:
+      description: |
+        Kind-owned configuration, free-form here and validated against the kind's `config_schema`
+        (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
+        named by a `*_env` key (an environment variable of the instance, as in the watch file),
+        and a name set through the API must be allowed by the instance configuration
+        (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+        be set through the API. The configuration of each built-in kind is listed in
+        `x-angelia-kind-config`.
+      type: object
+      additionalProperties: true
+      x-angelia-kind-config:
+        webhook:
+          $ref: '#/components/schemas/WebhookSinkConfig'
+    SinkPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sink'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    SubscriptionWrite:
+      description: The body of `PUT /v1/subscriptions/{name}`. Same keys as `subscriptions[]` in the watch file.
+      type: object
+      required: [sink]
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: Optional; when given it must equal the name in the path.
+        sink:
+          $ref: '#/components/schemas/Name'
+          description: The name of an existing sink managed like this subscription (`managed_by` must match, else `409 cross-owner-reference`).
+        filter:
+          $ref: '#/components/schemas/SubscriptionFilter'
+        policy:
+          $ref: '#/components/schemas/SubscriptionPolicy'
+        template:
+          description: A Go `text/template` over the event (`.data.package`, ...). Empty sends the CloudEvents JSON. Checked against the sample events when written.
+          type: string
+          maxLength: 32768
+          default: ''
+    Subscription:
+      description: A subscription as the server returns it, with every default filled in.
+      type: object
+      required: [name, id, managed_by, sink, filter, policy, template]
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated when the subscription is created; kept across updates. Part of the idempotency key of its deliveries.
+        managed_by:
+          $ref: '#/components/schemas/ManagedBy'
+        sink:
+          $ref: '#/components/schemas/Name'
+          description: The name of an existing sink managed like this subscription (`managed_by` must match, else `409 cross-owner-reference`).
+        filter:
+          $ref: '#/components/schemas/SubscriptionFilter'
+        policy:
+          $ref: '#/components/schemas/SubscriptionPolicy'
+        template:
+          description: A Go `text/template` over the event (`.data.package`, ...). Empty sends the CloudEvents JSON. Checked against the sample events when written.
+          type: string
+          maxLength: 32768
+          default: ''
+    SubscriptionFilter:
+      description: All given keys must match. An empty filter matches every `release.published` event.
+      type: object
+      additionalProperties: false
+      properties:
+        source:
+          description: Source kinds. Empty means any.
+          type: array
+          items:
+            $ref: '#/components/schemas/Kind'
+          default: []
+        labels:
+          $ref: '#/components/schemas/Labels'
+          description: The event's watch must carry all of these labels with equal values.
+          default: {}
+        bump:
+          description: Bumps. Empty means any. Narrows the watch's `policy.bump`.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Bump'
+          default: []
+        package:
+          description: A glob (Go `path.Match` syntax) on the package name. Empty means any.
+          type: string
+          default: ''
+        type:
+          description: Short event types.
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ShortEventType'
+          default: [release.published]
+    SubscriptionPolicy:
+      description: Narrows the watch's policy for this subscription only; it can never widen it.
+      type: object
+      additionalProperties: false
+      properties:
+        prerelease:
+          description: Intersected with what the watch admits. `null` inherits the watch's mode.
+          oneOf:
+            - $ref: '#/components/schemas/PrereleaseMode'
+            - type: 'null'
+          default: null
+        cooldown:
+          $ref: '#/components/schemas/Duration'
+          description: The effective hold is the larger of this and the watch's cooldown, counted from the same start. Clamped to `0` to `8760h` (a negative value becomes `0`), as in the watch file.
+          default: '0'
+    SubscriptionPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    DeliveryStatus:
+      description: '`pending`: queued or held, due at `next_attempt_at`. `in_flight`: being sent. `delivered`: the sink accepted it. `dead`: given up (the dead-letter state); replayable.'
+      type: string
+      enum: [pending, in_flight, delivered, dead]
+    Delivery:
+      description: One event sent to one subscription, with its retry state.
+      type: object
+      required:
+        - id
+        - event_id
+        - subscription_id
+        - subscription_name
+        - idempotency_key
+        - status
+        - attempts
+        - next_attempt_at
+        - held_until
+        - last_error
+      properties:
+        id:
+          $ref: '#/components/schemas/Ulid'
+        event_id:
+          $ref: '#/components/schemas/Ulid'
+          description: The CloudEvents `id` of the event.
+        subscription_id:
+          $ref: '#/components/schemas/Ulid'
+        subscription_name:
+          description: The subscription's current name, or `null` once it was deleted.
+          oneOf:
+            - $ref: '#/components/schemas/Name'
+            - type: 'null'
+        idempotency_key:
+          description: '`<event id>:<subscription id>`; the same on every attempt and replay.'
+          type: string
+          pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}:[0-7][0-9A-HJKMNP-TV-Z]{25}$'
+        status:
+          $ref: '#/components/schemas/DeliveryStatus'
+        attempts:
+          description: Attempts started so far, replays included; a replay does not reset it.
+          type: integer
+          minimum: 0
+        next_attempt_at:
+          description: When a `pending` delivery is next due; `null` otherwise.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        held_until:
+          description: The end of a cooldown hold, when the delivery is held; `null` otherwise.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        last_error:
+          description: The last failure, with URLs cut down to scheme and host, at most 1 KiB; `null` when there was none.
+          type: [string, 'null']
+          maxLength: 1024
+    DeliveryPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+    ReplayRequest:
+      description: |
+        Which deliveries to queue again: give `event`, or `subscription` with `since` and `until`
+        (both may also be combined with `event`).
+      type: object
+      additionalProperties: false
+      properties:
+        event:
+          $ref: '#/components/schemas/Ulid'
+          description: The deliveries of this event.
+        subscription:
+          $ref: '#/components/schemas/NameOrId'
+          description: The deliveries of this subscription, by name or id.
+        since:
+          $ref: '#/components/schemas/Timestamp'
+          description: Inclusive lower bound on the event `time`. Requires `subscription` and `until`.
+        until:
+          $ref: '#/components/schemas/Timestamp'
+          description: Exclusive upper bound on the event `time`. Requires `subscription` and `since`.
+        status:
+          description: Replay only deliveries in these states.
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [dead, delivered]
+          default: [dead]
+        dry_run:
+          description: Compute what would be replayed without queuing anything.
+          type: boolean
+          default: false
+      anyOf:
+        - required: [event]
+        - required: [subscription, since, until]
+    ReplayResult:
+      type: object
+      required: [replayed, dry_run, deliveries, truncated]
+      properties:
+        replayed:
+          description: How many deliveries were queued again (or would be).
+          type: integer
+          minimum: 0
+        dry_run:
+          type: boolean
+        deliveries:
+          description: The first 100 of them, oldest event first, as they are after the replay.
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Delivery'
+        truncated:
+          description: Whether `deliveries` lists fewer than `replayed`.
+          type: boolean
+
+    PluginInterface:
+      description: Which core interface the plugin implements.
+      type: string
+      enum: [source, sink]
+    Plugin:
+      description: A source or sink kind the instance can use.
+      type: object
+      required: [kind, interface, runtime, version, abi, config_schema, allowed_hosts]
+      properties:
+        kind:
+          $ref: '#/components/schemas/Kind'
+        interface:
+          $ref: '#/components/schemas/PluginInterface'
+        runtime:
+          description: '`builtin`: compiled into the binary. `wasm`: a WASM plugin. Open set: later runtimes may be added.'
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+          examples: [wasm]
+        version:
+          description: The plugin's version from its manifest; for a built-in, the Angelia version. `null` when unknown.
+          type: [string, 'null']
+          examples: [0.3.1]
+        abi:
+          description: For a third-party plugin, the host ABI it was built against (for WASM, the import module name); `null` for built-ins.
+          type: [string, 'null']
+          examples: ['angelia:host/v0']
+        config_schema:
+          description: The JSON Schema of the kind's configuration (a watch's `coordinates` for a source, a sink's `config` for a sink), or `null` when the kind does not publish one. A property with `x-angelia-secret` true holds a secret value; the server masks it in every response and refuses it in API writes.
+          type: [object, 'null']
+        allowed_hosts:
+          description: For a third-party plugin, the hosts it may reach (manifest and operator entries merged); empty for built-ins, which use the instance's network rules.
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginHost'
+    PluginHost:
+      type: object
+      required: [host, origin, credential_ports]
+      properties:
+        host:
+          description: Lower-case hostname or IP literal.
+          type: string
+          examples: [crates-mirror.example.com]
+        origin:
+          description: '`manifest`: declared by the plugin. `operator`: added in the instance configuration.'
+          type: string
+          enum: [manifest, operator]
+        credential_ports:
+          description: The ports on which the host injects a credential configured for this host. Never the credential itself.
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+    PluginPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plugin'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    NextCursor:
+      description: The cursor of the next page, or `null` on the last page.
+      oneOf:
+        - $ref: '#/components/schemas/Cursor'
+        - type: 'null'
+
+    Problem:
+      description: |
+        RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
+        is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
+        must be ignored.
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          description: Identifies the problem type; `https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-<slug>`.
+          type: string
+          format: uri
+          examples: ['https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-validation-failed']
+        title:
+          description: Short, human-readable summary of the problem type; the same for every occurrence.
+          type: string
+        status:
+          description: The HTTP status code.
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          description: Human-readable explanation of this occurrence. Never contains secrets.
+          type: string
+        instance:
+          description: The request path.
+          type: string
+          format: uri-reference
+        errors:
+          description: For `validation-failed`, every error found (the request is validated as a whole).
+          type: array
+          items:
+            $ref: '#/components/schemas/ProblemError'
+        required_scope:
+          description: For `forbidden`, the scope the operation needs.
+          type: string
+          enum: [read, write, admin]
+        oldest_seq:
+          $ref: '#/components/schemas/Seq'
+          description: For `cursor-expired`, the `seq` of the oldest event kept; resume with `after` set just below it, accepting the gap.
+    ProblemError:
+      type: object
+      required: [pointer, detail]
+      properties:
+        pointer:
+          description: JSON Pointer (RFC 6901) to the offending member of the request body; `""` for the whole body.
+          type: string
+          examples: [/policy/prerelease]
+        detail:
+          description: What is wrong with it.
+          type: string
+    WebhookSinkConfig:
+      description: The `config` of a `webhook` sink (the watch file's `sinks[].config` for that kind). Documentation of the built-in kind; the server validates against the kind's `config_schema`.
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          description: Absolute `https://` URL with no userinfo and no query parameter that looks like a secret.
+          type: string
+          format: uri
+        secret_env:
+          description: Name of an environment variable of the instance that holds the Standard Webhooks signing secret. Without it, deliveries are unsigned.
+          type: string
+          pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+        timeout:
+          $ref: '#/components/schemas/Duration'
+          description: Per-attempt timeout, `1s` to `2m`.
+          default: 10s
+
+  examples:
+    WatchPut:
+      summary: A PyPI watch, as `angelia apply` sends it
+      value:
+        source: pypi
+        coordinates:
+          name: requests
+        interval: 30m
+        labels:
+          team: platform
+          repo: api
+        policy:
+          bump: [major, minor]
+          cooldown: 72h
+    Watch:
+      summary: The watch with defaults filled in
+      value:
+        name: requests
+        id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+        managed_by: api
+        source: pypi
+        coordinates:
+          name: requests
+        interval: 30m
+        scheme: pep440
+        labels:
+          team: platform
+          repo: api
+        policy:
+          prerelease: none
+          include: []
+          exclude: []
+          constraint: ''
+          bump: [major, minor]
+          cooldown: 72h
+          baseline: true
+        status:
+          baseline_done: true
+          effective_interval: 30m
+          last_checked_at: '2026-10-30T17:00:02.512Z'
+          next_check_at: '2026-10-30T17:29:41.000Z'
+          error_count: 0
+    WatchCreated:
+      summary: A watch just created, not checked yet
+      value:
+        name: requests
+        id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+        managed_by: api
+        source: pypi
+        coordinates:
+          name: requests
+        interval: 30m
+        scheme: pep440
+        labels:
+          team: platform
+          repo: api
+        policy:
+          prerelease: none
+          include: []
+          exclude: []
+          constraint: ''
+          bump: [major, minor]
+          cooldown: 72h
+          baseline: true
+        status:
+          baseline_done: false
+          effective_interval: 30m
+          last_checked_at: null
+          next_check_at: '2026-10-30T16:00:00.000Z'
+          error_count: 0
+    WatchPage:
+      summary: A page with one watch, the last page
+      value:
+        items:
+          - name: requests
+            id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+            managed_by: api
+            source: pypi
+            coordinates:
+              name: requests
+            interval: 30m
+            scheme: pep440
+            labels:
+              team: platform
+              repo: api
+            policy:
+              prerelease: none
+              include: []
+              exclude: []
+              constraint: ''
+              bump: [major, minor]
+              cooldown: 72h
+              baseline: true
+            status:
+              baseline_done: true
+              effective_interval: 30m
+              last_checked_at: '2026-10-30T17:00:02.512Z'
+              next_check_at: '2026-10-30T17:29:41.000Z'
+              error_count: 0
+        next_cursor: null
+    VersionPage:
+      summary: The greatest known versions of a watch
+      value:
+        items:
+          - version: 2.33.0
+            normalized_version: 2.33.0
+            prerelease: false
+            yanked: false
+            published_at: '2026-10-27T14:02:11Z'
+            first_seen_at: '2026-10-27T14:15:00Z'
+            removed_at: null
+          - version: 2.32.5
+            normalized_version: 2.32.5
+            prerelease: false
+            yanked: false
+            published_at: '2026-08-18T09:12:40Z'
+            first_seen_at: '2026-10-20T08:00:00Z'
+            removed_at: null
+        next_cursor: eyJ2IjoiMi4zMi41In0
+    EventRecord:
+      summary: A release.published event
+      value:
+        seq: 4182
+        ref_event_id: null
+        event:
+          specversion: '1.0'
+          type: dev.angelia.release.published.v1
+          source: angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2
+          id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+          subject: pypi:requests@2.33.0
+          time: '2026-10-30T17:00:02.512Z'
+          datacontenttype: application/json
+          dataschema: https://github.com/angelia-dev/spec/schemas/release/v1.json
+          data:
+            source: pypi
+            package: requests
+            version: 2.33.0
+            normalized_version: 2.33.0
+            previous_version: 2.32.5
+            scheme: pep440
+            bump: minor
+            backport: false
+            prerelease: false
+            yanked: false
+            published_at: '2026-10-27T14:02:11Z'
+            detected_at: '2026-10-27T14:15:00Z'
+            cooldown_satisfied_at: '2026-10-30T14:02:11Z'
+            urls:
+              release: https://pypi.org/project/requests/2.33.0/
+              changelog: https://github.com/psf/requests/blob/main/HISTORY.md
+              artifact: null
+            notes: null
+            watch:
+              id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+              name: requests
+              labels:
+                team: platform
+                repo: api
+            purl: pkg:pypi/requests@2.33.0
+    EventPage:
+      summary: A published event and the yank that followed it
+      value:
+        items:
+          - seq: 4182
+            ref_event_id: null
+            event:
+              specversion: '1.0'
+              type: dev.angelia.release.published.v1
+              source: angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2
+              id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+              subject: pypi:requests@2.33.0
+              time: '2026-10-30T17:00:02.512Z'
+              datacontenttype: application/json
+              dataschema: https://github.com/angelia-dev/spec/schemas/release/v1.json
+              data:
+                source: pypi
+                package: requests
+                version: 2.33.0
+                normalized_version: 2.33.0
+                previous_version: 2.32.5
+                scheme: pep440
+                bump: minor
+                backport: false
+                prerelease: false
+                yanked: false
+                published_at: '2026-10-27T14:02:11Z'
+                detected_at: '2026-10-27T14:15:00Z'
+                cooldown_satisfied_at: '2026-10-30T14:02:11Z'
+                urls:
+                  release: https://pypi.org/project/requests/2.33.0/
+                  changelog: https://github.com/psf/requests/blob/main/HISTORY.md
+                  artifact: null
+                notes: null
+                watch:
+                  id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+                  name: requests
+                  labels:
+                    team: platform
+                    repo: api
+                purl: pkg:pypi/requests@2.33.0
+          - seq: 4190
+            ref_event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+            event:
+              specversion: '1.0'
+              type: dev.angelia.release.yanked.v1
+              source: angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2
+              id: 01JBXC4D5E6F7G8H9J0K1M2N3P
+              subject: pypi:requests@2.33.0
+              time: '2026-11-02T09:30:01.207Z'
+              datacontenttype: application/json
+              dataschema: https://github.com/angelia-dev/spec/schemas/release/v1.json
+              data:
+                source: pypi
+                package: requests
+                version: 2.33.0
+                normalized_version: 2.33.0
+                previous_version: 2.32.5
+                scheme: pep440
+                bump: minor
+                backport: false
+                prerelease: false
+                yanked: true
+                published_at: '2026-10-27T14:02:11Z'
+                detected_at: '2026-11-02T09:30:00Z'
+                cooldown_satisfied_at: null
+                urls:
+                  release: https://pypi.org/project/requests/2.33.0/
+                  changelog: https://github.com/psf/requests/blob/main/HISTORY.md
+                  artifact: null
+                notes: null
+                watch:
+                  id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+                  name: requests
+                  labels:
+                    team: platform
+                    repo: api
+                purl: pkg:pypi/requests@2.33.0
+        next_after: 4190
+        has_more: false
+    EventStream:
+      summary: The retry hint, one event and a keep-alive
+      value: |
+        retry: 5000
+
+        id: 4182
+        data: {"seq":4182,"ref_event_id":null,"event":{"specversion":"1.0","type":"dev.angelia.release.published.v1","source":"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2","id":"01JBX2A7C8D9E0F1G2H3J4K5M6","subject":"pypi:requests@2.33.0","time":"2026-10-30T17:00:02.512Z","datacontenttype":"application/json","dataschema":"https://github.com/angelia-dev/spec/schemas/release/v1.json","data":{"source":"pypi","package":"requests","version":"2.33.0","normalized_version":"2.33.0","previous_version":"2.32.5","scheme":"pep440","bump":"minor","backport":false,"prerelease":false,"yanked":false,"published_at":"2026-10-27T14:02:11Z","detected_at":"2026-10-27T14:15:00Z","cooldown_satisfied_at":"2026-10-30T14:02:11Z","urls":{"release":"https://pypi.org/project/requests/2.33.0/","changelog":"https://github.com/psf/requests/blob/main/HISTORY.md","artifact":null},"notes":null,"watch":{"id":"01JBX1Z3M4N5P6Q7R8S9T0V1W2","name":"requests","labels":{"team":"platform","repo":"api"}},"purl":"pkg:pypi/requests@2.33.0"}}}
+
+        : keep-alive
+
+    SinkPut:
+      summary: A webhook signed with a secret from the instance environment (as in the watch file)
+      value:
+        kind: webhook
+        config:
+          url: https://ci.example.com/hooks/angelia
+          secret_env: CI_WEBHOOK_SECRET
+    Sink:
+      summary: A webhook sink as an admin token sees it; the secret is only named
+      value:
+        name: ci-webhook
+        id: 01JBX1Y8K2M3N4P5Q6R7S8T9V0
+        managed_by: api
+        kind: webhook
+        config:
+          url: https://ci.example.com/hooks/angelia
+          secret_env: CI_WEBHOOK_SECRET
+          timeout: 10s
+        url_redacted: false
+        masked_fields: []
+    SinkPage:
+      summary: A page with one sink, read with a read token
+      value:
+        items:
+          - name: ci-webhook
+            id: 01JBX1Y8K2M3N4P5Q6R7S8T9V0
+            managed_by: api
+            kind: webhook
+            config:
+              url: https://ci.example.com
+              secret_env: CI_WEBHOOK_SECRET
+              timeout: 10s
+            url_redacted: true
+            masked_fields: []
+        next_cursor: null
+    SubscriptionPut:
+      summary: Minor and major releases of the platform team's watches, to CI
+      value:
+        sink: ci-webhook
+        filter:
+          labels:
+            team: platform
+          bump: [major, minor]
+          type: [release.published, release.yanked]
+        policy:
+          cooldown: 24h
+    Subscription:
+      summary: The subscription with defaults filled in
+      value:
+        name: platform-ci
+        id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+        managed_by: api
+        sink: ci-webhook
+        filter:
+          source: []
+          labels:
+            team: platform
+          bump: [major, minor]
+          package: ''
+          type: [release.published, release.yanked]
+        policy:
+          prerelease: null
+          cooldown: 24h
+        template: ''
+    SubscriptionPage:
+      summary: A page with one subscription, the last page
+      value:
+        items:
+          - name: platform-ci
+            id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+            managed_by: api
+            sink: ci-webhook
+            filter:
+              source: []
+              labels:
+                team: platform
+              bump: [major, minor]
+              package: ''
+              type: [release.published, release.yanked]
+            policy:
+              prerelease: null
+              cooldown: 24h
+            template: ''
+        next_cursor: null
+    DeliveryDead:
+      summary: A dead delivery (the receiver answered 404)
+      value:
+        id: 01JBX2A9QWERTY0123456789AB
+        event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+        subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+        subscription_name: platform-ci
+        idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
+        status: dead
+        attempts: 1
+        next_attempt_at: null
+        held_until: null
+        last_error: 'webhook: https://ci.example.com: unexpected status 404 Not Found'
+    DeliveryReplayed:
+      summary: The same delivery, queued again
+      value:
+        id: 01JBX2A9QWERTY0123456789AB
+        event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+        subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+        subscription_name: platform-ci
+        idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
+        status: pending
+        attempts: 1
+        next_attempt_at: '2026-11-03T10:00:00.000Z'
+        held_until: null
+        last_error: 'webhook: https://ci.example.com: unexpected status 404 Not Found'
+    DeliveryPage:
+      summary: The dead-letter view (status=dead)
+      value:
+        items:
+          - id: 01JBX2A9QWERTY0123456789AB
+            event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+            subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+            subscription_name: platform-ci
+            idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
+            status: dead
+            attempts: 1
+            next_attempt_at: null
+            held_until: null
+            last_error: 'webhook: https://ci.example.com: unexpected status 404 Not Found'
+          - id: 01JBX2B0ASDFGH0123456789CD
+            event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+            subscription_id: 01JBX0ZZ9Y8X7W6V5T4S3R2Q1P
+            subscription_name: null
+            idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX0ZZ9Y8X7W6V5T4S3R2Q1P
+            status: dead
+            attempts: 0
+            next_attempt_at: null
+            held_until: null
+            last_error: subscription removed
+        next_cursor: eyJkIjoiMDFKQlgyQjBBU0RGR0gwMTIzNDU2Nzg5Q0QifQ
+    ReplayByEvent:
+      summary: Replay every dead delivery of one event
+      value:
+        event: 01JBX2A7C8D9E0F1G2H3J4K5M6
+    ReplayBySubscription:
+      summary: Resend a day of one subscription's deliveries, delivered or dead
+      value:
+        subscription: platform-ci
+        since: '2026-11-02T00:00:00Z'
+        until: '2026-11-03T00:00:00Z'
+        status: [dead, delivered]
+        dry_run: true
+    ReplayResult:
+      summary: One delivery queued again
+      value:
+        replayed: 1
+        dry_run: false
+        deliveries:
+          - id: 01JBX2A9QWERTY0123456789AB
+            event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+            subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
+            subscription_name: platform-ci
+            idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
+            status: pending
+            attempts: 1
+            next_attempt_at: '2026-11-03T10:00:00.000Z'
+            held_until: null
+            last_error: 'webhook: https://ci.example.com: unexpected status 404 Not Found'
+        truncated: false
+    PluginWasm:
+      summary: A third-party WASM source with an operator-added mirror
+      value:
+        kind: crates
+        interface: source
+        runtime: wasm
+        version: 0.3.1
+        abi: 'angelia:host/v0'
+        config_schema:
+          type: object
+          properties:
+            name:
+              type: string
+          required: [name]
+        allowed_hosts:
+          - host: crates.io
+            origin: manifest
+            credential_ports: []
+          - host: crates-mirror.example.com
+            origin: operator
+            credential_ports: [443, 8443]
+    PluginPage:
+      summary: A built-in source and sink
+      value:
+        items:
+          - kind: pypi
+            interface: source
+            runtime: builtin
+            version: 0.1.0
+            abi: null
+            config_schema: null
+            allowed_hosts: []
+          - kind: webhook
+            interface: sink
+            runtime: builtin
+            version: 0.1.0
+            abi: null
+            config_schema: null
+            allowed_hosts: []
+        next_cursor: eyJrIjoid2ViaG9vayJ9
+
+    ProblemBadRequest:
+      summary: A cursor the server did not issue
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-bad-request
+        title: Bad request
+        status: 400
+        detail: 'query parameter cursor: not a cursor issued by this server'
+        instance: /v1/watches
+    ProblemUnauthorized:
+      summary: Missing or invalid token
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-unauthorized
+        title: Unauthorized
+        status: 401
+        detail: the bearer token is missing, unknown or revoked
+        instance: /v1/watches
+    ProblemForbidden:
+      summary: A read token on a write operation
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-forbidden
+        title: Forbidden
+        status: 403
+        detail: this operation needs the write scope; the token has read
+        instance: /v1/watches/requests
+        required_scope: write
+    ProblemNotFound:
+      summary: No such watch
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-not-found
+        title: Not found
+        status: 404
+        detail: no watch named requests
+        instance: /v1/watches/requests
+    ProblemManagedByFile:
+      summary: A watch loaded from the watch file
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-managed-by-file
+        title: Managed by the watch file
+        status: 409
+        detail: watch requests is managed by the watch file; change the file instead
+        instance: /v1/watches/requests
+    ProblemSinkInUse:
+      summary: A sink that subscriptions still use
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-sink-in-use
+        title: Sink in use
+        status: 409
+        detail: sink ci-webhook is used by subscription platform-ci
+        instance: /v1/sinks/ci-webhook
+    ProblemNotReplayable:
+      summary: A delivery that is still queued
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-not-replayable
+        title: Not replayable
+        status: 409
+        detail: delivery 01JBX2A9QWERTY0123456789AB is pending; only dead or delivered deliveries can be replayed
+        instance: /v1/deliveries/01JBX2A9QWERTY0123456789AB/replay
+    ProblemUnsupportedMediaType:
+      summary: A YAML body
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-unsupported-media-type
+        title: Unsupported media type
+        status: 415
+        detail: the request body must be application/json
+        instance: /v1/watches/requests
+    ProblemValidation:
+      summary: Two errors in one watch
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-validation-failed
+        title: Validation failed
+        status: 422
+        detail: the watch has 2 errors
+        instance: /v1/watches/requests
+        errors:
+          - pointer: /policy/prerelease
+            detail: must be one of none, only, include
+          - pointer: /interval
+            detail: must be at least 5m
+    ProblemInternal:
+      summary: An unexpected error
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-internal-error
+        title: Internal error
+        status: 500
+        detail: internal error; see the server log for request 01JBX3F0R5T6Y7V8W9X0Z1A2S3
+        instance: /v1/watches
+    SinkRedacted:
+      summary: The same sink as a read token sees it; the URL is cut to scheme and host
+      value:
+        name: ci-webhook
+        id: 01JBX1Y8K2M3N4P5Q6R7S8T9V0
+        managed_by: api
+        kind: webhook
+        config:
+          url: https://ci.example.com
+          secret_env: CI_WEBHOOK_SECRET
+          timeout: 10s
+        url_redacted: true
+        masked_fields: []
+    ProblemCrossOwnerReference:
+      summary: An API subscription on a sink from the watch file
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-cross-owner-reference
+        title: Cross-owner reference
+        status: 409
+        detail: sink ci-webhook is managed by the watch file; an API subscription cannot use it
+        instance: /v1/subscriptions/platform-ci
+    ProblemCursorExpired:
+      summary: A cursor older than the retention period
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-cursor-expired
+        title: Cursor expired
+        status: 410
+        detail: events after 1200 were pruned; the oldest event kept has seq 3051
+        instance: /v1/events
+        oldest_seq: 3051
+    ProblemPayloadTooLarge:
+      summary: A body over 1 MiB
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-payload-too-large
+        title: Payload too large
+        status: 413
+        detail: the request body is larger than 1 MiB
+        instance: /v1/watches/requests
+    ProblemUnavailable:
+      summary: The instance is draining
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-unavailable
+        title: Unavailable
+        status: 503
+        detail: the instance is shutting down; retry on another instance or later
+        instance: /v1/watches
+    ProblemEnvNotAllowed:
+      summary: An environment variable the instance does not allow
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-env-not-allowed
+        title: Environment variable not allowed
+        status: 422
+        detail: config.secret_env names a variable that api.allowed_env does not allow
+        instance: /v1/sinks/ci-webhook
+        errors:
+          - pointer: /config/secret_env
+            detail: not allowed by api.allowed_env
+

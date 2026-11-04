@@ -1,0 +1,10 @@
+# oapi-codegen v2.8.2 configuration (the one spec/scripts/check-go-stubs.sh
+# checks), without embedded-spec: that option links kin-openapi, which
+# architecture.md section 6 does not list. The server reads the vendored
+# document through api/openapi instead.
+package: api
+output: api.gen.go
+generate:
+  models: true
+  chi-server: true
+  strict-server: true
