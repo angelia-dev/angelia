@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -45,16 +46,26 @@ const (
 	gitlabAuthPerMin = 2000
 )
 
-// defaultAuthHeaders are the request headers that mark a request as
-// authenticated for the limiter: the standard one and GitLab's personal,
-// project and group access token header. Header values are never logged or
-// recorded; only their presence is looked at. Config.ExtraAuthHeaders adds
-// to this list.
-var defaultAuthHeaders = []string{"Authorization", "PRIVATE-TOKEN"}
+// IsCredentialHeader reports whether name is a request header that carries a
+// credential and so marks a request as authenticated for the limiter: the
+// standard Authorization and GitLab's PRIVATE-TOKEN (personal, project and
+// group access tokens). The match is case-insensitive. Header values are
+// never logged or recorded; only their presence is looked at.
+// Config.ExtraAuthHeaders adds to this set for the limiter. net/http can
+// forward such a header across hosts on a redirect; see
+// Config.ExtraAuthHeaders.
+func IsCredentialHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Private-Token":
+		return true
+	}
+	return false
+}
 
 // HostLimit holds the limits for one host. A request carrying an
-// Authorization or PRIVATE-TOKEN header (or one of Config.ExtraAuthHeaders) uses Authenticated; others use Anonymous. The two
-// budgets are tracked in separate buckets.
+// Authorization or PRIVATE-TOKEN header (or one of Config.ExtraAuthHeaders)
+// uses Authenticated; others use Anonymous. The two budgets are tracked in
+// separate buckets.
 //
 // MaxBodyBytes caps the response body for responses served by this host,
 // overriding Config.MaxBodyBytes. Zero means the built-in cap for the host if
@@ -113,8 +124,12 @@ func DefaultFallbackLimit() HostLimit {
 // gitlab.com allows 500 requests per minute per IP address for
 // unauthenticated traffic and 2,000 per minute per user for authenticated API
 // traffic; the buckets stay under those budgets in any one-minute window.
-// Source: https://docs.gitlab.com/user/gitlab_com/#rate-limits-on-gitlabcom
+// Source: https://docs.gitlab.com/user/gitlab_com/rate_limits/
 // (self-managed GitLab hosts are configured by the operator via HostLimits).
+// GitLab has announced per-plan limits (60 per hour unauthenticated; 5,000 per
+// hour with a burst of 100 per minute for authenticated users on the Free
+// plan) that are not yet in force. Until these defaults change, the pause on
+// RateLimit-Remaining and RateLimit-Reset is what protects us.
 //
 // crates.io's crawler policy allows one request per second to its API, so
 // crates.io gets a rate of 1 per second with no burst beyond a single
