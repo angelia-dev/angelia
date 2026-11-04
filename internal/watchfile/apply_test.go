@@ -449,6 +449,92 @@ watches:
 	}
 }
 
+// #134, ADR 0021: spellings of one PyPI project share one target, stored
+// under the canonical name.
+func TestSpellingsOfOneProjectShareATarget(t *testing.T) {
+	st := openStore(t)
+	plan := mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: Requests}}
+  - {name: b, source: pypi, coordinates: {name: requests}}
+  - {name: c, source: pypi, coordinates: {name: " requests "}}
+`)
+	tg, err := target(t, st, "pypi", map[string]string{"name": "requests"})
+	mustNoErr(t, err)
+	if _, err := target(t, st, "pypi", map[string]string{"name": "Requests"}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a target was stored under the spelling Requests: err = %v", err)
+	}
+	ws := snap(t, st, store.ManagedByFile).watches
+	if len(ws) != 3 {
+		t.Fatalf("watches = %+v", ws)
+	}
+	for _, w := range ws {
+		if w.TargetID != tg.ID {
+			t.Fatalf("watch %s is on target %s, want the shared %s", w.Name, w.TargetID, tg.ID)
+		}
+	}
+	creates := 0
+	for _, c := range plan.Changes {
+		if c.Kind == KindTarget && c.Action == Create {
+			creates++
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("plan creates %d targets, want 1:\n%s", creates, plan)
+	}
+	// Re-spelling a watch is not a move: same target, no baseline reset.
+	plan = mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: REQUESTS}}
+  - {name: b, source: pypi, coordinates: {name: requests}}
+  - {name: c, source: pypi, coordinates: {name: " requests "}}
+`)
+	for _, c := range plan.Changes {
+		if c.Action != Unchanged {
+			t.Fatalf("re-spelling changed something:\n%s", plan)
+		}
+	}
+}
+
+// #134, ADR 0021 decision 7: a store from before canonical targets holds a
+// target spelled {name: Requests}. Applying the file moves its watch to the
+// canonical target with a baseline reset and deletes the old target.
+func TestLegacyNonCanonicalTargetIsReplaced(t *testing.T) {
+	st := openStore(t)
+	const doc = base + `
+watches:
+  - {name: a, source: pypi, coordinates: {name: Requests}}
+`
+	f := mustParse(t, doc)
+	legacy := store.Target{ID: "legacy", Kind: "pypi", Coordinates: map[string]string{"name": "Requests"}, NextCheckAt: clock, Interval: f.Watches[0].Interval}
+	mustNoErr(t, st.InConfigTx(t.Context(), func(tx store.ConfigTx) error {
+		if err := tx.CreateTarget(t.Context(), legacy); err != nil {
+			return err
+		}
+		return tx.CreateWatch(t.Context(), store.Watch{
+			ID: "w1", TargetID: legacy.ID, Policy: f.Watches[0].PolicyJSON(), Labels: f.Watches[0].Labels,
+			Name: "a", ManagedBy: store.ManagedByFile,
+		})
+	}))
+
+	plan := mustApply(t, st, doc)
+	tg, err := target(t, st, "pypi", map[string]string{"name": "requests"})
+	mustNoErr(t, err)
+	ws := snap(t, st, store.ManagedByFile).watches
+	if len(ws) != 1 || ws[0].ID != "w1" || ws[0].TargetID != tg.ID {
+		t.Fatalf("watches = %+v, want w1 moved to target %s", ws, tg.ID)
+	}
+	moved := slices.ContainsFunc(plan.Changes, func(c Change) bool {
+		return c.Kind == KindWatch && c.Name == "a" && c.Action == Update && strings.Contains(c.Detail, "source/coordinates (baseline reset)")
+	})
+	if !moved {
+		t.Fatalf("plan does not report the move with a baseline reset:\n%s", plan)
+	}
+	if _, err := target(t, st, "pypi", map[string]string{"name": "Requests"}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the legacy target is still there: err = %v", err)
+	}
+}
+
 func TestSinkChangeAndRepointedSubscription(t *testing.T) {
 	st := openStore(t)
 	mustApply(t, st, twoWatches)

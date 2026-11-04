@@ -79,6 +79,8 @@ type Version struct {
     Metadata    map[string]any    // digest, tarball url, dist-tags, …
 }
 ```
+A source whose coordinates can name one upstream object in several spellings (`Requests` and `requests` on PyPI) also implements the optional interface `Canonicalizer { Canonical(t Target) (Target, error) }`; the core stores and coalesces targets on its result ([ADR 0021](adr/0021-source-canonical-target.md), amending [ADR 0006](adr/0006-source-target-and-fetchstate.md)).
+
 Built-in for v1: `pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`, `oci` (Docker Hub, GHCR, any OCI registry), `go-proxy`, `maven`, `http-json` (URL + JSONPath/jq) and `http-regex`.
 
 ### 3.4 Normalizer and policy engine
