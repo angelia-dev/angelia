@@ -329,3 +329,55 @@ func TestEventStreamKeepAliveAndDrain(t *testing.T) {
 		t.Fatalf("draining: %d %v %s", r.Status, r.Header, r.Body)
 	}
 }
+
+// slowStore makes every read of the event log slow, so that a catch-up
+// takes a while.
+type slowStore struct {
+	store.APIStore
+	delay time.Duration
+}
+
+func (s slowStore) ListEventsAfter(ctx context.Context, after int64, limit int) ([]store.Event, error) {
+	time.Sleep(s.delay)
+	return s.APIStore.ListEventsAfter(ctx, after, limit)
+}
+
+// A long catch-up with no match keeps the stream alive with comments and
+// ends at once on a drain.
+func TestEventStreamDrainDuringCatchUp(t *testing.T) {
+	e, ts := streamEnv(t, func(o *Options) {
+		o.Store = slowStore{APIStore: o.Store, delay: 20 * time.Millisecond}
+		o.EventScan = 1
+		o.KeepAlive = 50 * time.Millisecond
+	})
+	e.seedConfig()
+	wid := e.watchID("requests")
+	for i := range 200 { // 200 scans of 20 ms: 4 s of catch-up
+		e.appendEvent(wid, event.TypePublished, "pypi", e.now.Add(time.Duration(i)*time.Millisecond))
+	}
+	c := openStream(t, ts.URL+"/v1/events/stream?type=release.yanked", tokRead)
+	c.expect("retry: 5000")
+	c.expect(": keep-alive")
+	start := time.Now()
+	e.srv.Drain()
+	c.expectClosed()
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the stream closed %v after the drain", d)
+	}
+}
+
+// A request whose client went away is logged as 499 with the context error,
+// and not as a server failure.
+func TestAccessLogClientGone(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, "GET", "/v1/watches", nil)
+	req.Header.Set("Authorization", "Bearer "+tokRead)
+	rec := httptest.NewRecorder()
+	e.srv.ServeHTTP(rec, req)
+	log := e.log.String()
+	if !strings.Contains(log, `"status":499`) || !strings.Contains(log, `"client_error":"context canceled"`) || strings.Contains(log, "api request failed") {
+		t.Errorf("log:\n%s", log)
+	}
+}

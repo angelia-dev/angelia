@@ -38,43 +38,39 @@ type eventStream struct {
 	after  int64
 	filter *eventFilter
 	token  string
+
+	w         http.ResponseWriter
+	rc        *http.ResponseController
+	lastWrite time.Time
+	nextAuth  time.Time
 }
 
-// errStreamClosed ends a stream on purpose.
+// errStreamClosed ends a stream on purpose: the client went away, the
+// server drains, or the token was revoked.
 var errStreamClosed = errors.New("api: stream closed")
 
 // VisitStreamEventsResponse implements StreamEventsResponseObject.
 func (e *eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 	s := e.s
-	rc := http.NewResponseController(w)
+	e.w, e.rc = w, http.NewResponseController(w)
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	lastWrite := time.Now()
-	send := func(b []byte) error {
-		_ = rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout)) // not every writer supports deadlines
-		if _, err := w.Write(b); err != nil {
-			return err
-		}
-		lastWrite = time.Now()
-		return rc.Flush()
-	}
-	if err := send([]byte("retry: 5000\n\n")); err != nil {
+	e.nextAuth = time.Now().Add(s.opts.AuthRecheck)
+	if err := e.send([]byte("retry: 5000\n\n")); err != nil {
 		return nil //nolint:nilerr // the client went away: nothing to report
 	}
 	ticker := time.NewTicker(s.opts.StreamPoll)
 	defer ticker.Stop()
-	nextAuth := time.Now().Add(s.opts.AuthRecheck)
 	cursor := e.after
 	for {
-		if err := e.flushNew(&cursor, send); err != nil {
-			if e.ctx.Err() != nil || errors.Is(err, errStreamClosed) {
-				return nil
+		if err := e.flushNew(&cursor); err != nil {
+			if !errors.Is(err, errStreamClosed) && e.ctx.Err() == nil {
+				s.log.ErrorContext(e.ctx, "event stream", "request_id", stateFrom(e.ctx).id, "error", err)
 			}
-			s.log.ErrorContext(e.ctx, "event stream", "request_id", stateFrom(e.ctx).id, "error", err)
 			return nil // the status is sent: close the stream
 		}
 		select {
@@ -84,23 +80,52 @@ func (e *eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 			return nil
 		case <-ticker.C:
 		}
-		if !time.Now().Before(nextAuth) {
-			p, err := s.opts.Auth.Authenticate(e.ctx, e.token)
-			if err != nil || p.Scope < ScopeRead {
-				return nil // revoked: close the stream
-			}
-			nextAuth = time.Now().Add(s.opts.AuthRecheck)
-		}
-		if time.Since(lastWrite) >= s.opts.KeepAlive {
-			if err := send([]byte(": keep-alive\n\n")); err != nil {
-				return nil //nolint:nilerr // the client went away
-			}
+		if err := e.idle(); err != nil {
+			return nil //nolint:nilerr // closed on purpose
 		}
 	}
 }
 
-// flushNew sends every matching event after the cursor and moves it.
-func (e *eventStream) flushNew(cursor *int64, send func([]byte) error) error {
+func (e *eventStream) send(b []byte) error {
+	_ = e.rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout)) // not every writer supports deadlines
+	if _, err := e.w.Write(b); err != nil {
+		return errStreamClosed
+	}
+	e.lastWrite = time.Now()
+	if e.rc.Flush() != nil {
+		return errStreamClosed
+	}
+	return nil
+}
+
+// idle runs between two reads of the log: it ends the stream when the client
+// went away, the server drains or the token was revoked, and sends a
+// keep-alive comment once the stream has been silent for KeepAlive.
+func (e *eventStream) idle() error {
+	select {
+	case <-e.ctx.Done():
+		return errStreamClosed
+	case <-e.s.stop:
+		return errStreamClosed
+	default:
+	}
+	if !time.Now().Before(e.nextAuth) {
+		p, err := e.s.opts.Auth.Authenticate(e.ctx, e.token)
+		if err != nil || p.Scope < ScopeRead {
+			return errStreamClosed // revoked
+		}
+		e.nextAuth = time.Now().Add(e.s.opts.AuthRecheck)
+	}
+	if time.Since(e.lastWrite) >= e.s.opts.KeepAlive {
+		return e.send([]byte(": keep-alive\n\n"))
+	}
+	return nil
+}
+
+// flushNew sends every matching event after the cursor and moves it. A long
+// catch-up reads the log in bounded scans and runs idle between them, so it
+// stops on a drain and stays alive while nothing matches.
+func (e *eventStream) flushNew(cursor *int64) error {
 	for {
 		items, next, more, err := e.s.scanEvents(e.ctx, *cursor, 100, e.s.opts.EventScan, e.filter)
 		if err != nil {
@@ -115,13 +140,16 @@ func (e *eventStream) flushNew(cursor *int64, send func([]byte) error) error {
 				return err
 			}
 			b.WriteString("\n")
-			if err := send(b.Bytes()); err != nil {
-				return errStreamClosed
+			if err := e.send(b.Bytes()); err != nil {
+				return err
 			}
 		}
 		*cursor = next
 		if !more {
 			return nil
+		}
+		if err := e.idle(); err != nil {
+			return err
 		}
 	}
 }

@@ -37,6 +37,10 @@ const (
 	MaxAuthRecheck     = 60 * time.Second
 	DefaultEventScan   = 10000
 	streamWriteTimeout = 10 * time.Second
+	// StatusClientClosed is the status the access log records for a request
+	// whose client went away before anything was written (nginx's 499). It
+	// is never sent.
+	StatusClientClosed = 499
 )
 
 // Options configures a Server. Store, Auth and Sources are required.
@@ -100,8 +104,12 @@ func New(opts Options) (*Server, error) {
 	if opts.KeepAlive <= 0 {
 		opts.KeepAlive = DefaultKeepAlive
 	}
-	if opts.AuthRecheck <= 0 || opts.AuthRecheck > MaxAuthRecheck {
-		opts.AuthRecheck = MaxAuthRecheck
+	// A stream checks its token on the first poll after AuthRecheck has
+	// passed, so the worst case is AuthRecheck + StreamPoll: keep it within
+	// MaxAuthRecheck (spec docs/api.md decision 15).
+	opts.StreamPoll = min(opts.StreamPoll, MaxAuthRecheck/2)
+	if opts.AuthRecheck <= 0 || opts.AuthRecheck+opts.StreamPoll > MaxAuthRecheck {
+		opts.AuthRecheck = MaxAuthRecheck - opts.StreamPoll
 	}
 	if opts.EventScan <= 0 {
 		opts.EventScan = DefaultEventScan
@@ -433,6 +441,14 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	}
 	if p.ID != "" {
 		attrs = append(attrs, slog.String("principal", p.ID), slog.String("scope", p.Scope.String()))
+	}
+	if err := r.Context().Err(); err != nil {
+		// The client went away. Nothing written: 499, as nginx logs it; a
+		// stream that ends this way keeps its 200.
+		if !rec.wrote {
+			attrs[4] = slog.Int("status", StatusClientClosed)
+		}
+		attrs = append(attrs, slog.String("client_error", err.Error()))
 	}
 	s.log.LogAttrs(r.Context(), slog.LevelInfo, "api request", attrs...)
 }
