@@ -65,7 +65,8 @@ type APITx interface {
 	ListReplayCandidates(ctx context.Context, q ReplayQuery) ([]DeliveryRow, error)
 	// ReplayDelivery queues a dead or delivered delivery again, due at now:
 	// it becomes pending with NextAttemptAt now and no hold. Attempts and
-	// LastError are kept (spec docs/api.md decision 28). ErrNotFound when the
+	// LastError are kept, and ReplayBaseAttempts becomes Attempts, so the
+	// retry budget starts again (spec docs/api.md decision 28). ErrNotFound when the
 	// delivery does not exist or is neither dead nor delivered.
 	ReplayDelivery(ctx context.Context, id string, now time.Time) error
 }

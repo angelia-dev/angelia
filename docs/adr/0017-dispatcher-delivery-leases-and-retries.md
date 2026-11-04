@@ -171,3 +171,21 @@ The code emits two `last_error` strings for a deleted subscription, and both are
 - `subscription deleted` (`dispatch.ReasonSubscriptionDeleted`) is set by the dispatcher on a leased delivery whose subscription no longer exists, the case of rule 7 above.
 
 Both describe the same condition. The OpenAPI spec's `docs/api.md` uses `subscription removed`. Unifying the two constants is a code change, not a docs change; the rule text above is left as accepted.
+
+## Amendment (2026-11-04, #71): a replay restarts the retry budget
+
+Decision 28 of the OpenAPI spec (`docs/api.md`, accepted by the maintainer) says a replay keeps
+`attempts` and starts the retry budget again. Rules 4 and 6 above count every attempt since the
+delivery was created, so a delivery that was dead after its last attempt and was then replayed was
+leased with `attempts > MaxAttempts` and set dead by the poison guard without calling the sink.
+
+- `delivery.replay_base_attempts` (migration 00014, additive, default 0) holds `attempts` at the last
+  replay. `ReplayDelivery` sets it; nothing else writes it.
+- The dispatcher counts `used = attempts - replay_base_attempts`. The poison guard of rule 4 applies
+  when `used > MaxAttempts`, the last attempt of rule 6 is `used >= MaxAttempts`, the backoff of rule 6
+  is drawn for `used`, and the `giving up after N attempts` messages give `used`.
+- `attempts` itself keeps counting across replays. It is the attempt number sent to the sink and the
+  fence of rule 3, so both stay unique per delivery.
+
+The rule text above is left as accepted. Tests: `internal/dispatch/replay_test.go` and
+`internal/api/replay_e2e_test.go`.

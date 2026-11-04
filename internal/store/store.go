@@ -447,8 +447,12 @@ type Delivery struct {
 	SubscriptionID string
 	Status         string // one of the Delivery* constants
 	Attempts       int64
-	NextAttemptAt  time.Time // zero: not scheduled
-	LastError      string
+	// ReplayBaseAttempts is Attempts at the delivery's last replay, 0 when it
+	// was never replayed. The retry budget counts Attempts -
+	// ReplayBaseAttempts (spec docs/api.md decision 28, ADR 0017 amendment).
+	ReplayBaseAttempts int64
+	NextAttemptAt      time.Time // zero: not scheduled
+	LastError          string
 	// TraceParent is the W3C traceparent of the span active when the
 	// delivery was created, empty when there was none. The dispatcher links
 	// its delivery spans to it (ADR 0020). Ids only, never a secret.

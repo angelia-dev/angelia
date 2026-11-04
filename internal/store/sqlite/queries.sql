@@ -371,7 +371,9 @@ WHERE d.status IN (SELECT value FROM json_each(sqlc.arg(statuses_json)))
   AND (CAST(sqlc.arg(subscription_id) AS TEXT) = '' OR d.subscription_id = sqlc.arg(subscription_id))
 ORDER BY e.seq, d.id;
 
--- A replay keeps attempts and last_error (spec docs/api.md decision 28).
+-- A replay keeps attempts and last_error, and starts a new retry budget from
+-- the current attempts (spec docs/api.md decision 28).
 -- name: ReplayDelivery :execrows
-UPDATE delivery SET status = 'pending', next_attempt_at = sqlc.arg(now), held_until = NULL
+UPDATE delivery SET status = 'pending', next_attempt_at = sqlc.arg(now), held_until = NULL,
+    replay_base_attempts = attempts
 WHERE id = sqlc.arg(id) AND status IN ('dead', 'delivered');

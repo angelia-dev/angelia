@@ -166,12 +166,9 @@ func replayable(ctx context.Context, tx store.APITx, d store.Delivery) (string, 
 	return "", nil
 }
 
-// ReplayDelivery implements StrictServerInterface.
-//
-// TODO(decision 28): "the retry budget starts again from the replay" needs
-// the dispatcher to count attempts from the replay; it counts them from the
-// first attempt, so a replayed delivery whose attempts reached the budget
-// gets one attempt. See the story's report.
+// ReplayDelivery implements StrictServerInterface. The replay keeps attempts
+// and starts a new retry budget (store.Delivery.ReplayBaseAttempts, spec
+// docs/api.md decision 28).
 func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestObject) (ReplayDeliveryResponseObject, error) {
 	now := s.now()
 	var body deliveryJSON

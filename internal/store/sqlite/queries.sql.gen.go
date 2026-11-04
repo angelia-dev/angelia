@@ -533,7 +533,7 @@ func (q *Queries) FinishLeasedDelivery(ctx context.Context, arg FinishLeasedDeli
 }
 
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery WHERE id = ?
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent, replay_base_attempts FROM delivery WHERE id = ?
 `
 
 func (q *Queries) GetDelivery(ctx context.Context, id string) (Delivery, error) {
@@ -555,6 +555,7 @@ func (q *Queries) GetDelivery(ctx context.Context, id string) (Delivery, error) 
 		&i.HoldRaw,
 		&i.HoldInput,
 		&i.Traceparent,
+		&i.ReplayBaseAttempts,
 	)
 	return i, err
 }
@@ -838,7 +839,7 @@ func (q *Queries) HighestPrunedSeq(ctx context.Context) (int64, error) {
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery WHERE event_id = ? ORDER BY id
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent, replay_base_attempts FROM delivery WHERE event_id = ? ORDER BY id
 `
 
 func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Delivery, error) {
@@ -866,6 +867,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 			&i.HoldRaw,
 			&i.HoldInput,
 			&i.Traceparent,
+			&i.ReplayBaseAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -881,7 +883,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 }
 
 const listDeliveriesPage = `-- name: ListDeliveriesPage :many
-SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, e.seq AS event_seq
+SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, d.replay_base_attempts, e.seq AS event_seq
 FROM delivery d JOIN event e ON e.id = d.event_id
 WHERE d.status IN (SELECT value FROM json_each(?1))
   AND (CAST(?2 AS TEXT) = 'null'
@@ -940,6 +942,7 @@ func (q *Queries) ListDeliveriesPage(ctx context.Context, arg ListDeliveriesPage
 			&i.Delivery.HoldRaw,
 			&i.Delivery.HoldInput,
 			&i.Delivery.Traceparent,
+			&i.Delivery.ReplayBaseAttempts,
 			&i.EventSeq,
 		); err != nil {
 			return nil, err
@@ -996,7 +999,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 }
 
 const listHeldDeliveries = `-- name: ListHeldDeliveries :many
-SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent, replay_base_attempts FROM delivery
 WHERE subscription_id = ? AND status = 'pending' AND held_until > ?
 ORDER BY id
 `
@@ -1032,6 +1035,7 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 			&i.HoldRaw,
 			&i.HoldInput,
 			&i.Traceparent,
+			&i.ReplayBaseAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -1334,7 +1338,7 @@ func (q *Queries) ListPendingReleases(ctx context.Context, targetID string) ([]L
 }
 
 const listReplayCandidates = `-- name: ListReplayCandidates :many
-SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, e.seq AS event_seq, e.payload_json
+SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, d.replay_base_attempts, e.seq AS event_seq, e.payload_json
 FROM delivery d JOIN event e ON e.id = d.event_id
 WHERE d.status IN (SELECT value FROM json_each(?1))
   AND (CAST(?2 AS TEXT) = '' OR d.event_id = ?2)
@@ -1379,6 +1383,7 @@ func (q *Queries) ListReplayCandidates(ctx context.Context, arg ListReplayCandid
 			&i.Delivery.HoldRaw,
 			&i.Delivery.HoldInput,
 			&i.Delivery.Traceparent,
+			&i.Delivery.ReplayBaseAttempts,
 			&i.EventSeq,
 			&i.PayloadJson,
 		); err != nil {
@@ -1768,7 +1773,8 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) erro
 }
 
 const replayDelivery = `-- name: ReplayDelivery :execrows
-UPDATE delivery SET status = 'pending', next_attempt_at = ?1, held_until = NULL
+UPDATE delivery SET status = 'pending', next_attempt_at = ?1, held_until = NULL,
+    replay_base_attempts = attempts
 WHERE id = ?2 AND status IN ('dead', 'delivered')
 `
 
@@ -1777,7 +1783,8 @@ type ReplayDeliveryParams struct {
 	ID  string
 }
 
-// A replay keeps attempts and last_error (spec docs/api.md decision 28).
+// A replay keeps attempts and last_error, and starts a new retry budget from
+// the current attempts (spec docs/api.md decision 28).
 func (q *Queries) ReplayDelivery(ctx context.Context, arg ReplayDeliveryParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, replayDelivery, arg.Now, arg.ID)
 	if err != nil {
@@ -1838,7 +1845,7 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 const startDeliveryAttempt = `-- name: StartDeliveryAttempt :one
 UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
 WHERE id = ?
-RETURNING id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent
+RETURNING id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent, replay_base_attempts
 `
 
 // Every lease of a delivery counts as an attempt, so an attempt cut short
@@ -1862,6 +1869,7 @@ func (q *Queries) StartDeliveryAttempt(ctx context.Context, id string) (Delivery
 		&i.HoldRaw,
 		&i.HoldInput,
 		&i.Traceparent,
+		&i.ReplayBaseAttempts,
 	)
 	return i, err
 }
