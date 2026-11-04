@@ -40,5 +40,7 @@ END;
 -- +goose StatementEnd
 
 -- +goose Down
+-- Discards the recorded highest pruned seq; up again recovers it from the
+-- gaps in the event log.
 DROP TRIGGER event_prune_seq;
 DROP TABLE event_prune;

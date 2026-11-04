@@ -141,6 +141,29 @@ func (o txOps) SetTargetInterval(ctx context.Context, id string, interval time.D
 	return deleted(n, err, "set target interval", id)
 }
 
+func (o txOps) RecomputeTargetInterval(ctx context.Context, id string, now time.Time) (time.Duration, bool, error) {
+	tg, err := o.GetTarget(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	ws, err := o.ListWatches(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	want := store.EffectiveInterval(ws)
+	if want == 0 || want == tg.Interval {
+		return tg.Interval, false, nil
+	}
+	next := tg.NextCheckAt
+	if due := now.Add(want); due.Before(next) {
+		next = due
+	}
+	if err := o.SetTargetInterval(ctx, id, want, next); err != nil {
+		return 0, false, err
+	}
+	return want, true, nil
+}
+
 func (o txOps) DeleteTargetIfUnused(ctx context.Context, id string) (bool, error) {
 	// The known set goes first: the target delete is a no-op while a watch
 	// uses it, and then its versions must stay.

@@ -258,3 +258,53 @@ func TestHighestPrunedSeqBackfill(t *testing.T) {
 		})
 	}
 }
+
+// RecomputeTargetInterval sets the target to the smallest interval among its
+// watches, ignoring watches without one, and pulls the next check forward
+// when the interval goes down.
+func TestRecomputeTargetInterval(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	next := t0.Add(2 * time.Hour)
+	must(t, s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "a"}, NextCheckAt: next, Interval: 2 * time.Hour}))
+	recompute := func() (time.Duration, bool) {
+		t.Helper()
+		var d time.Duration
+		var changed bool
+		must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) (err error) {
+			d, changed, err = tx.RecomputeTargetInterval(ctx, "t1", t0)
+			return err
+		}))
+		return d, changed
+	}
+	// No watch has an interval: the target keeps its own.
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w0", TargetID: "t1"}))
+	if d, changed := recompute(); d != 2*time.Hour || changed {
+		t.Fatalf("no intervals: %s %v", d, changed)
+	}
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w1", TargetID: "t1", Interval: time.Hour}))
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w2", TargetID: "t1", Name: "f", ManagedBy: store.ManagedByFile, Interval: 30 * time.Minute}))
+	if d, changed := recompute(); d != 30*time.Minute || !changed {
+		t.Fatalf("lowered: %s %v", d, changed)
+	}
+	tg, err := s.GetTarget(ctx, "t1")
+	must(t, err)
+	if tg.Interval != 30*time.Minute || !tg.NextCheckAt.Equal(t0.Add(30*time.Minute)) {
+		t.Fatalf("target: %+v", tg)
+	}
+	if d, changed := recompute(); d != 30*time.Minute || changed {
+		t.Fatalf("again: %s %v", d, changed)
+	}
+	// Raising it leaves the next check alone.
+	must(t, s.DeleteWatch(ctx, "w2"))
+	if d, changed := recompute(); d != time.Hour || !changed {
+		t.Fatalf("raised: %s %v", d, changed)
+	}
+	if tg, _ = s.GetTarget(ctx, "t1"); !tg.NextCheckAt.Equal(t0.Add(30 * time.Minute)) {
+		t.Fatalf("next check moved: %s", tg.NextCheckAt)
+	}
+	wantErr(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error {
+		_, _, err := tx.RecomputeTargetInterval(ctx, "nope", t0)
+		return err
+	}), store.ErrNotFound, "missing target")
+}

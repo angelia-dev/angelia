@@ -148,7 +148,11 @@ type Store interface {
 	// HighestPrunedSeq returns the greatest Seq of an event that was ever
 	// deleted, 0 when none was. A pull cursor below it points into pruned
 	// events (spec docs/api.md decision 12: 410 cursor-expired). Events with a
-	// smaller Seq may still be kept, while one of their deliveries is pending.
+	// smaller Seq may still be kept, while one of their deliveries is pending,
+	// so the oldest kept Seq can be below it. The oldest_seq of the 410 must
+	// therefore be max(oldest kept Seq, HighestPrunedSeq+1): with the oldest
+	// kept Seq alone, a client resuming from it is still below the highest
+	// pruned Seq and gets 410 again, for as long as that old event is held.
 	HighestPrunedSeq(ctx context.Context) (int64, error)
 	// InConfigTx runs fn in one transaction like InTx, with the operations a
 	// declarative file apply needs.
@@ -257,6 +261,7 @@ type ConfigTx interface {
 	FindTarget(ctx context.Context, kind string, coordinates map[string]string) (Target, error)
 	CreateTarget(ctx context.Context, t Target) error
 	// SetTargetInterval stores the interval and the next check time of a target.
+	// Callers that change watches use RecomputeTargetInterval instead.
 	SetTargetInterval(ctx context.Context, id string, interval time.Duration, nextCheckAt time.Time) error
 	// DeleteTargetIfUnused deletes the target and its known versions when no
 	// watch uses it, and reports whether it did.
@@ -264,10 +269,21 @@ type ConfigTx interface {
 	CreateWatch(ctx context.Context, w Watch) error
 	// UpdateWatch stores TargetID, Policy, Labels and Interval. It leaves
 	// BaselineDone alone, so that an apply cannot undo a worker's baseline.
+	// Callers must always set Interval: a zero Interval clears the stored one.
+	// After a watch is created, updated or deleted, call
+	// RecomputeTargetInterval on its target (and on its previous target when
+	// it moved).
 	UpdateWatch(ctx context.Context, w Watch) error
 	// ResetWatchBaseline sets BaselineDone to false.
 	ResetWatchBaseline(ctx context.Context, id string) error
 	DeleteWatch(ctx context.Context, id string) error
+	// RecomputeTargetInterval sets the target's interval to the effective
+	// interval of its watches ([EffectiveInterval], spec docs/api.md decision
+	// 10) and returns it, reporting whether it changed. Lowering the interval
+	// also pulls NextCheckAt forward to at most now plus the new interval.
+	// When no watch has an interval, the target keeps its own and nothing
+	// changes. ErrNotFound for an unknown target.
+	RecomputeTargetInterval(ctx context.Context, targetID string, now time.Time) (time.Duration, bool, error)
 	CreateSink(ctx context.Context, s Sink) error
 	// UpdateSink stores Kind and ConfigEncrypted.
 	UpdateSink(ctx context.Context, s Sink) error
@@ -341,6 +357,19 @@ type Watch struct {
 	// one: the smallest among the watches on the target (spec docs/api.md
 	// decision 10).
 	Interval time.Duration
+}
+
+// EffectiveInterval is the check interval of a target with these watches:
+// the smallest Interval among them, ignoring watches without one. Zero when
+// none has one.
+func EffectiveInterval(ws []Watch) time.Duration {
+	var d time.Duration
+	for _, w := range ws {
+		if w.Interval > 0 && (d == 0 || w.Interval < d) {
+			d = w.Interval
+		}
+	}
+	return d
 }
 
 // Version is one entry of a target's known version set.

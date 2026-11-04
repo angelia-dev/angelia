@@ -12,4 +12,6 @@
 ALTER TABLE watch ADD COLUMN interval_ms INTEGER;
 
 -- +goose Down
+-- Discards the requested interval of every watch; target.interval_ms (the
+-- effective one) is kept.
 ALTER TABLE watch DROP COLUMN interval_ms;

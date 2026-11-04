@@ -192,7 +192,7 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 
 | File | Rows |
 |---|---|
-| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`, `interval` is applied to the target; `labels_json`) |
+| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`; `interval` is stored on the watch, `watch.interval_ms`, and the target holds the effective one, the smallest among its watches; `labels_json`) |
 | `sinks[]` | one `sink` (`config_json_encrypted`; in Phase 0 the secret *reference* `secret_env` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 
@@ -260,7 +260,12 @@ Details:
   effective interval: the smallest among the watches on it, the API's included (those without a stored
   interval do not count), kept in step on every apply. Lowering it also pulls `next_check_at` forward to
   at most one interval from now. A new target is due immediately. When the file stops watching a target
-  that API watches still use, its `interval_ms` becomes the smallest among those API watches.
+  that API watches still use, its `interval_ms` becomes the smallest among those API watches. A change
+  of the effective interval shows in the plan as `update target <id> (interval …)`. Apply uses
+  `ConfigTx.RecomputeTargetInterval`, which the REST API (#71) calls after its own watch writes.
+- The first apply after upgrading to migration 00012 records each file watch's interval once: watches
+  stored before it have no `watch.interval_ms`, so the plan shows them as
+  `update watch <name> (interval 1h0m0s (recorded))`. Later applies show them unchanged.
 - `policy_json` holds the policy with every default filled in plus `scheme`; `filter_json` likewise. This
   keeps the no-op comparison exact. Watch and subscription rows are compared by value, never by text.
 - Webhook URLs are never echoed in errors. A query parameter whose name contains `token`, `secret`, `key`,

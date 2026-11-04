@@ -742,7 +742,8 @@ watches:
 		return tx.UpdateWatch(ctx, c)
 	}))
 	plan = mustApply(t, st, changed)
-	if plan.Count(KindWatch, Update) != 1 || plan.Count(KindWatch, Unchanged) != 2 {
+	if plan.Count(KindWatch, Update) != 1 || plan.Count(KindWatch, Unchanged) != 2 ||
+		!strings.Contains(plan.String(), "watch c (interval 1h0m0s (recorded))") {
 		t.Fatalf("plan:\n%s", plan)
 	}
 	if w, _ := st.GetWatch(ctx, ws[2].ID); w.Interval != DefaultInterval {
@@ -764,10 +765,22 @@ watches:
 	mustNoErr(t, err)
 	mustNoErr(t, st.CreateWatch(ctx, store.Watch{ID: "apiw", TargetID: tg.ID, Name: "api-req", Interval: 30 * time.Minute}))
 
-	mustApply(t, st, base+`
+	// The API watch lowers the target: a target update, not a watch one. The
+	// plan of a dry run says the same as the apply.
+	oneHour := base + `
 watches:
   - {name: a, source: pypi, coordinates: {name: requests}, interval: 1h}
-`)
+`
+	dry, err := PlanFile(ctx, st, mustParse(t, oneHour), applyOpts())
+	mustNoErr(t, err)
+	plan := mustApply(t, st, oneHour)
+	if dry.String() != plan.String() {
+		t.Fatalf("plan:\n%s\napply:\n%s", dry, plan)
+	}
+	want := "update    watch a (interval 1h0m0s)\nupdate    target " + tg.ID + " (interval 30m0s)\n"
+	if plan.String() != want {
+		t.Fatalf("plan:\n%s\nwant:\n%s", plan, want)
+	}
 	if tg, _ = st.GetTarget(ctx, tg.ID); tg.Interval != 30*time.Minute {
 		t.Fatalf("interval with a 30m API watch = %s, want 30m", tg.Interval)
 	}
@@ -779,7 +792,13 @@ watches:
 	mustNoErr(t, st.InConfigTx(ctx, func(tx store.ConfigTx) error {
 		return tx.SetTargetInterval(ctx, tg.ID, 5*time.Minute, tg.NextCheckAt)
 	}))
-	plan := mustApply(t, st, base)
+	if dry, err = PlanFile(ctx, st, mustParse(t, base), applyOpts()); err != nil {
+		t.Fatal(err)
+	}
+	plan = mustApply(t, st, base)
+	if dry.String() != plan.String() {
+		t.Fatalf("plan:\n%s\napply:\n%s", dry, plan)
+	}
 	if tg, err = st.GetTarget(ctx, tg.ID); err != nil || tg.Interval != 30*time.Minute {
 		t.Fatalf("target after the file left: %+v %v", tg, err)
 	}
