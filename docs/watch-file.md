@@ -49,7 +49,9 @@ is not mistaken for "delete everything".
 ### 2.1 Names
 
 Every sink, watch and subscription has a `name`: the stable key used by apply. Pattern
-`^[a-z0-9][a-z0-9._-]{0,62}$`. Names are unique per list (a sink and a watch may share a name).
+`^[a-z0-9][a-z0-9._-]{0,62}$`. Names are unique per list (a sink and a watch may share a name), and
+also across owners: apply refuses a name that a row created through the API already has (migration
+00011, spec `docs/api.md` decision 2).
 
 ### 2.2 `watches[]`
 
@@ -190,7 +192,7 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 
 | File | Rows |
 |---|---|
-| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`, `interval` is applied to the target; `labels_json`) |
+| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`; `interval` is stored on the watch, `watch.interval_ms`, and the target holds the effective one, the smallest among its watches; `labels_json`) |
 | `sinks[]` | one `sink` (`config_json_encrypted`; in Phase 0 the secret *reference* `secret_env` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 
@@ -202,7 +204,10 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 Resolved by one additive migration, `00004_watch_file_ownership.sql`: `name TEXT` and
 `managed_by TEXT NOT NULL DEFAULT 'api'` on `watch`, `sink` and `subscription` (unique on
 `(managed_by, name)`; unnamed rows never collide), and `interval_ms INTEGER` on `target`. Nothing is
-dropped or rewritten; existing rows become `api` rows.
+dropped or rewritten; existing rows become `api` rows. Migration `00011_unique_names.sql` (#185) later
+made `name` unique per table whoever owns the row; it fails, listing the duplicates, when a file row and
+an API row already share a name, and rewrites nothing. Migration `00012_watch_interval.sql` adds
+`interval_ms` on `watch`: the interval the watch asked for.
 
 ## 4. What apply does
 
@@ -221,6 +226,7 @@ Reconciliation, per kind (sinks, watches, subscriptions), keyed on `(managed_by 
 | name in file, row exists, identical | no-op (the second run changes nothing, which is how "idempotent" is tested) |
 | row managed by file, name not in file | **delete** |
 | row not managed by file (`managed_by = 'api'`) | never touched |
+| name in file, row with that name managed by the API | apply and plan fail: `sink "hook": name taken by a sink managed by the API` |
 
 Order inside the transaction: sinks, watches, subscriptions (create/update), then deletes in reverse
 dependency order (subscriptions, watches, sinks), then targets no watch uses are deleted.
@@ -250,10 +256,16 @@ Details:
 - `watchfile.Parse` validates the whole file (every error, ordered by line); `watchfile.Apply` runs the
   reconciliation in one `Store.InConfigTx` transaction; `watchfile.PlanFile` computes the same plan
   without writing. Both return a plan of `create`, `update`, `delete` and `unchanged` lines.
-- A target's `interval_ms` is the smallest interval among the file's watches on it, kept in step with the
-  file on every apply. Lowering it also pulls `next_check_at` forward to at most one interval from now. A
-  new target is due immediately. Rows created through the API on the same target keep using that value. When the file stops watching a
-  target that API watches still use, its `interval_ms` stays as the file last set it; nothing resets it.
+- Each watch stores the interval it asked for in `watch.interval_ms`. A target's `interval_ms` is the
+  effective interval: the smallest among the watches on it, the API's included (those without a stored
+  interval do not count), kept in step on every apply. Lowering it also pulls `next_check_at` forward to
+  at most one interval from now. A new target is due immediately. When the file stops watching a target
+  that API watches still use, its `interval_ms` becomes the smallest among those API watches. A change
+  of the effective interval shows in the plan as `update target <id> (interval …)`. Apply uses
+  `ConfigTx.RecomputeTargetInterval`, which the REST API (#71) calls after its own watch writes.
+- The first apply after upgrading to migration 00012 records each file watch's interval once: watches
+  stored before it have no `watch.interval_ms`, so the plan shows them as
+  `update watch <name> (interval 1h0m0s (recorded))`. Later applies show them unchanged.
 - `policy_json` holds the policy with every default filled in plus `scheme`; `filter_json` likewise. This
   keeps the no-op comparison exact. Watch and subscription rows are compared by value, never by text.
 - Webhook URLs are never echoed in errors. A query parameter whose name contains `token`, `secret`, `key`,

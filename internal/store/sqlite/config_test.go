@@ -60,9 +60,10 @@ func TestConfigTxOwnershipAndUniqueNames(t *testing.T) {
 	ctx := t.Context()
 	must(t, s.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "a"}, NextCheckAt: t0, Interval: time.Hour}))
 	must(t, s.CreateWatch(ctx, store.Watch{ID: "w1", TargetID: "t1", Name: "a", ManagedBy: store.ManagedByFile}))
-	must(t, s.CreateWatch(ctx, store.Watch{ID: "w2", TargetID: "t1", Name: "a"})) // api row, same name
-	must(t, s.CreateWatch(ctx, store.Watch{ID: "w3", TargetID: "t1"}))            // unnamed
-	must(t, s.CreateWatch(ctx, store.Watch{ID: "w4", TargetID: "t1"}))            // unnamed rows never collide
+	// Names are unique across owners (00011): an api row cannot take a file row's name.
+	wantErr(t, s.CreateWatch(ctx, store.Watch{ID: "w2", TargetID: "t1", Name: "a"}), store.ErrConflict, "api row, same name")
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w3", TargetID: "t1"})) // unnamed
+	must(t, s.CreateWatch(ctx, store.Watch{ID: "w4", TargetID: "t1"})) // unnamed rows never collide
 	wantErr(t, s.CreateWatch(ctx, store.Watch{ID: "w5", TargetID: "t1", Name: "a", ManagedBy: store.ManagedByFile}), store.ErrConflict, "duplicate file name")
 
 	must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error {

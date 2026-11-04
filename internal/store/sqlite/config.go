@@ -141,6 +141,29 @@ func (o txOps) SetTargetInterval(ctx context.Context, id string, interval time.D
 	return deleted(n, err, "set target interval", id)
 }
 
+func (o txOps) RecomputeTargetInterval(ctx context.Context, id string, now time.Time) (time.Duration, bool, error) {
+	tg, err := o.GetTarget(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	ws, err := o.ListWatches(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	want := store.EffectiveInterval(ws)
+	if want == 0 || want == tg.Interval {
+		return tg.Interval, false, nil
+	}
+	next := tg.NextCheckAt
+	if due := now.Add(want); due.Before(next) {
+		next = due
+	}
+	if err := o.SetTargetInterval(ctx, id, want, next); err != nil {
+		return 0, false, err
+	}
+	return want, true, nil
+}
+
 func (o txOps) DeleteTargetIfUnused(ctx context.Context, id string) (bool, error) {
 	// The known set goes first: the target delete is a no-op while a watch
 	// uses it, and then its versions must stay.
@@ -172,7 +195,7 @@ func (o txOps) CreateWatch(ctx context.Context, w store.Watch) error {
 	}
 	return wrap(o.q.CreateWatch(ctx, CreateWatchParams{
 		ID: w.ID, TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), BaselineDone: boolInt(w.BaselineDone),
-		Name: nullName(w.Name), ManagedBy: owner(w.ManagedBy),
+		Name: nullName(w.Name), ManagedBy: owner(w.ManagedBy), IntervalMs: nullInterval(w.Interval),
 	}), "create watch", w.ID)
 }
 
@@ -186,7 +209,7 @@ func (o txOps) UpdateWatch(ctx context.Context, w store.Watch) error {
 		return fmt.Errorf("store: watch %s policy: %w", w.ID, err)
 	}
 	n, err := o.q.UpdateWatchConfig(ctx, UpdateWatchConfigParams{
-		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), ID: w.ID,
+		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), IntervalMs: nullInterval(w.Interval), ID: w.ID,
 	})
 	return deleted(n, err, "update watch", w.ID)
 }

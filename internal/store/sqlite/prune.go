@@ -77,3 +77,14 @@ func pruneBatchSize(n int) int {
 	}
 	return n
 }
+
+// HighestPrunedSeq implements [store.Store]. The event_prune_seq trigger
+// (migration 00013) records it on every event delete, in the deleting
+// transaction.
+func (s *Store) HighestPrunedSeq(ctx context.Context) (int64, error) {
+	seq, err := s.q.HighestPrunedSeq(ctx)
+	if err != nil {
+		return 0, wrap(err, "highest pruned seq", "")
+	}
+	return seq, nil
+}

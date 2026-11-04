@@ -293,8 +293,8 @@ func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) erro
 }
 
 const createWatch = `-- name: CreateWatch :exec
-INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateWatchParams struct {
@@ -305,6 +305,7 @@ type CreateWatchParams struct {
 	BaselineDone int64
 	Name         sql.NullString
 	ManagedBy    string
+	IntervalMs   sql.NullInt64
 }
 
 func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error {
@@ -316,6 +317,7 @@ func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error 
 		arg.BaselineDone,
 		arg.Name,
 		arg.ManagedBy,
+		arg.IntervalMs,
 	)
 	return err
 }
@@ -699,7 +701,7 @@ func (q *Queries) GetTargetByCoordinates(ctx context.Context, arg GetTargetByCoo
 }
 
 const getWatch = `-- name: GetWatch :one
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE id = ?
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE id = ?
 `
 
 func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
@@ -713,6 +715,7 @@ func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 		&i.BaselineDone,
 		&i.Name,
 		&i.ManagedBy,
+		&i.IntervalMs,
 	)
 	return i, err
 }
@@ -764,6 +767,18 @@ func (q *Queries) HasLeasableDueTargets(ctx context.Context, now int64) (bool, e
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const highestPrunedSeq = `-- name: HighestPrunedSeq :one
+SELECT highest_pruned_seq FROM event_prune WHERE id = 1
+`
+
+// Kept current by the event_prune_seq trigger (00013).
+func (q *Queries) HighestPrunedSeq(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, highestPrunedSeq)
+	var highest_pruned_seq int64
+	err := row.Scan(&highest_pruned_seq)
+	return highest_pruned_seq, err
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
@@ -1601,7 +1616,7 @@ func (q *Queries) ListWatchesByName(ctx context.Context, name sql.NullString) ([
 }
 
 const listWatchesByTarget = `-- name: ListWatchesByTarget :many
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE target_id = ? ORDER BY id
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE target_id = ? ORDER BY id
 `
 
 func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]Watch, error) {
@@ -1621,6 +1636,7 @@ func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]W
 			&i.BaselineDone,
 			&i.Name,
 			&i.ManagedBy,
+			&i.IntervalMs,
 		); err != nil {
 			return nil, err
 		}
@@ -1636,7 +1652,7 @@ func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]W
 }
 
 const listWatchesManagedBy = `-- name: ListWatchesManagedBy :many
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE managed_by = ? ORDER BY name
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE managed_by = ? ORDER BY name
 `
 
 func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([]Watch, error) {
@@ -1656,6 +1672,7 @@ func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([
 			&i.BaselineDone,
 			&i.Name,
 			&i.ManagedBy,
+			&i.IntervalMs,
 		); err != nil {
 			return nil, err
 		}
@@ -2056,13 +2073,14 @@ func (q *Queries) UpdateVersionState(ctx context.Context, arg UpdateVersionState
 }
 
 const updateWatchConfig = `-- name: UpdateWatchConfig :execrows
-UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ? WHERE id = ?
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ?, interval_ms = ? WHERE id = ?
 `
 
 type UpdateWatchConfigParams struct {
 	TargetID   string
 	PolicyJson string
 	LabelsJson string
+	IntervalMs sql.NullInt64
 	ID         string
 }
 
@@ -2071,6 +2089,7 @@ func (q *Queries) UpdateWatchConfig(ctx context.Context, arg UpdateWatchConfigPa
 		arg.TargetID,
 		arg.PolicyJson,
 		arg.LabelsJson,
+		arg.IntervalMs,
 		arg.ID,
 	)
 	if err != nil {

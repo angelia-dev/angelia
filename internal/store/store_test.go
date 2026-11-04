@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Acceptance criterion of #106: events are never updated after insert. No
@@ -21,6 +22,21 @@ func TestNoEventUpdateInStoreAPI(t *testing.T) {
 			if strings.Contains(m.Name, "Event") && !allowed[m.Name] {
 				t.Errorf("%s.%s: a method on events that is not append or list", typ.Name(), m.Name)
 			}
+		}
+	}
+}
+
+func TestEffectiveInterval(t *testing.T) {
+	for _, tc := range []struct {
+		ws   []Watch
+		want time.Duration
+	}{
+		{nil, 0},
+		{[]Watch{{}, {}}, 0},
+		{[]Watch{{Interval: time.Hour}, {}, {Interval: 5 * time.Minute}, {Interval: 2 * time.Hour}}, 5 * time.Minute},
+	} {
+		if got := EffectiveInterval(tc.ws); got != tc.want {
+			t.Errorf("EffectiveInterval(%v) = %s, want %s", tc.ws, got, tc.want)
 		}
 	}
 }
