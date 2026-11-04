@@ -22,8 +22,8 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
 | `plugins.<kind>.allowed_hosts` | none | empty | lower-case hostnames or IP literals, added to the plugin manifest's `allowed_hosts` |
-| `plugins.<kind>.credentials.<host>.token_env` | none | none | name of an environment variable; `<host>` must be in the merged `allowed_hosts` |
-| `plugins.<kind>.credentials.<host>.scheme` | none | empty | one word such as `Bearer`, written before the token |
+| `plugins.<kind>.credentials.<host[:port]>.token_env` | none | none | name of an environment variable; the host must be in the merged `allowed_hosts`; no port means 443 |
+| `plugins.<kind>.credentials.<host[:port]>.scheme` | none | empty | one word such as `Bearer`, written before the token |
 
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
 - Tokens are never configured inline: `token_env` names the variable that holds the token. A
@@ -62,20 +62,31 @@ plugins:
     allowed_hosts: [crates-mirror.example.com]   # added to the manifest's list
     credentials:
       crates-mirror.example.com:
-        token_env: CRATES_MIRROR_TOKEN           # the variable holding the token
+        token_env: CRATES_MIRROR_TOKEN           # the variable holding the token (port 443)
         scheme: Bearer                           # optional: "Authorization: Bearer <token>"
+      crates-mirror.example.com:8443:            # the same host on another port
+        token_env: CRATES_MIRROR_TOKEN
 ```
 
+- Host names: matching is case-insensitive and ignores a trailing dot, everywhere. In this file write them in
+  canonical form (lower case, no trailing dot, canonical IP literal); anything else is an error, so two keys
+  cannot name the same host.
 - `allowed_hosts` extends the manifest's list, it never replaces it. Same rules: exact match on every hop,
   redirects included, any port, no scheme, port, path or wildcard. The merged list, with where each entry
-  comes from and which hosts get a credential, is logged when the plugin is installed (`wasm plugin installed`).
-- A credential is bound to one host. The host adds it as the `Authorization` header of every request to that
-  host, over https only (a plain http request to it fails), replacing any `Authorization` the plugin set. It is
-  never sent to another host, allowed or not, including after a redirect. The plugin never receives it: it is
-  not in the plugin's config map, and an echo of the token in a response is replaced by `[REDACTED]`.
+  comes from and the ports that get a credential, is logged when the plugin is installed (`wasm plugin installed`).
+- A credential is bound to one host and port: `<host>` means port 443, `<host>:<port>` (`[addr]:port` for
+  IPv6) another port, for example a mirror on 8443. The host adds it as the `Authorization` header of every
+  request to that host and port, over https only (a plain http request to it fails), replacing any
+  `Authorization` the plugin set. It is never sent to another host or port, allowed or not, including after a
+  redirect, and it is not in the plugin's config map.
+- **Bind a credential only to a host that does not reflect the `Authorization` header** (in a body, a header,
+  an error page). The host redacts echoes of the token as `[REDACTED]`, refuses `Range` requests and compressed
+  bodies it cannot redact on credentialed requests, but that is best effort: an encoded or transformed echo
+  reaches the plugin. See the [ADR 0011 amendment](adr/0011-wasm-plugin-host-prototype.md#amendment-2026-11-04-145-operator-allowed_hosts-and-host-injected-credentials).
 - Credentials live only here, as an environment variable name; never in the watch file or the plugin config
   map. A `token:` key is an unknown key and an error. An unset or empty variable is a `config check` warning,
-  and requests to that host then fail. A secret-store reference will be an additional key (#75).
+  and requests to that host then fail, as do tokens shorter than 8 bytes. The variable is read once, at
+  start: a rotated token needs a restart. A secret-store reference will be an additional key (#75).
 - There are no `ANGELIA_PLUGINS_*` environment overrides.
 
 ## `angelia serve`

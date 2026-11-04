@@ -46,7 +46,7 @@ type Options struct {
 	// registry mirror. Same rules as the manifest's entries. Optional.
 	AllowedHosts []string
 	// Credentials are injected by the host into the requests to the hosts
-	// they are bound to; the plugin never sees them. Optional.
+	// they are bound to; the host never hands them to the plugin. Optional.
 	Credentials []Credential
 	// Logger receives the plugin's log host function calls and the host's
 	// warnings. Default: discard.

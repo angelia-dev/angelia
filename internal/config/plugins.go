@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -16,8 +18,9 @@ type Plugin struct {
 	// a registry mirror. Hostnames (lower case, no trailing dot) or IP
 	// literals; no scheme, port, path or wildcard.
 	AllowedHosts []string `yaml:"allowed_hosts"`
-	// Credentials, keyed by the host they are bound to, are injected by
-	// the host as the Authorization header; the plugin never sees them.
+	// Credentials, keyed by "host" (port 443) or "host:port", are injected
+	// by the host as the Authorization header of https requests to that
+	// host and port.
 	Credentials map[string]PluginCredential `yaml:"credentials"`
 }
 
@@ -53,6 +56,21 @@ func validPluginHost(h string) bool {
 	return true
 }
 
+// validCredentialKey reports whether k is host or host:port, with host in
+// canonical form and port 1-65535 without leading zeros. An IPv6 literal
+// with a port is written [addr]:port.
+func validCredentialKey(k string) bool {
+	if validPluginHost(k) {
+		return true
+	}
+	h, port, err := net.SplitHostPort(k)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == port && validPluginHost(h)
+}
+
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -77,8 +95,8 @@ func (c *Config) validatePlugins(bad func(string, ...any)) {
 		}
 		for _, h := range sortedKeys(p.Credentials) {
 			cr := p.Credentials[h]
-			if !validPluginHost(h) {
-				bad("plugins.%s.credentials: key must be a lower-case hostname or an IP literal", k)
+			if !validCredentialKey(h) {
+				bad("plugins.%s.credentials: key must be host or host:port, the host a lower-case hostname or an IP literal ([addr]:port for IPv6 with a port)", k)
 				continue
 			}
 			switch {

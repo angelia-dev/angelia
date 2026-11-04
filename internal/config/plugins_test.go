@@ -81,3 +81,24 @@ func TestPluginTokenEnvValueNeverEchoed(t *testing.T) {
 		t.Fatalf("err = %v, want an error that does not echo the value", err)
 	}
 }
+
+// Review S1: a credential key may name a port; the host part follows the
+// allowed_hosts rule (canonical form).
+func TestPluginCredentialKeys(t *testing.T) {
+	cred := func(key string) string {
+		return "plugins:\n  x:\n    credentials:\n      '" + key + "':\n        token_env: T\n"
+	}
+	for _, k := range []string{"mirror.example.com", "mirror.example.com:8443", "192.0.2.1:8443", "2001:db8::1", "[2001:db8::1]:8443"} {
+		if _, err := load(t, writeFile(t, cred(k))); err != nil {
+			t.Errorf("%q rejected: %v", k, err)
+		}
+	}
+	for _, k := range []string{
+		"mirror.example.com:0", "mirror.example.com:0443", "mirror.example.com:65536", "mirror.example.com:https",
+		"[2001:db8::1]", "Mirror.example.com:8443", "mirror.example.com.", "https://mirror.example.com",
+	} {
+		if _, err := load(t, writeFile(t, cred(k))); err == nil {
+			t.Errorf("%q accepted", k)
+		}
+	}
+}

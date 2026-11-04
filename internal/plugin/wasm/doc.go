@@ -11,6 +11,7 @@
 // ignores the error.
 //
 // Credentials (Options.Credentials) are added by the host to the hops to the
-// host each one is bound to, over https only; the plugin never sees them
+// host and port each one is bound to, over https only. The host never hands
+// them to the plugin; echoes from the upstream are redacted, best effort
 // (ADR 0011, amendment of #145).
 package wasm

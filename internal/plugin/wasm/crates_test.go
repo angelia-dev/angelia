@@ -153,7 +153,8 @@ func TestCratesManifestIsValid(t *testing.T) {
 
 // AC: a registry mirror added by the operator, with a host-injected
 // credential: the crates plugin is unchanged (manifest allows crates.io
-// only, no token in its config) and every page carries the credential.
+// only, no token in its config) and every page carries the credential,
+// bound to the mirror's host:port.
 func TestCratesMirrorWithInjectedCredential(t *testing.T) {
 	up := wasmtest.NewCratesUpstream(3, map[string]int{"tokio": 7})
 	srv := httptest.NewTLSServer(up)
@@ -171,7 +172,7 @@ func TestCratesMirrorWithInjectedCredential(t *testing.T) {
 		HTTPClient:   nc.HTTPClient(),
 		Config:       map[string]string{"base_url": srv.URL},
 		AllowedHosts: []string{"127.0.0.1"},
-		Credentials: []wasm.Credential{{Host: "127.0.0.1", Token: func(context.Context) (string, error) {
+		Credentials: []wasm.Credential{{Host: strings.TrimPrefix(srv.URL, "https://"), Token: func(context.Context) (string, error) {
 			return "mirror-token", nil
 		}}},
 		CompilationCache: testCache,

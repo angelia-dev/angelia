@@ -1,13 +1,18 @@
 package wasm_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -25,45 +30,75 @@ func staticToken(v string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) { return v, nil }
 }
 
-// hostAuthLog records the Authorization header of every request per
-// host, and echoes it in the body and in a response header, like a
-// misbehaving or debugging upstream would.
-type hostAuthLog struct {
-	mu   sync.Mutex
-	seen map[string][]string
+// seenReq is what the echo upstream received.
+type seenReq struct {
+	Authorization, Range, AcceptEncoding string
 }
 
-func (a *hostAuthLog) handler(host string) http.Handler {
+// echoUpstream records every request per host and reflects the
+// Authorization header everywhere it can, like a misbehaving or debugging
+// upstream: in the body, a header value, a header name, the ETag and
+// Last-Modified. It serves Range requests, and gzips the body on /gzip
+// when asked and on /gzip-always regardless. ?to=URL redirects.
+type echoUpstream struct {
+	mu   sync.Mutex
+	seen map[string][]seenReq
+}
+
+func (a *echoUpstream) handler(host string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := r.Header.Get("Authorization")
 		a.mu.Lock()
 		if a.seen == nil {
-			a.seen = map[string][]string{}
+			a.seen = map[string][]seenReq{}
 		}
-		a.seen[host] = append(a.seen[host], v)
+		a.seen[host] = append(a.seen[host], seenReq{v, r.Header.Get("Range"), r.Header.Get("Accept-Encoding")})
 		a.mu.Unlock()
 		if loc := r.URL.Query().Get("to"); loc != "" {
 			http.Redirect(w, r, loc, http.StatusFound) //nolint:gosec // G710: test upstream, redirects are the point.
 			return
 		}
-		w.Header().Set("X-Echo", v)
-		_, _ = fmt.Fprintf(w, "you sent %q", v) //nolint:gosec // G705: test upstream echoing on purpose.
+		body := fmt.Appendf(nil, "you sent %q", v)
+		if v != "" {
+			w.Header().Set("X-Echo", v)
+			w.Header().Set("X-Tok-"+strings.TrimPrefix(v, "Bearer "), "1")
+			w.Header().Set("Etag", `"`+v+`"`)
+			w.Header().Set("Last-Modified", v)
+		}
+		if r.URL.Path == "/gzip-always" || (r.URL.Path == "/gzip" && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")) {
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			_, _ = zw.Write(body)
+			_ = zw.Close()
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(buf.Bytes()) //nolint:gosec // G705: test upstream echoing on purpose.
+			return
+		}
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 	})
 }
 
-func (a *hostAuthLog) got(host string) []string {
+func (a *echoUpstream) got(host string) []seenReq {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Clone(a.seen[host])
 }
 
+func (a *echoUpstream) auth(host string) []string {
+	var out []string
+	for _, s := range a.got(host) {
+		out = append(out, s.Authorization)
+	}
+	return out
+}
+
 // newCredentialed returns the hostile plugin with allowed.test from its
 // manifest, other.test added by the operator and a credential bound to
-// allowed.test.
-func newCredentialed(t *testing.T, opts wasm.Options) (*hostAuthLog, *testNet, *wasm.Source) {
+// allowed.test (port 443) unless opts has others.
+func newCredentialed(t *testing.T, opts wasm.Options) (*echoUpstream, *wasm.Source) {
 	t.Helper()
-	rec := &hostAuthLog{}
-	net, hc := newTestNet(t, map[string]http.Handler{
+	rec := &echoUpstream{}
+	_, hc := newTestNet(t, map[string]http.Handler{
 		"allowed.test": rec.handler("allowed.test"),
 		"other.test":   rec.handler("other.test"),
 	})
@@ -72,97 +107,123 @@ func newCredentialed(t *testing.T, opts wasm.Options) (*hostAuthLog, *testNet, *
 	if opts.Credentials == nil {
 		opts.Credentials = []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer", Token: staticToken(testToken)}}
 	}
-	return rec, net, newHostile(t, hostileManifest(t, "allowed.test"), opts)
+	return rec, newHostile(t, hostileManifest(t, "allowed.test"), opts)
 }
 
-func body(t *testing.T, res source.Result) string {
+func fetch(t *testing.T, s *wasm.Source, u string, kv ...string) (string, error) {
 	t.Helper()
+	res, err := s.List(t.Context(), hostileTarget("fetch", append([]string{"url", u}, kv...)...), source.FetchState{})
+	if err != nil {
+		return "", err
+	}
 	if len(res.Versions) != 1 {
 		t.Fatalf("versions = %+v", res.Versions)
 	}
+	if out, _ := json.Marshal(res); strings.Contains(string(out), testToken) {
+		t.Errorf("result holds the token: %s", out)
+	}
 	b, _ := res.Versions[0].Metadata["body"].(string)
-	return b
+	return b, nil
 }
 
 // AC: credentials are injected by the host into requests to the host they
 // are bound to, and only there.
 func TestCredentialInjectedOnBoundHostOnly(t *testing.T) {
-	rec, _, s := newCredentialed(t, wasm.Options{})
+	rec, s := newCredentialed(t, wasm.Options{})
 
-	if _, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/a"), source.FetchState{}); err != nil {
-		t.Fatal(err)
+	for _, u := range []string{"https://allowed.test/a", "https://other.test/a", "https://allowed.test:8443/a"} {
+		if _, err := fetch(t, s, u); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://other.test/a"), source.FetchState{}); err != nil {
-		t.Fatal(err)
+	if got := rec.auth("allowed.test"); !slices.Equal(got, []string{"Bearer " + testToken, ""}) {
+		t.Errorf("allowed.test saw Authorization %q, want the credential on port 443 only", got)
 	}
-	if got := rec.got("allowed.test"); !slices.Equal(got, []string{"Bearer " + testToken}) {
-		t.Errorf("allowed.test saw Authorization %q, want the injected credential", got)
-	}
-	if got := rec.got("other.test"); !slices.Equal(got, []string{""}) {
+	if got := rec.auth("other.test"); !slices.Equal(got, []string{""}) {
 		t.Errorf("other.test saw Authorization %q, want none", got)
 	}
 
 	// The plugin's own Authorization on the bound host is replaced.
-	_, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/b", "authorization", "plugin-value"), source.FetchState{})
-	if err != nil {
+	if _, err := fetch(t, s, "https://allowed.test/b", "authorization", "plugin-value"); err != nil {
 		t.Fatal(err)
 	}
-	if got := rec.got("allowed.test"); got[len(got)-1] != "Bearer "+testToken {
+	if got := rec.auth("allowed.test"); got[len(got)-1] != "Bearer "+testToken {
 		t.Errorf("allowed.test saw %q, want the host's credential over the plugin's", got[len(got)-1])
 	}
 }
 
-// AC: the plugin cannot read an injected credential, nor send it to
-// another allowed host.
+// A credential bound to host:port is sent on that port only.
+func TestCredentialExplicitPort(t *testing.T) {
+	rec, s := newCredentialed(t, wasm.Options{Credentials: []wasm.Credential{{Host: "allowed.test:8443", Token: staticToken(testToken)}}})
+	for _, u := range []string{"https://allowed.test:8443/a", "https://allowed.test/a", "https://allowed.test:443/a"} {
+		if _, err := fetch(t, s, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rec.auth("allowed.test"); !slices.Equal(got, []string{testToken, "", ""}) {
+		t.Errorf("allowed.test saw Authorization %q, want the credential on port 8443 only", got)
+	}
+	if got := s.Hosts()[0].CredentialPorts; !slices.Equal(got, []string{"8443"}) {
+		t.Errorf("CredentialPorts = %q", got)
+	}
+}
+
+// AC: the host does not hand the credential to the plugin, and the plugin
+// cannot send it to another allowed host.
 func TestPluginCannotReadOrForwardCredential(t *testing.T) {
 	logs := &logRecorder{}
-	rec, _, s := newCredentialed(t, wasm.Options{Logger: slog.New(logs)})
+	rec, s := newCredentialed(t, wasm.Options{Logger: slog.New(logs)})
 
-	t.Run("echo is redacted", func(t *testing.T) {
-		res, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/echo"), source.FetchState{})
+	t.Run("echo in the body is redacted", func(t *testing.T) {
+		b, err := fetch(t, s, "https://allowed.test/echo")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b := body(t, res); strings.Contains(b, testToken) || !strings.Contains(b, "[REDACTED]") {
+		if strings.Contains(b, testToken) || !strings.Contains(b, "[REDACTED]") {
 			t.Errorf("plugin read body %q, want the token redacted", b)
-		}
-		if out, _ := json.Marshal(res); strings.Contains(string(out), testToken) {
-			t.Errorf("result holds the token: %s", out)
 		}
 	})
 
 	t.Run("redirect to another allowed host drops it", func(t *testing.T) {
-		u := "https://allowed.test/r?to=https://other.test/landing"
-		if _, err := s.List(t.Context(), hostileTarget("fetch", "url", u), source.FetchState{}); err != nil {
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://other.test/landing"); err != nil {
 			t.Fatal(err)
 		}
-		if got := rec.got("other.test"); slices.ContainsFunc(got, func(v string) bool { return v != "" }) {
+		if got := rec.auth("other.test"); slices.ContainsFunc(got, func(v string) bool { return v != "" }) {
 			t.Errorf("other.test saw Authorization %q after a redirect, want none", got)
+		}
+	})
+
+	t.Run("redirect to another port of the bound host drops it", func(t *testing.T) {
+		before := len(rec.got("allowed.test"))
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://allowed.test:8443/landing"); err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.auth("allowed.test")[before:]; !slices.Equal(got, []string{"Bearer " + testToken, ""}) {
+			t.Errorf("allowed.test saw %q, want the credential on the first hop only", got)
 		}
 	})
 
 	t.Run("redirect back to the bound host gets it again", func(t *testing.T) {
 		before := len(rec.got("allowed.test"))
-		u := "https://other.test/r?to=https://allowed.test/back"
-		if _, err := s.List(t.Context(), hostileTarget("fetch", "url", u), source.FetchState{}); err != nil {
+		if _, err := fetch(t, s, "https://other.test/r?to=https://allowed.test/back"); err != nil {
 			t.Fatal(err)
 		}
-		if got := rec.got("allowed.test")[before:]; !slices.Equal(got, []string{"Bearer " + testToken}) {
+		if got := rec.auth("allowed.test")[before:]; !slices.Equal(got, []string{"Bearer " + testToken}) {
 			t.Errorf("allowed.test saw %q", got)
 		}
 	})
 
 	t.Run("not over plain http", func(t *testing.T) {
 		before := len(rec.got("allowed.test"))
-		_, err := s.List(t.Context(), hostileTarget("fetch", "url", "http://allowed.test/a"), source.FetchState{})
-		if err == nil || !strings.Contains(err.Error(), "only sent over https") {
+		_, err := fetch(t, s, "http://allowed.test:443/a")
+		if err == nil || !strings.Contains(err.Error(), "only sent over https") || strings.Contains(err.Error(), testToken) {
 			t.Fatalf("err = %v, want the credential refused over http", err)
 		}
-		if strings.Contains(err.Error(), testToken) {
-			t.Errorf("error holds the token: %v", err)
+		if _, err := fetch(t, s, "http://allowed.test/a"); err != nil { // port 80: not bound
+			t.Fatal(err)
 		}
-		if got := rec.got("allowed.test")[before:]; len(got) != 0 {
-			t.Errorf("request reached the network: %q", got)
+		if got := rec.auth("allowed.test")[before:]; !slices.Equal(got, []string{""}) {
+			t.Errorf("allowed.test saw %q, want one request without the credential", got)
 		}
 	})
 
@@ -176,23 +237,158 @@ func TestPluginCannotReadOrForwardCredential(t *testing.T) {
 	}
 }
 
+// Review B1: a plugin must not read an echoed token in pieces through
+// Range requests, each of which would escape redaction.
+func TestCredentialRefusesRangeRequests(t *testing.T) {
+	rec, s := newCredentialed(t, wasm.Options{})
+	for _, h := range []string{"h:Range", "h:If-Range"} {
+		_, err := fetch(t, s, "https://allowed.test/echo", h, "bytes=10-20")
+		if err == nil || !strings.Contains(err.Error(), "Range requests are not allowed") {
+			t.Fatalf("%s: err = %v, want the request refused", h, err)
+		}
+	}
+	if got := rec.got("allowed.test"); len(got) != 0 {
+		t.Errorf("Range requests reached the network: %+v", got)
+	}
+	// Without a credential Range is the plugin's business.
+	b, err := fetch(t, s, "https://other.test/echo", "h:Range", "bytes=0-3")
+	if err != nil || b != "you " {
+		t.Errorf("unbound host Range = %q, %v", b, err)
+	}
+}
+
+// Review B1: a plugin must not get the compressed body, which it could
+// inflate itself after redaction.
+func TestCredentialResponseIsDecodedBeforeRedaction(t *testing.T) {
+	rec, s := newCredentialed(t, wasm.Options{})
+
+	t.Run("the plugin's Accept-Encoding is dropped", func(t *testing.T) {
+		b, err := fetch(t, s, "https://allowed.test/gzip", "h:Accept-Encoding", "gzip")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.got("allowed.test"); got[len(got)-1].AcceptEncoding != "" {
+			t.Errorf("upstream saw Accept-Encoding %q from the plugin", got[len(got)-1].AcceptEncoding)
+		}
+		if !strings.Contains(b, "[REDACTED]") {
+			t.Errorf("body = %q, want the decoded body, redacted", b)
+		}
+	})
+
+	t.Run("an encoded response is refused", func(t *testing.T) {
+		_, err := fetch(t, s, "https://allowed.test/gzip-always")
+		if err == nil || !strings.Contains(err.Error(), "cannot be redacted") {
+			t.Fatalf("err = %v, want the gzip response refused", err)
+		}
+	})
+
+	t.Run("net/http negotiates and decodes", func(t *testing.T) {
+		up := &echoUpstream{}
+		srv := httptest.NewTLSServer(up.handler("srv"))
+		t.Cleanup(srv.Close)
+		u, _ := url.Parse(srv.URL)
+		nc, err := netguard.New(netguard.Config{
+			Transport:   srv.Client().Transport,
+			Allow:       []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+			HostLimits:  map[string]netguard.HostLimit{"127.0.0.1": fastLimit},
+			MaxAttempts: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := newHostile(t, hostileManifest(t, "127.0.0.1"), wasm.Options{
+			HTTPClient:  nc.HTTPClient(),
+			Credentials: []wasm.Credential{{Host: u.Host, Token: staticToken(testToken)}},
+		})
+		b, err := fetch(t, s, srv.URL+"/gzip", "h:Accept-Encoding", "gzip")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := up.got("srv"); len(got) != 1 || got[0].AcceptEncoding != "gzip" || got[0].Authorization != testToken {
+			t.Errorf("upstream saw %+v, want gzip negotiated by net/http and the credential", got)
+		}
+		if b != `you sent "[REDACTED]"` {
+			t.Errorf("body = %q, want the decoded body, redacted", b)
+		}
+	})
+}
+
+// Review S2: headers (values and names), validators and error messages
+// are redacted too. The hostile plugin returns only the body, so this goes
+// through the HTTPForTest seam, the same path as the host function.
+func TestRedactionOfHeadersValidatorsAndErrors(t *testing.T) {
+	_, s := newCredentialed(t, wasm.Options{})
+	out := s.HTTPForTest(t.Context(), []byte(`{"url":"https://allowed.test/echo"}`))
+	var resp struct {
+		Status     int                 `json:"status"`
+		Headers    map[string][]string `json:"headers"`
+		Body       []byte              `json:"body"`
+		Validators map[string]string   `json:"validators"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("response = %s", out)
+	}
+	all := string(out) + string(resp.Body)
+	if strings.Contains(strings.ToLower(all), strings.ToLower(testToken)) {
+		t.Errorf("the plugin would receive the token: %s / %s", out, resp.Body)
+	}
+	if got := resp.Headers["x-echo"]; !slices.Equal(got, []string{"Bearer [REDACTED]"}) {
+		t.Errorf("x-echo = %q", got)
+	}
+	if v := resp.Validators; v["etag"] != `"Bearer [REDACTED]"` || v["last_modified"] != "Bearer [REDACTED]" {
+		t.Errorf("validators = %v", v)
+	}
+	if _, ok := resp.Headers["content-length"]; ok {
+		t.Errorf("content-length kept after the body changed: %v", resp.Headers["content-length"])
+	}
+
+	// A transport error that quotes the header.
+	nc, err := netguard.New(netguard.Config{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("upstream said %s", r.Header.Get("Authorization"))
+		}),
+		Resolver:    fakeResolver{"allowed.test": {netip.MustParseAddr("203.0.113.10")}},
+		HostLimits:  map[string]netguard.HostLimit{"allowed.test": fastLimit},
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{
+		HTTPClient:  nc.HTTPClient(),
+		Credentials: []wasm.Credential{{Host: "allowed.test", Token: staticToken(testToken)}},
+	})
+	out = s2.HTTPForTest(t.Context(), []byte(`{"url":"https://allowed.test/"}`))
+	if strings.Contains(string(out), testToken) || !strings.Contains(string(out), "upstream said [REDACTED]") {
+		t.Errorf("error response = %s, want the token redacted", out)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestCredentialTokenErrors(t *testing.T) {
 	for name, tok := range map[string]func(context.Context) (string, error){
 		"resolver fails": func(context.Context) (string, error) { return "", errors.New("environment variable X is not set") },
 		"empty":          staticToken(""),
-		"header split":   staticToken("abc\r\nX-Evil: 1"),
+		"too short":      staticToken("1234567"),
+		"header split":   staticToken("abcdefgh\r\nX-Evil: 1"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			rec, _, s := newCredentialed(t, wasm.Options{Credentials: []wasm.Credential{{Host: "allowed.test", Token: tok}}})
-			_, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/"), source.FetchState{})
+			rec, s := newCredentialed(t, wasm.Options{Credentials: []wasm.Credential{{Host: "allowed.test", Token: tok}}})
+			_, err := fetch(t, s, "https://allowed.test/")
 			if err == nil || !strings.Contains(err.Error(), "credential") {
 				t.Fatalf("err = %v, want a credential error", err)
 			}
-			if strings.Contains(err.Error(), "X-Evil") {
+			if strings.Contains(err.Error(), "X-Evil") || strings.Contains(err.Error(), "1234567") {
 				t.Errorf("error echoes the token: %v", err)
 			}
 			if got := rec.got("allowed.test"); len(got) != 0 {
-				t.Errorf("request reached the network: %q", got)
+				t.Errorf("request reached the network: %+v", got)
 			}
 		})
 	}
@@ -202,12 +398,16 @@ func TestCredentialTokenErrors(t *testing.T) {
 // shown when the plugin is installed.
 func TestOperatorAllowedHostsMergedAndShown(t *testing.T) {
 	logs := &logRecorder{}
-	_, _, s := newCredentialed(t, wasm.Options{Logger: slog.New(logs)})
+	_, s := newCredentialed(t, wasm.Options{Logger: slog.New(logs)})
 	want := []wasm.HostGrant{
-		{Host: "allowed.test", Manifest: true, Credential: true},
-		{Host: "other.test", Operator: true},
+		{Host: "allowed.test", Manifest: true, CredentialPorts: []string{"443"}},
+		{Host: "other.test", Operator: true, CredentialPorts: []string{}},
 	}
-	if got := s.Hosts(); !slices.Equal(got, want) {
+	got := s.Hosts()
+	if got[1].CredentialPorts == nil {
+		got[1].CredentialPorts = []string{}
+	}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Hosts() = %+v, want %+v", got, want)
 	}
 	var shown bool
@@ -226,15 +426,19 @@ func TestOperatorAllowedHostsMergedAndShown(t *testing.T) {
 
 func TestInstallErrors(t *testing.T) {
 	_, hc := newTestNet(t, nil)
+	cred := func(host string) wasm.Credential { return wasm.Credential{Host: host, Token: staticToken(testToken)} }
 	cases := map[string]wasm.Options{
 		"bad operator host":     {AllowedHosts: []string{"*.example.com"}},
-		"credential not listed": {Credentials: []wasm.Credential{{Host: "other.test", Token: staticToken("x")}}},
-		"credential twice": {Credentials: []wasm.Credential{
-			{Host: "allowed.test", Token: staticToken("x")}, {Host: "ALLOWED.test", Token: staticToken("y")},
-		}},
-		"no token func":  {Credentials: []wasm.Credential{{Host: "allowed.test"}}},
-		"bad scheme":     {Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer x", Token: staticToken("x")}}},
-		"bad credential": {Credentials: []wasm.Credential{{Host: "https://allowed.test", Token: staticToken("x")}}},
+		"credential not listed": {Credentials: []wasm.Credential{cred("other.test")}},
+		"credential twice":      {Credentials: []wasm.Credential{cred("allowed.test"), cred("ALLOWED.test")}},
+		"default port twice":    {Credentials: []wasm.Credential{cred("allowed.test"), cred("allowed.test:443")}},
+		"no token func":         {Credentials: []wasm.Credential{{Host: "allowed.test"}}},
+		"bad scheme":            {Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer x", Token: staticToken("x")}}},
+		"bad credential":        {Credentials: []wasm.Credential{cred("https://allowed.test")}},
+		"port zero":             {Credentials: []wasm.Credential{cred("allowed.test:0")}},
+		"port leading zero":     {Credentials: []wasm.Credential{cred("allowed.test:0443")}},
+		"port too large":        {Credentials: []wasm.Credential{cred("allowed.test:65536")}},
+		"port not a number":     {Credentials: []wasm.Credential{cred("allowed.test:https")}},
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -249,7 +453,7 @@ func TestInstallErrors(t *testing.T) {
 
 // An injected credential counts as authenticated for netguard's limiter.
 func TestInjectedCredentialUsesAuthenticatedBudget(t *testing.T) {
-	rec := &hostAuthLog{}
+	rec := &echoUpstream{}
 	n := &testNet{handlers: map[string]http.Handler{"allowed.test": rec.handler("allowed.test")}}
 	nc, err := netguard.New(netguard.Config{
 		Transport: n,
