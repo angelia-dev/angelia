@@ -48,6 +48,7 @@ func (e *HostNotAllowedError) Unwrap() error { return ErrHostNotAllowed }
 type allowlistTransport struct {
 	base    http.RoundTripper
 	allowed map[string]bool
+	creds   map[string]Credential // by normalised host
 }
 
 func (t *allowlistTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -60,7 +61,14 @@ func (t *allowlistTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 		}
 		return nil, err
 	}
-	return t.base.RoundTrip(r)
+	out, err := t.inject(r, normHost(r.URL.Hostname()))
+	if err != nil {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, err
+	}
+	return t.base.RoundTrip(out)
 }
 
 func (t *allowlistTransport) check(u *url.URL) error {
@@ -107,6 +115,9 @@ func (s *Source) hostHTTP(ctx context.Context, p *extism.CurrentPlugin, stack []
 			panic(fmt.Errorf("http_request: %w", err))
 		}
 		resp = s.doHTTP(ctx, in)
+	}
+	if cs, ok := ctx.Value(callKey{}).(*callState); ok {
+		cs.scrub(&resp)
 	}
 	out, err := json.Marshal(resp)
 	if err != nil {

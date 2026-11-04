@@ -167,6 +167,7 @@ func TestLogHostFunction(t *testing.T) {
 	rec := &logRecorder{}
 	_, hc := newTestNet(t, nil)
 	s := newHostile(t, hostileManifest(t), wasm.Options{HTTPClient: hc, Logger: slog.New(rec)})
+	rec.reset()
 	if _, err := s.List(t.Context(), hostileTarget("log"), source.FetchState{}); err != nil {
 		t.Fatal(err)
 	}

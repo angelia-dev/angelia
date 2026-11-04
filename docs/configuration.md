@@ -21,6 +21,9 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
+| `plugins.<kind>.allowed_hosts` | none | empty | lower-case hostnames or IP literals, added to the plugin manifest's `allowed_hosts` |
+| `plugins.<kind>.credentials.<host>.token_env` | none | none | name of an environment variable; `<host>` must be in the merged `allowed_hosts` |
+| `plugins.<kind>.credentials.<host>.scheme` | none | empty | one word such as `Bearer`, written before the token |
 
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
 - Tokens are never configured inline: `token_env` names the variable that holds the token. A
@@ -44,6 +47,36 @@ Check a configuration with `angelia config check [--config FILE]`.
   look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
   rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
 - A config file must contain a single YAML document.
+
+## Installed plugins (draft)
+
+> **Draft, for the maintainer to confirm (#145):** the `plugins` keys follow the WASM plugin host prototype
+> ([ADR 0011](adr/0011-wasm-plugin-host-prototype.md), amendment of #145) and may change with it. `angelia serve`
+> does not load plugins yet.
+
+`plugins.<kind>` configures the plugin whose manifest declares `kind`, when it is installed:
+
+```yaml
+plugins:
+  crates:
+    allowed_hosts: [crates-mirror.example.com]   # added to the manifest's list
+    credentials:
+      crates-mirror.example.com:
+        token_env: CRATES_MIRROR_TOKEN           # the variable holding the token
+        scheme: Bearer                           # optional: "Authorization: Bearer <token>"
+```
+
+- `allowed_hosts` extends the manifest's list, it never replaces it. Same rules: exact match on every hop,
+  redirects included, any port, no scheme, port, path or wildcard. The merged list, with where each entry
+  comes from and which hosts get a credential, is logged when the plugin is installed (`wasm plugin installed`).
+- A credential is bound to one host. The host adds it as the `Authorization` header of every request to that
+  host, over https only (a plain http request to it fails), replacing any `Authorization` the plugin set. It is
+  never sent to another host, allowed or not, including after a redirect. The plugin never receives it: it is
+  not in the plugin's config map, and an echo of the token in a response is replaced by `[REDACTED]`.
+- Credentials live only here, as an environment variable name; never in the watch file or the plugin config
+  map. A `token:` key is an unknown key and an error. An unset or empty variable is a `config check` warning,
+  and requests to that host then fail. A secret-store reference will be an additional key (#75).
+- There are no `ANGELIA_PLUGINS_*` environment overrides.
 
 ## `angelia serve`
 

@@ -180,3 +180,10 @@ func (l *logRecorder) all() []slog.Record {
 	defer l.mu.Unlock()
 	return append([]slog.Record(nil), l.records...)
 }
+
+// reset drops the records so far, such as the "wasm plugin installed" line.
+func (l *logRecorder) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = nil
+}

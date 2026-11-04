@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-11-01
-- **Story:** angelia-dev/angelia#59
+- **Story:** angelia-dev/angelia#59; amended by #145 (see [Amendment](#amendment-2026-11-04-145-operator-allowed_hosts-and-host-injected-credentials))
 
 ## Context
 
@@ -140,11 +140,75 @@ below) is measured before the plugin SDK freezes the ABI.
 
 - **Benchmark 4: go.** Overhead accepted for Phase 0.
 - **`allowed_hosts` ownership:** the manifest declares it, and the operator can extend or configure it when the
-  plugin is installed (for example a registry mirror). Not implemented in this prototype; follow-up #145.
+  plugin is installed (for example a registry mirror). Not implemented in this prototype; follow-up #145
+  (done, see the amendment).
 - **Credentials:** configured in the host when the plugin is installed, never in the plugin source. The host
-  injects them; the plugin does not need to see the token. Not implemented in this prototype; follow-up #145.
+  injects them; the plugin does not need to see the token. Not implemented in this prototype; follow-up #145
+  (done, see the amendment).
 - **Choices within the draft confirmed:** JSON with base64 and buffered bodies, GET/HEAD/POST only, 100 requests
   per call, exact-match `allowed_hosts`, and a `User-Agent` the plugin can override.
+
+## Amendment (2026-11-04, #145): operator allowed_hosts and host-injected credentials
+
+Implements the two maintainer decisions above. The original text is kept; where it conflicts, this section wins.
+Still a draft (`v0`), and both items are **for the maintainer to confirm**: the config keys are a public contract
+once released, and credential injection is a security decision.
+
+**Where it is configured.** In the instance config, under `plugins.<kind>` ([configuration.md](../configuration.md#installed-plugins-draft)),
+next to `sources.<kind>.token_env`, not in the watch file and not in the plugin's config map:
+
+```yaml
+plugins:
+  crates:
+    allowed_hosts: [crates-mirror.example.com]
+    credentials:
+      crates-mirror.example.com: {token_env: CRATES_MIRROR_TOKEN, scheme: Bearer}
+```
+
+In Go: `wasm.Options.AllowedHosts` and `wasm.Options.Credentials` (`internal/plugin/wasm/install.go`);
+`config.Config.PluginToken(kind, host)` reads the token. `angelia serve` does not load plugins yet, so nothing
+connects the two today.
+
+**Operator `allowed_hosts`.** Merged with the manifest's list (a union; the operator cannot remove a manifest
+host), same validation and matching. `Source.Hosts()` returns the merged list, each entry marked `manifest`,
+`operator` and `credential`, and `New` logs it as `wasm plugin installed`.
+
+**Credentials.**
+
+- One credential per host, and the host must be in the merged `allowed_hosts`. It is always the `Authorization`
+  header, `<scheme> <token>` or the bare token. Authorization only, so that netguard counts the request against
+  the authenticated budget of the host with no change (custom headers such as `PRIVATE-TOKEN` can follow once
+  netguard knows them, #151).
+- Injected per hop in `allowlistTransport`, after the allowlist check and before netguard. A hop to the bound host
+  gets the header, replacing any `Authorization` the plugin set; a hop to any other host is left as the plugin
+  built it. The injected value lives only on the transport's copy of the request, so net/http's redirect code
+  never sees it: a redirect to another host, allowed or not, does not carry it, and a redirect back to the bound
+  host gets it again.
+- Only over https: a plain http hop to a bound host fails before it is sent (the existing downgrade rule already
+  refuses https → http redirects).
+- The token is resolved for every hop through `Credential.Token(ctx)`, so a rotated value is picked up. This is
+  the seam for the secret store (#75): today the instance config resolves `token_env`; a store-backed resolver
+  replaces it without changing the host. An empty token, a value with control characters, or a resolver error
+  fails the request, and the error never quotes the token.
+- The plugin never receives it: not in its config map, and every injected token echoed back in a response body,
+  response header, validator or error message is replaced by `[REDACTED]` before the plugin sees it. This does
+  not catch a transformed echo (encoded, split); the allowlist is what limits where such an echo could be sent.
+- The `crates` example plugin still sets `Authorization` from a `token` config key when one is given. With an
+  injected credential no `token` is configured and the host's header wins; the plugin needs no change
+  (`TestCratesMirrorWithInjectedCredential`).
+
+Tested in `internal/plugin/wasm/credentials_test.go` (injection on the bound host only, the plugin's value
+replaced, echo redacted, redirect to another allowed host without the credential, http refused, resolver
+errors, merged hosts, authenticated budget) and `internal/config/plugins_test.go`.
+
+**Open questions for the maintainer.**
+
+1. Key names and place: `plugins.<kind>.allowed_hosts` and `plugins.<kind>.credentials.<host>.{token_env,scheme}`
+   in the instance config. Alternative: a separate install file per plugin (with the `.wasm` path and manifest),
+   which a later "install plugin" story will need anyway.
+2. Authorization only, or also an arbitrary header name (`header:`)? Recommendation: Authorization only until a
+   plugin needs more, then an additive `header` key restricted to names netguard counts as authenticated.
+3. Plain http to a bound host is refused. Allow it for a mirror on a private network? Recommendation: no.
 
 ## Consequences
 
@@ -159,6 +223,7 @@ below) is measured before the plugin SDK freezes the ABI.
 
 - Per-call overhead scales with payload size and misses the 5 ms target from ~100 versions per page.
 - In this prototype credentials still reach the plugin in its config map; host-side injection is follow-up #145.
+  (Resolved by the amendment: the config map remains, but credentials belong in `plugins.<kind>.credentials`.)
 - Buffered bodies: a plugin cannot stream a large response.
 - Nothing in CI runs `bench/plugins/build.sh --check` yet, so a committed `.wasm` that no longer matches its Rust
   source would go unnoticed. A follow-up issue is #143 for a CI job (it needs the Rust toolchain and
