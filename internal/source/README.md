@@ -15,6 +15,7 @@ parsing, filtering and cooldown belong to the core (architecture.md section 3.4)
 | `FetchState` | `ETag`, `LastModified`, `Cursor`; opaque to the core, stored as `fetch_state_json` |
 | `Result` | `Versions` (newest first if known), the next `State`, `NotModified` |
 | `Version` | `Raw`, `PublishedAt`, `Prerelease *bool`, `Yanked`, `URL`, `NotesURL`, `Metadata` |
+| `Canonicalizer` | optional: `Canonical(Target) (Target, error)` returns the one spelling stored and used as the coalescing key ([ADR 0021](../../docs/adr/0021-source-canonical-target.md)); call it through `source.Canonical(src, t)` |
 | `Registry` | explicit value (no package global): `NewRegistry`, `Register`, `Get`, `Kinds` |
 
 Errors: `ErrInvalidTarget` (every `Validate` failure wraps it), `ErrUnknownKind`, `ErrDuplicateKind`.
@@ -33,7 +34,10 @@ Errors: `ErrInvalidTarget` (every `Validate` failure wraps it), `ErrUnknownKind`
    upstream is an error, not an empty result. `List` must be safe for concurrent use.
 5. Fill `PublishedAt` whenever upstream has it; leave `Prerelease` nil when upstream has no flag.
 6. Return versions in a deterministic order.
-7. Register it on the `Registry` in the composition root (`registry.Register(pypi.New(...))`).
+7. If one upstream object can be spelled several ways in the coordinates (case, separators), implement
+   `source.Canonicalizer`: no I/O, keep `Kind`, idempotent, result passes `Validate`. Cite the registry's
+   own naming rule, and list other spellings in `Fixtures.Aliases`. If the registry is case-sensitive, don't.
+8. Register it on the `Registry` in the composition root (`registry.Register(pypi.New(...))`).
 
 ## The contract suite: `sourcetest.Run`
 
@@ -64,6 +68,7 @@ checks:
 | `Kind` | `Kind()` is non-empty and equals `Fixtures.Valid.Kind` |
 | `ValidateAccepts` / `ValidateRejects` | the valid target passes; every `Invalid` target fails with an error wrapping `ErrInvalidTarget` |
 | `ValidateNoRequests` | `Validate` sent no HTTP request (owned server only) |
+| `Canonical` | for a `Canonicalizer`: `Canonical(Valid)` keeps the kind, passes `Validate`, is idempotent, does not mutate its argument and sends no request; every `Aliases` entry has the same canonical target. A `Canonicalizer` without `Aliases` fails, and so do `Aliases` without `Canonicalizer` |
 | `ListDeterministic` | two `List` calls with empty state return identical results, at least one version, no empty `Raw`, not `NotModified` |
 | `ListConcurrent` | 8 concurrent `List` calls all equal the first (run with `-race`) |
 | `ListMatchesFixture` | if `WantRaw` is set, `Raw` values match it in order |
