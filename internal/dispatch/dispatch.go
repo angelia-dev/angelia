@@ -362,7 +362,7 @@ func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 	f := store.DeliveryFinish{ID: del.ID, Attempt: del.Attempts}
 	// A replay starts a new retry budget: only the attempts since the last
 	// replay count (spec docs/api.md decision 28, ADR 0017 amendment).
-	used := del.Attempts - del.ReplayBaseAttempts
+	used := max(del.Attempts-del.ReplayBaseAttempts, 0) // a base above attempts is never written; guard anyway
 	if used > d.opts.MaxAttempts {
 		// The last attempt was leased but never recorded: its holder
 		// crashed or stalled. Sending again could crash this process too
