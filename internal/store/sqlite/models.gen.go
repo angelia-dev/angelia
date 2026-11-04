@@ -36,6 +36,11 @@ type Event struct {
 	RefEventID  sql.NullString
 }
 
+type EventPrune struct {
+	ID               int64
+	HighestPrunedSeq int64
+}
+
 type Lease struct {
 	Name      string
 	Holder    string
@@ -103,4 +108,5 @@ type Watch struct {
 	BaselineDone int64
 	Name         sql.NullString
 	ManagedBy    string
+	IntervalMs   sql.NullInt64
 }
