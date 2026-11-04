@@ -530,6 +530,33 @@ func (q *Queries) FinishLeasedDelivery(ctx context.Context, arg FinishLeasedDeli
 	return result.RowsAffected()
 }
 
+const getDelivery = `-- name: GetDelivery :one
+SELECT id, event_id, subscription_id, status, attempts, next_attempt_at, last_error, held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input, traceparent FROM delivery WHERE id = ?
+`
+
+func (q *Queries) GetDelivery(ctx context.Context, id string) (Delivery, error) {
+	row := q.db.QueryRowContext(ctx, getDelivery, id)
+	var i Delivery
+	err := row.Scan(
+		&i.ID,
+		&i.EventID,
+		&i.SubscriptionID,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastError,
+		&i.HeldUntil,
+		&i.HoldStartedAt,
+		&i.HoldWatchCooldownMs,
+		&i.HoldPrerelease,
+		&i.HoldWatchID,
+		&i.HoldRaw,
+		&i.HoldInput,
+		&i.Traceparent,
+	)
+	return i, err
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT seq, id, watch_id, type, payload_json, created_at, ref_event_id FROM event WHERE id = ?
 `
@@ -690,6 +717,17 @@ func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 	return i, err
 }
 
+const hasEventsAfter = `-- name: HasEventsAfter :one
+SELECT EXISTS (SELECT 1 FROM event WHERE seq > ?)
+`
+
+func (q *Queries) HasEventsAfter(ctx context.Context, seq int64) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasEventsAfter, seq)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasLeasableDueDeliveries = `-- name: HasLeasableDueDeliveries :one
 SELECT EXISTS (
   SELECT 1 FROM delivery d
@@ -757,6 +795,81 @@ func (q *Queries) ListDeliveries(ctx context.Context, eventID string) ([]Deliver
 			&i.HoldRaw,
 			&i.HoldInput,
 			&i.Traceparent,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveriesPage = `-- name: ListDeliveriesPage :many
+SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, e.seq AS event_seq
+FROM delivery d JOIN event e ON e.id = d.event_id
+WHERE d.status IN (SELECT value FROM json_each(?1))
+  AND (CAST(?2 AS TEXT) = 'null'
+       OR d.subscription_id IN (SELECT value FROM json_each(?2)))
+  AND (CAST(?3 AS TEXT) = '' OR d.event_id = ?3)
+  AND (e.seq < ?4 OR (e.seq = ?4 AND d.id > ?5))
+ORDER BY e.seq DESC, d.id
+LIMIT ?6
+`
+
+type ListDeliveriesPageParams struct {
+	StatusesJson        interface{}
+	SubscriptionIdsJson string
+	EventID             string
+	BeforeSeq           int64
+	BeforeID            string
+	MaxRows             int64
+}
+
+type ListDeliveriesPageRow struct {
+	Delivery Delivery
+	EventSeq int64
+}
+
+// Newest event first, then by delivery id. all_subscriptions true ignores
+// subscription_ids.
+func (q *Queries) ListDeliveriesPage(ctx context.Context, arg ListDeliveriesPageParams) ([]ListDeliveriesPageRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeliveriesPage,
+		arg.StatusesJson,
+		arg.SubscriptionIdsJson,
+		arg.EventID,
+		arg.BeforeSeq,
+		arg.BeforeID,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDeliveriesPageRow
+	for rows.Next() {
+		var i ListDeliveriesPageRow
+		if err := rows.Scan(
+			&i.Delivery.ID,
+			&i.Delivery.EventID,
+			&i.Delivery.SubscriptionID,
+			&i.Delivery.Status,
+			&i.Delivery.Attempts,
+			&i.Delivery.NextAttemptAt,
+			&i.Delivery.LastError,
+			&i.Delivery.HeldUntil,
+			&i.Delivery.HoldStartedAt,
+			&i.Delivery.HoldWatchCooldownMs,
+			&i.Delivery.HoldPrerelease,
+			&i.Delivery.HoldWatchID,
+			&i.Delivery.HoldRaw,
+			&i.Delivery.HoldInput,
+			&i.Delivery.Traceparent,
+			&i.EventSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -960,6 +1073,143 @@ func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDu
 	return items, nil
 }
 
+const listNamedSinksPage = `-- name: ListNamedSinksPage :many
+SELECT id, kind, config_json_encrypted, name, managed_by FROM sink
+WHERE name IS NOT NULL
+  AND (name > ?1 OR (name = ?1 AND id > ?2))
+ORDER BY name, id
+LIMIT ?3
+`
+
+type ListNamedSinksPageParams struct {
+	AfterName sql.NullString
+	AfterID   string
+	MaxRows   int64
+}
+
+func (q *Queries) ListNamedSinksPage(ctx context.Context, arg ListNamedSinksPageParams) ([]Sink, error) {
+	rows, err := q.db.QueryContext(ctx, listNamedSinksPage, arg.AfterName, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Sink
+	for rows.Next() {
+		var i Sink
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.ConfigJsonEncrypted,
+			&i.Name,
+			&i.ManagedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNamedSubscriptionsPage = `-- name: ListNamedSubscriptionsPage :many
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription
+WHERE name IS NOT NULL
+  AND (name > ?1 OR (name = ?1 AND id > ?2))
+ORDER BY name, id
+LIMIT ?3
+`
+
+type ListNamedSubscriptionsPageParams struct {
+	AfterName sql.NullString
+	AfterID   string
+	MaxRows   int64
+}
+
+func (q *Queries) ListNamedSubscriptionsPage(ctx context.Context, arg ListNamedSubscriptionsPageParams) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listNamedSubscriptionsPage, arg.AfterName, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+			&i.PolicyJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNamedWatchesPage = `-- name: ListNamedWatchesPage :many
+
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch
+WHERE name IS NOT NULL
+  AND (name > ?1 OR (name = ?1 AND id > ?2))
+ORDER BY name, id
+LIMIT ?3
+`
+
+type ListNamedWatchesPageParams struct {
+	AfterName sql.NullString
+	AfterID   string
+	MaxRows   int64
+}
+
+// REST API (story #71). Additive: reads by name and by page, and replay.
+// Rows without a name cannot be addressed through the API and are left out
+// of its lists.
+func (q *Queries) ListNamedWatchesPage(ctx context.Context, arg ListNamedWatchesPageParams) ([]Watch, error) {
+	rows, err := q.db.QueryContext(ctx, listNamedWatchesPage, arg.AfterName, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Watch
+	for rows.Next() {
+		var i Watch
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.PolicyJson,
+			&i.LabelsJson,
+			&i.BaselineDone,
+			&i.Name,
+			&i.ManagedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingReleases = `-- name: ListPendingReleases :many
 SELECT p.watch_id, p.target_id, p.raw, p.held_at, p.release_json, v.yanked, v.removed_at
 FROM pending_release p
@@ -997,6 +1247,101 @@ func (q *Queries) ListPendingReleases(ctx context.Context, targetID string) ([]L
 			&i.ReleaseJson,
 			&i.Yanked,
 			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReplayCandidates = `-- name: ListReplayCandidates :many
+SELECT d.id, d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at, d.last_error, d.held_until, d.hold_started_at, d.hold_watch_cooldown_ms, d.hold_prerelease, d.hold_watch_id, d.hold_raw, d.hold_input, d.traceparent, e.seq AS event_seq, e.payload_json
+FROM delivery d JOIN event e ON e.id = d.event_id
+WHERE d.status IN (SELECT value FROM json_each(?1))
+  AND (CAST(?2 AS TEXT) = '' OR d.event_id = ?2)
+  AND (CAST(?3 AS TEXT) = '' OR d.subscription_id = ?3)
+ORDER BY e.seq, d.id
+`
+
+type ListReplayCandidatesParams struct {
+	StatusesJson   interface{}
+	EventID        string
+	SubscriptionID string
+}
+
+type ListReplayCandidatesRow struct {
+	Delivery    Delivery
+	EventSeq    int64
+	PayloadJson string
+}
+
+func (q *Queries) ListReplayCandidates(ctx context.Context, arg ListReplayCandidatesParams) ([]ListReplayCandidatesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listReplayCandidates, arg.StatusesJson, arg.EventID, arg.SubscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReplayCandidatesRow
+	for rows.Next() {
+		var i ListReplayCandidatesRow
+		if err := rows.Scan(
+			&i.Delivery.ID,
+			&i.Delivery.EventID,
+			&i.Delivery.SubscriptionID,
+			&i.Delivery.Status,
+			&i.Delivery.Attempts,
+			&i.Delivery.NextAttemptAt,
+			&i.Delivery.LastError,
+			&i.Delivery.HeldUntil,
+			&i.Delivery.HoldStartedAt,
+			&i.Delivery.HoldWatchCooldownMs,
+			&i.Delivery.HoldPrerelease,
+			&i.Delivery.HoldWatchID,
+			&i.Delivery.HoldRaw,
+			&i.Delivery.HoldInput,
+			&i.Delivery.Traceparent,
+			&i.EventSeq,
+			&i.PayloadJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSinksByName = `-- name: ListSinksByName :many
+SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE name = ? ORDER BY managed_by, id
+`
+
+func (q *Queries) ListSinksByName(ctx context.Context, name sql.NullString) ([]Sink, error) {
+	rows, err := q.db.QueryContext(ctx, listSinksByName, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Sink
+	for rows.Next() {
+		var i Sink
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.ConfigJsonEncrypted,
+			&i.Name,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1050,6 +1395,76 @@ SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM su
 
 func (q *Queries) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
 	rows, err := q.db.QueryContext(ctx, listSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+			&i.PolicyJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubscriptionsByName = `-- name: ListSubscriptionsByName :many
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE name = ? ORDER BY managed_by, id
+`
+
+func (q *Queries) ListSubscriptionsByName(ctx context.Context, name sql.NullString) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptionsByName, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Subscription
+	for rows.Next() {
+		var i Subscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.FilterJson,
+			&i.SinkID,
+			&i.Template,
+			&i.Name,
+			&i.ManagedBy,
+			&i.PolicyJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubscriptionsBySink = `-- name: ListSubscriptionsBySink :many
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE sink_id = ? ORDER BY name, id
+`
+
+func (q *Queries) ListSubscriptionsBySink(ctx context.Context, sinkID string) ([]Subscription, error) {
+	rows, err := q.db.QueryContext(ctx, listSubscriptionsBySink, sinkID)
 	if err != nil {
 		return nil, err
 	}
@@ -1136,6 +1551,41 @@ func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version,
 			&i.Yanked,
 			&i.FirstSeenAt,
 			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWatchesByName = `-- name: ListWatchesByName :many
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE name = ? ORDER BY managed_by, id
+`
+
+func (q *Queries) ListWatchesByName(ctx context.Context, name sql.NullString) ([]Watch, error) {
+	rows, err := q.db.QueryContext(ctx, listWatchesByName, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Watch
+	for rows.Next() {
+		var i Watch
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.PolicyJson,
+			&i.LabelsJson,
+			&i.BaselineDone,
+			&i.Name,
+			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1344,6 +1794,25 @@ type ReleaseLeaseParams struct {
 func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) error {
 	_, err := q.db.ExecContext(ctx, releaseLease, arg.Name, arg.Holder)
 	return err
+}
+
+const replayDelivery = `-- name: ReplayDelivery :execrows
+UPDATE delivery SET status = 'pending', next_attempt_at = ?1, held_until = NULL
+WHERE id = ?2 AND status IN ('dead', 'delivered')
+`
+
+type ReplayDeliveryParams struct {
+	Now sql.NullInt64
+	ID  string
+}
+
+// A replay keeps attempts and last_error (spec docs/api.md decision 28).
+func (q *Queries) ReplayDelivery(ctx context.Context, arg ReplayDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replayDelivery, arg.Now, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const rescheduleHeldDelivery = `-- name: RescheduleHeldDelivery :execrows

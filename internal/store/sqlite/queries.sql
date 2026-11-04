@@ -302,3 +302,72 @@ SELECT status, count(*) AS n FROM delivery GROUP BY status;
 
 -- name: SubscriptionGeneration :one
 SELECT generation FROM subscription_generation WHERE id = 1;
+
+-- REST API (story #71). Additive: reads by name and by page, and replay.
+-- Rows without a name cannot be addressed through the API and are left out
+-- of its lists.
+
+-- name: ListNamedWatchesPage :many
+SELECT * FROM watch
+WHERE name IS NOT NULL
+  AND (name > sqlc.arg(after_name) OR (name = sqlc.arg(after_name) AND id > sqlc.arg(after_id)))
+ORDER BY name, id
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListWatchesByName :many
+SELECT * FROM watch WHERE name = ? ORDER BY managed_by, id;
+
+-- name: ListNamedSinksPage :many
+SELECT * FROM sink
+WHERE name IS NOT NULL
+  AND (name > sqlc.arg(after_name) OR (name = sqlc.arg(after_name) AND id > sqlc.arg(after_id)))
+ORDER BY name, id
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSinksByName :many
+SELECT * FROM sink WHERE name = ? ORDER BY managed_by, id;
+
+-- name: ListNamedSubscriptionsPage :many
+SELECT * FROM subscription
+WHERE name IS NOT NULL
+  AND (name > sqlc.arg(after_name) OR (name = sqlc.arg(after_name) AND id > sqlc.arg(after_id)))
+ORDER BY name, id
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSubscriptionsByName :many
+SELECT * FROM subscription WHERE name = ? ORDER BY managed_by, id;
+
+-- name: ListSubscriptionsBySink :many
+SELECT * FROM subscription WHERE sink_id = ? ORDER BY name, id;
+
+-- name: GetDelivery :one
+SELECT * FROM delivery WHERE id = ?;
+
+-- name: HasEventsAfter :one
+SELECT EXISTS (SELECT 1 FROM event WHERE seq > ?);
+
+-- Newest event first, then by delivery id. all_subscriptions true ignores
+-- subscription_ids.
+-- name: ListDeliveriesPage :many
+SELECT sqlc.embed(d), e.seq AS event_seq
+FROM delivery d JOIN event e ON e.id = d.event_id
+WHERE d.status IN (SELECT value FROM json_each(sqlc.arg(statuses_json)))
+  AND (CAST(sqlc.arg(subscription_ids_json) AS TEXT) = 'null'
+       OR d.subscription_id IN (SELECT value FROM json_each(sqlc.arg(subscription_ids_json))))
+  AND (CAST(sqlc.arg(event_id) AS TEXT) = '' OR d.event_id = sqlc.arg(event_id))
+  AND (e.seq < sqlc.arg(before_seq) OR (e.seq = sqlc.arg(before_seq) AND d.id > sqlc.arg(before_id)))
+ORDER BY e.seq DESC, d.id
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListReplayCandidates :many
+SELECT sqlc.embed(d), e.seq AS event_seq, e.payload_json
+FROM delivery d JOIN event e ON e.id = d.event_id
+WHERE d.status IN (SELECT value FROM json_each(sqlc.arg(statuses_json)))
+  AND (CAST(sqlc.arg(event_id) AS TEXT) = '' OR d.event_id = sqlc.arg(event_id))
+  AND (CAST(sqlc.arg(subscription_id) AS TEXT) = '' OR d.subscription_id = sqlc.arg(subscription_id))
+ORDER BY e.seq, d.id;
+
+-- A replay keeps attempts and last_error (spec docs/api.md decision 28).
+-- name: ReplayDelivery :execrows
+UPDATE delivery SET status = 'pending', next_attempt_at = sqlc.arg(now), held_until = NULL
+WHERE id = sqlc.arg(id) AND status IN ('dead', 'delivered');
