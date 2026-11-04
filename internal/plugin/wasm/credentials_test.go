@@ -39,7 +39,8 @@ type seenReq struct {
 // Authorization header everywhere it can, like a misbehaving or debugging
 // upstream: in the body, a header value, a header name, the ETag and
 // Last-Modified. It serves Range requests, and gzips the body on /gzip
-// when asked and on /gzip-always regardless. ?to=URL redirects.
+// when asked, on /gzip-always regardless, and on /gzip-double behind an
+// identity Content-Encoding header followed by a gzip one. ?to=URL redirects.
 type echoUpstream struct {
 	mu   sync.Mutex
 	seen map[string][]seenReq
@@ -64,6 +65,16 @@ func (a *echoUpstream) handler(host string) http.Handler {
 			w.Header().Set("X-Tok-"+strings.TrimPrefix(v, "Bearer "), "1")
 			w.Header().Set("Etag", `"`+v+`"`)
 			w.Header().Set("Last-Modified", v)
+		}
+		if r.URL.Path == "/gzip-double" {
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			_, _ = zw.Write(body)
+			_ = zw.Close()
+			w.Header().Add("Content-Encoding", "identity")
+			w.Header().Add("Content-Encoding", "gzip")
+			_, _ = w.Write(buf.Bytes()) //nolint:gosec // G705: test upstream echoing on purpose.
+			return
 		}
 		if r.URL.Path == "/gzip-always" || (r.URL.Path == "/gzip" && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")) {
 			var buf bytes.Buffer
@@ -279,6 +290,13 @@ func TestCredentialResponseIsDecodedBeforeRedaction(t *testing.T) {
 		_, err := fetch(t, s, "https://allowed.test/gzip-always")
 		if err == nil || !strings.Contains(err.Error(), "cannot be redacted") {
 			t.Fatalf("err = %v, want the gzip response refused", err)
+		}
+	})
+
+	t.Run("a second Content-Encoding header is checked too", func(t *testing.T) {
+		_, err := fetch(t, s, "https://allowed.test/gzip-double")
+		if err == nil || !strings.Contains(err.Error(), "cannot be redacted") {
+			t.Fatalf("err = %v, want the identity+gzip response refused", err)
 		}
 	})
 

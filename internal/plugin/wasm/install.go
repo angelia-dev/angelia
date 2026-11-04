@@ -203,11 +203,18 @@ func (t *allowlistTransport) inject(r *http.Request) (*http.Request, bool, error
 
 // checkEncoding refuses a credentialed response whose body is still
 // encoded (a transport that does not decompress, or a server that ignored
-// the negotiation): its bytes cannot be scrubbed.
+// the negotiation): its bytes cannot be scrubbed. Every Content-Encoding
+// value is checked, since a server can send several headers and the
+// transport only acts on the first; net/http deletes the header after it
+// decompresses, so a decoded response has none.
 func checkEncoding(resp *http.Response) error {
-	if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
-		_ = resp.Body.Close()
-		return fmt.Errorf("%w: response with Content-Encoding %q cannot be redacted", errCredential, ce)
+	for _, v := range resp.Header.Values("Content-Encoding") {
+		for ce := range strings.SplitSeq(v, ",") {
+			if ce = strings.TrimSpace(ce); ce != "" && !strings.EqualFold(ce, "identity") {
+				_ = resp.Body.Close()
+				return fmt.Errorf("%w: response with Content-Encoding %q cannot be redacted", errCredential, ce)
+			}
+		}
 	}
 	return nil
 }
