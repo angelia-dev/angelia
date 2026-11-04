@@ -150,3 +150,46 @@ func TestCratesManifestIsValid(t *testing.T) {
 		t.Errorf("manifest = %+v", m)
 	}
 }
+
+// AC: a registry mirror added by the operator, with a host-injected
+// credential: the crates plugin is unchanged (manifest allows crates.io
+// only, no token in its config) and every page carries the credential,
+// bound to the mirror's host:port.
+func TestCratesMirrorWithInjectedCredential(t *testing.T) {
+	up := wasmtest.NewCratesUpstream(3, map[string]int{"tokio": 7})
+	srv := httptest.NewTLSServer(up)
+	t.Cleanup(srv.Close)
+	nc, err := netguard.New(netguard.Config{
+		Transport:   srv.Client().Transport,
+		Allow:       []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+		HostLimits:  map[string]netguard.HostLimit{"127.0.0.1": fastLimit},
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := wasm.New(t.Context(), cratesManifest(t), plugins.CratesWasm(), wasm.Options{
+		HTTPClient:   nc.HTTPClient(),
+		Config:       map[string]string{"base_url": srv.URL},
+		AllowedHosts: []string{"127.0.0.1"},
+		Credentials: []wasm.Credential{{Host: strings.TrimPrefix(srv.URL, "https://"), Token: func(context.Context) (string, error) {
+			return "mirror-token", nil
+		}}},
+		CompilationCache: testCache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	res, err := s.List(t.Context(), crate("tokio"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Versions) != 7 {
+		t.Fatalf("got %d versions, want 7", len(res.Versions))
+	}
+	if a := up.Authorizations(); len(a) != 3 || slices.ContainsFunc(a, func(v string) bool { return v != "mirror-token" }) {
+		t.Errorf("Authorization per page = %q, want the injected credential on all 3", a)
+	}
+}

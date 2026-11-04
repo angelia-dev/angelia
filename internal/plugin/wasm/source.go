@@ -37,10 +37,17 @@ type Options struct {
 	// Transport to enforce allowed_hosts on every hop and drops its Jar.
 	// Required, with a non-nil Transport.
 	HTTPClient *http.Client
-	// Config is the plugin's config map (Extism config), for example
-	// {"token": "..."}. Every key must be declared in the manifest's
-	// config_schema properties.
+	// Config is the plugin's config map (Extism config). Every key must be
+	// declared in the manifest's config_schema properties. It is visible
+	// to the plugin: put tokens in Credentials, not here.
 	Config map[string]string
+	// AllowedHosts extends the manifest's allowed_hosts with hosts the
+	// operator configured when installing the plugin, for example a
+	// registry mirror. Same rules as the manifest's entries. Optional.
+	AllowedHosts []string
+	// Credentials are injected by the host into the requests to the hosts
+	// they are bound to; the host never hands them to the plugin. Optional.
+	Credentials []Credential
 	// Logger receives the plugin's log host function calls and the host's
 	// warnings. Default: discard.
 	Logger *slog.Logger
@@ -86,6 +93,8 @@ var ErrPolicy = errors.New("wasm: plugin violated host policy")
 type Source struct {
 	kind     string
 	allowed  map[string]bool
+	grants   map[string]*HostGrant
+	creds    map[string]Credential
 	opts     Options
 	client   *http.Client
 	log      *slog.Logger
@@ -127,19 +136,17 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 	}
 
 	s := &Source{
-		kind:    m.Kind,
-		allowed: make(map[string]bool, len(m.AllowedHosts)),
-		opts:    opts,
-		log:     opts.Logger.With("plugin", m.Kind),
+		kind: m.Kind,
+		opts: opts,
+		log:  opts.Logger.With("plugin", m.Kind),
 	}
-	for _, h := range m.AllowedHosts {
-		n, _ := normAllowedHost(h) // checked by Validate
-		s.allowed[n] = true
+	if err := s.install(m, opts); err != nil {
+		return nil, err
 	}
 	hc := opts.HTTPClient
 	inner := hc.CheckRedirect
 	s.client = &http.Client{
-		Transport: &allowlistTransport{base: hc.Transport, allowed: s.allowed},
+		Transport: &allowlistTransport{base: hc.Transport, allowed: s.allowed, creds: s.creds},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return s.checkRedirect(req, via, inner)
 		},
@@ -163,6 +170,7 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 	if err != nil {
 		return nil, fmt.Errorf("wasm %s: compile: %w", m.Kind, err)
 	}
+	s.log.InfoContext(ctx, "wasm plugin installed", "allowed_hosts", s.Hosts())
 	return s, nil
 }
 
@@ -253,6 +261,8 @@ type callState struct {
 	mu       sync.Mutex
 	requests int
 	violated error
+
+	secrets []string // tokens injected during the call, scrubbed from responses
 
 	logEntries   int
 	logBytes     int64

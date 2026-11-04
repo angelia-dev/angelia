@@ -146,6 +146,95 @@ below) is measured before the plugin SDK freezes the ABI.
 - **Choices within the draft confirmed:** JSON with base64 and buffered bodies, GET/HEAD/POST only, 100 requests
   per call, exact-match `allowed_hosts`, and a `User-Agent` the plugin can override.
 
+## Amendment (2026-11-04, #145): operator allowed_hosts and host-injected credentials
+
+This section implements the two maintainer decisions above on `allowed_hosts` ownership and credentials (both
+marked "follow-up #145": **done** here). The text above is unchanged; where it conflicts with this section, this
+section wins. It is still a draft (`v0`), and it is **for the maintainer to confirm**: the config keys become a
+public contract once released, and credential injection is a security decision.
+
+**Where it is configured.** In the instance config, under `plugins.<kind>`
+([configuration.md](../configuration.md#installed-plugins-draft)), next to `sources.<kind>.token_env`; not in the
+watch file and not in the plugin's config map:
+
+```yaml
+plugins:
+  crates:
+    allowed_hosts: [crates-mirror.example.com]
+    credentials:
+      crates-mirror.example.com: {token_env: CRATES_MIRROR_TOKEN, scheme: Bearer}   # port 443
+      crates-mirror.example.com:8443: {token_env: CRATES_MIRROR_TOKEN}             # explicit port
+```
+
+In Go: `wasm.Options.AllowedHosts` and `wasm.Options.Credentials` (`internal/plugin/wasm/install.go`);
+`config.Config.PluginToken(kind, host)` reads the token. `angelia serve` does not load plugins yet, so nothing
+connects the two today.
+
+**Host names.** One rule: hosts are matched case-insensitively and a trailing dot is ignored. The manifest may use
+any case; the instance config requires the canonical form (lower case, no trailing dot, canonical IP literal) so
+that two keys cannot name the same host.
+
+**Operator `allowed_hosts`.** Merged with the manifest's list (a union: the operator cannot remove a manifest
+host), with the same validation and matching. `Source.Hosts()` returns the merged list, each entry marked
+`manifest`, `operator` and with its `credential_ports`, and `New` logs it as `wasm plugin installed`.
+
+**Credentials.**
+
+- Bound to one host and port: `host` means port 443, `host:port` (`[addr]:port` for IPv6) names another port, for
+  example a mirror on 8443. The host must be in the merged `allowed_hosts`. It is always the `Authorization`
+  header, `<scheme> <token>` or the bare token, so netguard counts the request against the authenticated budget
+  of the host with no change (custom headers such as `PRIVATE-TOKEN` can follow once netguard knows them, #151).
+- Injected per hop in `allowlistTransport`, after the allowlist check and before netguard, keyed by the hop's host
+  and effective port. A hop to the bound host and port gets the header, replacing any `Authorization` the plugin
+  set; any other hop is left as the plugin built it. The header lives only on the transport's copy of the request,
+  so net/http's redirect code never sees it: a redirect to another host or port, allowed or not, does not carry
+  it, and a redirect back gets it again.
+- Only over https: a plain http hop to a bound host and port fails before it is sent (the existing downgrade rule
+  already refuses https → http redirects).
+- `Credential.Token(ctx)` is called for every hop. It is the seam for the secret store (#75). Rotation is **not**
+  picked up today: the instance config reads `token_env` once, at load, so a rotated value needs a restart until
+  a resolver reads the value at call time. An empty token, one shorter than 8 bytes, a value with control
+  characters, or a resolver error fails the request; the error never quotes the token.
+- The host never hands the token to the plugin: it is not in the plugin's config map, not in a host-made error,
+  not in a log line.
+
+**An upstream that reflects `Authorization` defeats this.** The real guarantee is that the bound host does not
+echo the header back; bind a credential only to such a host. On top of that the host redacts, **best effort**:
+
+- Every token injected during the call is replaced by `[REDACTED]` in the response body, header values,
+  validators and error messages before the plugin sees them; a header whose name holds the token is dropped, and
+  `Content-Length` is dropped once the body changed.
+- On a credentialed hop the plugin's `Accept-Encoding` is removed, so net/http negotiates compression and
+  decompresses before redaction; a response that still has a `Content-Encoding` is refused, since its bytes
+  cannot be scrubbed. Otherwise a plugin could ask for gzip and inflate the echo itself.
+- On a credentialed hop `Range` and `If-Range` are refused (not stripped, so the plugin cannot mistake a full
+  response for the range it asked for): partial responses would let a plugin read the echo in pieces that each
+  escape redaction. A source plugin has no need for partial content on an authenticated API.
+- Limits: a transformed echo (encoded, hashed, split by the server, case-changed) is not caught. Secrets are
+  recorded per call, so a token the bound host stores and another allowed host reflects in a later call is not
+  scrubbed. The allowlist still bounds where a recovered token could be sent.
+
+The `crates` example plugin still sets `Authorization` from a `token` config key when one is given. With an
+injected credential no `token` is configured and the host's header wins; the plugin needs no change
+(`TestCratesMirrorWithInjectedCredential`).
+
+Tested in `internal/plugin/wasm/credentials_test.go` (injection on the bound host and port only, the plugin's
+value replaced, redirects, http refused, Range and gzip refused or decoded, redaction of body, headers, validators
+and errors, resolver errors, merged hosts, authenticated budget) and `internal/config/plugins_test.go`.
+
+**Open questions for the maintainer.**
+
+1. Key names and place: `plugins.<kind>.allowed_hosts` and `plugins.<kind>.credentials.<host[:port]>.{token_env,
+   scheme}` in the instance config. Alternative: a separate install file per plugin (with the `.wasm` path and the
+   manifest), which a later "install plugin" story will need anyway.
+2. Authorization only, or also an arbitrary header name (`header:`)? Recommendation: Authorization only until a
+   plugin needs more; should a future `header:` key be limited to the headers netguard counts as credentials?
+3. Should netguard count an `Authorization` (or, after #151, `PRIVATE-TOKEN`) set by the plugin itself as
+   authenticated? Today it does, so a plugin can move its requests to the authenticated budget with a dummy value.
+4. Is the `wasm plugin installed` log line (and `Source.Hosts()`) enough to show the hosts, or should
+   `config check` or an install command print them?
+5. Plain http to a bound host is refused. Allow it for a mirror on a private network? Recommendation: no.
+
 ## Consequences
 
 ### Positive

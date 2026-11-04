@@ -48,6 +48,7 @@ func (e *HostNotAllowedError) Unwrap() error { return ErrHostNotAllowed }
 type allowlistTransport struct {
 	base    http.RoundTripper
 	allowed map[string]bool
+	creds   map[string]Credential // by normalised host
 }
 
 func (t *allowlistTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -60,7 +61,20 @@ func (t *allowlistTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 		}
 		return nil, err
 	}
-	return t.base.RoundTrip(r)
+	out, credentialed, err := t.inject(r)
+	if err != nil {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, err
+	}
+	resp, err := t.base.RoundTrip(out)
+	if err == nil && credentialed {
+		if err := checkEncoding(resp); err != nil {
+			return nil, err
+		}
+	}
+	return resp, err
 }
 
 func (t *allowlistTransport) check(u *url.URL) error {
@@ -106,7 +120,7 @@ func (s *Source) hostHTTP(ctx context.Context, p *extism.CurrentPlugin, stack []
 		if err != nil {
 			panic(fmt.Errorf("http_request: %w", err))
 		}
-		resp = s.doHTTP(ctx, in)
+		resp = s.handleHTTP(ctx, in)
 	}
 	out, err := json.Marshal(resp)
 	if err != nil {
@@ -117,6 +131,16 @@ func (s *Source) hostHTTP(ctx context.Context, p *extism.CurrentPlugin, stack []
 		panic(fmt.Errorf("http_request: %w", err))
 	}
 	stack[0] = off
+}
+
+// handleHTTP runs one http_request and scrubs the injected tokens from
+// what goes back to the plugin.
+func (s *Source) handleHTTP(ctx context.Context, in []byte) wireHTTPResponse {
+	resp := s.doHTTP(ctx, in)
+	if cs, ok := ctx.Value(callKey{}).(*callState); ok {
+		cs.scrub(&resp)
+	}
+	return resp
 }
 
 func failure(code, msg string) wireHTTPResponse {

@@ -66,11 +66,15 @@ type Config struct {
 	Log      Log               `yaml:"log"`
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
+	Plugins  map[string]Plugin `yaml:"plugins"`
 
 	// Tokens holds the values read from each source's token_env variable,
 	// keyed by kind. It is not part of the file format; use SourceToken.
-	Tokens   map[string]secret `yaml:"-"`
-	warnings []string
+	Tokens map[string]secret `yaml:"-"`
+	// PluginTokens holds the values of plugins.<kind>.credentials.<host>.token_env.
+	// It is not part of the file format; use PluginToken.
+	PluginTokens map[string]secret `yaml:"-"`
+	warnings     []string
 }
 
 // Instance identifies this Angelia instance. Name is the <instance> part of
@@ -369,6 +373,7 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	c.validatePlugins(bad)
 	return errors.Join(errs...)
 }
 
@@ -411,6 +416,7 @@ func (c *Config) resolveTokens(env map[string]string) {
 		}
 		c.Tokens[k] = secret(env[name])
 	}
+	c.resolvePluginTokens(env)
 }
 
 // Warnings lists non-fatal findings, such as a token_env naming an unset variable.
