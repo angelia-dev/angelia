@@ -449,6 +449,53 @@ watches:
 	}
 }
 
+// #134, ADR 0021: spellings of one PyPI project share one target, stored
+// under the canonical name.
+func TestSpellingsOfOneProjectShareATarget(t *testing.T) {
+	st := openStore(t)
+	plan := mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: Requests}}
+  - {name: b, source: pypi, coordinates: {name: requests}}
+  - {name: c, source: pypi, coordinates: {name: " requests "}}
+`)
+	tg, err := target(t, st, "pypi", map[string]string{"name": "requests"})
+	mustNoErr(t, err)
+	if _, err := target(t, st, "pypi", map[string]string{"name": "Requests"}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a target was stored under the spelling Requests: err = %v", err)
+	}
+	ws := snap(t, st, store.ManagedByFile).watches
+	if len(ws) != 3 {
+		t.Fatalf("watches = %+v", ws)
+	}
+	for _, w := range ws {
+		if w.TargetID != tg.ID {
+			t.Fatalf("watch %s is on target %s, want the shared %s", w.Name, w.TargetID, tg.ID)
+		}
+	}
+	creates := 0
+	for _, c := range plan.Changes {
+		if c.Kind == KindTarget && c.Action == Create {
+			creates++
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("plan creates %d targets, want 1:\n%s", creates, plan)
+	}
+	// Re-spelling a watch is not a move: same target, no baseline reset.
+	plan = mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: REQUESTS}}
+  - {name: b, source: pypi, coordinates: {name: requests}}
+  - {name: c, source: pypi, coordinates: {name: " requests "}}
+`)
+	for _, c := range plan.Changes {
+		if c.Action != Unchanged {
+			t.Fatalf("re-spelling changed something:\n%s", plan)
+		}
+	}
+}
+
 func TestSinkChangeAndRepointedSubscription(t *testing.T) {
 	st := openStore(t)
 	mustApply(t, st, twoWatches)

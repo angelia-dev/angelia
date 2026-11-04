@@ -190,7 +190,7 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 
 | File | Rows |
 |---|---|
-| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared) and one `watch` (`policy_json` holds the policy plus `scheme`, `interval` is applied to the target; `labels_json`) |
+| `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`, `interval` is applied to the target; `labels_json`) |
 | `sinks[]` | one `sink` (`config_json_encrypted`; in Phase 0 the secret *reference* `secret_env` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 

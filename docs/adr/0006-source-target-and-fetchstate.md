@@ -3,6 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-11-01
 - **Story:** angelia-dev/angelia#50
+- **Amended by:** [ADR 0021](0021-source-canonical-target.md) (optional `Canonicalizer`: the canonical target is the coalescing key)
 
 ## Context
 

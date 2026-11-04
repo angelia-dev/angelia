@@ -80,6 +80,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -171,6 +172,21 @@ func (*Source) Validate(t source.Target) error {
 // index path and in the target coalescing key: lower case. "-" and "_" are
 // not folded, they are different characters on crates.io.
 func Normalize(name string) string { return strings.ToLower(name) }
+
+// Canonical implements source.Canonicalizer: the "name" coordinate is
+// lower-cased, so "Serde" and "serde" share one target. crates.io does not
+// allow two crates whose names differ only in case and resolves either
+// spelling to the same crate; the sparse index files are named by the
+// lower-case name (https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files).
+// "-" and "_" are kept apart. See ADR 0021.
+func (s *Source) Canonical(t source.Target) (source.Target, error) {
+	if err := s.Validate(t); err != nil {
+		return source.Target{}, err
+	}
+	coords := maps.Clone(t.Coordinates)
+	coords["name"] = Normalize(coords["name"])
+	return source.Target{Kind: t.Kind, Coordinates: coords}, nil
+}
 
 func crateName(t source.Target) (string, error) {
 	// No trimming: what is validated is what is stored, and the name is

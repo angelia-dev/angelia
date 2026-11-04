@@ -523,9 +523,7 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 		w.Coordinates = p.stringMap(cn, jp+".coordinates", false, nil)
 		if len(p.errs) == before && w.Source != "" && p.opts.Sources != nil {
 			if src, err := p.opts.Sources.Get(w.Source); err == nil {
-				if err := src.Validate(source.Target{Kind: w.Source, Coordinates: w.Coordinates}); err != nil {
-					p.errf(cn, jp+".coordinates", "%s", strings.TrimPrefix(err.Error(), source.ErrInvalidTarget.Error()+": "))
-				}
+				w.Coordinates = p.canonical(src, cn, jp, w)
 			}
 		}
 	}
@@ -547,6 +545,22 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 		p.compilePolicy(w, m, n, jp)
 	}
 	return w, len(p.errs) == before
+}
+
+// canonical validates the watch's coordinates with src and returns their
+// canonical form (source.Canonical, ADR 0021), the one stored in the target
+// row, so that every spelling of one upstream object shares one target. On
+// an error it records it and returns the coordinates as written.
+func (p *parser) canonical(src source.Source, cn *yaml.Node, jp string, w Watch) map[string]string {
+	t := source.Target{Kind: w.Source, Coordinates: w.Coordinates}
+	err := src.Validate(t)
+	if err == nil {
+		if t, err = source.Canonical(src, t); err == nil {
+			return t.Coordinates
+		}
+	}
+	p.errf(cn, jp+".coordinates", "%s", strings.TrimPrefix(err.Error(), source.ErrInvalidTarget.Error()+": "))
+	return w.Coordinates
 }
 
 // compilePolicy runs the stored form of the watch's policy through the

@@ -32,6 +32,27 @@ func TestTemplateAccepted(t *testing.T) {
 	}
 }
 
+// #134, ADR 0021: watch coordinates are stored in the source's canonical
+// form; a source without source.Canonicalizer keeps them as written.
+func TestWatchCoordinatesCanonical(t *testing.T) {
+	f, err := Parse([]byte(base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: Zope.Interface}}
+  - {name: b, source: npm, coordinates: {name: JSONStream}}
+  - {name: c, source: github-release, coordinates: {repo: Kubernetes/Kubernetes}}
+`), "w.yaml", opts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"zope-interface", "JSONStream", "Kubernetes/Kubernetes"} {
+		for _, got := range f.Watches[i].Coordinates {
+			if got != want {
+				t.Errorf("watch %s: coordinate %q, want %q", f.Watches[i].Name, got, want)
+			}
+		}
+	}
+}
+
 // Template errors never echo the template text.
 func TestTemplateErrorsDoNotEcho(t *testing.T) {
 	const marker = "SECRET"
