@@ -97,7 +97,12 @@ func TokenSafe(u *url.URL) bool {
 
 // hasCredentials reports whether h carries one of the credential headers.
 func hasCredentials(h http.Header) bool {
-	return h.Get("Authorization") != "" || h.Get("PRIVATE-TOKEN") != ""
+	for k, v := range h {
+		if len(v) > 0 && v[0] != "" && netguard.IsCredentialHeader(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // GuardRedirects returns a shallow copy of hc whose CheckRedirect refuses to
