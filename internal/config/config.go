@@ -67,6 +67,7 @@ type Config struct {
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
 	Plugins  map[string]Plugin `yaml:"plugins"`
+	API      API               `yaml:"api"`
 
 	// Tokens holds the values read from each source's token_env variable,
 	// keyed by kind. It is not part of the file format; use SourceToken.
@@ -119,6 +120,21 @@ type Log struct {
 // HTTP configures outgoing HTTP requests.
 type HTTP struct {
 	UserAgent string `yaml:"user_agent"`
+}
+
+// API configures the REST API.
+type API struct {
+	// AllowedEnv lists the environment variables a *_env key set through the
+	// API may name (spec docs/api.md decision 25): exact names, empty by
+	// default, so the API cannot name any. Names starting with ANGELIA_ are
+	// always refused.
+	AllowedEnv []string `yaml:"allowed_env"`
+}
+
+// AllowsEnv reports whether a *_env key written through the API may name the
+// environment variable name.
+func (a API) AllowsEnv(name string) bool {
+	return !strings.HasPrefix(name, envPrefix) && slices.Contains(a.AllowedEnv, name)
 }
 
 // Source configures one source kind. There is deliberately no token field:
@@ -374,6 +390,14 @@ func (c *Config) Validate() error {
 		}
 	}
 	c.validatePlugins(bad)
+	for i, n := range c.API.AllowedEnv {
+		switch {
+		case !envNameRE.MatchString(n):
+			bad("api.allowed_env[%d]: must be an environment variable name", i)
+		case strings.HasPrefix(n, envPrefix):
+			bad("api.allowed_env[%d]: names starting with %s are always refused", i, envPrefix)
+		}
+	}
 	return errors.Join(errs...)
 }
 

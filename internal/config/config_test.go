@@ -367,3 +367,28 @@ func TestInstanceNameInvalidMessage(t *testing.T) {
 		})
 	}
 }
+
+// api.allowed_env: exact names, empty by default, ANGELIA_* always refused.
+func TestAPIAllowedEnv(t *testing.T) {
+	cfg, err := load(t, "")
+	if err != nil || len(cfg.API.AllowedEnv) != 0 || cfg.API.AllowsEnv("CI_WEBHOOK_SECRET") {
+		t.Fatalf("default: %+v %v", cfg.API, err)
+	}
+	cfg, err = load(t, writeFile(t, "api:\n  allowed_env: [CI_WEBHOOK_SECRET, SLACK_URL]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"CI_WEBHOOK_SECRET": true, "SLACK_URL": true, "CI_WEBHOOK": false, "ci_webhook_secret": false} {
+		if got := cfg.API.AllowsEnv(name); got != want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	if (API{AllowedEnv: []string{"ANGELIA_DATABASE_DSN"}}).AllowsEnv("ANGELIA_DATABASE_DSN") {
+		t.Error("an ANGELIA_ name is allowed")
+	}
+	for _, y := range []string{"api:\n  allowed_env: [ANGELIA_TOKEN]\n", "api:\n  allowed_env: ['a b']\n"} {
+		if _, err := load(t, writeFile(t, y)); err == nil || !strings.Contains(err.Error(), "api.allowed_env[0]") {
+			t.Errorf("%q: %v", y, err)
+		}
+	}
+}
