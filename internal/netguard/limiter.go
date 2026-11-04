@@ -40,8 +40,20 @@ func Budget(n int, per time.Duration, burst int) (Limit, error) {
 	return Limit{Rate: float64(n-burst) / per.Seconds(), Burst: burst}, nil
 }
 
+const (
+	gitlabAnonPerMin = 500
+	gitlabAuthPerMin = 2000
+)
+
+// defaultAuthHeaders are the request headers that mark a request as
+// authenticated for the limiter: the standard one and GitLab's personal,
+// project and group access token header. Header values are never logged or
+// recorded; only their presence is looked at. Config.ExtraAuthHeaders adds
+// to this list.
+var defaultAuthHeaders = []string{"Authorization", "PRIVATE-TOKEN"}
+
 // HostLimit holds the limits for one host. A request carrying an
-// Authorization header uses Authenticated; others use Anonymous. The two
+// Authorization or PRIVATE-TOKEN header (or one of Config.ExtraAuthHeaders) uses Authenticated; others use Anonymous. The two
 // budgets are tracked in separate buckets.
 //
 // MaxBodyBytes caps the response body for responses served by this host,
@@ -98,6 +110,12 @@ func DefaultFallbackLimit() HostLimit {
 // Burst + Rate*1h equals those budgets (see Budget), so the buckets never
 // exceed them over any one-hour window.
 //
+// gitlab.com allows 500 requests per minute per IP address for
+// unauthenticated traffic and 2,000 per minute per user for authenticated API
+// traffic; the buckets stay under those budgets in any one-minute window.
+// Source: https://docs.gitlab.com/user/gitlab_com/#rate-limits-on-gitlabcom
+// (self-managed GitLab hosts are configured by the operator via HostLimits).
+//
 // crates.io's crawler policy allows one request per second to its API, so
 // crates.io gets a rate of 1 per second with no burst beyond a single
 // request. The sparse index (index.crates.io) is a CDN meant for bulk reads
@@ -106,6 +124,10 @@ func DefaultHostLimits() map[string]HostLimit {
 	crates := Limit{Rate: 1, Burst: 1}
 	return map[string]HostLimit{
 		"crates.io": {Authenticated: crates, Anonymous: crates},
+		"gitlab.com": {
+			Authenticated: Limit{Rate: (gitlabAuthPerMin - 10) / 60.0, Burst: 10},
+			Anonymous:     Limit{Rate: (gitlabAnonPerMin - 10) / 60.0, Burst: 10},
+		},
 		"api.github.com": {
 			Authenticated: Limit{Rate: (5000 - 10) / 3600.0, Burst: 10},
 			Anonymous:     Limit{Rate: (60 - 1) / 3600.0, Burst: 1},

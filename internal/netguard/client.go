@@ -62,6 +62,11 @@ type Config struct {
 	HostLimits map[string]HostLimit
 	// FallbackLimit applies to other hosts. Default DefaultFallbackLimit().
 	FallbackLimit HostLimit
+	// ExtraAuthHeaders names request headers, besides Authorization and
+	// PRIVATE-TOKEN, whose presence (non-empty value) makes the limiter use a
+	// host's Authenticated bucket. Only presence is read; values are never
+	// logged. Go-level option: it has no YAML key.
+	ExtraAuthHeaders []string
 	// Allow lists prefixes the SSRF guard accepts even though they are
 	// loopback, private or link-local. Empty by default.
 	Allow []netip.Prefix
@@ -241,7 +246,7 @@ func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	host := normHost(r.URL.Hostname())
-	authed := r.Header.Get("Authorization") != ""
+	authed := c.isAuthenticated(r.Header)
 	canRetry := isIdempotent(r.Method) && (r.Body == nil || r.Body == http.NoBody)
 
 	for attempt := 1; ; attempt++ {
@@ -296,6 +301,18 @@ func closeRequestBody(req *http.Request) {
 	}
 }
 
+// isAuthenticated reports whether h carries a credential header.
+func (c *Client) isAuthenticated(h http.Header) bool {
+	for _, names := range [][]string{defaultAuthHeaders, c.cfg.ExtraAuthHeaders} {
+		for _, n := range names {
+			if h.Get(n) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // inspect applies rate limit headers to the limiter and decides whether the
 // outcome is worth a retry, and after how long the server asked us to wait.
 func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bool, resp *http.Response, err error) (retry bool, serverWait time.Duration) {
@@ -328,14 +345,23 @@ func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bo
 }
 
 // retryAt returns when the server allows the next request, from
-// Retry-After or from GitHub's X-RateLimit-Remaining: 0 plus
-// X-RateLimit-Reset. It returns the zero time if the server set no limit.
+// Retry-After or from a rate limit header pair: X-RateLimit-Remaining: 0
+// plus X-RateLimit-Reset (GitHub), or the unprefixed RateLimit-Remaining and
+// RateLimit-Reset (GitLab). Both Reset headers are read as a Unix timestamp
+// in seconds, which is what GitHub and GitLab send. A registry that sends a
+// delta in seconds there (the IETF draft meaning of RateLimit-Reset) would
+// read as a time in the past and be ignored, so its Retry-After still wins.
+// The X- pair takes precedence if both are present. It returns the zero time
+// if the server set no limit.
 func retryAt(h http.Header, now time.Time) time.Time {
 	if d := parseRetryAfter(h.Get("Retry-After"), now); d > 0 {
 		return now.Add(d)
 	}
-	if h.Get("X-RateLimit-Remaining") == "0" {
-		if reset, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+	for _, p := range [][2]string{{"X-RateLimit-Remaining", "X-RateLimit-Reset"}, {"RateLimit-Remaining", "RateLimit-Reset"}} {
+		if h.Get(p[0]) != "0" {
+			continue
+		}
+		if reset, err := strconv.ParseInt(h.Get(p[1]), 10, 64); err == nil {
 			if t := time.Unix(reset, 0); t.After(now) {
 				return t
 			}
