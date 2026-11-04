@@ -32,9 +32,13 @@ const (
 	// MaxInterval caps every delay (interval, backoff), so that jitter
 	// arithmetic cannot overflow time.Duration. Larger values are clamped.
 	MaxInterval = 30 * 24 * time.Hour
-	// writeTimeout bounds the final store writes of a check (target state,
-	// lease release), which still run after shutdown has started.
-	writeTimeout = 5 * time.Second
+	// writeTimeout bounds each final store write of a check (target state,
+	// lease release), which still run after shutdown has started. It stays
+	// above sqlite.BusyTimeout (5 s), so write contention delays a write
+	// instead of dropping the check result. A check that finishes during
+	// shutdown does two such writes in a row (target state, then release),
+	// so 2 x writeTimeout must fit in supervisor.DefaultDrainTimeout (25 s).
+	writeTimeout = 8 * time.Second
 	// leasePruneEvery is how often expired target leases are deleted.
 	leasePruneEvery = time.Hour
 	// errorLogEvery limits how often a failing store is logged by Run.

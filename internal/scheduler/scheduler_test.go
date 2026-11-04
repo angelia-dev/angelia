@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/supervisor"
 )
 
 // AC: a target is never fetched by two workers at the same time, with
@@ -890,5 +892,28 @@ func TestStoreErrorLogRateLimited(t *testing.T) {
 	pollAndWait(ctx, s)
 	if logs.count("store reachable again") != 1 {
 		t.Fatal("recovery not logged")
+	}
+}
+
+// Acceptance criteria (#177): writeTimeout is above SQLite's busy timeout, so
+// contention delays the final write instead of dropping the check result; the
+// lease invariants hold; and the shutdown path fits in the drain timeout.
+func TestWriteTimeoutAboveBusyTimeout(t *testing.T) {
+	if writeTimeout <= sqlite.BusyTimeout {
+		t.Errorf("writeTimeout %v not above the SQLite busy timeout %v", writeTimeout, sqlite.BusyTimeout)
+	}
+	// Lease: a check that runs to its timeout still records its result
+	// (one write) while the renewed lease is held.
+	if DefaultCheckTimeout >= DefaultLeaseTTL {
+		t.Errorf("check timeout %v not below the lease TTL %v", DefaultCheckTimeout, DefaultLeaseTTL)
+	}
+	if DefaultCheckTimeout+writeTimeout >= DefaultLeaseTTL {
+		t.Errorf("check %v + write %v not below the lease TTL %v", DefaultCheckTimeout, writeTimeout, DefaultLeaseTTL)
+	}
+	// Shutdown: Run waits for running checks. A check cut short only
+	// releases its lease (one write); one that completed first records its
+	// result and then releases (two writes in a row).
+	if 2*writeTimeout >= supervisor.DefaultDrainTimeout {
+		t.Errorf("2 x write %v not below the drain timeout %v", writeTimeout, supervisor.DefaultDrainTimeout)
 	}
 }
