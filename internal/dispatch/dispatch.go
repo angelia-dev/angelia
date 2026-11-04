@@ -34,11 +34,13 @@ const (
 	// before its lease can expire, and DefaultDeliverTimeout + writeTimeout
 	// stays below supervisor.DefaultDrainTimeout (25 s), so an attempt in
 	// progress at shutdown is still recorded.
-	DefaultDeliverTimeout = 20 * time.Second
+	DefaultDeliverTimeout = 15 * time.Second
 	DefaultPollInterval   = time.Second
 	// writeTimeout bounds the store write that ends an attempt, which still
-	// runs after shutdown has started.
-	writeTimeout = 4 * time.Second
+	// runs after shutdown has started. It stays above the SQLite busy
+	// timeout (5 s; checked by a test), so write contention delays the
+	// record instead of dropping it and causing a duplicate send (#176).
+	writeTimeout = 8 * time.Second
 	// minLeaseMargin is the least time between the end of DeliverTimeout
 	// and the lease's expiry: the clock skew tolerated between hosts.
 	minLeaseMargin = 30 * time.Second

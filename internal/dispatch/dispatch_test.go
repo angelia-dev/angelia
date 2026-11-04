@@ -11,6 +11,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/supervisor"
 )
 
@@ -596,6 +597,18 @@ func TestNewOptions(t *testing.T) {
 	}
 	if DefaultDeliverTimeout+writeTimeout >= supervisor.DefaultDrainTimeout {
 		t.Errorf("deliver %v + write %v not below the drain timeout %v", DefaultDeliverTimeout, writeTimeout, supervisor.DefaultDrainTimeout)
+	}
+}
+
+// Acceptance criterion (#176): writeTimeout is above SQLite's busy timeout,
+// so contention delays the final write instead of dropping it, and the
+// lease outlasts the whole attempt (deliver, write and the margin).
+func TestWriteTimeoutAboveBusyTimeout(t *testing.T) {
+	if writeTimeout <= sqlite.BusyTimeout {
+		t.Errorf("writeTimeout %v not above the SQLite busy timeout %v", writeTimeout, sqlite.BusyTimeout)
+	}
+	if DefaultDeliverTimeout+writeTimeout+minLeaseMargin > DefaultLeaseTTL {
+		t.Errorf("deliver %v + write %v + margin %v exceeds the lease %v", DefaultDeliverTimeout, writeTimeout, minLeaseMargin, DefaultLeaseTTL)
 	}
 }
 

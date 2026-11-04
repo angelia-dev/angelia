@@ -32,7 +32,7 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    `FOR UPDATE SKIP LOCKED`, as for targets.
 2. **No lease renewal; the attempt is bounded instead.** Deliveries are short calls, so a dispatcher
    does not renew its leases (unlike a scheduler check). Rendering and the sink call run under
-   `DeliverTimeout` (default 20 s), which must be at most `LeaseTTL − max(30 s, LeaseTTL/4)` (`LeaseTTL`
+   `DeliverTimeout` (default 15 s; 20 s before the amendment of 2026-11-04), which must be at most `LeaseTTL − max(30 s, LeaseTTL/4)` (`LeaseTTL`
    default 2 min). The holder gives up before its lease can expire, so two dispatchers never send a
    delivery at the same time, provided the sink honours its context and host clocks differ by less than
    that margin (at least 30 s; 100 s by default).
@@ -53,7 +53,7 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    the delivery is dead with `sink panicked: <value>`. Dead deliveries stay visible and replayable.
 5. **Shutdown drains.** Cancelling `Run` stops polling but does not cancel the attempts in progress
    (cancelling would turn a likely success into a likely duplicate); they end within `DeliverTimeout`,
-   and the final write has 4 s. The defaults (20 s + 4 s) stay below the supervisor's 25 s drain timeout,
+   and the final write has 8 s (4 s before the amendment of 2026-11-04). The defaults (15 s + 8 s) stay below the supervisor's 25 s drain timeout,
    so an attempt in progress at shutdown is recorded. If the process is killed first, rule 1 redelivers
    after the lease TTL.
 6. **Retry schedule: full jitter.** After the n-th failed attempt the wait is uniform in
@@ -133,6 +133,16 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
 - Worker count, timeouts and retry settings are `dispatch.Options`; exposing them in `angelia.yaml`
   changes a public contract and is left to the maintainer. Wiring the role into `angelia serve` waits for
   a first sink.
+
+## Amendment (2026-11-04, #176)
+
+The final write of an attempt (rule 5) was bounded at 4 s, below SQLite's 5 s `busy_timeout`
+(`sqlite.BusyTimeout`). Under write contention the record could time out after the sink had already
+accepted the delivery, leaving it `in_flight` and sent again after the lease: a duplicate. The write
+timeout is now 8 s, above the busy timeout (a test ties the two), so a busy database delays the record
+instead of dropping it. To keep `DeliverTimeout` + write timeout (15 s + 8 s) below the supervisor's 25 s
+drain timeout, the default `DeliverTimeout` goes from 20 s to 15 s. Rule 2 still holds: 15 s is far below
+`LeaseTTL − 30 s`, and deliver + write + margin (53 s) fits in the 2 min lease.
 
 ## Alternatives considered
 

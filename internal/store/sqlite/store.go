@@ -8,7 +8,7 @@
 //     and beyond the busy timeout they fail with SQLITE_BUSY; the pool
 //     queues them in Go instead;
 //   - journal_mode=WAL: readers do not block the writer;
-//   - busy_timeout=5000: a writer waits up to 5 s for the write lock;
+//   - busy_timeout=BusyTimeout (5 s): a writer waits up to 5 s for the write lock;
 //   - _txlock=immediate: transactions take the write lock at BEGIN, so the
 //     busy timeout applies and two readers never deadlock upgrading to write;
 //   - foreign_keys=ON and synchronous=NORMAL (durable with WAL).
@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"time"
 
 	modernc "modernc.org/sqlite"
@@ -56,9 +57,15 @@ func Open(ctx context.Context, path string, logger *slog.Logger) (*Store, error)
 	return &Store{db: db, q: New(db)}, nil
 }
 
+// BusyTimeout is how long a writer waits for SQLite's write lock before
+// failing with SQLITE_BUSY. Callers that bound a store write with their own
+// timeout keep it above this value, so a busy database delays the write
+// instead of cancelling it.
+const BusyTimeout = 5 * time.Second
+
 func openDB(path string) (*sql.DB, error) {
 	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?_txlock=immediate" +
-		"&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(" + strconv.Itoa(int(BusyTimeout.Milliseconds())) + ")&_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
