@@ -32,7 +32,7 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    `FOR UPDATE SKIP LOCKED`, as for targets.
 2. **No lease renewal; the attempt is bounded instead.** Deliveries are short calls, so a dispatcher
    does not renew its leases (unlike a scheduler check). Rendering and the sink call run under
-   `DeliverTimeout` (default 15 s; 20 s before the amendment of 2026-11-04), which must be at most `LeaseTTL − max(30 s, LeaseTTL/4)` (`LeaseTTL`
+   `DeliverTimeout` (default 20 s), which must be at most `LeaseTTL − max(30 s, LeaseTTL/4)` (`LeaseTTL`
    default 2 min). The holder gives up before its lease can expire, so two dispatchers never send a
    delivery at the same time, provided the sink honours its context and host clocks differ by less than
    that margin (at least 30 s; 100 s by default).
@@ -53,7 +53,7 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
    the delivery is dead with `sink panicked: <value>`. Dead deliveries stay visible and replayable.
 5. **Shutdown drains.** Cancelling `Run` stops polling but does not cancel the attempts in progress
    (cancelling would turn a likely success into a likely duplicate); they end within `DeliverTimeout`,
-   and the final write has 8 s (4 s before the amendment of 2026-11-04). The defaults (15 s + 8 s) stay below the supervisor's 25 s drain timeout,
+   and the final write has 4 s. The defaults (20 s + 4 s) stay below the supervisor's 25 s drain timeout,
    so an attempt in progress at shutdown is recorded. If the process is killed first, rule 1 redelivers
    after the lease TTL.
 6. **Retry schedule: full jitter.** After the n-th failed attempt the wait is uniform in
@@ -135,6 +135,10 @@ pending rows due at the end of the hold ([ADR 0014](0014-subscription-policy-ove
   a first sink.
 
 ## Amendment (2026-11-04, #176)
+
+This amendment supersedes the figures in rules 2 and 5: the default `DeliverTimeout` is now 15 s (was
+20 s) and the final write timeout 8 s (was 4 s). The rules' text above is left as accepted. Reasons:
+SQLite's `busy_timeout` is 5 s, and deliver + write must stay below the 25 s drain timeout.
 
 The final write of an attempt (rule 5) was bounded at 4 s, below SQLite's 5 s `busy_timeout`
 (`sqlite.BusyTimeout`). Under write contention the record could time out after the sink had already

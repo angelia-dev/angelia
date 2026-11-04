@@ -607,6 +607,9 @@ func TestWriteTimeoutAboveBusyTimeout(t *testing.T) {
 	if writeTimeout <= sqlite.BusyTimeout {
 		t.Errorf("writeTimeout %v not above the SQLite busy timeout %v", writeTimeout, sqlite.BusyTimeout)
 	}
+	if DefaultDeliverTimeout+writeTimeout >= supervisor.DefaultDrainTimeout {
+		t.Errorf("deliver %v + write %v not below the drain timeout %v", DefaultDeliverTimeout, writeTimeout, supervisor.DefaultDrainTimeout)
+	}
 	if DefaultDeliverTimeout+writeTimeout+minLeaseMargin > DefaultLeaseTTL {
 		t.Errorf("deliver %v + write %v + margin %v exceeds the lease %v", DefaultDeliverTimeout, writeTimeout, minLeaseMargin, DefaultLeaseTTL)
 	}

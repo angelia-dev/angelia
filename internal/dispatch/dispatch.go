@@ -124,7 +124,7 @@ type Options struct {
 	// must be at most LeaseTTL − max(30 s, LeaseTTL/4); that margin is the
 	// clock skew tolerated between dispatchers. Zero means
 	// DefaultDeliverTimeout, or that bound when it is lower. Keep
-	// DeliverTimeout + 4 s below the supervisor's drain timeout, so that
+	// DeliverTimeout + writeTimeout (8 s) below the supervisor's drain timeout, so that
 	// attempts in progress at shutdown are recorded.
 	DeliverTimeout time.Duration
 	// PollInterval is how often the store is asked for due deliveries.
