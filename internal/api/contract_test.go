@@ -461,11 +461,61 @@ func TestContract(t *testing.T) {
 	_, v = c.call("getWatch", 404, "/v1/watches/requests", tokRead, nil)
 	c.sameAsExample("ProblemNotFound", v)
 
-	// The stream answers with its own test (stream_test.go).
+	// The stream answers with its own test (TestEventStream in events_test.go).
 	c.covered["streamEvents"] = true
 	for _, op := range e.srv.spec.ops {
 		if !c.covered[op.ID] {
 			t.Errorf("operation %s is not covered", op.ID)
 		}
+	}
+}
+
+func TestValidatorEdges(t *testing.T) {
+	e := newEnv(t)
+	d := e.srv.spec
+	check := func(schema any, value string) []fieldError {
+		t.Helper()
+		v, err := decodeJSON([]byte(value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var errs []fieldError
+		d.validate(schema, v, "", &errs)
+		return errs
+	}
+	// An integral number is an integer whatever its spelling; a huge
+	// exponent is out of range, quickly.
+	for _, v := range []string{`1`, `1.0`, `1e2`, `100E-2`} {
+		if errs := check(d.schema("Seq"), v); len(errs) != 0 {
+			t.Errorf("Seq %s: %v", v, errs)
+		}
+	}
+	for _, v := range []string{`1.5`, `1e999999999`, `9223372036854775808`} {
+		if errs := check(d.schema("Seq"), v); len(errs) == 0 {
+			t.Errorf("Seq %s accepted", v)
+		}
+	}
+	unique := map[string]any{"type": "array", "uniqueItems": true}
+	if errs := check(unique, `[1, 1.0, {"a":1,"b":2}, {"b":2,"a":1.0}]`); len(errs) != 2 || errs[0].Pointer != "/1" || errs[1].Pointer != "/3" {
+		t.Errorf("uniqueItems: %v", errs)
+	}
+	if errs := check(unique, `[9007199254740993, 9007199254740992]`); len(errs) != 0 {
+		t.Errorf("uniqueItems on large integers: %v", errs)
+	}
+	// format: date-time
+	for v, ok := range map[string]bool{`"2026-11-03T10:00:00Z"`: true, `"2026-11-03T10:00:00.123Z"`: true, `"2026-13-45T00:00:00Z"`: false, `"yesterday"`: false} {
+		if errs := check(d.schema("Timestamp"), v); (len(errs) == 0) != ok {
+			t.Errorf("Timestamp %s: %v", v, errs)
+		}
+	}
+	r := e.do("POST", "/v1/replays", tokWrite, map[string]any{"subscription": "x", "since": "2026-13-45T00:00:00Z", "until": "2026-11-04T00:00:00Z"})
+	if r.Status != 422 || !strings.Contains(string(r.Body), `"pointer":"/since"`) {
+		t.Errorf("bad since: %d %s", r.Status, r.Body)
+	}
+	// A pattern that does not compile is a broken specification.
+	bad := []byte("security: [{bearerAuth: [read]}]\npaths:\n  /v1/x:\n    get:\n      operationId: x\n      responses: {'200': {description: ok}}\n" +
+		"components:\n  schemas:\n    Bad: {type: string, pattern: '(['}\n")
+	if _, err := parseSpec(bad); err == nil || !strings.Contains(err.Error(), "Bad") {
+		t.Errorf("parseSpec: %v", err)
 	}
 }

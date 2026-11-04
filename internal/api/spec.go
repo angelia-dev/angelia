@@ -113,6 +113,9 @@ func parseSpec(data []byte) (*specDoc, error) {
 	if len(d.ops) == 0 {
 		return nil, fmt.Errorf("api: the specification has no operations")
 	}
+	if err := checkPatterns(any(d.root), "#"); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 

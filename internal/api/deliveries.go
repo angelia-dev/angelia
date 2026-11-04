@@ -63,7 +63,11 @@ type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
 func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
 	for n > 0 && n < len(s) && s[n]&0xC0 == 0x80 {
 		n--
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/event"
 	"github.com/angelia-dev/angelia/internal/store"
@@ -422,5 +423,18 @@ func TestWatchIntervals(t *testing.T) {
 	e.must(http.StatusNoContent, e.do("DELETE", "/v1/watches/fast", tokWrite, nil))
 	if _, eff := get("slow"); eff != "2h" {
 		t.Errorf("after the delete: %s", eff)
+	}
+}
+
+func TestTruncateKeepsCharacters(t *testing.T) {
+	if got := truncate("ééé", 3); got != "é..." {
+		t.Errorf("truncate = %q", got)
+	}
+	if got := truncateUTF8("ab", 5); got != "ab" {
+		t.Errorf("truncateUTF8 = %q", got)
+	}
+	r := newEnv(t).do("GET", "/v1/watches?"+strings.Repeat("é", 40)+"=1", tokRead, nil)
+	if r.Status != 400 || !utf8.Valid(r.Body) || strings.Contains(string(r.Body), `�`) {
+		t.Errorf("%d %s", r.Status, r.Body)
 	}
 }

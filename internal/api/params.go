@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -111,9 +110,11 @@ func (s *Server) coerceOne(schema any, v string) (any, string) {
 	return v, ""
 }
 
+// truncate cuts s to at most n bytes, on a character boundary, and marks
+// the cut.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return fmt.Sprintf("%s...", s[:n])
+	return truncateUTF8(s, n) + "..."
 }

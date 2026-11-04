@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -17,9 +20,10 @@ import (
 // uses: $ref (local), type, enum, pattern, minLength, maxLength, minimum,
 // maximum, properties, required, additionalProperties, minProperties,
 // maxProperties, propertyNames, items, minItems, maxItems, uniqueItems,
-// oneOf, anyOf and allOf. Annotations (description, default, examples,
-// format, x-*) are ignored: every format the specification uses is also a
-// pattern. An external $ref (the event envelope) accepts anything: the server
+// oneOf, anyOf and allOf, and format date-time (RFC 3339). Other formats
+// and annotations (description, default, examples, x-*) are ignored: uri
+// and uri-reference values are checked by the resource's own rules, and
+// int64 is the range of an integer here. An external $ref (the event envelope) accepts anything: the server
 // returns stored events byte for byte. architecture.md section 6 lists no
 // JSON Schema or OpenAPI validation library, so this stays in house.
 
@@ -126,6 +130,11 @@ func (d *specDoc) validateString(m map[string]any, s, ptr string, bad func(strin
 			bad(ptr, "must match the pattern %s", p)
 		}
 	}
+	if m["format"] == "date-time" {
+		if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
+			bad(ptr, "must be an RFC 3339 date-time")
+		}
+	}
 }
 
 func validateNumber(m map[string]any, n json.Number, ptr string, bad func(string, string, ...any)) {
@@ -196,11 +205,11 @@ func (d *specDoc) validateArray(m map[string]any, arr []any, ptr string, errs *[
 	if u, _ := m["uniqueItems"].(bool); u {
 		seen := map[string]bool{}
 		for i, it := range arr {
-			b, _ := json.Marshal(it)
-			if seen[string(b)] {
+			k := canonical(it)
+			if seen[k] {
 				bad(pointerJoin(ptr, strconv.Itoa(i)), "duplicates an earlier item")
 			}
-			seen[string(b)] = true
+			seen[k] = true
 		}
 	}
 	if is, ok := m["items"]; ok {
@@ -315,13 +324,93 @@ func typeMatches(t, v any) bool {
 		return ok
 	case "integer":
 		n, ok := v.(json.Number)
-		if !ok {
-			return false
-		}
-		_, err := strconv.ParseInt(string(n), 10, 64)
-		return err == nil
+		return ok && isInteger(n)
 	}
 	return true
+}
+
+// isInteger reports whether n is an integer in the int64 range; 1.0 and 1e2
+// are integers (JSON Schema 2020-12, section 6.1.1 of the validation
+// vocabulary).
+func isInteger(n json.Number) bool {
+	_, ok := intValue(n)
+	return ok
+}
+
+// intValue returns n as an int64 when it is an integer in range. It never
+// expands a large exponent (1e999999999 is out of range, not slow).
+func intValue(n json.Number) (int64, bool) {
+	if i, err := strconv.ParseInt(string(n), 10, 64); err == nil {
+		return i, true
+	}
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil || f != math.Trunc(f) || f < math.MinInt64 || f >= math.MaxInt64 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// canonical is a key for JSON equality: numbers compare by value (1, 1.0
+// and 1e0 are one number) and object keys in any order.
+func canonical(v any) string {
+	switch x := v.(type) {
+	case json.Number:
+		if i, ok := intValue(x); ok {
+			return "n" + strconv.FormatInt(i, 10)
+		}
+		if f, err := strconv.ParseFloat(string(x), 64); err == nil {
+			return "n" + strconv.FormatFloat(f, 'g', -1, 64)
+		}
+		return "n" + string(x)
+	case map[string]any:
+		var b strings.Builder
+		b.WriteString("{")
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			kb, _ := json.Marshal(k)
+			b.Write(kb)
+			b.WriteString(":")
+			b.WriteString(canonical(x[k]))
+			b.WriteString(",")
+		}
+		b.WriteString("}")
+		return b.String()
+	case []any:
+		var b strings.Builder
+		b.WriteString("[")
+		for _, e := range x {
+			b.WriteString(canonical(e))
+			b.WriteString(",")
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// checkPatterns reports the first pattern in a schema tree that does not
+// compile.
+func checkPatterns(v any, at string) error {
+	switch x := v.(type) {
+	case map[string]any:
+		if p, ok := x["pattern"].(string); ok {
+			if _, err := compilePattern(p); err != nil {
+				return fmt.Errorf("api: specification %s: pattern %q: %w", at, p, err)
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			if err := checkPatterns(x[k], at+"/"+k); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, e := range x {
+			if err := checkPatterns(e, at+"/"+strconv.Itoa(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func typeName(t any) string {
