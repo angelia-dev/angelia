@@ -51,14 +51,15 @@ but not the key.
 5. **The contract suite** (`sourcetest.Run`) gains a `Canonical` check: for a `Canonicalizer`, the canonical
    form of `Fixtures.Valid` keeps the kind, passes `Validate`, is a fixed point, leaves its argument intact
    and costs no request. `Fixtures.Aliases` lists other spellings of `Valid` that must canonicalise to the
-   same target; listing aliases for a source without `Canonicalizer` fails.
+   same target. A `Canonicalizer` whose fixtures list no `Aliases` fails, and so does listing aliases for a
+   source without `Canonicalizer`.
 
 6. **Built-in sources**, implemented only where the registry's own rule is clear:
 
    | Kind | Canonical | Rule |
    |---|---|---|
    | `pypi` | `name` trimmed and PEP 503-normalised (`Zope.Interface` → `zope-interface`) | [PEP 503, normalized names](https://peps.python.org/pep-0503/#normalized-names): PyPI treats these spellings as one project |
-   | `crates` | `name` lower-cased; `-` and `_` kept apart | crates.io names are unique case-insensitively and the sparse index files are named by the lower-case name ([Cargo registry index](https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files)); `serde_json` and `serde-json` are different crates |
+   | `crates` | `name` lower-cased; `-` and `_` kept apart | crates.io does not allow two names that differ only in case or in `-`/`_`, and the sparse index files are named by the lower-case name ([Cargo registry index](https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files)). But the sparse index resolves only the separator spelling the crate was published with, so folding `-`/`_` would need I/O to find it; that is why they are kept apart |
    | `npm` | none: as written | the registry is case-sensitive and legacy packages with capitals (`JSONStream`) are distinct from their lower-case spelling; only new names must be lower case ([package.json `name`](https://docs.npmjs.com/cli/configuring-npm/package-json#name)) |
    | `github-release`, `github-tag` | none for now | see Open questions |
    | `gitlab-release` | none for now | see Open questions |
@@ -69,7 +70,10 @@ but not the key.
    maintainer decision. A store built before this change keeps its rows; on the next apply, a file watch
    whose stored target is not canonical is moved to the canonical target like any change of coordinates
    (the plan reports `source/coordinates (baseline reset)`), and the old target is deleted when no watch
-   uses it.
+   uses it. The baseline reset has a cost. With `baseline: true` (the default), releases published since
+   the old target's last check, and any pending cooldown holds, are dropped. With `baseline: false`, the
+   whole history is re-emitted under new event ids, and receivers avoid duplicates only if they
+   deduplicate on `subject` + `type`. Only development stores are affected, since nothing has shipped.
 
 ## Consequences
 
@@ -78,14 +82,19 @@ but not the key.
 - Spellings of one PyPI project or crate share one target row and one fetch, as ADR 0006 intended.
 - The `Source` interface is unchanged: existing sources, test fakes and plugins keep compiling and keep
   their behaviour.
-- `data.package` does not change for pypi and crates: `event.Package` already used the same normalisation.
+- `data.package` does not change for pypi and crates, because `event.Package` already used the same
+  normalisation, with one fix: a space-padded pypi name (`" requests "`) used to give `data.package`
+  `" requests "` and now gives `"requests"`, like every other spelling.
 
 ### Negative
 
 - Canonicalisation is opt-in, so a new source that forgets it silently loses coalescing. The contract
-  suite only catches this when the source's fixtures list `Aliases`.
+  suite requires `Aliases` from every `Canonicalizer`, but cannot detect a source that should implement
+  it and does not.
 - A store made by a development build before this change may hold non-canonical targets; the first apply
-  after upgrading moves those watches with a baseline reset.
+  after upgrading moves those watches with a baseline reset: with `baseline: true`, releases since the
+  last check and pending cooldown holds are dropped; with `baseline: false`, the history is re-emitted
+  under new event ids.
 
 ### Open questions
 

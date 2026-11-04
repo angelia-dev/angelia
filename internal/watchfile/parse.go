@@ -559,7 +559,9 @@ func (p *parser) canonical(src source.Source, cn *yaml.Node, jp string, w Watch)
 			return t.Coordinates
 		}
 	}
-	p.errf(cn, jp+".coordinates", "%s", strings.TrimPrefix(err.Error(), source.ErrInvalidTarget.Error()+": "))
+	// Drop the sentinel's text wherever it is: Validate errors start with it,
+	// source.Canonical puts "canonical target for ..." before it.
+	p.errf(cn, jp+".coordinates", "%s", strings.Replace(err.Error(), source.ErrInvalidTarget.Error()+": ", "", 1))
 	return w.Coordinates
 }
 

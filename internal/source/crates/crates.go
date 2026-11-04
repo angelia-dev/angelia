@@ -178,7 +178,10 @@ func Normalize(name string) string { return strings.ToLower(name) }
 // allow two crates whose names differ only in case and resolves either
 // spelling to the same crate; the sparse index files are named by the
 // lower-case name (https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files).
-// "-" and "_" are kept apart. See ADR 0021.
+// crates.io does not allow two names that differ only in "-"/"_" either,
+// but the sparse index resolves only the separator spelling the crate was
+// published with, so folding them would need I/O: they are kept apart. See
+// ADR 0021.
 func (s *Source) Canonical(t source.Target) (source.Target, error) {
 	if err := s.Validate(t); err != nil {
 		return source.Target{}, err

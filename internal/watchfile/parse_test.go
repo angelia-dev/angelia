@@ -2,9 +2,13 @@ package watchfile
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/sourcetest"
 )
 
 const base = "version: 1\n"
@@ -50,6 +54,33 @@ watches:
 				t.Errorf("watch %s: coordinate %q, want %q", f.Watches[i].Name, got, want)
 			}
 		}
+	}
+}
+
+// rejectingCanon is a Fake whose Canonical rejects every target.
+type rejectingCanon struct{ *sourcetest.Fake }
+
+func (rejectingCanon) Canonical(source.Target) (source.Target, error) {
+	return source.Target{}, fmt.Errorf("%w: no canonical form", source.ErrInvalidTarget)
+}
+
+// A Canonical error is reported on the coordinates, without the sentinel's
+// text.
+func TestWatchCoordinatesCanonicalError(t *testing.T) {
+	reg := source.NewRegistry()
+	if err := reg.Register(rejectingCanon{sourcetest.NewFake("fake")}); err != nil {
+		t.Fatal(err)
+	}
+	o := opts(t)
+	o.Sources = reg
+	_, err := Parse([]byte(base+"watches:\n  - {name: a, source: fake, coordinates: {name: pkg}}\n"), "w.yaml", o)
+	if err == nil {
+		t.Fatal("parse accepted a target Canonical rejects")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "coordinates") || !strings.Contains(msg, "no canonical form") ||
+		strings.Contains(msg, source.ErrInvalidTarget.Error()) {
+		t.Fatalf("error = %q, want the canonical error on the coordinates without the sentinel", msg)
 	}
 }
 

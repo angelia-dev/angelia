@@ -52,6 +52,7 @@ func TestCanonicalDetectsViolations(t *testing.T) {
 		fx   func(*Fixtures)
 	}{
 		{"aliases without canonicalizer", f, nil},
+		{"canonicalizer without aliases", canon{Fake: f, canonical: lower}, func(fx *Fixtures) { fx.Aliases = nil }},
 		{"canonical error", canon{Fake: f, canonical: func(source.Target) (source.Target, error) { return source.Target{}, errBoom }}, nil},
 		{"changes kind", canon{Fake: f, canonical: func(t source.Target) (source.Target, error) {
 			t.Kind = "other"

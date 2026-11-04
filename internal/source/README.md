@@ -68,7 +68,7 @@ checks:
 | `Kind` | `Kind()` is non-empty and equals `Fixtures.Valid.Kind` |
 | `ValidateAccepts` / `ValidateRejects` | the valid target passes; every `Invalid` target fails with an error wrapping `ErrInvalidTarget` |
 | `ValidateNoRequests` | `Validate` sent no HTTP request (owned server only) |
-| `Canonical` | for a `Canonicalizer`: `Canonical(Valid)` keeps the kind, passes `Validate`, is idempotent, does not mutate its argument and sends no request; every `Aliases` entry has the same canonical target. `Aliases` without `Canonicalizer` fails |
+| `Canonical` | for a `Canonicalizer`: `Canonical(Valid)` keeps the kind, passes `Validate`, is idempotent, does not mutate its argument and sends no request; every `Aliases` entry has the same canonical target. A `Canonicalizer` without `Aliases` fails, and so do `Aliases` without `Canonicalizer` |
 | `ListDeterministic` | two `List` calls with empty state return identical results, at least one version, no empty `Raw`, not `NotModified` |
 | `ListConcurrent` | 8 concurrent `List` calls all equal the first (run with `-race`) |
 | `ListMatchesFixture` | if `WantRaw` is set, `Raw` values match it in order |

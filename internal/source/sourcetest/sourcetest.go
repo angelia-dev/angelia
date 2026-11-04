@@ -65,10 +65,10 @@ type Fixtures struct {
 	// HasPublishedAt is true when the fake upstream provides publication
 	// dates; every version must then carry a non-zero PublishedAt.
 	HasPublishedAt bool
-	// Aliases, if set, are other spellings of Valid (different case, say)
-	// that name the same upstream object. The source must then implement
-	// source.Canonicalizer, and every alias must have the canonical target of
-	// Valid. See ADR 0021.
+	// Aliases are other spellings of Valid (different case, say) that name
+	// the same upstream object, and every alias must have the canonical
+	// target of Valid. They are required when the source implements
+	// source.Canonicalizer and not allowed when it does not. See ADR 0021.
 	Aliases []source.Target
 }
 
@@ -282,8 +282,9 @@ func checkNoRequests(_ context.Context, src source.Source, fx Fixtures, c *http.
 // checkCanonical checks a source.Canonicalizer: the canonical target of
 // Valid and of each alias keeps the kind, passes Validate, is a fixed point
 // (canonicalizing it again changes nothing), is the same for every alias and
-// costs no request. A source without Canonicalizer passes unless the
-// fixtures list Aliases.
+// costs no request. A Canonicalizer must come with Aliases, so the suite
+// sees it coalesce something; a source without Canonicalizer passes unless
+// the fixtures list Aliases.
 func checkCanonical(_ context.Context, src source.Source, fx Fixtures, c *http.Client) error {
 	cz, ok := src.(source.Canonicalizer)
 	if !ok {
@@ -291,6 +292,9 @@ func checkCanonical(_ context.Context, src source.Source, fx Fixtures, c *http.C
 			return errors.New("fixtures list Aliases but the source does not implement source.Canonicalizer")
 		}
 		return nil
+	}
+	if len(fx.Aliases) == 0 {
+		return errors.New("the source implements source.Canonicalizer but the fixtures list no Aliases")
 	}
 	before := 0
 	if c != nil {
