@@ -149,7 +149,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Detect changes under bench/plugins/
+      - name: Detect changes under bench/plugins/ or to this workflow
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -158,17 +158,21 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
         run: |
+          # A pull request uses the merge base (three dots), so changes that
+          # landed on the base branch after it branched do not count.
           if [[ "$EVENT_NAME" == pull_request ]]; then
-            base="$PR_BASE" head="$PR_HEAD"
+            range="$PR_BASE...$PR_HEAD"
           else
-            base="$PUSH_BEFORE" head="$PUSH_AFTER"
+            range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
-          if ! files="$(git diff --name-only "$base" "$head" -- 2>/dev/null)"; then
-            echo "cannot diff $base..$head; running the plugin check"
+          if ! files="$(git diff --name-only "$range" --)"; then
+            echo "cannot diff $range; running the plugin check"
             echo "plugins=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if grep -q '^bench/plugins/' <<<"$files"; then
+          # A change to this workflow also runs the check, so edits to the
+          # job itself are exercised by their own CI run.
+          if grep -qE '^(bench/plugins/|\.github/workflows/ci\.yml$)' <<<"$files"; then
             echo "plugins=true" >> "$GITHUB_OUTPUT"
           else
             echo "plugins=false" >> "$GITHUB_OUTPUT"
