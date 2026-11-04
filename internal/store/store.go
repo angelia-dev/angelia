@@ -145,6 +145,11 @@ type Store interface {
 	// finished (see the sqlite engine's PruneHistory). Config rows are never
 	// touched. Callers pass before = now - retention.
 	PruneHistory(ctx context.Context, before time.Time, batch int) (PruneResult, error)
+	// HighestPrunedSeq returns the greatest Seq of an event that was ever
+	// deleted, 0 when none was. A pull cursor below it points into pruned
+	// events (spec docs/api.md decision 12: 410 cursor-expired). Events with a
+	// smaller Seq may still be kept, while one of their deliveries is pending.
+	HighestPrunedSeq(ctx context.Context) (int64, error)
 	// InConfigTx runs fn in one transaction like InTx, with the operations a
 	// declarative file apply needs.
 	InConfigTx(ctx context.Context, fn func(tx ConfigTx) error) error
@@ -257,8 +262,8 @@ type ConfigTx interface {
 	// watch uses it, and reports whether it did.
 	DeleteTargetIfUnused(ctx context.Context, id string) (bool, error)
 	CreateWatch(ctx context.Context, w Watch) error
-	// UpdateWatch stores TargetID, Policy and Labels. It leaves BaselineDone
-	// alone, so that an apply cannot undo a worker's baseline.
+	// UpdateWatch stores TargetID, Policy, Labels and Interval. It leaves
+	// BaselineDone alone, so that an apply cannot undo a worker's baseline.
 	UpdateWatch(ctx context.Context, w Watch) error
 	// ResetWatchBaseline sets BaselineDone to false.
 	ResetWatchBaseline(ctx context.Context, id string) error
@@ -326,10 +331,16 @@ type Watch struct {
 	Labels       map[string]string
 	BaselineDone bool
 	// Name and ManagedBy identify a row owned by a declarative file (see
-	// ConfigTx). Name is empty for rows without one; ManagedBy "" means
-	// ManagedByAPI.
+	// ConfigTx). Name is empty for rows without one, and is unique among
+	// watches whoever owns them (spec docs/api.md decision 2; the same holds
+	// for sinks and subscriptions). ManagedBy "" means ManagedByAPI.
 	Name      string
 	ManagedBy string
+	// Interval is the check interval this watch asked for; zero means not set
+	// (rows written before it was stored). Target.Interval is the effective
+	// one: the smallest among the watches on the target (spec docs/api.md
+	// decision 10).
+	Interval time.Duration
 }
 
 // Version is one entry of a target's known version set.

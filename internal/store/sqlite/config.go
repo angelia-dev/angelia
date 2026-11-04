@@ -172,7 +172,7 @@ func (o txOps) CreateWatch(ctx context.Context, w store.Watch) error {
 	}
 	return wrap(o.q.CreateWatch(ctx, CreateWatchParams{
 		ID: w.ID, TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), BaselineDone: boolInt(w.BaselineDone),
-		Name: nullName(w.Name), ManagedBy: owner(w.ManagedBy),
+		Name: nullName(w.Name), ManagedBy: owner(w.ManagedBy), IntervalMs: nullInterval(w.Interval),
 	}), "create watch", w.ID)
 }
 
@@ -186,7 +186,7 @@ func (o txOps) UpdateWatch(ctx context.Context, w store.Watch) error {
 		return fmt.Errorf("store: watch %s policy: %w", w.ID, err)
 	}
 	n, err := o.q.UpdateWatchConfig(ctx, UpdateWatchConfigParams{
-		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), ID: w.ID,
+		TargetID: w.TargetID, PolicyJson: policy, LabelsJson: string(labels), IntervalMs: nullInterval(w.Interval), ID: w.ID,
 	})
 	return deleted(n, err, "update watch", w.ID)
 }

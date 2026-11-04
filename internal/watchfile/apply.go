@@ -34,6 +34,11 @@ const (
 	KindTarget       = "target"
 )
 
+// ErrNameTaken is returned when the file declares a name that a row it does
+// not manage already uses. Names are unique per resource type whoever manages
+// the row (spec docs/api.md decision 2), so the file cannot take it over.
+var ErrNameTaken = errors.New("name taken")
+
 // DeadOnDelete is the LastError of the pending deliveries of a subscription the
 // file stopped declaring (docs/watch-file.md D8).
 const DeadOnDelete = "subscription removed"
@@ -160,6 +165,9 @@ func (r *reconciler) reconcile(f *File) error {
 	if err != nil {
 		return err
 	}
+	if err := r.refuseTakenNames(f); err != nil {
+		return err
+	}
 
 	sinkIDs, err := r.sinks(f, oldSinks)
 	if err != nil {
@@ -224,6 +232,9 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 		// Watches the file owns are gone or moved away; only the others stay.
 		if slices.ContainsFunc(ws, func(w store.Watch) bool { return w.ManagedBy != store.ManagedByFile }) {
+			if err := r.keepTargetInterval(id, ws); err != nil {
+				return err
+			}
 			continue
 		}
 		deleted := true
@@ -240,6 +251,85 @@ func (r *reconciler) reconcile(f *File) error {
 			r.add(KindTarget, id, Delete, "no watch uses it")
 		}
 	}
+	return nil
+}
+
+// refuseTakenNames fails with ErrNameTaken when the file declares a name that
+// a row of another owner (the API) already has. Without it the create would
+// hit the store's unique index with a less helpful error, and only on a real
+// apply, not on a plan.
+func (r *reconciler) refuseTakenNames(f *File) error {
+	sinks, err := r.tx.ListManagedSinks(r.ctx, store.ManagedByAPI)
+	if err != nil {
+		return err
+	}
+	watches, err := r.tx.ListManagedWatches(r.ctx, store.ManagedByAPI)
+	if err != nil {
+		return err
+	}
+	subs, err := r.tx.ListManagedSubscriptions(r.ctx, store.ManagedByAPI)
+	if err != nil {
+		return err
+	}
+	if err := checkNames(KindSink, sinks, func(s store.Sink) string { return s.Name }, f.Sinks, func(d Sink) string { return d.Name }); err != nil {
+		return err
+	}
+	if err := checkNames(KindWatch, watches, func(w store.Watch) string { return w.Name }, f.Watches, func(d Watch) string { return d.Name }); err != nil {
+		return err
+	}
+	return checkNames(KindSubscription, subs, func(s store.Subscription) string { return s.Name }, f.Subscriptions, func(d Subscription) string { return d.Name })
+}
+
+// checkNames returns nameTaken for the first declared name that a row of
+// another owner has.
+func checkNames[R, D any](kind string, rows []R, rowName func(R) string, decl []D, declName func(D) string) error {
+	taken := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		taken[rowName(r)] = true
+	}
+	for _, d := range decl {
+		if n := declName(d); taken[n] {
+			return nameTaken(kind, n)
+		}
+	}
+	return nil
+}
+
+func nameTaken(kind, name string) error {
+	return fmt.Errorf("%s %q: %w by a %s managed by the API (names are unique per resource type); "+
+		"rename it in the watch file or delete the API %s", kind, name, ErrNameTaken, kind, kind)
+}
+
+// keepTargetInterval sets the interval of a target that the file's watches no
+// longer use, but other watches still do, to the smallest interval among those
+// watches (the effective interval, spec docs/api.md decision 10). Watches
+// without a stored interval do not count; when none has one, the target keeps
+// its interval.
+func (r *reconciler) keepTargetInterval(id string, ws []store.Watch) error {
+	var want time.Duration
+	for _, w := range ws {
+		if w.ManagedBy != store.ManagedByFile && w.Interval > 0 && (want == 0 || w.Interval < want) {
+			want = w.Interval
+		}
+	}
+	if want == 0 {
+		return nil
+	}
+	tg, err := r.tx.GetTarget(r.ctx, id)
+	if err != nil {
+		return err
+	}
+	if tg.Interval == want {
+		return nil
+	}
+	next := tg.NextCheckAt
+	if due := r.now.Add(want); due.Before(next) {
+		next = due
+	}
+	if err := r.write(func() error { return r.tx.SetTargetInterval(r.ctx, id, want, next) }); err != nil {
+		return err
+	}
+	r.add(KindTarget, id, Update, "interval "+want.String())
 	return nil
 }
 
@@ -295,7 +385,7 @@ func targetKey(kind string, coords map[string]string) string {
 type targetState struct {
 	id       string
 	existing *store.Target // nil: created by this run
-	interval time.Duration // desired: the smallest interval among the file's watches on it
+	interval time.Duration // desired: the smallest interval among the watches on it (any owner)
 	watches  []int         // plan indexes of the file's watches on it
 }
 
@@ -319,6 +409,16 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 		switch {
 		case err == nil:
 			t.id, t.existing = ex.ID, &ex
+			// Watches of other owners on the target count towards its interval.
+			ws, err := r.tx.ListWatches(r.ctx, ex.ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, w := range ws {
+				if w.ManagedBy != store.ManagedByFile && w.Interval > 0 {
+					t.interval = min(t.interval, w.Interval)
+				}
+			}
 		case errors.Is(err, store.ErrNotFound):
 			t.id = r.newID()
 		default:
@@ -347,6 +447,7 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 			if err := r.write(func() error {
 				return r.tx.CreateWatch(r.ctx, store.Watch{
 					ID: id, TargetID: t.id, Policy: policy, Labels: d.Labels, Name: d.Name, ManagedBy: store.ManagedByFile,
+					Interval: d.Interval,
 				})
 			}); err != nil {
 				return nil, nil, err
@@ -365,11 +466,15 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 			if !reflect.DeepEqual(nonNilMap(cur.Labels), nonNilMap(d.Labels)) {
 				diffs = append(diffs, "labels")
 			}
+			if cur.Interval != d.Interval {
+				// Also rows stored before the watch kept its own interval (00012).
+				diffs = append(diffs, "interval "+d.Interval.String())
+			}
 			if len(diffs) == 0 {
 				idx = r.add(KindWatch, d.Name, Unchanged, "")
 				break
 			}
-			nw := store.Watch{ID: cur.ID, TargetID: t.id, Policy: policy, Labels: d.Labels}
+			nw := store.Watch{ID: cur.ID, TargetID: t.id, Policy: policy, Labels: d.Labels, Interval: d.Interval}
 			if err := r.write(func() error {
 				if err := r.tx.UpdateWatch(r.ctx, nw); err != nil {
 					return err
@@ -390,7 +495,7 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 		t.watches = append(t.watches, idx)
 	}
 
-	// A target's interval is the smallest among the file's watches on it.
+	// A target's interval is the smallest among its watches (decision 10).
 	for _, k := range order {
 		t := targets[k]
 		if t.existing == nil || t.existing.Interval == t.interval {

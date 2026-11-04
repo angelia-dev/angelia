@@ -23,11 +23,11 @@ SET fetch_state_json = ?, last_checked_at = ?, next_check_at = ?, error_count = 
 WHERE id = ?;
 
 -- name: CreateWatch :exec
-INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateWatchConfig :execrows
-UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ? WHERE id = ?;
+UPDATE watch SET target_id = ?, policy_json = ?, labels_json = ?, interval_ms = ? WHERE id = ?;
 
 -- name: ResetWatchBaseline :execrows
 UPDATE watch SET baseline_done = 0 WHERE id = ?;
@@ -156,6 +156,10 @@ WHERE status IN ('delivered', 'dead')
 DELETE FROM event
 WHERE seq > sqlc.arg(after_seq) AND seq <= sqlc.arg(up_to_seq) AND created_at < sqlc.arg(before)
   AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id);
+
+-- Kept current by the event_prune_seq trigger (00013).
+-- name: HighestPrunedSeq :one
+SELECT highest_pruned_seq FROM event_prune WHERE id = 1;
 
 -- name: DeleteExpiredLease :exec
 DELETE FROM lease WHERE name = ? AND expires_at <= ?;

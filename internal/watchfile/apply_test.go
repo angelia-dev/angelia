@@ -1,6 +1,7 @@
 package watchfile
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -265,11 +266,12 @@ func TestEmptyFileDeletesWhatItManagesAndNothingElse(t *testing.T) {
 	ctx := t.Context()
 	// An API-managed set, which a file apply must never touch.
 	mustNoErr(t, st.CreateTarget(ctx, store.Target{ID: "apit", Kind: "pypi", Coordinates: map[string]string{"name": "requests"}, NextCheckAt: clock}))
-	mustNoErr(t, st.CreateWatch(ctx, store.Watch{ID: "apiw", TargetID: "apit", Name: "req"}))
-	mustNoErr(t, st.CreateSink(ctx, store.Sink{ID: "apis", Kind: "webhook", Name: "hook"}))
-	mustNoErr(t, st.CreateSubscription(ctx, store.Subscription{ID: "apisub", SinkID: "apis", Name: "all"}))
+	mustNoErr(t, st.CreateWatch(ctx, store.Watch{ID: "apiw", TargetID: "apit", Name: "api-req"}))
+	mustNoErr(t, st.CreateSink(ctx, store.Sink{ID: "apis", Kind: "webhook", Name: "api-hook"}))
+	mustNoErr(t, st.CreateSubscription(ctx, store.Subscription{ID: "apisub", SinkID: "apis", Name: "api-all"}))
 
-	// The file declares the same names and the same upstream: separate rows.
+	// The file declares the same upstream: separate rows. (Names are unique
+	// across owners, see TestApplyRefusesNameOwnedByAPI.)
 	mustApply(t, st, twoWatches)
 	if got := snap(t, st, store.ManagedByFile); len(got.watches) != 2 || len(got.sinks) != 1 || len(got.subs) != 2 {
 		t.Fatalf("file rows: %+v", got)
@@ -650,5 +652,142 @@ func TestSwapDoesNotDeleteTargetAWatchMovesTo(t *testing.T) {
 	mustNoErr(t, err)
 	if p2.Count(KindTarget, Delete) != 0 {
 		t.Fatalf("dry plan:\n%s", p2)
+	}
+}
+
+// #185, spec docs/api.md decision 2: a name is unique per resource type
+// whoever owns the row, so the file cannot declare a name the API owns. Apply
+// and plan both refuse with an error naming the resource, and nothing is
+// written.
+func TestApplyRefusesNameOwnedByAPI(t *testing.T) {
+	for _, tc := range []struct {
+		kind, name string
+		create     func(t *testing.T, st store.Store)
+	}{
+		{KindSink, "hook", func(t *testing.T, st store.Store) {
+			mustNoErr(t, st.CreateSink(t.Context(), store.Sink{ID: "apis", Kind: "webhook", Name: "hook"}))
+		}},
+		{KindWatch, "django", func(t *testing.T, st store.Store) {
+			mustNoErr(t, st.CreateTarget(t.Context(), store.Target{ID: "apit", Kind: "npm", Coordinates: map[string]string{"name": "react"}, NextCheckAt: clock}))
+			mustNoErr(t, st.CreateWatch(t.Context(), store.Watch{ID: "apiw", TargetID: "apit", Name: "django"}))
+		}},
+		{KindSubscription, "teamb", func(t *testing.T, st store.Store) {
+			mustNoErr(t, st.CreateSink(t.Context(), store.Sink{ID: "apis", Kind: "webhook", Name: "api-hook"}))
+			mustNoErr(t, st.CreateSubscription(t.Context(), store.Subscription{ID: "apisub", SinkID: "apis", Name: "teamb"}))
+		}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			st := openStore(t)
+			tc.create(t, st)
+			for _, run := range []func(context.Context, store.Store, *File, ApplyOptions) (*Plan, error){Apply, PlanFile} {
+				_, err := run(t.Context(), st, mustParse(t, twoWatches), applyOpts())
+				if !errors.Is(err, ErrNameTaken) {
+					t.Fatalf("err = %v, want ErrNameTaken", err)
+				}
+				want := tc.kind + ` "` + tc.name + `": name taken by a ` + tc.kind + " managed by the API"
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %q, want it to contain %q", err, want)
+				}
+			}
+			if got := snap(t, st, store.ManagedByFile); len(got.watches)+len(got.sinks)+len(got.subs) != 0 {
+				t.Fatalf("refused apply wrote rows: %+v", got)
+			}
+		})
+	}
+}
+
+// #185, spec docs/api.md decision 10: each watch keeps the interval it asked
+// for; the target keeps the smallest. Rows stored before the watch had its own
+// interval get it on the next apply.
+func TestWatchKeepsRequestedInterval(t *testing.T) {
+	st := openStore(t)
+	ctx := t.Context()
+	const three = base + `
+watches:
+  - {name: a, source: pypi, coordinates: {name: requests}, interval: 2h}
+  - {name: b, source: pypi, coordinates: {name: requests}, interval: 15m}
+  - {name: c, source: pypi, coordinates: {name: django}}
+`
+	mustApply(t, st, three)
+	want := map[string]time.Duration{"a": 2 * time.Hour, "b": 15 * time.Minute, "c": DefaultInterval}
+	for _, w := range snap(t, st, store.ManagedByFile).watches {
+		if w.Interval != want[w.Name] {
+			t.Errorf("watch %s interval = %s, want %s", w.Name, w.Interval, want[w.Name])
+		}
+	}
+	tg, err := target(t, st, "pypi", map[string]string{"name": "requests"})
+	mustNoErr(t, err)
+	if tg.Interval != 15*time.Minute {
+		t.Fatalf("effective interval = %s, want 15m", tg.Interval)
+	}
+
+	// Changing only a's interval updates a, and the target stays at 15m.
+	changed := strings.Replace(three, "interval: 2h", "interval: 30m", 1)
+	plan := mustApply(t, st, changed)
+	if plan.Count(KindWatch, Update) != 1 || !strings.Contains(plan.String(), "watch a (interval 30m0s)") {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	ws := snap(t, st, store.ManagedByFile).watches
+	if ws[0].Name != "a" || ws[0].Interval != 30*time.Minute {
+		t.Fatalf("watch a: %+v", ws[0])
+	}
+	if tg, _ = st.GetTarget(ctx, tg.ID); tg.Interval != 15*time.Minute {
+		t.Fatalf("effective interval = %s, want 15m", tg.Interval)
+	}
+
+	// A row without a stored interval (written before migration 00012) gets it.
+	mustNoErr(t, st.InConfigTx(ctx, func(tx store.ConfigTx) error {
+		c := ws[2]
+		c.Interval = 0
+		return tx.UpdateWatch(ctx, c)
+	}))
+	plan = mustApply(t, st, changed)
+	if plan.Count(KindWatch, Update) != 1 || plan.Count(KindWatch, Unchanged) != 2 {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	if w, _ := st.GetWatch(ctx, ws[2].ID); w.Interval != DefaultInterval {
+		t.Fatalf("watch c interval = %s", w.Interval)
+	}
+}
+
+// The effective interval counts the watches of every owner on the target: a
+// shorter API watch keeps the target short, and when the file's watches leave
+// the target, the API watches decide its interval.
+func TestEffectiveIntervalCountsOtherOwners(t *testing.T) {
+	st := openStore(t)
+	ctx := t.Context()
+	mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: requests}, interval: 2h}
+`)
+	tg, err := target(t, st, "pypi", map[string]string{"name": "requests"})
+	mustNoErr(t, err)
+	mustNoErr(t, st.CreateWatch(ctx, store.Watch{ID: "apiw", TargetID: tg.ID, Name: "api-req", Interval: 30 * time.Minute}))
+
+	mustApply(t, st, base+`
+watches:
+  - {name: a, source: pypi, coordinates: {name: requests}, interval: 1h}
+`)
+	if tg, _ = st.GetTarget(ctx, tg.ID); tg.Interval != 30*time.Minute {
+		t.Fatalf("interval with a 30m API watch = %s, want 30m", tg.Interval)
+	}
+	if w, _ := st.GetWatch(ctx, "apiw"); w.Interval != 30*time.Minute {
+		t.Fatalf("API watch touched: %+v", w)
+	}
+
+	// The file's watch leaves; the API watch decides the target's interval.
+	mustNoErr(t, st.InConfigTx(ctx, func(tx store.ConfigTx) error {
+		return tx.SetTargetInterval(ctx, tg.ID, 5*time.Minute, tg.NextCheckAt)
+	}))
+	plan := mustApply(t, st, base)
+	if tg, err = st.GetTarget(ctx, tg.ID); err != nil || tg.Interval != 30*time.Minute {
+		t.Fatalf("target after the file left: %+v %v", tg, err)
+	}
+	if plan.Count(KindTarget, Update) != 1 || plan.Count(KindTarget, Delete) != 0 {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	// Nothing to change the next time.
+	if plan = mustApply(t, st, base); !plan.Empty() {
+		t.Fatalf("plan:\n%s", plan)
 	}
 }

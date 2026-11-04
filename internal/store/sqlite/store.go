@@ -294,6 +294,9 @@ func watchFromRow(r Watch) (store.Watch, error) {
 		ID: r.ID, TargetID: r.TargetID, Policy: json.RawMessage(r.PolicyJson), BaselineDone: r.BaselineDone != 0,
 		Name: r.Name.String, ManagedBy: r.ManagedBy,
 	}
+	if r.IntervalMs.Valid {
+		w.Interval = time.Duration(r.IntervalMs.Int64) * time.Millisecond
+	}
 	if err := json.Unmarshal([]byte(r.LabelsJson), &w.Labels); err != nil {
 		return store.Watch{}, fmt.Errorf("store: watch %s labels: %w", r.ID, err)
 	}
