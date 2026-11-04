@@ -1,6 +1,6 @@
 # ADR 0021: Sources canonicalise targets through an optional `Canonicalizer` interface
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-04, maintainer decision on #181)
 - **Date:** 2026-11-04
 - **Story:** angelia-dev/angelia#134
 - **Amends:** [ADR 0006](0006-source-target-and-fetchstate.md)
