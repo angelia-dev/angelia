@@ -162,3 +162,12 @@ drain timeout, the default `DeliverTimeout` goes from 20 s to 15 s. Rule 2 still
 - [architecture.md §3.5](../architecture.md#35-dispatcher-and-sink-plugins-deliver), [§5](../architecture.md#5-data-model-simplified)
 - [ADR 0009](0009-scheduler-target-leases-and-backoff.md), [ADR 0014](0014-subscription-policy-overrides.md), [ADR 0015](0015-release-event-outbox-in-house.md)
 - Issue #107 and its maintainer comment.
+
+## Amendment (2026-11-04, #186)
+
+The code emits two `last_error` strings for a deleted subscription, and both are kept until the maintainer picks one:
+
+- `subscription removed` (`watchfile.DeadOnDelete`) is set on the pending deliveries when a watch-file apply deletes the subscription (watch-file.md, D8; [ADR 0014](0014-subscription-policy-overrides.md)).
+- `subscription deleted` (`dispatch.ReasonSubscriptionDeleted`) is set by the dispatcher on a leased delivery whose subscription no longer exists, the case of rule 7 above.
+
+Both describe the same condition. The OpenAPI spec's `docs/api.md` uses `subscription removed`. Unifying the two constants is a code change, not a docs change; the rule text above is left as accepted.
