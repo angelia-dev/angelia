@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/event"
+	"github.com/angelia-dev/angelia/internal/store"
 )
 
 type eventPage struct {
@@ -155,6 +156,41 @@ func TestEventScanBudget(t *testing.T) {
 	p = e.eventPage("/v1/events?limit=1&type=release.yanked&after=" + strconv.FormatInt(p.NextAfter, 10))
 	if len(p.Items) != 0 || p.HasMore || p.NextAfter != last {
 		t.Fatalf("second page: %+v", p)
+	}
+}
+
+// A non-zero cursor below the highest pruned seq gets 410 with oldest_seq
+// past every pruned event, even while an older event is kept for a pending
+// delivery (spec docs/api.md decision 12).
+func TestEventCursorExpired(t *testing.T) {
+	e := newEnv(t)
+	e.seedConfig()
+	wid, sid := e.watchID("requests"), e.subscriptionID("platform-ci")
+	old := e.now.Add(-100 * 24 * time.Hour)
+	kept := e.appendEvent(wid, event.TypePublished, "pypi", old,
+		store.Delivery{SubscriptionID: sid, Status: store.DeliveryPending, NextAttemptAt: e.now})
+	e.appendEvent(wid, event.TypePublished, "pypi", old.Add(time.Second))
+	pruned := e.appendEvent(wid, event.TypePublished, "pypi", old.Add(2*time.Second))
+	fresh := e.appendEvent(wid, event.TypePublished, "pypi", e.now)
+	if _, err := e.st.PruneHistory(context.Background(), e.now.Add(-90*24*time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/events", "/v1/events/stream"} {
+		r := e.do("GET", path+"?after="+strconv.FormatInt(kept.Seq, 10), tokRead, nil)
+		if r.Status != http.StatusGone || r.problemType(t) != SlugCursorExpired {
+			t.Fatalf("%s: %d %s", path, r.Status, r.Body)
+		}
+		if got := r.json(t)["oldest_seq"]; got != float64(pruned.Seq+1) {
+			t.Errorf("%s: oldest_seq = %v, want %d", path, got, pruned.Seq+1)
+		}
+	}
+	p := e.eventPage("/v1/events?after=" + strconv.FormatInt(pruned.Seq, 10))
+	if len(p.Items) != 1 || p.Items[0].Seq != fresh.Seq {
+		t.Errorf("after the highest pruned: %+v", p)
+	}
+	p = e.eventPage("/v1/events")
+	if len(p.Items) != 2 || p.Items[0].Seq != kept.Seq {
+		t.Errorf("after=0 starts at the oldest kept: %+v", p)
 	}
 }
 

@@ -51,13 +51,9 @@ func subscriptionJSONOf(ctx context.Context, r subscriptionReader, sub store.Sub
 
 // GetSubscription implements StrictServerInterface.
 func (s *Server) GetSubscription(ctx context.Context, req GetSubscriptionRequestObject) (GetSubscriptionResponseObject, error) {
-	rows, err := s.opts.Store.SubscriptionsByName(ctx, req.Name)
-	if err != nil {
+	sub, err := s.opts.Store.SubscriptionByName(ctx, req.Name)
+	if sub, err = readByName(sub, err, "subscription", req.Name); err != nil {
 		return nil, err
-	}
-	sub, p := pickRead(rows, "subscription", req.Name)
-	if p != nil {
-		return nil, p
 	}
 	body, err := subscriptionJSONOf(ctx, s.opts.Store, sub)
 	if err != nil {
@@ -74,13 +70,14 @@ func (s *Server) ListSubscriptions(ctx context.Context, req ListSubscriptionsReq
 	}
 	var sinkIDs []string
 	if req.Params.Sink != nil {
-		ks, err := s.opts.Store.SinksByName(ctx, *req.Params.Sink)
-		if err != nil {
+		k, err := s.opts.Store.SinkByName(ctx, *req.Params.Sink)
+		switch {
+		case isNotFound(err):
+			sinkIDs = []string{} // a sink that does not exist matches nothing
+		case err != nil:
 			return nil, err
-		}
-		sinkIDs = []string{} // a sink that does not exist matches nothing
-		for _, k := range ks {
-			sinkIDs = append(sinkIDs, k.ID)
+		default:
+			sinkIDs = []string{k.ID}
 		}
 	}
 	items, next, err := pageByName(cur, pageLimit(req.Params.Limit),
@@ -134,13 +131,10 @@ func (s *Server) PutSubscription(ctx context.Context, req PutSubscriptionRequest
 	var body subscriptionJSON
 	var change Change
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		rows, err := tx.SubscriptionsByName(ctx, sub.Name)
+		old, err := tx.SubscriptionByName(ctx, sub.Name)
+		cur, err := writeByName(old, err, "subscription", sub.Name)
 		if err != nil {
 			return err
-		}
-		cur, p := pickWrite(rows, "subscription", sub.Name)
-		if p != nil {
-			return p
 		}
 		sinkID, p, err := s.subscriptionSink(ctx, tx, sub.Sink)
 		if p != nil || err != nil {
@@ -193,19 +187,16 @@ func firstErr(p *ProblemDetail, err error) error {
 // subscriptionSink resolves the sink an API subscription names: an API sink,
 // never one from the watch file (spec docs/api.md decision 4).
 func (s *Server) subscriptionSink(ctx context.Context, tx store.APITx, name string) (string, *ProblemDetail, error) {
-	ks, err := tx.SinksByName(ctx, name)
-	if err != nil {
+	k, err := tx.SinkByName(ctx, name)
+	switch {
+	case isNotFound(err):
+		return "", validationProblem("subscription", []fieldError{{Pointer: "/sink", Detail: "no sink named " + name}}), nil
+	case err != nil:
 		return "", nil, err
-	}
-	for _, k := range ks {
-		if ownerOf(k) == store.ManagedByAPI {
-			return k.ID, nil, nil
-		}
-	}
-	if len(ks) > 0 {
+	case ownerOf(k) != store.ManagedByAPI:
 		return "", problem(SlugCrossOwnerReference, "sink %s is managed by the watch file; an API subscription cannot use it", name), nil
 	}
-	return "", validationProblem("subscription", []fieldError{{Pointer: "/sink", Detail: "no sink named " + name}}), nil
+	return k.ID, nil, nil
 }
 
 // samePolicy compares a stored subscription policy with a parsed one.
@@ -218,13 +209,10 @@ func samePolicy(stored []byte, p subscription.Policy) bool {
 func (s *Server) DeleteSubscription(ctx context.Context, req DeleteSubscriptionRequestObject) (DeleteSubscriptionResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		rows, err := tx.SubscriptionsByName(ctx, req.Name)
+		old, err := tx.SubscriptionByName(ctx, req.Name)
+		cur, err := writeByName(old, err, "subscription", req.Name)
 		if err != nil {
 			return err
-		}
-		cur, p := pickWrite(rows, "subscription", req.Name)
-		if p != nil {
-			return p
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no subscription named %s", req.Name)

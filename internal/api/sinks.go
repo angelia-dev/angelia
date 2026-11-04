@@ -114,13 +114,9 @@ func (s *Server) checkSinkConfig(kind string, cfg map[string]any) (invalid, env 
 
 // GetSink implements StrictServerInterface.
 func (s *Server) GetSink(ctx context.Context, req GetSinkRequestObject) (GetSinkResponseObject, error) {
-	rows, err := s.opts.Store.SinksByName(ctx, req.Name)
-	if err != nil {
+	k, err := s.opts.Store.SinkByName(ctx, req.Name)
+	if k, err = readByName(k, err, "sink", req.Name); err != nil {
 		return nil, err
-	}
-	k, p := pickRead(rows, "sink", req.Name)
-	if p != nil {
-		return nil, p
 	}
 	return jsonOK(s.sinkJSONOf(k, principalFrom(ctx).Scope)), nil
 }
@@ -183,13 +179,10 @@ func (s *Server) PutSink(ctx context.Context, req PutSinkRequestObject) (PutSink
 	var body sinkJSON
 	var change Change
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		rows, err := tx.SinksByName(ctx, k.Name)
+		k0, err := tx.SinkByName(ctx, k.Name)
+		cur, err := writeByName(k0, err, "sink", k.Name)
 		if err != nil {
 			return err
-		}
-		cur, p := pickWrite(rows, "sink", k.Name)
-		if p != nil {
-			return p
 		}
 		row := store.Sink{Kind: k.Kind, ConfigEncrypted: k.Config, Name: k.Name, ManagedBy: store.ManagedByAPI}
 		switch {
@@ -224,13 +217,10 @@ func (s *Server) PutSink(ctx context.Context, req PutSinkRequestObject) (PutSink
 func (s *Server) DeleteSink(ctx context.Context, req DeleteSinkRequestObject) (DeleteSinkResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		rows, err := tx.SinksByName(ctx, req.Name)
+		k, err := tx.SinkByName(ctx, req.Name)
+		cur, err := writeByName(k, err, "sink", req.Name)
 		if err != nil {
 			return err
-		}
-		cur, p := pickWrite(rows, "sink", req.Name)
-		if p != nil {
-			return p
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no sink named %s", req.Name)

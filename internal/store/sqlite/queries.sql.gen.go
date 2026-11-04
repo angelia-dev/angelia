@@ -636,12 +636,48 @@ func (q *Queries) GetSink(ctx context.Context, id string) (Sink, error) {
 	return i, err
 }
 
+const getSinkByName = `-- name: GetSinkByName :one
+SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE name = ?
+`
+
+func (q *Queries) GetSinkByName(ctx context.Context, name sql.NullString) (Sink, error) {
+	row := q.db.QueryRowContext(ctx, getSinkByName, name)
+	var i Sink
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.ConfigJsonEncrypted,
+		&i.Name,
+		&i.ManagedBy,
+	)
+	return i, err
+}
+
 const getSubscription = `-- name: GetSubscription :one
 SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE id = ?
 `
 
 func (q *Queries) GetSubscription(ctx context.Context, id string) (Subscription, error) {
 	row := q.db.QueryRowContext(ctx, getSubscription, id)
+	var i Subscription
+	err := row.Scan(
+		&i.ID,
+		&i.FilterJson,
+		&i.SinkID,
+		&i.Template,
+		&i.Name,
+		&i.ManagedBy,
+		&i.PolicyJson,
+	)
+	return i, err
+}
+
+const getSubscriptionByName = `-- name: GetSubscriptionByName :one
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE name = ?
+`
+
+func (q *Queries) GetSubscriptionByName(ctx context.Context, name sql.NullString) (Subscription, error) {
+	row := q.db.QueryRowContext(ctx, getSubscriptionByName, name)
 	var i Subscription
 	err := row.Scan(
 		&i.ID,
@@ -706,6 +742,26 @@ SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by,
 
 func (q *Queries) GetWatch(ctx context.Context, id string) (Watch, error) {
 	row := q.db.QueryRowContext(ctx, getWatch, id)
+	var i Watch
+	err := row.Scan(
+		&i.ID,
+		&i.TargetID,
+		&i.PolicyJson,
+		&i.LabelsJson,
+		&i.BaselineDone,
+		&i.Name,
+		&i.ManagedBy,
+		&i.IntervalMs,
+	)
+	return i, err
+}
+
+const getWatchByName = `-- name: GetWatchByName :one
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE name = ?
+`
+
+func (q *Queries) GetWatchByName(ctx context.Context, name sql.NullString) (Watch, error) {
+	row := q.db.QueryRowContext(ctx, getWatchByName, name)
 	var i Watch
 	err := row.Scan(
 		&i.ID,
@@ -1178,7 +1234,7 @@ func (q *Queries) ListNamedSubscriptionsPage(ctx context.Context, arg ListNamedS
 
 const listNamedWatchesPage = `-- name: ListNamedWatchesPage :many
 
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch
 WHERE name IS NOT NULL
   AND (name > ?1 OR (name = ?1 AND id > ?2))
 ORDER BY name, id
@@ -1211,6 +1267,7 @@ func (q *Queries) ListNamedWatchesPage(ctx context.Context, arg ListNamedWatches
 			&i.BaselineDone,
 			&i.Name,
 			&i.ManagedBy,
+			&i.IntervalMs,
 		); err != nil {
 			return nil, err
 		}
@@ -1338,39 +1395,6 @@ func (q *Queries) ListReplayCandidates(ctx context.Context, arg ListReplayCandid
 	return items, nil
 }
 
-const listSinksByName = `-- name: ListSinksByName :many
-SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE name = ? ORDER BY managed_by, id
-`
-
-func (q *Queries) ListSinksByName(ctx context.Context, name sql.NullString) ([]Sink, error) {
-	rows, err := q.db.QueryContext(ctx, listSinksByName, name)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Sink
-	for rows.Next() {
-		var i Sink
-		if err := rows.Scan(
-			&i.ID,
-			&i.Kind,
-			&i.ConfigJsonEncrypted,
-			&i.Name,
-			&i.ManagedBy,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listSinksManagedBy = `-- name: ListSinksManagedBy :many
 SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE managed_by = ? ORDER BY name
 `
@@ -1410,41 +1434,6 @@ SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM su
 
 func (q *Queries) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
 	rows, err := q.db.QueryContext(ctx, listSubscriptions)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Subscription
-	for rows.Next() {
-		var i Subscription
-		if err := rows.Scan(
-			&i.ID,
-			&i.FilterJson,
-			&i.SinkID,
-			&i.Template,
-			&i.Name,
-			&i.ManagedBy,
-			&i.PolicyJson,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listSubscriptionsByName = `-- name: ListSubscriptionsByName :many
-SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE name = ? ORDER BY managed_by, id
-`
-
-func (q *Queries) ListSubscriptionsByName(ctx context.Context, name sql.NullString) ([]Subscription, error) {
-	rows, err := q.db.QueryContext(ctx, listSubscriptionsByName, name)
 	if err != nil {
 		return nil, err
 	}
@@ -1566,41 +1555,6 @@ func (q *Queries) ListVersions(ctx context.Context, targetID string) ([]Version,
 			&i.Yanked,
 			&i.FirstSeenAt,
 			&i.RemovedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listWatchesByName = `-- name: ListWatchesByName :many
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by FROM watch WHERE name = ? ORDER BY managed_by, id
-`
-
-func (q *Queries) ListWatchesByName(ctx context.Context, name sql.NullString) ([]Watch, error) {
-	rows, err := q.db.QueryContext(ctx, listWatchesByName, name)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Watch
-	for rows.Next() {
-		var i Watch
-		if err := rows.Scan(
-			&i.ID,
-			&i.TargetID,
-			&i.PolicyJson,
-			&i.LabelsJson,
-			&i.BaselineDone,
-			&i.Name,
-			&i.ManagedBy,
 		); err != nil {
 			return nil, err
 		}

@@ -130,20 +130,18 @@ func (s *Server) ListDeliveries(ctx context.Context, req ListDeliveriesRequestOb
 
 // subscriptionIDs resolves a subscription given by name (its current id) or
 // by id (also a deleted one). An unknown name gives an empty, non-nil list.
-// TODO(#185): a name that a file and an API subscription share gives both.
 func (s *Server) subscriptionIDs(ctx context.Context, nameOrID string) ([]string, error) {
 	if ulid.Valid(nameOrID) {
 		return []string{nameOrID}, nil
 	}
-	subs, err := s.opts.Store.SubscriptionsByName(ctx, nameOrID)
-	if err != nil {
+	sub, err := s.opts.Store.SubscriptionByName(ctx, nameOrID)
+	switch {
+	case isNotFound(err):
+		return []string{}, nil
+	case err != nil:
 		return nil, err
 	}
-	ids := []string{}
-	for _, sub := range subs {
-		ids = append(ids, sub.ID)
-	}
-	return ids, nil
+	return []string{sub.ID}, nil
 }
 
 // replayable reports why a delivery cannot be replayed, or "".
@@ -245,13 +243,10 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 		if err != nil {
 			return nil, err
 		}
-		switch len(ids) {
-		case 0:
+		if len(ids) == 0 {
 			errs = append(errs, fieldError{Pointer: "/subscription", Detail: "no subscription named " + *in.Subscription})
-		case 1:
+		} else {
 			q.SubscriptionID = ids[0]
-		default: // TODO(#185): names become unique per resource type
-			errs = append(errs, fieldError{Pointer: "/subscription", Detail: "two subscriptions have this name; give the id"})
 		}
 	}
 	if len(errs) > 0 {

@@ -61,34 +61,29 @@ func ownerOf[T owned](row T) string {
 	return m
 }
 
-// pickRead returns the one row named name. Names are unique per owner only
-// until #185, so a name that a file row and an API row share is refused.
-// TODO(#185): drop the ambiguity case once names are unique per resource
-// type.
-func pickRead[T owned](rows []T, what, name string) (T, *ProblemDetail) {
-	var zero T
-	switch len(rows) {
-	case 0:
-		return zero, problem(SlugNotFound, "no %s named %s", what, name)
-	case 1:
-		return rows[0], nil
+// readByName turns a lookup by name into the row of a read: 404 when there
+// is none.
+func readByName[T any](row T, err error, what, name string) (T, error) {
+	if isNotFound(err) {
+		return row, problem(SlugNotFound, "no %s named %s", what, name)
 	}
-	return zero, problem(SlugManagedByFile,
-		"two %ss are named %s, one from the watch file and one from the API; rename the API one", what, name)
+	return row, err
 }
 
-// pickWrite returns the API row named name, or nil when there is none. A row
-// of the watch file with this name makes the write a 409 managed-by-file:
-// names are unique per resource type (spec docs/api.md decision 2).
-func pickWrite[T owned](rows []T, what, name string) (*T, *ProblemDetail) {
-	var api *T
-	for i := range rows {
-		if ownerOf(rows[i]) != store.ManagedByAPI {
-			return nil, problem(SlugManagedByFile, "%s %s is managed by the watch file; change the file instead", what, name)
-		}
-		api = &rows[i]
+// writeByName turns a lookup by name into the API row a write changes, nil
+// when there is none. A row of the watch file with this name makes the write
+// a 409 managed-by-file: names are unique per resource type whoever owns them
+// (spec docs/api.md decision 2).
+func writeByName[T owned](row T, err error, what, name string) (*T, error) {
+	switch {
+	case isNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case ownerOf(row) != store.ManagedByAPI:
+		return nil, problem(SlugManagedByFile, "%s %s is managed by the watch file; change the file instead", what, name)
 	}
-	return api, nil
+	return &row, nil
 }
 
 // bodyNameErrors enforces "name, when given, equals the name in the path".

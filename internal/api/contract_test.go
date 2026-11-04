@@ -289,11 +289,11 @@ func seedExamples(c *contract) {
 	e.now = time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
 
 	// The target as the Watch example shows it.
-	w, err := e.st.WatchesByName(ctx, "requests")
+	w, err := e.st.WatchByName(ctx, "requests")
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	tg, err := e.st.GetTarget(ctx, w[0].TargetID)
+	tg, err := e.st.GetTarget(ctx, w.TargetID)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func seedExamples(c *contract) {
 	if err := e.st.UpdateTarget(ctx, tg); err != nil {
 		c.t.Fatal(err)
 	}
-	if err := e.st.MarkBaselineDone(ctx, w[0].ID); err != nil {
+	if err := e.st.MarkBaselineDone(ctx, w.ID); err != nil {
 		c.t.Fatal(err)
 	}
 	// Versions of the VersionPage example, and an older one so that the
@@ -326,7 +326,7 @@ func seedExamples(c *contract) {
 		env := rec["event"].(map[string]any)
 		payload, _ := json.Marshal(env)
 		ev := store.Event{
-			ID: env["id"].(string), WatchID: w[0].ID, Type: env["type"].(string), Payload: payload,
+			ID: env["id"].(string), WatchID: w.ID, Type: env["type"].(string), Payload: payload,
 			CreatedAt: e.now,
 		}
 		if ref, ok := rec["ref_event_id"].(string); ok {

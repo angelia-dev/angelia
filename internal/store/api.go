@@ -9,10 +9,6 @@ import (
 // [Store]: reads by name and by page, and the writes of replay. It is a
 // separate interface so that the engine contract of [Store] stays as it is;
 // every engine that serves the API implements both.
-//
-// Names are unique per owner only until #185 makes them unique per resource
-// type, so the ByName lookups return every row with the name, ordered by
-// ManagedBy then ID.
 type APIStore interface {
 	Store
 	APIReader
@@ -32,9 +28,12 @@ type APIReader interface {
 	// sinks and subscriptions.
 	ListNamedSinks(ctx context.Context, afterName, afterID string, limit int) ([]Sink, error)
 	ListNamedSubscriptions(ctx context.Context, afterName, afterID string, limit int) ([]Subscription, error)
-	WatchesByName(ctx context.Context, name string) ([]Watch, error)
-	SinksByName(ctx context.Context, name string) ([]Sink, error)
-	SubscriptionsByName(ctx context.Context, name string) ([]Subscription, error)
+	// WatchByName, SinkByName and SubscriptionByName return the row with the
+	// name, whoever owns it (names are unique per resource type), or
+	// ErrNotFound.
+	WatchByName(ctx context.Context, name string) (Watch, error)
+	SinkByName(ctx context.Context, name string) (Sink, error)
+	SubscriptionByName(ctx context.Context, name string) (Subscription, error)
 	// SubscriptionsBySink returns the subscriptions that deliver to a sink,
 	// ordered by name then ID.
 	SubscriptionsBySink(ctx context.Context, sinkID string) ([]Subscription, error)
@@ -54,9 +53,9 @@ type APIReader interface {
 // APITx is the unit of work of one API write.
 type APITx interface {
 	ConfigTx
-	WatchesByName(ctx context.Context, name string) ([]Watch, error)
-	SinksByName(ctx context.Context, name string) ([]Sink, error)
-	SubscriptionsByName(ctx context.Context, name string) ([]Subscription, error)
+	WatchByName(ctx context.Context, name string) (Watch, error)
+	SinkByName(ctx context.Context, name string) (Sink, error)
+	SubscriptionByName(ctx context.Context, name string) (Subscription, error)
 	SubscriptionsBySink(ctx context.Context, sinkID string) ([]Subscription, error)
 	GetSink(ctx context.Context, id string) (Sink, error)
 	GetSubscription(ctx context.Context, id string) (Subscription, error)

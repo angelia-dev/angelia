@@ -16,7 +16,7 @@ import (
 
 // watchReader is the lookup both the store and a transaction offer.
 type watchReader interface {
-	WatchesByName(ctx context.Context, name string) ([]store.Watch, error)
+	WatchByName(ctx context.Context, name string) (store.Watch, error)
 	GetTarget(ctx context.Context, id string) (store.Target, error)
 }
 
@@ -54,18 +54,20 @@ func watchJSONOf(w store.Watch, t store.Target) (watchJSON, error) {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	interval := formatDuration(effectiveInterval(t))
+	effective := formatDuration(effectiveInterval(t))
+	interval := effective // a row written before watches stored their own
+	if w.Interval > 0 {
+		interval = formatDuration(w.Interval)
+	}
 	return watchJSON{
 		Name: w.Name, ID: w.ID, ManagedBy: ownerOf(w), Source: t.Kind, Coordinates: t.Coordinates,
-		// TODO(#185): the requested interval needs the per-watch interval
-		// column; until then it is the target's (effective) interval.
 		Interval: interval, Scheme: scheme, Labels: labels,
 		Policy: watchPolicyJSON{
 			Prerelease: string(p.Prerelease), Include: nonNil(p.Include), Exclude: nonNil(p.Exclude),
 			Constraint: p.Constraint, Bump: bump, Cooldown: formatDuration(time.Duration(p.Cooldown)), Baseline: p.Baseline,
 		},
 		Status: watchStatusJSON{
-			BaselineDone: w.BaselineDone, EffectiveInterval: interval,
+			BaselineDone: w.BaselineDone, EffectiveInterval: effective,
 			LastCheckedAt: ts(t.LastCheckedAt), NextCheckAt: ts(t.NextCheckAt), ErrorCount: t.ErrorCount,
 		},
 	}, nil
@@ -79,13 +81,9 @@ func nonNil(s []string) []string {
 }
 
 func (s *Server) readWatch(ctx context.Context, r watchReader, name string) (store.Watch, store.Target, error) {
-	rows, err := r.WatchesByName(ctx, name)
-	if err != nil {
+	w, err := r.WatchByName(ctx, name)
+	if w, err = readByName(w, err, "watch", name); err != nil {
 		return store.Watch{}, store.Target{}, err
-	}
-	w, p := pickRead(rows, "watch", name)
-	if p != nil {
-		return store.Watch{}, store.Target{}, p
 	}
 	t, err := r.GetTarget(ctx, w.TargetID)
 	if err != nil {
@@ -247,13 +245,10 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 // applyWatch creates or updates the API watch w, as the watch file apply
 // does for one of its watches.
 func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Watch) (Change, error) {
-	rows, err := tx.WatchesByName(ctx, w.Name)
+	old, err := tx.WatchByName(ctx, w.Name)
+	cur, err := writeByName(old, err, "watch", w.Name)
 	if err != nil {
 		return "", err
-	}
-	cur, p := pickWrite(rows, "watch", w.Name)
-	if p != nil {
-		return "", p
 	}
 	now := s.now()
 	t, err := tx.FindTarget(ctx, w.Source, w.Coordinates)
@@ -278,7 +273,7 @@ func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Wat
 		change = ChangeCreated
 	} else {
 		moved := cur.TargetID != t.ID
-		if moved || !jsonEqual(cur.Policy, pol) || !sameLabels(cur.Labels, w.Labels) {
+		if moved || cur.Interval != w.Interval || !jsonEqual(cur.Policy, pol) || !sameLabels(cur.Labels, w.Labels) {
 			if err := tx.UpdateWatch(ctx, watchRow(cur.ID, t.ID, w)); err != nil {
 				return "", err
 			}
@@ -296,7 +291,7 @@ func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Wat
 					return "", err
 				}
 				if !gone {
-					if _, err := s.recomputeInterval(ctx, tx, cur.TargetID, 0, now); err != nil {
+					if _, _, err := tx.RecomputeTargetInterval(ctx, cur.TargetID, now); err != nil {
 						return "", err
 					}
 				}
@@ -304,59 +299,21 @@ func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Wat
 			change = ChangeUpdated
 		}
 	}
-	if !newTarget {
-		changed, err := s.recomputeInterval(ctx, tx, t.ID, w.Interval, now)
-		if err != nil {
+	if !newTarget { // a new target was created with the watch's interval
+		if _, _, err := tx.RecomputeTargetInterval(ctx, t.ID, now); err != nil {
 			return "", err
-		}
-		if changed && change == ChangeUnchanged {
-			change = ChangeUpdated
 		}
 	}
 	return change, nil
 }
 
-// recomputeInterval is the one seam for the target's check interval, the
-// smallest interval among its watches. It runs after an API watch is
-// created, updated or deleted; want is the written watch's requested
-// interval (0 after a delete).
-//
-// TODO(#185): replace the body with tx.RecomputeTargetInterval(ctx,
-// targetID, now), and set store.Watch.Interval on CreateWatch and
-// UpdateWatch (see watchRow). Until then the requests of the other watches
-// are unknown, so the interval is set exactly only when the target has one
-// watch, otherwise only ever lowered, and left alone after a delete.
-func (s *Server) recomputeInterval(ctx context.Context, tx store.APITx, targetID string, want time.Duration, now time.Time) (bool, error) {
-	if want <= 0 {
-		return false, nil
-	}
-	t, err := tx.GetTarget(ctx, targetID)
-	if err != nil {
-		return false, err
-	}
-	ws, err := tx.ListWatches(ctx, t.ID) // the watch written is on t already
-	if err != nil {
-		return false, err
-	}
-	desired := want
-	if len(ws) > 1 {
-		desired = min(effectiveInterval(t), want)
-	}
-	if t.Interval == desired {
-		return false, nil
-	}
-	next := t.NextCheckAt
-	if due := now.Add(desired); due.Before(next) {
-		next = due
-	}
-	return true, tx.SetTargetInterval(ctx, t.ID, desired, next)
-}
-
-// watchRow is the store row of an API watch.
-// TODO(#185): set Interval: w.Interval (UpdateWatch overwrites interval_ms,
-// so it must always be set).
+// watchRow is the store row of an API watch. Interval is always set:
+// UpdateWatch clears a zero one.
 func watchRow(id, targetID string, w watchfile.Watch) store.Watch {
-	return store.Watch{ID: id, TargetID: targetID, Policy: w.PolicyJSON(), Labels: w.Labels, Name: w.Name, ManagedBy: store.ManagedByAPI}
+	return store.Watch{
+		ID: id, TargetID: targetID, Policy: w.PolicyJSON(), Labels: w.Labels, Interval: w.Interval,
+		Name: w.Name, ManagedBy: store.ManagedByAPI,
+	}
 }
 
 func sameLabels(a, b map[string]string) bool {
@@ -375,13 +332,10 @@ func sameLabels(a, b map[string]string) bool {
 func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) (DeleteWatchResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		rows, err := tx.WatchesByName(ctx, req.Name)
+		old, err := tx.WatchByName(ctx, req.Name)
+		cur, err := writeByName(old, err, "watch", req.Name)
 		if err != nil {
 			return err
-		}
-		cur, p := pickWrite(rows, "watch", req.Name)
-		if p != nil {
-			return p
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no watch named %s", req.Name)
@@ -393,7 +347,7 @@ func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) 
 		if err != nil || gone {
 			return err
 		}
-		_, err = s.recomputeInterval(ctx, tx, cur.TargetID, 0, s.now())
+		_, _, err = tx.RecomputeTargetInterval(ctx, cur.TargetID, s.now())
 		return err
 	})
 	if err != nil {

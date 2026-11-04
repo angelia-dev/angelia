@@ -314,3 +314,37 @@ func TestListPagination(t *testing.T) {
 		t.Errorf("cross-list cursor: %d", r.Status)
 	}
 }
+
+// Each watch keeps the interval it asked for; the target is checked at the
+// smallest one (spec docs/api.md decision 10).
+func TestWatchIntervals(t *testing.T) {
+	e := newEnv(t)
+	get := func(name string) (string, string) {
+		t.Helper()
+		m := e.must(http.StatusOK, e.do("GET", "/v1/watches/"+name, tokRead, nil)).json(t)
+		return m["interval"].(string), m["status"].(map[string]any)["effective_interval"].(string)
+	}
+	slow := clone(watchPut)
+	slow["interval"] = "2h"
+	e.must(http.StatusCreated, e.do("PUT", "/v1/watches/slow", tokWrite, slow))
+	if i, eff := get("slow"); i != "2h" || eff != "2h" {
+		t.Fatalf("slow alone: %s %s", i, eff)
+	}
+	e.must(http.StatusCreated, e.do("PUT", "/v1/watches/fast", tokWrite, watchPut)) // 30m, same target
+	if i, eff := get("slow"); i != "2h" || eff != "30m" {
+		t.Errorf("slow with fast: %s %s", i, eff)
+	}
+	// Changing only the interval is an update.
+	fast := clone(watchPut)
+	fast["interval"] = "45m"
+	if r := e.must(http.StatusOK, e.do("PUT", "/v1/watches/fast", tokWrite, fast)); r.Header.Get("Angelia-Change") != "updated" {
+		t.Errorf("interval change: %v", r.Header)
+	}
+	if i, eff := get("fast"); i != "45m" || eff != "45m" {
+		t.Errorf("fast at 45m: %s %s", i, eff)
+	}
+	e.must(http.StatusNoContent, e.do("DELETE", "/v1/watches/fast", tokWrite, nil))
+	if _, eff := get("slow"); eff != "2h" {
+		t.Errorf("after the delete: %s", eff)
+	}
+}

@@ -318,8 +318,8 @@ WHERE name IS NOT NULL
 ORDER BY name, id
 LIMIT sqlc.arg(max_rows);
 
--- name: ListWatchesByName :many
-SELECT * FROM watch WHERE name = ? ORDER BY managed_by, id;
+-- name: GetWatchByName :one
+SELECT * FROM watch WHERE name = ?;
 
 -- name: ListNamedSinksPage :many
 SELECT * FROM sink
@@ -328,8 +328,8 @@ WHERE name IS NOT NULL
 ORDER BY name, id
 LIMIT sqlc.arg(max_rows);
 
--- name: ListSinksByName :many
-SELECT * FROM sink WHERE name = ? ORDER BY managed_by, id;
+-- name: GetSinkByName :one
+SELECT * FROM sink WHERE name = ?;
 
 -- name: ListNamedSubscriptionsPage :many
 SELECT * FROM subscription
@@ -338,8 +338,8 @@ WHERE name IS NOT NULL
 ORDER BY name, id
 LIMIT sqlc.arg(max_rows);
 
--- name: ListSubscriptionsByName :many
-SELECT * FROM subscription WHERE name = ? ORDER BY managed_by, id;
+-- name: GetSubscriptionByName :one
+SELECT * FROM subscription WHERE name = ?;
 
 -- name: ListSubscriptionsBySink :many
 SELECT * FROM subscription WHERE sink_id = ? ORDER BY name, id;

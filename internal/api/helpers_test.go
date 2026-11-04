@@ -242,20 +242,20 @@ func (e *env) seedConfig() {
 
 func (e *env) watchID(name string) string {
 	e.t.Helper()
-	ws, err := e.st.WatchesByName(context.Background(), name)
-	if err != nil || len(ws) != 1 {
-		e.t.Fatalf("watch %s: %v %v", name, ws, err)
+	w, err := e.st.WatchByName(context.Background(), name)
+	if err != nil {
+		e.t.Fatalf("watch %s: %v", name, err)
 	}
-	return ws[0].ID
+	return w.ID
 }
 
 func (e *env) subscriptionID(name string) string {
 	e.t.Helper()
-	ss, err := e.st.SubscriptionsByName(context.Background(), name)
-	if err != nil || len(ss) != 1 {
-		e.t.Fatalf("subscription %s: %v %v", name, ss, err)
+	sub, err := e.st.SubscriptionByName(context.Background(), name)
+	if err != nil {
+		e.t.Fatalf("subscription %s: %v", name, err)
 	}
-	return ss[0].ID
+	return sub.ID
 }
 
 // envelope returns a release event envelope like the spec's example.

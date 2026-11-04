@@ -20,7 +20,6 @@ type eventFilter struct {
 
 // newEventFilter resolves the watch filter: a name means the current id of
 // the watch with that name, an id also matches deleted or renamed watches.
-// TODO(#185): a name that a file watch and an API watch share matches both.
 func (s *Server) newEventFilter(ctx context.Context, watches []string, types []ShortEventType, sources []string) (*eventFilter, error) {
 	f := &eventFilter{}
 	if len(watches) > 0 {
@@ -30,12 +29,13 @@ func (s *Server) newEventFilter(ctx context.Context, watches []string, types []S
 				f.watchIDs[w] = true
 				continue
 			}
-			rows, err := s.opts.Store.WatchesByName(ctx, w)
-			if err != nil {
+			row, err := s.opts.Store.WatchByName(ctx, w)
+			switch {
+			case isNotFound(err): // matches nothing
+			case err != nil:
 				return nil, err
-			}
-			for _, r := range rows {
-				f.watchIDs[r.ID] = true
+			default:
+				f.watchIDs[row.ID] = true
 			}
 		}
 	}
@@ -115,13 +115,31 @@ func eventRecordOf(e store.Event) eventRecordJSON {
 	return r
 }
 
-// cursorCheck refuses a cursor into pruned events (410 cursor-expired).
-// TODO(#185): the store does not record the highest pruned seq yet, so no
-// cursor is refused. With store.HighestPrunedSeq: a non-zero after below it
-// gets 410 with oldest_seq = max(oldest kept seq, HighestPrunedSeq()+1), so
-// a client resuming from oldest_seq does not loop on 410 while an older
-// event is kept for a pending delivery.
-func (s *Server) cursorCheck(context.Context, int64) error { return nil }
+// cursorCheck refuses a cursor into pruned events: a non-zero after below
+// the highest pruned seq gets 410 cursor-expired (spec docs/api.md decision
+// 12). Its oldest_seq is max(oldest kept seq, highest pruned seq + 1): an
+// event older than the highest pruned one can be kept while a delivery of it
+// is pending, and a client resuming from that one would get 410 again.
+func (s *Server) cursorCheck(ctx context.Context, after int64) error {
+	if after <= 0 {
+		return nil // after=0 starts at the oldest event kept
+	}
+	pruned, err := s.opts.Store.HighestPrunedSeq(ctx)
+	if err != nil || after >= pruned {
+		return err
+	}
+	oldest := pruned + 1
+	first, err := s.opts.Store.ListEventsAfter(ctx, 0, 1)
+	if err != nil {
+		return err
+	}
+	if len(first) > 0 && first[0].Seq > oldest {
+		oldest = first[0].Seq
+	}
+	p := problem(SlugCursorExpired, "events after %d were pruned; resume from oldest_seq", after)
+	p.OldestSeq = &oldest
+	return p
+}
 
 // ListEvents implements StrictServerInterface.
 func (s *Server) ListEvents(ctx context.Context, req ListEventsRequestObject) (ListEventsResponseObject, error) {

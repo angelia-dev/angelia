@@ -55,19 +55,19 @@ func (s *Store) ListNamedSubscriptions(ctx context.Context, afterName, afterID s
 	return subscriptionsFromRows(rows), nil
 }
 
-// WatchesByName implements [store.APIReader].
-func (s *Store) WatchesByName(ctx context.Context, name string) ([]store.Watch, error) {
-	return txOps{q: s.q}.WatchesByName(ctx, name)
+// WatchByName implements [store.APIReader].
+func (s *Store) WatchByName(ctx context.Context, name string) (store.Watch, error) {
+	return txOps{q: s.q}.WatchByName(ctx, name)
 }
 
-// SinksByName implements [store.APIReader].
-func (s *Store) SinksByName(ctx context.Context, name string) ([]store.Sink, error) {
-	return txOps{q: s.q}.SinksByName(ctx, name)
+// SinkByName implements [store.APIReader].
+func (s *Store) SinkByName(ctx context.Context, name string) (store.Sink, error) {
+	return txOps{q: s.q}.SinkByName(ctx, name)
 }
 
-// SubscriptionsByName implements [store.APIReader].
-func (s *Store) SubscriptionsByName(ctx context.Context, name string) ([]store.Subscription, error) {
-	return txOps{q: s.q}.SubscriptionsByName(ctx, name)
+// SubscriptionByName implements [store.APIReader].
+func (s *Store) SubscriptionByName(ctx context.Context, name string) (store.Subscription, error) {
+	return txOps{q: s.q}.SubscriptionByName(ctx, name)
 }
 
 // SubscriptionsBySink implements [store.APIReader].
@@ -149,28 +149,32 @@ func sinksFromRows(rows []Sink) []store.Sink {
 	return out
 }
 
-func (o txOps) WatchesByName(ctx context.Context, name string) ([]store.Watch, error) {
-	rows, err := o.q.ListWatchesByName(ctx, nullName(name))
+func (o txOps) WatchByName(ctx context.Context, name string) (store.Watch, error) {
+	r, err := o.q.GetWatchByName(ctx, nullName(name))
 	if err != nil {
-		return nil, wrap(err, "watches by name", name)
+		return store.Watch{}, wrap(err, "watch by name", name)
 	}
-	return watchesFromRows(rows)
+	ws, err := watchesFromRows([]Watch{r})
+	if err != nil {
+		return store.Watch{}, err
+	}
+	return ws[0], nil
 }
 
-func (o txOps) SinksByName(ctx context.Context, name string) ([]store.Sink, error) {
-	rows, err := o.q.ListSinksByName(ctx, nullName(name))
+func (o txOps) SinkByName(ctx context.Context, name string) (store.Sink, error) {
+	r, err := o.q.GetSinkByName(ctx, nullName(name))
 	if err != nil {
-		return nil, wrap(err, "sinks by name", name)
+		return store.Sink{}, wrap(err, "sink by name", name)
 	}
-	return sinksFromRows(rows), nil
+	return sinksFromRows([]Sink{r})[0], nil
 }
 
-func (o txOps) SubscriptionsByName(ctx context.Context, name string) ([]store.Subscription, error) {
-	rows, err := o.q.ListSubscriptionsByName(ctx, nullName(name))
+func (o txOps) SubscriptionByName(ctx context.Context, name string) (store.Subscription, error) {
+	r, err := o.q.GetSubscriptionByName(ctx, nullName(name))
 	if err != nil {
-		return nil, wrap(err, "subscriptions by name", name)
+		return store.Subscription{}, wrap(err, "subscription by name", name)
 	}
-	return subscriptionsFromRows(rows), nil
+	return subscriptionsFromRows([]Subscription{r})[0], nil
 }
 
 func (o txOps) SubscriptionsBySink(ctx context.Context, sinkID string) ([]store.Subscription, error) {
