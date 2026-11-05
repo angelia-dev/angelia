@@ -1,0 +1,19 @@
+{
+  "deliveries": [
+    {
+      "attempts": 1,
+      "event_id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
+      "held_until": null,
+      "id": "01JBX2A9QWERTY0123456789AB",
+      "idempotency_key": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M",
+      "last_error": "webhook: https://ci.example.com: unexpected status 404 Not Found",
+      "next_attempt_at": "2026-11-03T10:00:00Z",
+      "status": "pending",
+      "subscription_id": "01JBX1YB3C4D5E6F7G8H9J0K1M",
+      "subscription_name": "platform-ci"
+    }
+  ],
+  "dry_run": true,
+  "replayed": 2,
+  "truncated": true
+}
