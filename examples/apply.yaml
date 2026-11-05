@@ -1,0 +1,50 @@
+# Example for `angelia apply` (docs/cli.md, "Apply"). The format is the watch file of
+# docs/watch-file.md; apply sends each object through the REST API instead of loading the file at
+# startup. Try it without writing anything:
+#
+#   angelia apply -f examples/apply.yaml --dry-run
+#
+# then apply it, and later delete what you removed from the file:
+#
+#   angelia apply -f examples/apply.yaml --prune -l team=platform
+#
+# --prune deletes only watches created through the API whose labels match the scope. Sinks and
+# subscriptions carry no owner labels in API v1: apply lists likely leftovers as "kept" and never
+# deletes them. The sink's secret_env must be listed in the instance's api.allowed_env.
+version: 1
+
+sinks:
+  - name: platform-ci
+    kind: webhook
+    config:
+      url: https://ci.example.org/hooks/angelia
+      secret_env: CI_WEBHOOK_SECRET
+
+watches:
+  - name: pypi-requests
+    source: pypi
+    coordinates:
+      name: requests
+    interval: 1h
+    labels:
+      team: platform
+    policy:
+      prerelease: none
+      cooldown: 72h
+
+  - name: npm-react
+    source: npm
+    coordinates:
+      name: react
+    interval: 2h
+    labels:
+      team: platform
+    policy:
+      bump: [major, minor]
+
+subscriptions:
+  - name: platform-to-ci
+    sink: platform-ci
+    filter:
+      labels:
+        team: platform

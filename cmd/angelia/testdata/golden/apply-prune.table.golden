@@ -1,0 +1,13 @@
+sink/platform-ci unchanged
+sink/chat-new created
+watch/pypi-requests updated
+    interval: "1h" -> "30m"
+    labels.tier: (none) -> "critical"
+    policy.cooldown: "72h" -> "0"
+watch/npm-react unchanged
+watch/pypi-flask created
+subscription/platform-to-ci unchanged
+subscription/new-sub created
+watch/pypi-old deleted
+subscription/old-sub kept (not pruned: subscriptions carry no owner labels in API v1; if it is yours, run: angelia sub delete old-sub)
+3 created, 1 updated, 3 unchanged, 1 deleted, 1 kept

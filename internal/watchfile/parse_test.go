@@ -290,3 +290,11 @@ func TestULID(t *testing.T) {
 		t.Fatal("ulid does not sort by time")
 	}
 }
+
+func TestValidName(t *testing.T) {
+	for s, want := range map[string]bool{"requests": true, "a.b_c-1": true, "": false, "Bad": false, "-x": false, strings.Repeat("a", 64): false} {
+		if got := ValidName(s); got != want {
+			t.Errorf("ValidName(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
