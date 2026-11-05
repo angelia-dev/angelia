@@ -146,3 +146,29 @@ func TestPreviousKeyOpens(t *testing.T) {
 		t.Fatal("a previous key sealed")
 	}
 }
+
+// NIT1 (#75 review): the AAD binds the header, not only the row. The key id
+// lookup already refuses a changed id, so this test aliases a forged id to
+// the real key, which leaves the AAD as the only thing that rejects it; a
+// changed version byte is checked by aad() directly.
+func TestAADBindsHeader(t *testing.T) {
+	k := ring(t, 1)
+	env, kid, err := k.Seal("01ID", "ci-webhook", []byte(canary))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := bytes.Clone(env)
+	forged[1] ^= 0xff
+	k.byID[EnvelopeKeyID(forged)] = k.byID[kid]
+	if _, err := k.Open("01ID", "ci-webhook", forged); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("a forged key id opened: %v", err)
+	}
+	if v, err := k.Open("01ID", "ci-webhook", env); err != nil || string(v.Reveal()) != canary {
+		t.Fatalf("the genuine envelope: %v", err)
+	}
+	h := env[:headerLen]
+	v2 := append([]byte{2}, h[1:]...)
+	if bytes.Equal(aad(h, "01ID", "ci-webhook"), aad(v2, "01ID", "ci-webhook")) {
+		t.Fatal("the AAD ignores the version byte")
+	}
+}
