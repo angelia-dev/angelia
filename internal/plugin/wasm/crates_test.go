@@ -31,7 +31,7 @@ func cratesManifest(t *testing.T) wasm.Manifest {
 // transport goes under a netguard client that allows loopback, so the
 // netguard path is the production one; allowed_hosts is replaced by the
 // fake server's host.
-func newCrates(t *testing.T, baseURL string, rt http.RoundTripper, config map[string]string) *wasm.Source {
+func newCrates(t *testing.T, baseURL string, rt http.RoundTripper, creds []wasm.Credential) *wasm.Source {
 	t.Helper()
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -48,11 +48,12 @@ func newCrates(t *testing.T, baseURL string, rt http.RoundTripper, config map[st
 	}
 	m := cratesManifest(t)
 	m.AllowedHosts = []string{u.Hostname()}
-	cfg := map[string]string{"base_url": baseURL}
-	for k, v := range config {
-		cfg[k] = v
-	}
-	s, err := wasm.New(t.Context(), m, plugins.CratesWasm(), wasm.Options{HTTPClient: nc.HTTPClient(), Config: cfg, CompilationCache: testCache})
+	s, err := wasm.New(t.Context(), m, plugins.CratesWasm(), wasm.Options{
+		HTTPClient:       nc.HTTPClient(),
+		Config:           map[string]string{"base_url": baseURL},
+		Credentials:      creds,
+		CompilationCache: testCache,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,12 +92,16 @@ func TestCratesContract(t *testing.T) {
 	})
 }
 
-// Q1: pagination, ETags and auth headers through the host function.
+// Q1: pagination, ETags and auth headers through the host function. Since
+// #184 the plugin cannot set Authorization itself: the host injects it.
 func TestCratesPaginationETagAuth(t *testing.T) {
 	up := wasmtest.NewCratesUpstream(3, map[string]int{"tokio": 7}) // pages of 3, 3, 1
-	srv := httptest.NewServer(up)
+	srv := httptest.NewTLSServer(up)
 	t.Cleanup(srv.Close)
-	s := newCrates(t, srv.URL, srv.Client().Transport, map[string]string{"token": "test-token"})
+	s := newCrates(t, srv.URL, srv.Client().Transport, []wasm.Credential{{
+		Host:  strings.TrimPrefix(srv.URL, "https://"),
+		Token: func(context.Context) (string, error) { return "test-token", nil },
+	}})
 
 	res, err := s.List(t.Context(), crate("tokio"), source.FetchState{})
 	if err != nil {
@@ -117,7 +122,7 @@ func TestCratesPaginationETagAuth(t *testing.T) {
 	}
 	for i, a := range up.Authorizations() {
 		if a != "test-token" {
-			t.Errorf("request %d Authorization = %q, want the configured token", i, a)
+			t.Errorf("request %d Authorization = %q, want the injected token", i, a)
 		}
 	}
 	v := res.Versions[0]
@@ -148,6 +153,12 @@ func TestCratesManifestIsValid(t *testing.T) {
 	m := cratesManifest(t)
 	if m.Kind != "crates" || !slices.Equal(m.AllowedHosts, []string{"crates.io"}) {
 		t.Errorf("manifest = %+v", m)
+	}
+	// #184: the token is a host-injected credential, not a plugin config key.
+	_, hc := newTestNet(t, nil)
+	if s, err := wasm.New(t.Context(), m, plugins.CratesWasm(), wasm.Options{HTTPClient: hc, Config: map[string]string{"token": "x"}}); err == nil {
+		_ = s.Close(context.Background())
+		t.Error("the crates manifest still declares a token config key")
 	}
 }
 

@@ -32,7 +32,7 @@ func staticToken(v string) func(context.Context) (string, error) {
 
 // seenReq is what the echo upstream received.
 type seenReq struct {
-	Authorization, Range, AcceptEncoding string
+	Authorization, Range, AcceptEncoding, PrivateToken, APIKey string
 }
 
 // echoUpstream records every request per host and reflects the
@@ -53,7 +53,12 @@ func (a *echoUpstream) handler(host string) http.Handler {
 		if a.seen == nil {
 			a.seen = map[string][]seenReq{}
 		}
-		a.seen[host] = append(a.seen[host], seenReq{v, r.Header.Get("Range"), r.Header.Get("Accept-Encoding")})
+		a.seen[host] = append(a.seen[host], seenReq{
+			v, r.Header.Get("Range"), r.Header.Get("Accept-Encoding"), r.Header.Get("Private-Token"), r.Header.Get("X-Api-Key"),
+		})
+		if v == "" {
+			v = r.Header.Get("Private-Token")
+		}
 		a.mu.Unlock()
 		if loc := r.URL.Query().Get("to"); loc != "" {
 			http.Redirect(w, r, loc, http.StatusFound) //nolint:gosec // G710: test upstream, redirects are the point.
@@ -105,14 +110,15 @@ func (a *echoUpstream) auth(host string) []string {
 
 // newCredentialed returns the hostile plugin with allowed.test from its
 // manifest, other.test added by the operator and a credential bound to
-// allowed.test (port 443) unless opts has others.
-func newCredentialed(t *testing.T, opts wasm.Options) (*echoUpstream, *wasm.Source) {
+// allowed.test (port 443) unless opts has others. extraAuth becomes the
+// netguard client's ExtraAuthHeaders.
+func newCredentialed(t *testing.T, opts wasm.Options, extraAuth ...string) (*echoUpstream, *wasm.Source) {
 	t.Helper()
 	rec := &echoUpstream{}
 	_, hc := newTestNet(t, map[string]http.Handler{
 		"allowed.test": rec.handler("allowed.test"),
 		"other.test":   rec.handler("other.test"),
-	})
+	}, extraAuth...)
 	opts.HTTPClient = hc
 	opts.AllowedHosts = []string{"other.test"}
 	if opts.Credentials == nil {
@@ -152,14 +158,6 @@ func TestCredentialInjectedOnBoundHostOnly(t *testing.T) {
 	}
 	if got := rec.auth("other.test"); !slices.Equal(got, []string{""}) {
 		t.Errorf("other.test saw Authorization %q, want none", got)
-	}
-
-	// The plugin's own Authorization on the bound host is replaced.
-	if _, err := fetch(t, s, "https://allowed.test/b", "authorization", "plugin-value"); err != nil {
-		t.Fatal(err)
-	}
-	if got := rec.auth("allowed.test"); got[len(got)-1] != "Bearer "+testToken {
-		t.Errorf("allowed.test saw %q, want the host's credential over the plugin's", got[len(got)-1])
 	}
 }
 
@@ -446,17 +444,20 @@ func TestInstallErrors(t *testing.T) {
 	_, hc := newTestNet(t, nil)
 	cred := func(host string) wasm.Credential { return wasm.Credential{Host: host, Token: staticToken(testToken)} }
 	cases := map[string]wasm.Options{
-		"bad operator host":     {AllowedHosts: []string{"*.example.com"}},
-		"credential not listed": {Credentials: []wasm.Credential{cred("other.test")}},
-		"credential twice":      {Credentials: []wasm.Credential{cred("allowed.test"), cred("ALLOWED.test")}},
-		"default port twice":    {Credentials: []wasm.Credential{cred("allowed.test"), cred("allowed.test:443")}},
-		"no token func":         {Credentials: []wasm.Credential{{Host: "allowed.test"}}},
-		"bad scheme":            {Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer x", Token: staticToken("x")}}},
-		"bad credential":        {Credentials: []wasm.Credential{cred("https://allowed.test")}},
-		"port zero":             {Credentials: []wasm.Credential{cred("allowed.test:0")}},
-		"port leading zero":     {Credentials: []wasm.Credential{cred("allowed.test:0443")}},
-		"port too large":        {Credentials: []wasm.Credential{cred("allowed.test:65536")}},
-		"port not a number":     {Credentials: []wasm.Credential{cred("allowed.test:https")}},
+		"bad operator host":       {AllowedHosts: []string{"*.example.com"}},
+		"credential not listed":   {Credentials: []wasm.Credential{cred("other.test")}},
+		"credential twice":        {Credentials: []wasm.Credential{cred("allowed.test"), cred("ALLOWED.test")}},
+		"default port twice":      {Credentials: []wasm.Credential{cred("allowed.test"), cred("allowed.test:443")}},
+		"no token func":           {Credentials: []wasm.Credential{{Host: "allowed.test"}}},
+		"bad scheme":              {Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer x", Token: staticToken("x")}}},
+		"bad credential":          {Credentials: []wasm.Credential{cred("https://allowed.test")}},
+		"port zero":               {Credentials: []wasm.Credential{cred("allowed.test:0")}},
+		"port leading zero":       {Credentials: []wasm.Credential{cred("allowed.test:0443")}},
+		"port too large":          {Credentials: []wasm.Credential{cred("allowed.test:65536")}},
+		"port not a number":       {Credentials: []wasm.Credential{cred("allowed.test:https")}},
+		"header not a credential": {Credentials: []wasm.Credential{{Host: "allowed.test", Header: "X-Api-Key", Token: staticToken(testToken)}}},
+		"header not a token":      {Credentials: []wasm.Credential{{Host: "allowed.test", Header: "Private Token", Token: staticToken(testToken)}}},
+		"scheme on PRIVATE-TOKEN": {Credentials: []wasm.Credential{{Host: "allowed.test", Header: "PRIVATE-TOKEN", Scheme: "Bearer", Token: staticToken(testToken)}}},
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -489,11 +490,145 @@ func TestInjectedCredentialUsesAuthenticatedBudget(t *testing.T) {
 		HTTPClient:  nc.HTTPClient(),
 		Credentials: []wasm.Credential{{Host: "allowed.test", Token: staticToken(testToken)}},
 	})
+	s2 := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{
+		HTTPClient:  nc.HTTPClient(),
+		Credentials: []wasm.Credential{{Host: "allowed.test", Header: "PRIVATE-TOKEN", Token: staticToken(testToken)}},
+	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	for i := range 3 {
-		if _, err := s.List(ctx, hostileTarget("fetch", "url", "https://allowed.test/"), source.FetchState{}); err != nil {
-			t.Fatalf("request %d: %v (anonymous budget used?)", i, err)
+	for _, src := range []*wasm.Source{s, s2} {
+		for i := range 3 {
+			if _, err := src.List(ctx, hostileTarget("fetch", "url", "https://allowed.test/"), source.FetchState{}); err != nil {
+				t.Fatalf("request %d: %v (anonymous budget used?)", i, err)
+			}
 		}
+	}
+}
+
+// Q3 (#184): only credentials the host injects count as authenticated, so
+// a plugin may not set a credential header itself, on any host: the
+// request is refused with bad_request before it reaches netguard.
+func TestPluginCredentialHeadersRefused(t *testing.T) {
+	rec, s := newCredentialed(t, wasm.Options{}, "X-Api-Key")
+	for _, tc := range []struct{ host, header string }{
+		{"allowed.test", "h:Authorization"},
+		{"other.test", "h:Authorization"},
+		{"other.test", "h:authorization"},
+		{"other.test", "h:PRIVATE-TOKEN"},
+		{"other.test", "h:private-token"},
+		{"other.test", "h:X-Api-Key"}, // one of netguard's ExtraAuthHeaders
+		{"other.test", "h:x-api-key"},
+	} {
+		_, err := fetch(t, s, "https://"+tc.host+"/a", tc.header, "dummy-value")
+		if err == nil || !strings.Contains(err.Error(), "bad_request") || !strings.Contains(err.Error(), "reserved for credentials the host injects") {
+			t.Errorf("%s on %s: err = %v, want bad_request", tc.header, tc.host, err)
+		}
+	}
+	// An empty value is refused too: the header is reserved, whatever it holds.
+	if _, err := fetch(t, s, "https://other.test/a", "h:Authorization", ""); err == nil {
+		t.Error("an empty Authorization from the plugin was accepted")
+	}
+	if got := len(rec.got("allowed.test")) + len(rec.got("other.test")); got != 0 {
+		t.Errorf("%d refused requests reached the network", got)
+	}
+
+	// A header that netguard does not count as a credential stays the
+	// plugin's business.
+	_, s2 := newCredentialed(t, wasm.Options{})
+	if _, err := fetch(t, s2, "https://other.test/a", "h:X-Api-Key", "dummy-value"); err != nil {
+		t.Errorf("X-Api-Key without ExtraAuthHeaders: %v", err)
+	}
+}
+
+// A plugin-set credential header can no longer move a plugin onto the
+// authenticated budget of a host: the request never reaches the limiter.
+func TestPluginCannotClaimAuthenticatedBudget(t *testing.T) {
+	rec := &echoUpstream{}
+	n := &testNet{handlers: map[string]http.Handler{"allowed.test": rec.handler("allowed.test")}}
+	nc, err := netguard.New(netguard.Config{
+		Transport: n,
+		Resolver:  fakeResolver{"allowed.test": {netip.MustParseAddr("203.0.113.10")}},
+		HostLimits: map[string]netguard.HostLimit{"allowed.test": {
+			Authenticated: netguard.Limit{Rate: 1e6, Burst: 1000},
+			Anonymous:     netguard.Limit{Rate: 0.001, Burst: 1},
+		}},
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{HTTPClient: nc.HTTPClient()})
+	for _, h := range []string{"authorization", "h:PRIVATE-TOKEN"} {
+		_, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/", h, "dummy-value"), source.FetchState{})
+		if err == nil || !strings.Contains(err.Error(), "bad_request") {
+			t.Errorf("%s: err = %v, want bad_request", h, err)
+		}
+	}
+	if got := rec.got("allowed.test"); len(got) != 0 {
+		t.Errorf("requests with a plugin-set credential reached the upstream: %+v", got)
+	}
+}
+
+// Q2 (#184): a credential can name another header netguard counts as a
+// credential, such as GitLab's PRIVATE-TOKEN. It gets the same injection,
+// https-only rule and redaction, and no Authorization is sent.
+func TestCredentialCustomHeader(t *testing.T) {
+	rec, s := newCredentialed(t, wasm.Options{Credentials: []wasm.Credential{
+		{Host: "allowed.test", Header: "private-token", Token: staticToken(testToken)},
+	}})
+	b, err := fetch(t, s, "https://allowed.test/echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rec.got("allowed.test")
+	if len(got) != 1 || got[0].PrivateToken != testToken || got[0].Authorization != "" {
+		t.Errorf("upstream saw %+v, want PRIVATE-TOKEN only", got)
+	}
+	if strings.Contains(b, testToken) || !strings.Contains(b, "[REDACTED]") {
+		t.Errorf("body = %q, want the echoed token redacted", b)
+	}
+	if _, err := fetch(t, s, "https://other.test/a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.got("other.test"); len(got) != 1 || got[0].PrivateToken != "" {
+		t.Errorf("other.test saw %+v, want no credential", got)
+	}
+	if _, err := fetch(t, s, "http://allowed.test:443/a"); err == nil || !strings.Contains(err.Error(), "only sent over https") {
+		t.Errorf("err = %v, want the credential refused over http", err)
+	}
+
+	// net/http forwards custom headers on a cross-host redirect (it strips
+	// only Authorization). The credential lives on the transport's per-hop
+	// copy, so it never follows a redirect to another host or port.
+	t.Run("redirect to another allowed host drops it", func(t *testing.T) {
+		before := len(rec.got("other.test"))
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://other.test/landing"); err != nil {
+			t.Fatal(err)
+		}
+		got := rec.got("other.test")[before:]
+		if len(got) != 1 || got[0].PrivateToken != "" {
+			t.Errorf("other.test saw %+v after a redirect, want no PRIVATE-TOKEN", got)
+		}
+	})
+	t.Run("redirect to another port of the bound host drops it", func(t *testing.T) {
+		before := len(rec.got("allowed.test"))
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://allowed.test:8443/landing"); err != nil {
+			t.Fatal(err)
+		}
+		got := rec.got("allowed.test")[before:]
+		if len(got) != 2 || got[0].PrivateToken != testToken || got[1].PrivateToken != "" {
+			t.Errorf("allowed.test saw %+v, want PRIVATE-TOKEN on the first hop only", got)
+		}
+	})
+
+	// One of the netguard client's ExtraAuthHeaders is accepted too.
+	rec2, s2 := newCredentialed(t, wasm.Options{
+		Credentials: []wasm.Credential{{Host: "allowed.test", Header: "X-Api-Key", Token: staticToken(testToken)}},
+	}, "X-Api-Key")
+	if _, err := fetch(t, s2, "https://allowed.test/a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec2.got("allowed.test"); len(got) != 1 || got[0].APIKey != testToken {
+		t.Errorf("upstream saw %+v, want X-Api-Key", got)
 	}
 }

@@ -243,7 +243,7 @@ func (s *Source) newRequest(ctx context.Context, r wireHTTPRequest) (*http.Reque
 		return nil, err
 	}
 	if req.URL.User != nil {
-		return nil, errors.New("credentials in the URL are not allowed; use the Authorization header")
+		return nil, errors.New("credentials in the URL are not allowed; configure a credential in grants.yaml")
 	}
 	for k, v := range r.Headers {
 		if !validHeader(k, v) {
@@ -252,6 +252,12 @@ func (s *Source) newRequest(ctx context.Context, r wireHTTPRequest) (*http.Reque
 		ck := http.CanonicalHeaderKey(k)
 		if reservedHeaders[ck] {
 			return nil, fmt.Errorf("header %q is set by the host", k)
+		}
+		// Only credentials the host injects count as authenticated for
+		// netguard's limiter (#184): a plugin could otherwise claim a
+		// host's authenticated budget with a dummy value.
+		if s.isCredentialHeader(ck) {
+			return nil, fmt.Errorf("header %q is reserved for credentials the host injects; configure a credential in grants.yaml", k)
 		}
 		if _, dup := req.Header[ck]; dup {
 			return nil, fmt.Errorf("header %q given twice", ck)
