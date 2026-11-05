@@ -1,0 +1,13 @@
+{
+  "name": "ci-webhook",
+  "id": "01JBX1Y8K2M3N4P5Q6R7S8T9V0",
+  "managed_by": "api",
+  "kind": "webhook",
+  "config": {
+    "url": "https://ci.example.com/hooks/angelia",
+    "secret_env": "CI_WEBHOOK_SECRET",
+    "timeout": "10s"
+  },
+  "url_redacted": false,
+  "masked_fields": []
+}

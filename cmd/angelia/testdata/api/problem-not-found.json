@@ -1,0 +1,7 @@
+{
+  "type": "https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-not-found",
+  "title": "Not found",
+  "status": 404,
+  "detail": "no watch named requests",
+  "instance": "/v1/watches/requests"
+}

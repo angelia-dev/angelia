@@ -1,0 +1,2 @@
+NAME      SOURCE  COORDINATES    INTERVAL  SCHEME  MANAGED  LAST CHECKED              ERRORS
+requests  pypi    name=requests  30m       pep440  api      2026-10-30T17:00:02.512Z  0

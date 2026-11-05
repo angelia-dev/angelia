@@ -1,0 +1,29 @@
+{
+  "items": [
+    {
+      "id": "01JBX2A9QWERTY0123456789AB",
+      "event_id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
+      "subscription_id": "01JBX1YB3C4D5E6F7G8H9J0K1M",
+      "subscription_name": "platform-ci",
+      "idempotency_key": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M",
+      "status": "dead",
+      "attempts": 1,
+      "next_attempt_at": null,
+      "held_until": null,
+      "last_error": "webhook: https://ci.example.com: unexpected status 404 Not Found"
+    },
+    {
+      "id": "01JBX2B0ASDFGH0123456789CD",
+      "event_id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
+      "subscription_id": "01JBX0ZZ9Y8X7W6V5T4S3R2Q1P",
+      "subscription_name": null,
+      "idempotency_key": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX0ZZ9Y8X7W6V5T4S3R2Q1P",
+      "status": "dead",
+      "attempts": 0,
+      "next_attempt_at": null,
+      "held_until": null,
+      "last_error": "subscription removed"
+    }
+  ],
+  "next_cursor": "eyJkIjoiMDFKQlgyQjBBU0RGR0gwMTIzNDU2Nzg5Q0QifQ"
+}

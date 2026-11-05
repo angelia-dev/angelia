@@ -1,0 +1,10 @@
+FIELD              VALUE
+name               ci-webhook
+id                 01JBX1Y8K2M3N4P5Q6R7S8T9V0
+managed by         api
+kind               webhook
+url redacted       false
+masked fields      -
+config.secret_env  CI_WEBHOOK_SECRET
+config.timeout     10s
+config.url         https://ci.example.com/hooks/angelia

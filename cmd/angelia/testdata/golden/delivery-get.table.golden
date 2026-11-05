@@ -1,0 +1,11 @@
+FIELD            VALUE
+id               01JBX2A9QWERTY0123456789AB
+event            01JBX2A7C8D9E0F1G2H3J4K5M6
+subscription     platform-ci
+subscription id  01JBX1YB3C4D5E6F7G8H9J0K1M
+idempotency key  01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
+status           dead
+attempts         1
+next attempt     -
+held until       -
+last error       webhook: https://ci.example.com: unexpected status 404 Not Found

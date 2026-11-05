@@ -1,0 +1,26 @@
+{
+  "name": "platform-ci",
+  "id": "01JBX1YB3C4D5E6F7G8H9J0K1M",
+  "managed_by": "api",
+  "sink": "ci-webhook",
+  "filter": {
+    "source": [],
+    "labels": {
+      "team": "platform"
+    },
+    "bump": [
+      "major",
+      "minor"
+    ],
+    "package": "",
+    "type": [
+      "release.published",
+      "release.yanked"
+    ]
+  },
+  "policy": {
+    "prerelease": null,
+    "cooldown": "24h"
+  },
+  "template": ""
+}

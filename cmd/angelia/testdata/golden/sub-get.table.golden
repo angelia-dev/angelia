@@ -1,0 +1,13 @@
+FIELD              VALUE
+name               platform-ci
+id                 01JBX1YB3C4D5E6F7G8H9J0K1M
+managed by         api
+sink               ci-webhook
+filter.type        release.published,release.yanked
+filter.source      -
+filter.bump        major,minor
+filter.package     -
+filter.labels      team=platform
+policy.prerelease  -
+policy.cooldown    24h
+template           -

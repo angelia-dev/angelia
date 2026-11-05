@@ -1,0 +1,2 @@
+{"event":{"type":"dev.angelia.release.published.v1","id":"01JBX2A7C8D9E0F1G2H3J4K5M6","time":"2026-10-30T17:00:02.512Z","data":{"package":"requests","version":"2.33.0","watch":{"name":"requests"}}},"ref_event_id":null,"seq":4182}
+{"event":{"type":"dev.angelia.release.yanked.v1","id":"01JBXC4D5E6F7G8H9J0K1M2N3P","time":"2026-11-02T09:30:01.207Z","data":{"package":"requests","version":"2.33.0","watch":{"name":"requests"}}},"ref_event_id":"01JBX2A7C8D9E0F1G2H3J4K5M6","seq":4190}

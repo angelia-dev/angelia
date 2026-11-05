@@ -1,0 +1,21 @@
+FIELD               VALUE
+name                requests
+id                  01JBX1Z3M4N5P6Q7R8S9T0V1W2
+managed by          api
+source              pypi
+coordinates         name=requests
+interval            30m
+scheme              pep440
+labels              repo=api,team=platform
+policy.prerelease   none
+policy.include      -
+policy.exclude      -
+policy.constraint   -
+policy.bump         major,minor
+policy.cooldown     72h
+policy.baseline     true
+baseline done       true
+effective interval  30m
+last checked        2026-10-30T17:00:02.512Z
+next check          2026-10-30T17:29:41.000Z
+errors              0
