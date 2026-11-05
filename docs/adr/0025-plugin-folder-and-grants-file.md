@@ -1,6 +1,6 @@
 # ADR 0025: Each installed plugin has a folder in `plugins_dir`; the operator's grants live in its `grants.yaml`
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-05, maintainer decision on #196)
 - **Date:** 2026-11-05
 - **Story:** angelia-dev/angelia#184
 

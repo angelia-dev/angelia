@@ -27,7 +27,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0020](0020-opentelemetry-traces-link-checks-to-deliveries.md) | Traces are OpenTelemetry over OTLP/HTTP, enabled only by `OTEL_*` variables; a check is one trace and each delivery attempt a linked trace, joined through `delivery.traceparent` | Proposed | #118 |
 | [0021](0021-source-canonical-target.md) | Sources canonicalise targets through an optional `Canonicalizer` interface (amends ADR 0006) | Accepted | #134 |
 | [0022](0022-rest-api-in-house-spec-driven-validation.md) | The REST API validates and routes from the embedded OpenAPI document with an in-house JSON Schema subset; oapi-codegen generates types and the strict interface only, with a pinned template override | Accepted | #71 |
-| [0025](0025-plugin-folder-and-grants-file.md) | Each installed plugin has a folder in `plugins_dir`; the operator's grants live in its `grants.yaml` | Proposed | #184 |
+| [0025](0025-plugin-folder-and-grants-file.md) | Each installed plugin has a folder in `plugins_dir`; the operator's grants live in its `grants.yaml` | Accepted | #184 |
 
 ## Process
 
