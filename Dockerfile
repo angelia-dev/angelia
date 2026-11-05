@@ -9,4 +9,10 @@ ARG TARGETPLATFORM
 COPY ${TARGETPLATFORM}/angelia /usr/local/bin/angelia
 
 USER 65532:65532
+
+# No shell and no curl in the image: the probe is the binary itself, GET /healthz on the
+# default listen port 8080 (docs/configuration.md). If you change `listen`, override the
+# healthcheck with `angelia healthcheck --url http://127.0.0.1:<port>/healthz`.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/angelia","healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/angelia"]

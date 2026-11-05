@@ -1,0 +1,70 @@
+# Full stack: Angelia with Postgres and an apprise-api sidecar. PLACEHOLDER, read the README first.
+#
+#   cd deploy/compose/full
+#   printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
+#   docker compose up -d        # starts postgres only: see the profiles below
+#
+# Status of each part:
+# - postgres: running, but Angelia cannot use it yet. The store has a SQLite engine only,
+#   and `angelia serve` refuses a postgres DSN (Postgres store: #85).
+# - angelia: profile "placeholder". Start it with `--profile placeholder` only to see the
+#   wiring; it exits at start until #85 lands. Its healthcheck is the real one.
+# - apprise: profile "not-wired". It is not connected to anything: no sink calls it until a
+#   chat sink exists (#120). Start it with `--profile not-wired`.
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    environment:
+      POSTGRES_DB: angelia
+      POSTGRES_USER: angelia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U angelia -d angelia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PLACEHOLDER: the DSN below is the intended shape. The password is interpolated here,
+  # not in angelia.yaml. Secret references for DSNs come with #75.
+  angelia:
+    profiles: ["placeholder"]
+    image: ghcr.io/angelia-dev/angelia:0.1.0
+    command:
+      - serve
+      - --config
+      - /etc/angelia/angelia.yaml
+      - --watches
+      - /etc/angelia/watches.yaml
+    environment:
+      ANGELIA_DATABASE_DSN: postgres://angelia:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/angelia?sslmode=disable
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./angelia.yaml:/etc/angelia/angelia.yaml:ro
+      - ./watches.yaml:/etc/angelia/watches.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/angelia", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # NOT WIRED: no service depends on apprise, and Angelia does not call it. It becomes useful
+  # when the apprise sink exists (#120); the sink's URL and secrets are not decided yet.
+  apprise:
+    profiles: ["not-wired"]
+    image: caronc/apprise:2.0.2@sha256:6ae97e24b3447f85f725a03ba73c6dc3a5f4b99f4273ac126de2d9b5ed6205d5
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  postgres-data:

@@ -1,0 +1,48 @@
+# Angelia in homelab mode: one container, SQLite on a named volume.
+#
+#   cd deploy/compose/sqlite
+#   docker compose up -d
+#   docker compose ps          # angelia turns "healthy" after its first probe
+#
+# Image: see ../README.md for the tag. The probe is the binary itself, because the
+# image has no shell and no curl.
+services:
+  # A new named volume is owned by root, and the image runs as uid 65532. This one-shot
+  # job hands the volume to that user before angelia starts, then exits.
+  volume-init:
+    image: busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    command: ["sh", "-c", "chown -R 65532:65532 /var/lib/angelia"]
+    volumes:
+      - angelia-data:/var/lib/angelia
+    restart: "no"
+
+  angelia:
+    image: ghcr.io/angelia-dev/angelia:0.1.0
+    command:
+      - serve
+      - --config
+      - /etc/angelia/angelia.yaml
+      - --watches
+      - /etc/angelia/watches.yaml
+    ports:
+      # Loopback only: the REST API needs a token and nothing else is public yet.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./angelia.yaml:/etc/angelia/angelia.yaml:ro
+      - ./watches.yaml:/etc/angelia/watches.yaml:ro
+      - angelia-data:/var/lib/angelia
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Longer than the default drain timeout (25s) plus the final flush.
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/angelia", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  angelia-data:
