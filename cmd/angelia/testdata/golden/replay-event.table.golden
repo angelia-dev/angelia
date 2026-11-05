@@ -1,0 +1,3 @@
+1 delivery queued again
+ID                          EVENT                       SUBSCRIPTION  STATUS   ATTEMPTS  NEXT ATTEMPT              LAST ERROR
+01JBX2A9QWERTY0123456789AB  01JBX2A7C8D9E0F1G2H3J4K5M6  platform-ci   pending  1         2026-11-03T10:00:00.000Z  webhook: https://ci.example.com: unexpected status 404 Not …
