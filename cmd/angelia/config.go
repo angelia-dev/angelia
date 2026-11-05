@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/secrets"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -44,6 +47,10 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range cfg.Warnings() {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
+			secretsLine, err := checkSecretsConfig(cmd.Context(), cfg, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
 			plugins, warns, err := config.LoadPlugins(cmd.Context(), cfg.PluginsDir, os.Environ())
 			for _, w := range warns {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
@@ -60,10 +67,14 @@ func newConfigCheckCmd() *cobra.Command {
 			}
 			show := func(w io.Writer) error {
 				if unreadable {
-					_, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir)
+					if _, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir); err != nil {
+						return err
+					}
+				} else if err := printPlugins(w, cfg.PluginsDir, plugins); err != nil {
 					return err
 				}
-				return printPlugins(w, cfg.PluginsDir, plugins)
+				_, err := fmt.Fprintln(w, secretsLine)
+				return err
 			}
 			watches, err := watchesPath(cmd)
 			if err != nil {
@@ -171,4 +182,34 @@ func printable(s string) string {
 		}
 	}
 	return s
+}
+
+// checkSecretsConfig reads the secrets keys, as serve does (a bad or loose
+// key file fails the check), and counts the stored secrets read-only,
+// without creating or migrating the database. It returns the summary line
+// ("secrets: no key configured (0 stored)") and fails, like serve would,
+// when stored secrets have no configured key.
+func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer) (string, error) {
+	keys, warns, err := secrets.LoadKeyring(cfg.Secrets.KeyConfig())
+	if err != nil {
+		return "", fmt.Errorf("invalid secrets key: %w", err)
+	}
+	for _, w := range warns {
+		_, _ = fmt.Fprintln(warn, "warning:", w)
+	}
+	counts := map[string]int64{}
+	if dbPath, err := cfg.Database.SQLitePath(); err == nil {
+		c, err := sqlite.SecretKeyCounts(ctx, dbPath)
+		switch {
+		case errors.Is(err, sqlite.ErrNoDatabase):
+		case err != nil:
+			_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
+		default:
+			counts = c
+		}
+	}
+	if err := secrets.CheckCounts(counts, keys); err != nil {
+		return "", err
+	}
+	return secrets.Summary(counts, keys), nil
 }

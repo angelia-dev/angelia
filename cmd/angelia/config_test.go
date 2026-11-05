@@ -133,7 +133,8 @@ credentials:
 		"    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants)\n" +
 		"    credentials:\n" +
 		"      crates-mirror.example.com:443  Authorization: Bearer <token from $ANGELIA_TEST_MIRROR_TOK>\n" +
-		"      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $ANGELIA_TEST_UNSET_TOK, not set>\n"
+		"      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $ANGELIA_TEST_UNSET_TOK, not set>\n" +
+		"secrets: no key configured (0 stored)\n"
 	if out != want {
 		t.Errorf("out =\n%s\nwant\n%s", out, want)
 	}
@@ -150,7 +151,7 @@ func TestConfigCheckNoPlugins(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
 	out, _, err := runCheck(t)
-	if err != nil || out != "configuration OK\nplugins in "+dir+": none\n" {
+	if err != nil || out != "configuration OK\nplugins in "+dir+": none\nsecrets: no key configured (0 stored)\n" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }

@@ -227,7 +227,7 @@ Proposed stack [P0]:
 
 ## 8. Security
 
-- Secrets (tokens, webhook secrets) are encrypted at rest with a key from env or file (age or AES-GCM); they are never returned by the API.
+- Secrets (tokens, webhook secrets) are encrypted at rest with AES-256-GCM and a key from a file or env ([ADR 0024](adr/0024-secrets-encrypted-at-rest.md)); they are never returned by the API.
 - SSRF protection on `http-*` sources and webhook sinks: deny private ranges by default, allowlist to opt in.
 - WASM plugins only reach hosts declared in their manifest.
 - Signed releases (cosign), SBOM published, OpenSSF Scorecard. A supply-chain tool has to practice what it preaches.

@@ -383,3 +383,48 @@ func TestMissingSecretRefsWarn(t *testing.T) {
 		t.Fatalf("warnings: %q", w)
 	}
 }
+
+func TestConfigCheckSecrets(t *testing.T) {
+	t.Setenv("ANGELIA_PLUGINS_DIR", filepath.Join(t.TempDir(), "none"))
+	cfg, db := instanceFiles(t, "")
+	out, _, err := runCLI(t, "config", "check", "--config", cfg)
+	if err != nil || !strings.Contains(out, "secrets: no key configured (0 stored)") {
+		t.Fatalf("no key, no database: %v %s", err, out)
+	}
+	if _, err := os.Stat(db); err == nil {
+		t.Fatal("config check created the database")
+	}
+	seedSecrets(t, db, keyring(t, 1), "a", "b")
+	_, _, err = runCLI(t, "config", "check", "--config", cfg)
+	if err == nil || err.Error() != "secrets: 2 stored secrets but no key configured; set secrets.key_file" {
+		t.Fatalf("rows, no key: %v", err)
+	}
+	key := writeKeyFile(t, 1)
+	withKey := writeCfg(t, "database:\n  dsn: sqlite://"+db+"\nsecrets:\n  key_file: "+key+"\n")
+	out, _, err = runCLI(t, "config", "check", "--config", withKey)
+	if err != nil || !strings.Contains(out, "secrets: key "+keyring(t, 1).PrimaryID()+" (2 stored)") {
+		t.Fatalf("with key: %v %s", err, out)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(key, 0o644); err != nil { //nolint:gosec // the loose mode under test
+			t.Fatal(err)
+		}
+		_, _, err = runCLI(t, "config", "check", "--config", withKey)
+		if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("world-readable key: %v", err)
+		}
+		if err := os.Chmod(key, 0o640); err != nil { //nolint:gosec // the loose mode under test
+			t.Fatal(err)
+		}
+		_, errOut, err := runCLI(t, "config", "check", "--config", withKey)
+		if err != nil || !strings.Contains(errOut, "warning: secrets:") {
+			t.Fatalf("group-readable key: %v %s", err, errOut)
+		}
+	}
+	bad := writeCfg(t, "database:\n  dsn: sqlite://"+db+"\nsecrets:\n  key_file: "+writeTemp(t, "bad.key", cliCanary)+"\n")
+	_, errOut, err := runCLI(t, "config", "check", "--config", bad)
+	if err == nil || !strings.Contains(err.Error(), "not a secrets key") {
+		t.Fatalf("bad key file: %v", err)
+	}
+	noCanary(t, "config check", errOut, err.Error())
+}
