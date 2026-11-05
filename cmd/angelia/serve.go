@@ -94,6 +94,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	// The stored-sinks check of ADR 0024 §6 runs where the store is opened:
+	// today only in the api role (newAPIServer). A scheduler or dispatcher
+	// role that replaces its stub must run it too (ADR 0024 amendment).
 	factory := supervisor.NewStub
 	if hasAPIRole(roleNames) {
 		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, keys, log)

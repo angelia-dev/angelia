@@ -374,3 +374,32 @@ The maintainer accepted every recommendation on #195 (2026-11-05).
   [ADR 0017](0017-dispatcher-delivery-leases-and-retries.md), [ADR 0022](0022-rest-api-in-house-spec-driven-validation.md)
 - Spec `docs/api.md` decisions 22, 24, 25, 26 and the Secrets section
 - NIST SP 800-38D (GCM, nonce limits); RFC 5869 (HKDF); RFC 6901 (JSON Pointer)
+
+## Amendment (2026-11-05, #75 review)
+
+The implementation review found places where the text above says more than v0.1 does. The accepted
+text is left as is; this amendment states what holds.
+
+- **No rename in v0.1** (§3, §7). The API has no rename: a secret's name is immutable
+  (`UpdateSecret` never writes it). So "A rename through the API re-seals" and the rename audit record
+  describe a future operation. Renaming a row in SQL still makes `Open` fail, as §3 says. A rename, if
+  one is added, re-seals and is audited.
+- **A missing reference** (§4 table). The watch-file apply warns. The API accepts the reference without
+  a warning, because it has no channel for warnings yet.
+- **Resolution comes with #108** (§6). The dispatcher does not resolve `*_ref` keys into
+  `sink.Request.Secrets` until the #108 wiring lands. Until then a delivery whose sink config holds a
+  `*_ref` key fails before `Deliver` and is retried, with a `last_error` that names the key's pointer.
+  It is never sent unsigned. The host binding, the redirect re-check and
+  `422 secret-host-binding-required` (source and registry credentials, #111) take effect with that
+  wiring. Until then `hosts` is stored and validated only.
+- **Scope of the stored-sinks startup check** (§6). The check runs in the role that opens the store,
+  and today only the `api` role does: the scheduler and dispatcher roles of `serve` are stubs that
+  don't open it. When they replace their stubs, they must run the same check before they start. The
+  stored-secrets key check (§4) already runs in every role, before any role starts.
+- **`ANGELIA_` names** (§2, §4). Like `api.allowed_env`, the instance config (`sources.<kind>.token_env`,
+  a plugin's `credentials.<host>.token_env`) and the watch file (`secret_env`) refuse every name that
+  starts with `ANGELIA_`. Otherwise `token_env: ANGELIA_SECRETS_KEY` would read the key before `serve`
+  unsets it, and send it as a token.
+- **A lost fenced update on `PUT /v1/secrets/{name}`** (§5). The request runs again on the new row, up
+  to three times (last writer wins, as for any `PUT`). This cannot happen on SQLite, whose API
+  transactions lock.
