@@ -1,6 +1,6 @@
 # ADR 0022: REST API server: in-house spec-driven validation and routing
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-05, maintainer decision on #189)
 - **Date:** 2026-11-04
 - **Story:** angelia-dev/angelia#71
 
