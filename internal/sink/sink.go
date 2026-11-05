@@ -71,8 +71,9 @@ type Request struct {
 	// IdempotencyKey(event id, subscription id). Sinks pass it on, for
 	// example as a header, so that consumers can drop duplicates.
 	IdempotencyKey string
-	// DeliveryID and SubscriptionID identify the delivery, for logs.
-	DeliveryID, SubscriptionID string
+	// DeliveryID, SubscriptionID and SinkID identify the delivery and its
+	// sink, for logs.
+	DeliveryID, SubscriptionID, SinkID string
 	// Attempt counts from 1. An attempt cut short by a crash counts.
 	Attempt int64
 }

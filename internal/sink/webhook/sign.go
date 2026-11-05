@@ -174,6 +174,10 @@ func Verify(secrets []string, h http.Header, body []byte, now time.Time, toleran
 	if d := now.Sub(time.Unix(secs, 0)); d > tolerance || d < -tolerance {
 		return ErrTimestamp
 	}
+	want := make([][]byte, len(keys)) // one HMAC per key, not per entry
+	for i, k := range keys {
+		want[i] = mac(k, id, ts, body)
+	}
 	for _, entry := range strings.Split(sigs, " ") {
 		b64, ok := strings.CutPrefix(entry, "v1,")
 		if !ok {
@@ -183,8 +187,8 @@ func Verify(secrets []string, h http.Header, body []byte, now time.Time, toleran
 		if err != nil {
 			continue
 		}
-		for _, k := range keys {
-			if hmac.Equal(got, mac(k, id, ts, body)) {
+		for _, w := range want {
+			if hmac.Equal(got, w) {
 				return nil
 			}
 		}

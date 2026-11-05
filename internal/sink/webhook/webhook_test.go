@@ -1,10 +1,13 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,9 +51,12 @@ func guarded(t *testing.T, allow []netip.Prefix, r netguard.Resolver) *http.Clie
 
 var fixedNow = time.Unix(1793880000, 0)
 
+// testHTTPHosts lets the tests reach httptest servers over http://.
+var testHTTPHosts = []string{"127.0.0.1", "localhost", "169.254.169.254"}
+
 func newSink(t *testing.T, allow []netip.Prefix) *Sink {
 	t.Helper()
-	return New(guarded(t, allow, nil), Options{Now: func() time.Time { return fixedNow }})
+	return New(guarded(t, allow, nil), Options{Now: func() time.Time { return fixedNow }, AllowHTTPHosts: testHTTPHosts})
 }
 
 const (
@@ -285,10 +292,23 @@ func TestDeliverTransportErrors(t *testing.T) {
 	_ = l.Close()
 
 	s := newSink(t, loopback)
-	for name, u := range map[string]string{"reset": reset.URL, "refused": refused} {
-		_, err := s.Deliver(t.Context(), request(u, "", nil))
-		if err == nil || sink.IsPermanent(err) || !strings.HasPrefix(err.Error(), "webhook: http://127.0.0.1:") {
-			t.Errorf("%s: %v, want a retried error", name, err)
+	// The errors are fixed strings plus scheme and host: no path, query,
+	// dialled address or cause text (review SR3, NIT5).
+	for _, c := range []struct{ name, url, class string }{
+		{"reset", reset.URL, "connection reset"},
+		{"refused", refused, "connection refused"},
+	} {
+		_, err := s.Deliver(t.Context(), request(c.url+"/tok-SECRETPATH?k=v", "", nil))
+		want := "webhook: " + c.url + ": " + c.class
+		if err == nil || sink.IsPermanent(err) || err.Error() != want {
+			t.Errorf("%s: %v, want retried %q", c.name, err, want)
+			continue
+		}
+		if msg := err.Error(); strings.Contains(msg, "SECRETPATH") || strings.Contains(msg, "k=v") || strings.Contains(msg, "dial") {
+			t.Errorf("%s: error holds the path, query or cause: %q", c.name, msg)
+		}
+		if sink.RedactURL(err) != want {
+			t.Errorf("%s: RedactURL changes it to %q", c.name, sink.RedactURL(err))
 		}
 	}
 	// The dispatcher's deadline bounds the request when it is shorter than
@@ -318,7 +338,7 @@ func TestDeliverSSRF(t *testing.T) {
 
 	// Not allowlisted: a literal loopback URL, and a hostname that
 	// resolves to a private address, are refused before any request.
-	s := New(guarded(t, nil, fakeResolver{"hooks.internal.test": {netip.MustParseAddr("10.20.30.40")}}), Options{})
+	s := New(guarded(t, nil, fakeResolver{"hooks.internal.test": {netip.MustParseAddr("10.20.30.40")}}), Options{AllowHTTPHosts: testHTTPHosts})
 	for _, c := range []struct{ url, host string }{
 		{srv.URL, "127.0.0.1"},
 		{"https://hooks.internal.test/x", "hooks.internal.test"},
@@ -334,7 +354,7 @@ func TestDeliverSSRF(t *testing.T) {
 		}
 	}
 	// DNS rebinding: public for the URL check, loopback at dial time.
-	s = New(guarded(t, nil, fakeResolver{"localhost": {netip.MustParseAddr("203.0.113.7")}}), Options{})
+	s = New(guarded(t, nil, fakeResolver{"localhost": {netip.MustParseAddr("203.0.113.7")}}), Options{AllowHTTPHosts: testHTTPHosts})
 	_, err := s.Deliver(t.Context(), request("http://localhost:"+p+"/", "", nil))
 	if !sink.IsPermanent(err) || err.Error() != "webhook: destination not allowed (localhost)" {
 		t.Errorf("rebinding: %v", err)
@@ -379,6 +399,117 @@ func TestDeliverSecretErrors(t *testing.T) {
 	}
 	if got.count() != 0 {
 		t.Fatalf("sent %d requests without a valid secret", got.count())
+	}
+}
+
+// Review SR3: reached by host name, a failed connection names the host,
+// never the address it resolved to.
+func TestDeliverErrorHidesResolvedAddress(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	_ = l.Close()
+	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip4", "localhost")
+	if err != nil || len(as) == 0 || !as[0].IsLoopback() {
+		t.Skip("localhost does not resolve to IPv4 loopback here")
+	}
+	s := New(guarded(t, loopback, fakeResolver{"localhost": {netip.MustParseAddr("127.0.0.1")}}), Options{AllowHTTPHosts: testHTTPHosts})
+	_, err = s.Deliver(t.Context(), request("http://localhost:"+port+"/x", "", nil))
+	if err == nil || sink.IsPermanent(err) || err.Error() != "webhook: http://localhost:"+port+": connection refused" {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "::1") {
+		t.Fatalf("error leaks the dialled address: %v", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("the cause is not kept in the chain: %v", err)
+	}
+}
+
+func TestFailureClass(t *testing.T) {
+	for want, err := range map[string]error{
+		"timeout":              context.DeadlineExceeded,
+		"canceled":             context.Canceled,
+		"DNS lookup failed":    &net.DNSError{Err: "no such host", Name: "h"},
+		"connection reset":     io.ErrUnexpectedEOF,
+		"TLS handshake failed": &tls.CertificateVerificationError{Err: errors.New("x")},
+		"request failed":       errors.New("something else at 10.1.2.3:443"),
+	} {
+		if got := failureClass(err); got != want {
+			t.Errorf("failureClass(%v) = %q, want %q", err, got, want)
+		}
+	}
+	if got := failureClass(fmt.Errorf("netguard: resolve h: %w", errors.New("no such host"))); got != "DNS lookup failed" {
+		t.Errorf("netguard resolve error: %q", got)
+	}
+}
+
+// Review SR1: a non-canonical numeric host is refused when configured, and
+// a netguard URL error no retry can fix is permanent; a DNS failure is not.
+func TestDeliverInvalidURLIsPermanent(t *testing.T) {
+	s := newSink(t, loopback)
+	for _, u := range []string{"http://2130706433/", "http://0x7f000001/", "http://127.1/"} {
+		if err := s.Validate(sink.Config(fmt.Sprintf(`{"url":%q}`, u))); err == nil {
+			t.Errorf("Validate(%s): want an error", u)
+		}
+		if _, err := s.Deliver(t.Context(), request(u, "", nil)); !sink.IsPermanent(err) {
+			t.Errorf("Deliver(%s): %v, want permanent", u, err)
+		}
+	}
+	if err := requestError("https://h", "h", &url.Error{Op: "Post", URL: "https://h/", Err: fmt.Errorf("x: %w", netguard.ErrInvalidURL)}); !sink.IsPermanent(err) ||
+		err.Error() != "webhook: https://h: invalid URL (scheme or host not allowed)" {
+		t.Errorf("ErrInvalidURL: %v", err)
+	}
+	_, err := s.Deliver(t.Context(), request("https://no-such-host.test/", "", nil))
+	if err == nil || sink.IsPermanent(err) || err.Error() != "webhook: https://no-such-host.test: DNS lookup failed" {
+		t.Errorf("DNS failure: %v, want retried", err)
+	}
+}
+
+// Review NIT3: http:// is checked against AllowHTTPHosts at every delivery,
+// so removing a host stops cleartext to sinks stored earlier.
+func TestDeliverHTTPAllowlist(t *testing.T) {
+	srv, got := receiver(t, nil)
+	s := New(guarded(t, loopback, nil), Options{})
+	_, err := s.Deliver(t.Context(), request(srv.URL+"/p", "", nil))
+	if !sink.IsPermanent(err) || !strings.Contains(err.Error(), "http:// is not allowed for this host") || strings.Contains(err.Error(), "/p") {
+		t.Fatalf("got %v", err)
+	}
+	if got.count() != 0 {
+		t.Fatal("cleartext request sent")
+	}
+	s = New(guarded(t, loopback, nil), Options{AllowHTTPHosts: []string{"127.0.0.1"}})
+	if _, err := s.Deliver(t.Context(), request(srv.URL, "", nil)); err != nil || got.count() != 1 {
+		t.Fatalf("allowlisted: %v, %d requests", err, got.count())
+	}
+}
+
+// Review SR4: an unsigned sink logs one warning per sink id, with no URL
+// path; a signed sink logs nothing.
+func TestDeliverWarnsOncePerUnsignedSink(t *testing.T) {
+	srv, _ := receiver(t, nil)
+	var buf bytes.Buffer
+	s := New(guarded(t, loopback, nil), Options{AllowHTTPHosts: testHTTPHosts, Logger: slog.New(slog.NewJSONHandler(&buf, nil))})
+	for _, id := range []string{"k1", "k1", "k2", "k1"} {
+		req := request(srv.URL+"/secret-path", "", nil)
+		req.SinkID = id
+		if _, err := s.Deliver(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signed := request(srv.URL, "WH", map[string][]byte{SecretPointer: []byte(genSecret(t, 32))})
+	signed.SinkID = "k3"
+	if _, err := s.Deliver(t.Context(), signed); err != nil {
+		t.Fatal(err)
+	}
+	logs := buf.String()
+	if n := strings.Count(logs, "deliveries are unsigned"); n != 2 || !strings.Contains(logs, `"sink":"k1"`) || !strings.Contains(logs, `"sink":"k2"`) || strings.Contains(logs, "k3") {
+		t.Fatalf("%d warnings:\n%s", n, logs)
+	}
+	if strings.Contains(logs, "secret-path") {
+		t.Fatalf("warning holds the URL path:\n%s", logs)
 	}
 }
 

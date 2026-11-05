@@ -490,7 +490,7 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 	res, err := s.Deliver(dctx, sink.Request{
 		Config: sink.Config(cfg), Secrets: secrets, Event: ev, Rendered: rendered,
 		IdempotencyKey: sink.IdempotencyKey(ld.Event.ID, ld.Delivery.SubscriptionID),
-		DeliveryID:     ld.Delivery.ID, SubscriptionID: ld.Delivery.SubscriptionID, Attempt: ld.Delivery.Attempts,
+		DeliveryID:     ld.Delivery.ID, SubscriptionID: ld.Delivery.SubscriptionID, SinkID: ld.Sink.ID, Attempt: ld.Delivery.Attempts,
 	})
 	if err != nil && errors.Is(dctx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("dispatch: deliver timed out after %v: %w", d.opts.DeliverTimeout, err)

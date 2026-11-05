@@ -147,7 +147,7 @@ func TestSecretsNeverLogged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rs := &recordingSink{Sink: webhook.New(nc.HTTPClient(), webhook.Options{})}
+			rs := &recordingSink{Sink: webhook.New(nc.HTTPClient(), webhook.Options{AllowHTTPHosts: []string{"127.0.0.1"}, Logger: log})}
 			sinks = append(sinks, rs)
 			st := storeWithSink(t, webhook.Kind, `{"url":"`+srv.URL+`/hook","secret_env":"WH_CAPTURE","timeout":"10s"}`)
 			env := map[string]string{}

@@ -16,14 +16,21 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/config"
@@ -59,15 +66,28 @@ type Config struct {
 
 // Options configures a Sink.
 type Options struct {
-	// Now is the clock read for webhook-timestamp just before sending.
-	// Default time.Now.
+	// Now is the clock read for webhook-timestamp just before the request
+	// is handed to the client (before netguard's per-host rate-limit wait,
+	// which the delivery deadline bounds). Default time.Now.
 	Now func() time.Time
+	// AllowHTTPHosts is the instance's http.allow_http_hosts: the hosts a
+	// webhook may reach over plain http:// (decision D12). It is checked at
+	// every delivery, so removing a host stops cleartext deliveries to it
+	// even for sinks stored earlier. Empty: https only.
+	AllowHTTPHosts []string
+	// Logger receives one warning per unsigned sink (no secret_env), the
+	// first time this process delivers for it. Nil discards.
+	Logger *slog.Logger
 }
 
 // Sink is the webhook sink. It is safe for concurrent use.
 type Sink struct {
-	client *http.Client
-	now    func() time.Time
+	client    *http.Client
+	now       func() time.Time
+	httpHosts []string
+	log       *slog.Logger
+	// unsigned holds the ids of the unsigned sinks already warned about.
+	unsigned sync.Map
 }
 
 var _ sink.Sink = (*Sink)(nil)
@@ -84,7 +104,10 @@ func New(client *http.Client, opts Options) *Sink {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Sink{client: &c, now: opts.Now}
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	return &Sink{client: &c, now: opts.Now, httpHosts: slices.Clone(opts.AllowHTTPHosts), log: opts.Logger}
 }
 
 // Kind implements sink.Sink.
@@ -114,6 +137,9 @@ func parseConfig(raw sink.Config) (parsed, string, error) {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
 		return p, "", errors.New("webhook: invalid configuration: url must be an absolute http(s) URL without credentials")
 	}
+	if netguard.NonCanonicalIP(u.Hostname()) {
+		return p, "", errors.New("webhook: invalid configuration: url host is an IP address in a non-canonical form; write it as a.b.c.d")
+	}
 	p.url = u
 	origin := u.Scheme + "://" + u.Host
 	if p.SecretEnv != "" && (!config.IsEnvName(p.SecretEnv) || config.LooksLikeToken(p.SecretEnv)) {
@@ -142,8 +168,13 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	if id == "" || strings.ContainsAny(id, ". \t\r\n\v\f") {
 		return sink.Result{}, sink.Permanent(errors.New("webhook: invalid webhook-id: empty, or holds '.' or white space"))
 	}
+	if cfg.url.Scheme == "http" && !slices.ContainsFunc(s.httpHosts, func(h string) bool { return strings.EqualFold(h, cfg.url.Hostname()) }) {
+		return sink.Result{}, sink.Permanent(fmt.Errorf("webhook: %s: http:// is not allowed for this host (http.allow_http_hosts); use https://", origin))
+	}
 	var keys [][]byte
-	if cfg.SecretEnv != "" {
+	if cfg.SecretEnv == "" {
+		s.warnUnsigned(req.SinkID, origin)
+	} else {
 		v, ok := req.Secrets[SecretPointer]
 		if !ok {
 			return sink.Result{}, fmt.Errorf("webhook: secret_env %s: not resolved", cfg.SecretEnv)
@@ -185,20 +216,74 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	return res, nil
 }
 
+// warnUnsigned logs once per sink id that the sink delivers unsigned.
+func (s *Sink) warnUnsigned(sinkID, origin string) {
+	if _, seen := s.unsigned.LoadOrStore(sinkID, struct{}{}); seen {
+		return
+	}
+	s.log.Warn("webhook sink has no secret_env: deliveries are unsigned and receivers cannot verify them",
+		"sink", sinkID, "destination", origin)
+}
+
 // requestError classifies a failed request. An SSRF refusal is permanent and
-// names the URL host only, never the resolved address. Anything else
-// (connection refused or reset, DNS, TLS, timeout) is retried.
+// names the URL host only, never the resolved address; so is a URL no retry
+// can fix (netguard.ErrInvalidURL). Anything else is retried, with a fixed
+// description (connection refused or reset, timeout, DNS, TLS) that never
+// holds the dialled address or port. The cause stays in the chain.
 func requestError(origin, host string, err error) error {
 	var be *netguard.BlockedError
 	if errors.As(err, &be) || errors.Is(err, netguard.ErrBlocked) {
 		return sink.Permanent(blockedError{host: host})
 	}
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		err = ue.Err // its message repeats the full URL
+	if errors.Is(err, netguard.ErrInvalidURL) {
+		return sink.Permanent(&requestFailure{origin: origin, class: "invalid URL (scheme or host not allowed)", err: err})
 	}
-	return fmt.Errorf("webhook: %s: %w", origin, err)
+	return &requestFailure{origin: origin, class: failureClass(err), err: err}
 }
+
+// failureClass describes a transport error without its addresses.
+func failureClass(err error) string {
+	var (
+		dnsErr  *net.DNSError
+		ne      net.Error
+		certErr *tls.CertificateVerificationError
+		recErr  tls.RecordHeaderError
+		alert   tls.AlertError
+		unknown x509.UnknownAuthorityError
+		badHost x509.HostnameError
+		invalid x509.CertificateInvalidError
+	)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.As(err, &dnsErr):
+		return "DNS lookup failed"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "connection reset"
+	case errors.As(err, &certErr), errors.As(err, &recErr), errors.As(err, &alert),
+		errors.As(err, &unknown), errors.As(err, &badHost), errors.As(err, &invalid):
+		return "TLS handshake failed"
+	case strings.Contains(err.Error(), "netguard: resolve "):
+		return "DNS lookup failed"
+	default:
+		return "request failed"
+	}
+}
+
+// requestFailure is a request that got no response: "webhook:
+// <scheme://host>: <class>". Unwrap gives the cause, for errors.Is and
+// spans; Error never repeats it.
+type requestFailure struct {
+	origin, class string
+	err           error
+}
+
+func (e *requestFailure) Error() string { return "webhook: " + e.origin + ": " + e.class }
+func (e *requestFailure) Unwrap() error { return e.err }
 
 // blockedError is a destination the SSRF guard refused.
 type blockedError struct{ host string }
