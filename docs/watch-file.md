@@ -112,7 +112,9 @@ at load time with the file, line and path of the key. The policy is stored as `w
 
 If `secret_env` is absent the webhook is delivered unsigned and `config check` warns. If the named
 variable is empty or unset at startup, apply succeeds with a warning and delivery fails visibly until it is
-set (same rule as `token_env` in configuration.md).
+set (same rule as `token_env` in configuration.md). The variable holds one to three `whsec_` secrets
+separated by spaces, for rotation; a `timeout` above the dispatcher's 15 s deliver timeout has no effect
+and `config check` warns. Signing, rotation, responses and the receiver's side: [webhooks.md](webhooks.md).
 
 ### 2.5 `subscriptions[]`
 
@@ -307,7 +309,7 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D9 | No per-watch token; credentials come from the instance config `token_env` | `token_env` on a watch or sink | None in Phase 0; add `auth_env` later if needed |
 | D10 | No `${VAR}` interpolation; only `*_env` references | interpolate env into any value | No interpolation: avoids accidental inline secrets and keeps the file reviewable |
 | D11 | Bounds: `interval` 5m to 720h default 1h; `labels` at most 32; name pattern in 2.1 | other limits | Accept; the 5m floor protects upstream rate limits (netguard has per-host limits anyway) |
-| D12 | Webhook `url` must be `https://` | allow `http://` too (needed for local tests and homelabs) | `https` by default; `http` only if the instance config allowlist permits the host. The loader takes the allowlist as an option; the instance config has no such key yet, so `angelia serve` accepts `https` only for now |
+| D12 | Webhook `url` must be `https://` | allow `http://` too (needed for local tests and homelabs) | `https` by default; `http` only if the instance config allowlist permits the host. The loader takes the allowlist as an option, filled from the instance key `http.allow_http_hosts` (#108, ADR 0023) |
 | D13 | `baseline` defaults to `true` | default `false` | `true`: no event flood on first run |
 | D14 | Sink `secret_env` stores the reference, resolved at delivery | read the value at apply and store it encrypted (needs the Phase 1 secrets key) | Reference in Phase 0; revisit with encryption at rest (architecture.md, security section) |
 | D15 | Whole-file validation, all-or-nothing, process exits non-zero on error | skip invalid entries and continue | All-or-nothing; a half-applied GitOps file is worse than a crash |

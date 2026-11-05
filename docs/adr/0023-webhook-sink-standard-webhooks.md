@@ -275,3 +275,24 @@ check with proxy exemption in #108, the clock option, the parsing rules, and add
 - Standard Webhooks specification, `spec/standard-webhooks.md`, and reference library
   `libraries/go/webhook_test.go`, github.com/standard-webhooks/standard-webhooks (Apache-2.0)
 - CloudEvents HTTP protocol binding 1.0 (structured and binary content modes)
+
+## Amendment (2026-11-05): implementation notes from #108
+
+Recorded by the implementation; no decision above changes.
+
+- **Licence of the vectors.** The repository's root `LICENSE` is Apache-2.0, but its `libraries/`
+  directory, which holds `libraries/go/webhook_test.go`, carries its own MIT licence ("Copyright (c) 2023
+  Svix"). Both are copied into `internal/sink/webhook/testdata/standard-webhooks/`; the pinned commit has
+  no `NOTICE`. The vectors are transcribed into `vectors.json`; the boundary cases follow section 7
+  (inclusive tolerance), where the reference test fails at exactly 5 minutes only because time passes.
+- **`Request.Secrets`** is `map[string][]byte` keyed by the JSON Pointer of the reference key
+  (`/secret_env`), resolved by `dispatch.ResolveSecrets` for every `*_env` key of the sink config.
+  An unset or empty variable fails as `dispatch: secret /secret_env: environment variable WH_CI is not
+  set or empty`; a value that is not a valid secret fails in the sink with the section 2 message.
+- **Proxy exemption.** netguard gains a Go-level `Config.Proxy` (default `http.ProxyFromEnvironment`);
+  the exempt addresses are what it returns for an http and an https probe URL when the client is built.
+- **Allowlist keys.** `http.allow_networks` (CIDR prefixes; `/0` warns) and `http.allow_http_hosts`
+  (lower-case host names or IPv4 addresses), with comma-separated `ANGELIA_HTTP_ALLOW_NETWORKS` and
+  `ANGELIA_HTTP_ALLOW_HTTP_HOSTS`. `allow_http_hosts` reaches the watch-file loader and the API;
+  `HTTP.AllowPrefixes()` is ready for `netguard.Config.Allow`, which `angelia serve` passes once it wires
+  the dispatcher role (it still runs a stub, see `cmd/angelia/serve.go`).

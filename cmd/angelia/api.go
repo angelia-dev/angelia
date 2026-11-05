@@ -33,7 +33,7 @@ func newAPIServer(ctx context.Context, cfg *config.Config, log *slog.Logger) (*a
 	}
 	srv, err := api.New(api.Options{
 		Store: st, Auth: api.DenyAll{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
-		API: cfg.API, Logger: log,
+		API: cfg.API, AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("api role: %w", errorsJoin(err, st.Close()))

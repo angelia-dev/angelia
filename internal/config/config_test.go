@@ -392,3 +392,39 @@ func TestAPIAllowedEnv(t *testing.T) {
 		}
 	}
 }
+
+// ADR 0023 decided question 4: http.allow_networks and
+// http.allow_http_hosts, shared by sources and sinks.
+func TestHTTPAllowlists(t *testing.T) {
+	cfg, err := load(t, "")
+	if err != nil || len(cfg.HTTP.AllowNetworks) != 0 || len(cfg.HTTP.AllowHTTPHosts) != 0 || len(cfg.HTTP.AllowPrefixes()) != 0 {
+		t.Fatalf("default: %+v %v", cfg.HTTP, err)
+	}
+	cfg, err = load(t, writeFile(t, "http:\n  allow_networks: [10.1.2.3/8, 'fd00::/8']\n  allow_http_hosts: [hooks.lan, 10.0.0.7]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.HTTP.AllowPrefixes(); len(p) != 2 || p[0].String() != "10.0.0.0/8" || p[1].String() != "fd00::/8" {
+		t.Errorf("prefixes %v", p)
+	}
+	if !reflect.DeepEqual(cfg.HTTP.AllowHTTPHosts, []string{"hooks.lan", "10.0.0.7"}) {
+		t.Errorf("hosts %v", cfg.HTTP.AllowHTTPHosts)
+	}
+	cfg, err = load(t, "", "ANGELIA_HTTP_ALLOW_NETWORKS=192.168.0.0/16, 127.0.0.1/32", "ANGELIA_HTTP_ALLOW_HTTP_HOSTS=a.lan,b.lan")
+	if err != nil || len(cfg.HTTP.AllowPrefixes()) != 2 || len(cfg.HTTP.AllowHTTPHosts) != 2 {
+		t.Fatalf("env: %+v %v", cfg.HTTP, err)
+	}
+	for _, y := range []string{
+		"http:\n  allow_networks: [10.0.0.1]\n", "http:\n  allow_networks: [example.com/8]\n",
+		"http:\n  allow_http_hosts: ['http://hooks.lan']\n", "http:\n  allow_http_hosts: ['hooks.lan:8080']\n",
+		"http:\n  allow_http_hosts: [Hooks.LAN]\n", "http:\n  allow_http_hosts: ['']\n",
+	} {
+		if _, err := load(t, writeFile(t, y)); err == nil || !strings.Contains(err.Error(), "[0]") {
+			t.Errorf("%q: %v", y, err)
+		}
+	}
+	cfg, err = load(t, writeFile(t, "http:\n  allow_networks: [0.0.0.0/0]\n"))
+	if err != nil || len(cfg.Warnings()) != 1 || !strings.Contains(cfg.Warnings()[0], "SSRF guard is off") {
+		t.Errorf("/0: %v %v", cfg.Warnings(), err)
+	}
+}

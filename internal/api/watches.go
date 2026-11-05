@@ -22,7 +22,8 @@ type watchReader interface {
 
 func (s *Server) parseOptions() watchfile.Options {
 	return watchfile.Options{
-		Sources: s.opts.Sources,
+		Sources:        s.opts.Sources,
+		AllowHTTPHosts: s.opts.AllowHTTPHosts,
 		// Only feeds warnings, which the API drops.
 		LookupEnv: func(string) (string, bool) { return "set", true },
 	}
