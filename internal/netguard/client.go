@@ -314,13 +314,25 @@ func (c *Client) isAuthenticated(h http.Header) bool {
 		if len(v) == 0 || v[0] == "" {
 			continue
 		}
-		if IsCredentialHeader(k) {
+		if c.IsCredentialHeader(k) {
 			return true
 		}
-		for _, n := range c.cfg.ExtraAuthHeaders {
-			if strings.EqualFold(k, n) {
-				return true
-			}
+	}
+	return false
+}
+
+// IsCredentialHeader reports whether this client counts the header name as
+// a credential, which puts a request on a host's Authenticated budget: the
+// package-level IsCredentialHeader set plus Config.ExtraAuthHeaders. The
+// match is case-insensitive. The WASM plugin host derives the headers it
+// reserves for host-injected credentials from it, so the two cannot drift.
+func (c *Client) IsCredentialHeader(name string) bool {
+	if IsCredentialHeader(name) {
+		return true
+	}
+	for _, n := range c.cfg.ExtraAuthHeaders {
+		if strings.EqualFold(name, n) {
+			return true
 		}
 	}
 	return false

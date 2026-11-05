@@ -1,8 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -38,13 +44,36 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range cfg.Warnings() {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
+			plugins, warns, err := config.LoadPlugins(cmd.Context(), cfg.PluginsDir, os.Environ())
+			for _, w := range warns {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+			}
+			unreadable := false
+			if errors.Is(err, config.ErrPluginsDirUnreadable) && cfg.PluginsDirIsDefault() {
+				// The default folder may belong to the service user; only a
+				// configured plugins_dir must be readable (#184).
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v; plugins not checked\n", err)
+				err, unreadable = nil, true
+			}
+			if err != nil {
+				return fmt.Errorf("invalid plugins: %w", err)
+			}
+			show := func(w io.Writer) error {
+				if unreadable {
+					_, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir)
+					return err
+				}
+				return printPlugins(w, cfg.PluginsDir, plugins)
+			}
 			watches, err := watchesPath(cmd)
 			if err != nil {
 				return err
 			}
 			if watches == "" {
-				_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration OK")
-				return err
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), "configuration OK"); err != nil {
+					return err
+				}
+				return show(cmd.OutOrStdout())
 			}
 			f, err := parseWatchFile(cfg, watches)
 			if err != nil {
@@ -53,10 +82,93 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range f.Warnings {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions))
-			return err
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions)); err != nil {
+				return err
+			}
+			return show(cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().String("watches", "", watchesFlagHelp)
 	return cmd
+}
+
+// printPlugins shows, for each installed plugin, the hosts it may reach and
+// the hosts that get a credential, with the header and scheme (#184 Q4).
+// It names the variable that holds a token, never the token.
+func printPlugins(w io.Writer, dir string, plugins []config.InstalledPlugin) error {
+	var b strings.Builder
+	if len(plugins) == 0 {
+		fmt.Fprintf(&b, "plugins in %s: none\n", dir)
+	} else {
+		fmt.Fprintf(&b, "plugins in %s: %d\n", dir, len(plugins))
+	}
+	for _, p := range plugins {
+		fmt.Fprintf(&b, "  %s\n", p.Kind)
+		var hosts []string
+		from := map[string][]string{}
+		add := func(h, origin string) {
+			if _, seen := from[h]; !seen {
+				hosts = append(hosts, h)
+			}
+			from[h] = append(from[h], origin)
+		}
+		for _, h := range p.ManifestHosts {
+			add(printable(strings.TrimSuffix(strings.ToLower(h), ".")), "manifest")
+		}
+		for _, h := range p.Grants.AllowedHosts {
+			add(h, "grants")
+		}
+		if len(hosts) == 0 {
+			b.WriteString("    allowed hosts: none\n")
+		} else {
+			parts := make([]string, len(hosts))
+			for i, h := range hosts {
+				parts[i] = fmt.Sprintf("%s (%s)", h, strings.Join(from[h], ", "))
+			}
+			fmt.Fprintf(&b, "    allowed hosts: %s\n", strings.Join(parts, ", "))
+		}
+		keys := make([]string, 0, len(p.Grants.Credentials))
+		for k := range p.Grants.Credentials {
+			keys = append(keys, k)
+		}
+		if len(keys) == 0 {
+			b.WriteString("    credentials: none\n")
+			continue
+		}
+		slices.Sort(keys)
+		b.WriteString("    credentials:\n")
+		for _, k := range keys {
+			c := p.Grants.Credentials[k]
+			hostPort := k
+			if _, _, err := net.SplitHostPort(k); err != nil {
+				hostPort = net.JoinHostPort(k, "443")
+			}
+			header := c.Header
+			if header == "" {
+				header = "Authorization"
+			}
+			scheme := ""
+			if c.Scheme != "" {
+				scheme = c.Scheme + " "
+			}
+			unset := ""
+			if p.Token(k) == "" {
+				unset = ", not set"
+			}
+			fmt.Fprintf(&b, "      %s  %s: %s<token from $%s%s>\n", hostPort, header, scheme, c.TokenEnv, unset)
+		}
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// printable quotes a manifest value that is not plain printable ASCII, so
+// that a plugin's manifest cannot write control characters to a terminal.
+func printable(s string) string {
+	for _, r := range s {
+		if r < 0x21 || r > 0x7e {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }

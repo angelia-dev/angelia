@@ -15,20 +15,26 @@ import (
 )
 
 // Credential is a token the operator configured when installing a plugin,
-// bound to one of its allowed hosts (ADR 0011, amendment of #145). The
-// host adds it as the Authorization header of every hop to that host and
-// port, over https only. It is never in the plugin's config map. The host
-// does not hand it to the plugin, but an upstream that reflects the
-// Authorization header can: redacting such echoes is best effort, so bind
-// a credential only to a host that does not reflect it.
+// bound to one of its allowed hosts (ADR 0011, amendments of #145 and
+// #184). The host adds it as the Authorization header (or Header) of every
+// hop to that host and port, over https only. It is never in the plugin's
+// config map. The host does not hand it to the plugin, but an upstream
+// that reflects the header can: redacting such echoes is best effort, so
+// bind a credential only to a host that does not reflect it.
 type Credential struct {
 	// Host is "host" or "host:port": a hostname or IP literal in the merged
 	// allowed_hosts, optionally with the port (an IPv6 literal with a port
 	// is "[addr]:port"). Without a port the credential is sent on port 443
 	// only.
 	Host string
+	// Header is the request header that carries the token. Empty means
+	// Authorization. Otherwise it must be a header the netguard client
+	// counts as a credential (PRIVATE-TOKEN, or one of its
+	// Config.ExtraAuthHeaders).
+	Header string
 	// Scheme, if set, is written before the token: "Bearer" gives
-	// "Authorization: Bearer <token>". Empty sends the token as is.
+	// "Authorization: Bearer <token>". Empty sends the token as is. Only
+	// with the Authorization header.
 	Scheme string
 	// Token returns the token. It is called for every hop to Host; it is
 	// the seam for the secret store (#75). A rotated value is only picked
@@ -122,12 +128,44 @@ func (s *Source) install(m Manifest, opts Options) error {
 		case c.Scheme != "" && !schemeRE.MatchString(c.Scheme):
 			return fmt.Errorf("wasm %s: credential for %q: scheme must match %s", m.Kind, key, schemeRE)
 		}
+		hdr, err := s.credentialHeader(c.Header)
+		if err != nil {
+			return fmt.Errorf("wasm %s: credential for %q: %w", m.Kind, key, err)
+		}
+		if c.Scheme != "" && hdr != "Authorization" {
+			return fmt.Errorf("wasm %s: credential for %q: scheme applies to the Authorization header only", m.Kind, key)
+		}
+		c.Header = hdr
 		s.creds[key] = c
 		g := s.grants[h]
 		g.CredentialPorts = append(g.CredentialPorts, port)
 		sort.Strings(g.CredentialPorts)
 	}
 	return nil
+}
+
+// credentialHeader returns the canonical name of the header a credential
+// is injected in: Authorization by default, or a header netguard counts as
+// a credential.
+func (s *Source) credentialHeader(h string) (string, error) {
+	if h == "" {
+		return "Authorization", nil
+	}
+	if !validHeader(h, "") {
+		return "", fmt.Errorf("header %q is not a valid header name", h)
+	}
+	if !s.isCredentialHeader(h) {
+		return "", fmt.Errorf("header %q is not a credential header for the netguard client (Authorization, PRIVATE-TOKEN or one of its ExtraAuthHeaders)", h)
+	}
+	return http.CanonicalHeaderKey(h), nil
+}
+
+// isCredentialHeader reports whether the netguard client counts the header
+// name as a credential, which makes a request authenticated for its
+// limiter. These headers are reserved for the credentials the host
+// injects.
+func (s *Source) isCredentialHeader(name string) bool {
+	return s.credHdrs.IsCredentialHeader(name)
 }
 
 // Hosts returns the merged allowed_hosts, sorted, with where each entry
@@ -157,10 +195,10 @@ func hopKey(r *http.Request) string {
 }
 
 // inject returns the request to send for one hop and whether it carries a
-// credential. On a hop to a bound host and port, the Authorization header
-// is the host's (the plugin's own value is replaced). Other hops are left
-// as the plugin built them, so a credential never follows a redirect to
-// another host or port. The token is recorded in the call's state so that
+// credential. On a hop to a bound host and port, the host adds the
+// credential header (the plugin cannot set a credential header: newRequest
+// refuses it). Other hops are left as the plugin built them, so a
+// credential never follows a redirect to another host or port. The token is recorded in the call's state so that
 // echoes are scrubbed.
 //
 // On a credentialed hop, the plugin's Accept-Encoding is removed, so that
@@ -189,7 +227,7 @@ func (t *allowlistTransport) inject(r *http.Request) (*http.Request, bool, error
 	if c.Scheme != "" {
 		v = c.Scheme + " " + tok
 	}
-	if len(strings.TrimSpace(tok)) < minTokenLen || !validHeader("Authorization", v) {
+	if len(strings.TrimSpace(tok)) < minTokenLen || !validHeader(c.Header, v) {
 		return nil, false, fmt.Errorf("%w for %q is shorter than %d bytes or not a valid header value", errCredential, key, minTokenLen)
 	}
 	if cs, ok := r.Context().Value(callKey{}).(*callState); ok {
@@ -197,7 +235,7 @@ func (t *allowlistTransport) inject(r *http.Request) (*http.Request, bool, error
 	}
 	out := r.Clone(r.Context())
 	out.Header.Del("Accept-Encoding")
-	out.Header.Set("Authorization", v)
+	out.Header.Set(c.Header, v)
 	return out, true, nil
 }
 

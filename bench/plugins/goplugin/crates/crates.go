@@ -42,6 +42,8 @@ func (p *Plugin) Configure(cfg map[string]string) error {
 	if p.base == "" {
 		p.base = defaultBaseURL
 	}
+	// Unlike the WASM crates plugin since #184, this ADR 0013 prototype
+	// still sets Authorization itself; it is bench-only.
 	p.token = cfg["token"]
 	return nil
 }
