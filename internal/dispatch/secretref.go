@@ -12,7 +12,7 @@ import (
 // sink.Request.Secrets (ADR 0024 §6, the #108 wiring), such a delivery
 // fails closed, before Deliver, and is retried: a sink that only knows
 // *_env would otherwise send it unsigned without a word.
-const errSecretRefNotWired = "names a stored secret, and stored secrets are not resolved at delivery yet (#108); the delivery is retried"
+const errSecretRefNotWired = "names a stored secret, and stored secrets are not resolved at delivery yet (#108); the delivery is retried" //nolint:gosec // an error message, not a credential
 
 // secretRef returns the JSON Pointer of the first *_ref key in a sink
 // config, or "" when it has none or is not a JSON object.

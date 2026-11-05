@@ -8,7 +8,7 @@ import (
 )
 
 func TestSecretRef(t *testing.T) {
-	for cfg, want := range map[string]string{
+	for cfg, want := range map[string]string{ //nolint:gosec // names, not secrets
 		`{"url":"https://example.com"}`:                        "",
 		`{"url":"https://example.com","secret_env":"HOOK"}`:    "",
 		`{"url":"https://example.com","secret_ref":"hook"}`:    "/secret_ref",
