@@ -49,8 +49,15 @@ func noSecretLeak(t *testing.T, what, out string) {
 func TestSecretLifecycle(t *testing.T) {
 	e := newEnv(t, withKeys)
 	ctx := context.Background()
+	// Every response body is checked for the value, as the log is below.
+	do := func(method, path, token string, b any) result {
+		t.Helper()
+		r := e.do(method, path, token, b)
+		noSecretLeak(t, method+" "+path+" response", string(r.Body))
+		return r
+	}
 
-	r := e.must(http.StatusCreated, e.do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{"value": leakCanary}))
+	r := e.must(http.StatusCreated, do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{"value": leakCanary}))
 	if r.Header.Get("Angelia-Change") != "created" || r.Header.Get("Location") != "/v1/secrets/ci-signing" {
 		t.Fatalf("headers %v", r.Header)
 	}
@@ -73,43 +80,43 @@ func TestSecretLifecycle(t *testing.T) {
 	}
 
 	// The same value again is unchanged; a new value or new hosts update.
-	r = e.must(http.StatusOK, e.do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{"value": leakCanary}))
+	r = e.must(http.StatusOK, do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{"value": leakCanary}))
 	if r.Header.Get("Angelia-Change") != "unchanged" {
 		t.Fatalf("same value: %v", r.Header)
 	}
-	r = e.must(http.StatusOK, e.do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{
+	r = e.must(http.StatusOK, do("PUT", "/v1/secrets/ci-signing", tokAdmin, map[string]any{
 		"value_base64": base64.StdEncoding.EncodeToString([]byte(leakCanary + "2")), "hosts": []any{"ci.example.com"},
 	}))
 	if r.Header.Get("Angelia-Change") != "updated" || r.json(t)["hosts"].([]any)[0] != "ci.example.com" {
 		t.Fatalf("update: %v %s", r.Header, r.Body)
 	}
 	// A dry run changes nothing.
-	e.must(http.StatusOK, e.do("PUT", "/v1/secrets/ci-signing?dry_run=true", tokAdmin, map[string]any{"value": "other"}))
-	e.must(http.StatusCreated, e.do("PUT", "/v1/secrets/dry?dry_run=true", tokAdmin, map[string]any{"value": "other"}))
-	e.must(http.StatusNotFound, e.do("GET", "/v1/secrets/dry", tokAdmin, nil))
+	e.must(http.StatusOK, do("PUT", "/v1/secrets/ci-signing?dry_run=true", tokAdmin, map[string]any{"value": "other"}))
+	e.must(http.StatusCreated, do("PUT", "/v1/secrets/dry?dry_run=true", tokAdmin, map[string]any{"value": "other"}))
+	e.must(http.StatusNotFound, do("GET", "/v1/secrets/dry", tokAdmin, nil))
 	row2, _ := e.st.SecretByName(ctx, "ci-signing")
 	if v, _ := testKeyring().Open(row2.ID, row2.Name, row2.Ciphertext); string(v.Reveal()) != leakCanary+"2" || row2.Revision != 2 {
 		t.Fatalf("dry run wrote: revision %d", row2.Revision)
 	}
 
 	// Referenced by a sink: listed, and the delete is refused.
-	e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/ci", tokAdmin, map[string]any{"kind": "webhook", "config": map[string]any{
+	e.must(http.StatusCreated, do("PUT", "/v1/sinks/ci", tokAdmin, map[string]any{"kind": "webhook", "config": map[string]any{
 		"url": "https://ci.example.com/hook", "secret_ref": "ci-signing",
 	}}))
-	r = e.must(http.StatusOK, e.do("GET", "/v1/secrets/ci-signing", tokAdmin, nil))
+	r = e.must(http.StatusOK, do("GET", "/v1/secrets/ci-signing", tokAdmin, nil))
 	refs := r.json(t)["referenced_by"].([]any)
 	if len(refs) != 1 || refs[0].(map[string]any)["name"] != "ci" || refs[0].(map[string]any)["pointer"] != "/config/secret_ref" {
 		t.Fatalf("referenced_by: %s", r.Body)
 	}
-	r = e.do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil)
+	r = do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil)
 	if r.Status != http.StatusConflict || r.problemType(t) != SlugSecretInUse || !strings.Contains(string(r.Body), "sink ci (/config/secret_ref)") {
 		t.Fatalf("delete in use: %d %s", r.Status, r.Body)
 	}
-	e.must(http.StatusNoContent, e.do("DELETE", "/v1/sinks/ci", tokAdmin, nil))
-	e.must(http.StatusNoContent, e.do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil))
-	e.must(http.StatusNotFound, e.do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil))
+	e.must(http.StatusNoContent, do("DELETE", "/v1/sinks/ci", tokAdmin, nil))
+	e.must(http.StatusNoContent, do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil))
+	e.must(http.StatusNotFound, do("DELETE", "/v1/secrets/ci-signing", tokAdmin, nil))
 
-	// Every response, the access log and the audit records: no value.
+	// The access log and the audit records: no value (responses: see do).
 	logs := e.log.String()
 	noSecretLeak(t, "log", logs)
 	for _, want := range []string{`"action":"secret.create"`, `"action":"secret.update"`, `"action":"secret.delete"`, `"secret":"ci-signing"`, `"principal":"tok-admin"`} {
@@ -119,6 +126,55 @@ func TestSecretLifecycle(t *testing.T) {
 	}
 	if n := strings.Count(logs, `"audit":true`); n != 3 {
 		t.Errorf("%d audit records, want 3 (create, update, delete; none for unchanged or dry runs)", n)
+	}
+}
+
+// lostUpdates makes the first n fenced secret updates lose, as a
+// concurrent writer would on a store whose transactions do not lock.
+type lostUpdates struct {
+	store.APIStore
+	n *int
+}
+
+func (l lostUpdates) InAPITx(ctx context.Context, fn func(store.APITx) error) error {
+	return l.APIStore.InAPITx(ctx, func(tx store.APITx) error { return fn(lostUpdateTx{tx, l.n}) })
+}
+
+type lostUpdateTx struct {
+	store.APITx
+	n *int
+}
+
+func (l lostUpdateTx) UpdateSecret(ctx context.Context, s store.Secret) (bool, error) {
+	if *l.n > 0 {
+		*l.n--
+		return false, nil
+	}
+	return l.APITx.UpdateSecret(ctx, s)
+}
+
+// NIT4 (#75 review): a PUT whose fenced update loses runs again on the new
+// row, up to putSecretAttempts times, instead of failing at once.
+func TestPutSecretLostUpdate(t *testing.T) {
+	lose := 0
+	e := newEnv(t, withKeys, func(o *Options) { o.Store = lostUpdates{o.Store, &lose} })
+	e.must(http.StatusCreated, e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v1"}))
+	lose = putSecretAttempts - 1
+	r := e.must(http.StatusOK, e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v2"}))
+	if r.Header.Get("Angelia-Change") != "updated" || lose != 0 {
+		t.Fatalf("retried update: %v, %d losses left", r.Header, lose)
+	}
+	row, _ := e.st.SecretByName(context.Background(), "s")
+	if v, _ := testKeyring().Open(row.ID, row.Name, row.Ciphertext); string(v.Reveal()) != "v2" || row.Revision != 2 {
+		t.Fatalf("stored revision %d", row.Revision)
+	}
+	lose = putSecretAttempts
+	r = e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v3"})
+	if r.Status != http.StatusInternalServerError || lose != 0 {
+		t.Fatalf("always losing: %d %s, %d losses left", r.Status, r.Body, lose)
+	}
+	if n := strings.Count(e.log.String(), `"action":"secret.update"`); n != 1 {
+		t.Errorf("%d update audit records, want 1", n)
 	}
 }
 
@@ -272,6 +328,47 @@ func TestSinkSecretRef(t *testing.T) {
 	}})
 	if r.Status != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "at most one") {
 		t.Fatalf("both references: %d %s", r.Status, r.Body)
+	}
+}
+
+// SR4 (#75 review): for a kind whose config_schema is absent, so no schema
+// covers its keys (a plugin kind, written through the watch file: the API
+// enum admits only built-in kinds), the API's own rules still apply. A
+// read token sees every *_ref name as written and every other string
+// masked, and a *_ref that is not a secret name is refused at its pointer.
+func TestSchemalessKindRefs(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.Plugins = append(o.Plugins, PluginInfo{Kind: "chat", Interface: "sink", Runtime: "wasm", Version: "1.0.0"})
+	})
+	k := store.Sink{
+		ID: "01JBX2A7C8D9E0F1G2H3J4K5M6", Name: "c", Kind: "chat", ManagedBy: store.ManagedByFile,
+		ConfigEncrypted: []byte(`{"room":"ops","token_ref":"chat-token","auth":{"key_ref":"chat-key","user":"bot"}}`),
+	}
+	j, err := e.srv.sinkJSONOf(k, ScopeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(j.Config); string(b) != `{"auth":{"key_ref":"chat-key","user":"[REDACTED]"},"room":"[REDACTED]","token_ref":"chat-token"}` {
+		t.Errorf("read view: %s", b)
+	}
+	if got := strings.Join(j.MaskedFields, ","); got != "auth.user,room" {
+		t.Errorf("masked %s", got)
+	}
+	for ptr, cfg := range map[string]map[string]any{
+		"/config/token_ref":     {"token_ref": "Not A Name"},
+		"/config/auth/key_ref":  {"auth": map[string]any{"key_ref": 3}},
+		"/config/list/0/id_ref": {"list": []any{map[string]any{"id_ref": leakCanary + "/x"}}},
+		"":                      {"token_ref": "chat-token", "auth": map[string]any{"key_ref": "chat-key"}},
+	} {
+		invalid, env := e.srv.checkSinkConfig("chat", cfg)
+		switch {
+		case ptr == "" && (len(invalid) != 0 || len(env) != 0):
+			t.Errorf("valid names refused: %v %v", invalid, env)
+		case ptr != "" && (len(invalid) != 1 || invalid[0].Pointer != ptr || len(env) != 0):
+			t.Errorf("%s: %v %v", ptr, invalid, env)
+		case ptr != "":
+			noSecretLeak(t, "detail", invalid[0].Detail)
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -257,11 +258,44 @@ func (s *Server) PutSecret(ctx context.Context, req PutSecretRequestObject) (Put
 		return nil, validationProblem("secret", errs)
 	}
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
-	var body secretJSON
-	var change Change
-	var changed []string
-	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		cur, err := tx.SecretByName(ctx, req.Name)
+	var (
+		body    secretJSON
+		change  Change
+		changed []string
+	)
+	// A fenced update that loses to a concurrent write (possible where the
+	// transaction does not lock, as on Postgres) runs the request again on
+	// the new row: the last writer wins, as for any PUT.
+	err := errLostUpdate
+	for attempt := 0; attempt < putSecretAttempts && errors.Is(err, errLostUpdate); attempt++ {
+		body, change, changed, err = s.putSecretTx(ctx, req.Name, b, dry)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !dry && change != ChangeUnchanged {
+		action := "secret.create"
+		if change == ChangeUpdated {
+			action = "secret.update"
+		}
+		s.audit(ctx, action, slog.String("secret", req.Name), slog.String("key_id", body.KeyID),
+			slog.Any("changed", changed), slog.Any("hosts", body.Hosts))
+	}
+	return putResponse(change, location("secrets", req.Name), body), nil
+}
+
+// putSecretAttempts bounds the runs of PutSecret's transaction when its
+// fenced update loses (errLostUpdate).
+const putSecretAttempts = 3
+
+// errLostUpdate reports a fenced update that found a newer revision.
+var errLostUpdate = errors.New("api: the secret changed during the request")
+
+// putSecretTx is one run of PutSecret's transaction.
+func (s *Server) putSecretTx(ctx context.Context, name string, b secretBody, dry bool) (body secretJSON, change Change, changed []string, err error) {
+	keys := s.opts.Secrets
+	err = s.inTx(ctx, dry, func(tx store.APITx) error {
+		cur, err := tx.SecretByName(ctx, name)
 		if err != nil && !isNotFound(err) {
 			return err
 		}
@@ -269,7 +303,7 @@ func (s *Server) PutSecret(ctx context.Context, req PutSecretRequestObject) (Put
 		var row store.Secret
 		switch {
 		case isNotFound(err):
-			row = store.Secret{ID: s.opts.NewID(), Name: req.Name, Hosts: b.hosts, CreatedAt: now, UpdatedAt: now}
+			row = store.Secret{ID: s.opts.NewID(), Name: name, Hosts: b.hosts, CreatedAt: now, UpdatedAt: now}
 			if err := seal(keys, &row, b.value); err != nil {
 				return err
 			}
@@ -298,7 +332,7 @@ func (s *Server) PutSecret(ctx context.Context, req PutSecretRequestObject) (Put
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("secret %s changed during the request", req.Name)
+				return errLostUpdate
 			}
 			row.Revision++
 			change = ChangeUpdated
@@ -310,18 +344,7 @@ func (s *Server) PutSecret(ctx context.Context, req PutSecretRequestObject) (Put
 		body = secretJSONOf(row, refs[row.Name])
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if !dry && change != ChangeUnchanged {
-		action := "secret.create"
-		if change == ChangeUpdated {
-			action = "secret.update"
-		}
-		s.audit(ctx, action, slog.String("secret", req.Name), slog.String("key_id", body.KeyID),
-			slog.Any("changed", changed), slog.Any("hosts", body.Hosts))
-	}
-	return putResponse(change, location("secrets", req.Name), body), nil
+	return body, change, changed, err
 }
 
 // seal encrypts v into row under the primary key, binding it to the row's
