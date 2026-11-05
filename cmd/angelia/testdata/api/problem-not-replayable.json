@@ -1,0 +1,7 @@
+{
+  "type": "https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-not-replayable",
+  "title": "Not replayable",
+  "status": 409,
+  "detail": "delivery 01JBX2A9QWERTY0123456789AB is pending; only dead or delivered deliveries can be replayed",
+  "instance": "/v1/deliveries/01JBX2A9QWERTY0123456789AB/replay"
+}

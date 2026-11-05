@@ -69,6 +69,51 @@ the stream ends.
 `--all` of `event list` and the other lists stops with an error when the server
 repeats a cursor or `next_after` does not grow.
 
+## Dead letters and replay
+
+```
+angelia deliveries list --status dead [--subscription S] [--event ID] [--all]
+angelia replay --delivery ID
+angelia replay --event ID [--status dead,delivered] [--dry-run]
+angelia replay --subscription NAME --since T [--until T] [--status dead,delivered] [--dry-run]
+```
+
+A delivery that used up its retries is `dead`; `deliveries list --status dead`
+is the dead-letter view. `replay` queues deliveries again
+(`POST /v1/deliveries/{id}/replay` for `--delivery`, `POST /v1/replays`
+otherwise). A replay queues the **existing** delivery again, due now: same id,
+same idempotency key, `attempts` keeps counting and the retry budget starts
+again from the replay (spec decision 28). A receiver that deduplicates on the
+idempotency key may drop a replayed delivery it already accepted.
+
+- `--event` replays the deliveries of one event; `--subscription` with
+  `--since` replays those of one subscription whose event `time` is in
+  `[since, until)`. The two can be combined.
+- Only `dead` deliveries are replayed unless `--status` adds `delivered`.
+  `pending` and `in_flight` deliveries, and those whose subscription or sink is
+  gone, are skipped; `--delivery` on one of them fails with
+  `409 not-replayable`.
+- `--since` and `--until` take an RFC 3339 time, `now`, or a duration back from
+  now (`24h`, `90m`, `7d`). `--until` defaults to now. Times are sent in UTC,
+  cut to milliseconds.
+- `--dry-run` shows what would be replayed and queues nothing. The API has no
+  dry run for a single delivery, so `--delivery` refuses it (and the other
+  selectors).
+
+The output says how many deliveries were queued again and lists them (the
+server lists at most 100; the summary line says when the list is cut). With
+`-o json` it is the API's `ReplayResult` (`replayed`, `dry_run`, `deliveries`,
+`truncated`); `--delivery` prints its one delivery in the same shape.
+
+Replay needs a token with the `write` scope. The server writes one audit
+record per replay that ran (not for a dry run or a refused request): `"audit":
+true`, `"action": "replay"`, the `principal` (token id) and `request_id`, the
+selector as given (`delivery`, or `event`, `subscription`, `since`, `until`
+and `status`, plus the resolved `subscription_id`), the count `deliveries`,
+the first 100 `ids` (`[]` when nothing matched) and `from_status`, the number
+of replayed deliveries per state they were in before (`{"dead": 2,
+"delivered": 1}`), which tells a resend of a `delivered` delivery apart.
+
 ## Output
 
 `-o table` (default) prints aligned columns for a list and a `FIELD VALUE`

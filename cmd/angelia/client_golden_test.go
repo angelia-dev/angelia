@@ -47,7 +47,7 @@ func newFixtureServer(t *testing.T, routes map[string]string) *fixtureServer {
 		ct := "application/json"
 		if strings.HasPrefix(name, "problem-") {
 			ct = "application/problem+json"
-			status = map[string]int{"problem-not-found": 404, "problem-validation": 422, "problem-managed": 409}[name]
+			status = map[string]int{"problem-not-found": 404, "problem-validation": 422, "problem-managed": 409, "problem-not-replayable": 409}[name]
 		}
 		data, err := os.ReadFile(filepath.Join("testdata", "api", name+".json")) //nolint:gosec // test fixture
 		if err != nil {

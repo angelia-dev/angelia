@@ -1,0 +1,12 @@
+{
+  "id": "01JBX2A9QWERTY0123456789AB",
+  "event_id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
+  "subscription_id": "01JBX1YB3C4D5E6F7G8H9J0K1M",
+  "subscription_name": "platform-ci",
+  "idempotency_key": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M",
+  "status": "pending",
+  "attempts": 1,
+  "next_attempt_at": "2026-11-03T10:00:00.000Z",
+  "held_until": null,
+  "last_error": "webhook: https://ci.example.com: unexpected status 404 Not Found"
+}
