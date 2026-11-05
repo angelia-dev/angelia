@@ -44,6 +44,9 @@ func TestReplayExhaustedIsSent(t *testing.T) {
 	}
 	d, err := dispatch.New(e.st, reg, dispatch.Options{
 		PollInterval: 10 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// The sink's secret_env must resolve, or the attempt fails before
+		// Deliver (ADR 0023 section 4).
+		LookupEnv: func(string) (string, bool) { return "set", true },
 	})
 	if err != nil {
 		t.Fatal(err)
