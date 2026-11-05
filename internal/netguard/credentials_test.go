@@ -51,3 +51,15 @@ func TestExtraAuthHeadersCloned(t *testing.T) {
 		t.Error("caller mutation of ExtraAuthHeaders leaked into the client")
 	}
 }
+
+func TestClientIsCredentialHeader(t *testing.T) {
+	c, _ := newTestClient(t, func(cfg *Config) { cfg.ExtraAuthHeaders = []string{"X-Api-Key"} })
+	for _, n := range []string{"Authorization", "private-token", "X-Api-Key", "x-api-key"} {
+		if !c.IsCredentialHeader(n) {
+			t.Errorf("IsCredentialHeader(%q) = false", n)
+		}
+	}
+	if c.IsCredentialHeader("Accept") {
+		t.Error("IsCredentialHeader(Accept) = true")
+	}
+}

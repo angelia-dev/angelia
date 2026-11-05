@@ -253,8 +253,11 @@ func TestNewErrors(t *testing.T) {
 		wasm []byte
 		opts wasm.Options
 	}{
-		"no client":         {cm, plugins.CratesWasm(), wasm.Options{}},
-		"no transport":      {cm, plugins.CratesWasm(), wasm.Options{HTTPClient: &http.Client{}}},
+		"no client":    {cm, plugins.CratesWasm(), wasm.Options{}},
+		"no transport": {cm, plugins.CratesWasm(), wasm.Options{HTTPClient: &http.Client{}}},
+		// #184 N3: the netguard client decides the reserved credential
+		// headers; any other transport fails closed.
+		"not netguard":      {cm, plugins.CratesWasm(), wasm.Options{HTTPClient: &http.Client{Transport: http.DefaultTransport}}},
 		"undeclared config": {cm, plugins.CratesWasm(), wasm.Options{HTTPClient: hc, Config: map[string]string{"secret": "x"}}},
 		"config without schema": {
 			hostileManifest(t), plugins.HostileWasm(),

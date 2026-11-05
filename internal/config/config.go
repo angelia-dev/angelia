@@ -81,6 +81,8 @@ type Config struct {
 	// keyed by kind. It is not part of the file format; use SourceToken.
 	Tokens   map[string]secret `yaml:"-"`
 	warnings []string
+	// pluginsDirDefault is true when PluginsDir was not configured.
+	pluginsDirDefault bool
 }
 
 // fileConfig is the instance file: the Config plus the keys that moved
@@ -170,8 +172,14 @@ func Default() *Config {
 		Sources:    map[string]Source{},
 		PluginsDir: defaultPluginsDir(DefaultDSN),
 		Tokens:     map[string]secret{},
+
+		pluginsDirDefault: true,
 	}
 }
+
+// PluginsDirIsDefault reports whether PluginsDir is the default, not set
+// in the file or the environment.
+func (c *Config) PluginsDirIsDefault() bool { return c.pluginsDirDefault }
 
 // defaultPluginsDir is <data dir>/plugins: the data directory is the
 // directory of a sqlite database file, else DefaultDataDir.
@@ -212,7 +220,8 @@ func Load(ctx context.Context, opts Options) (*Config, error) {
 	if err := applyEnv(cfg, env); err != nil {
 		return nil, err
 	}
-	if cfg.PluginsDir == "" {
+	cfg.pluginsDirDefault = cfg.PluginsDir == ""
+	if cfg.pluginsDirDefault {
 		cfg.PluginsDir = defaultPluginsDir(cfg.Database.DSN)
 	} else if filepath.IsAbs(cfg.PluginsDir) {
 		cfg.PluginsDir = filepath.Clean(cfg.PluginsDir)
@@ -242,7 +251,16 @@ func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
-		return nil, yamlError(path, err)
+		err = yamlError(path, err)
+		// A typo elsewhere must not hide the move of the plugins key.
+		if m := movedPlugins(data, &f.Plugins); m != nil {
+			dir := f.PluginsDir
+			if dir == "" {
+				dir = "<plugins_dir>"
+			}
+			err = errors.Join(err, pluginsMovedError(path, m, dir))
+		}
+		return nil, err
 	}
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -252,10 +270,16 @@ func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
 	if cfg.Sources == nil {
 		cfg.Sources = map[string]Source{}
 	}
-	if f.Plugins.Kind == 0 {
-		return nil, nil
+	return movedPlugins(data, &f.Plugins), nil
+}
+
+// movedPlugins describes the plugins key n of the instance file data, or
+// returns nil when there is none.
+func movedPlugins(data []byte, n *yaml.Node) *movedKey {
+	if n.Kind == 0 {
+		return nil
 	}
-	m := &movedKey{line: f.Plugins.Line}
+	m := &movedKey{line: n.Line}
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err == nil && len(root.Content) == 1 && root.Content[0].Kind == yaml.MappingNode {
 		top := root.Content[0].Content
@@ -265,15 +289,15 @@ func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
 			}
 		}
 	}
-	if f.Plugins.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(f.Plugins.Content); i += 2 {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
 			// Only valid kind names are echoed, never another value.
-			if k := f.Plugins.Content[i].Value; pluginKindRE.MatchString(k) {
+			if k := n.Content[i].Value; pluginKindRE.MatchString(k) {
 				m.kinds = append(m.kinds, k)
 			}
 		}
 	}
-	return m, nil
+	return m
 }
 
 // yamlError names the file and line of a decoding error, and reports

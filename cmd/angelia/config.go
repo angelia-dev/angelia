@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -47,8 +48,22 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range warns {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
+			unreadable := false
+			if errors.Is(err, config.ErrPluginsDirUnreadable) && cfg.PluginsDirIsDefault() {
+				// The default folder may belong to the service user; only a
+				// configured plugins_dir must be readable (#184).
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v; plugins not checked\n", err)
+				err, unreadable = nil, true
+			}
 			if err != nil {
 				return fmt.Errorf("invalid plugins: %w", err)
+			}
+			show := func(w io.Writer) error {
+				if unreadable {
+					_, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir)
+					return err
+				}
+				return printPlugins(w, cfg.PluginsDir, plugins)
 			}
 			watches, err := watchesPath(cmd)
 			if err != nil {
@@ -58,7 +73,7 @@ func newConfigCheckCmd() *cobra.Command {
 				if _, err := fmt.Fprintln(cmd.OutOrStdout(), "configuration OK"); err != nil {
 					return err
 				}
-				return printPlugins(cmd.OutOrStdout(), cfg.PluginsDir, plugins)
+				return show(cmd.OutOrStdout())
 			}
 			f, err := parseWatchFile(cfg, watches)
 			if err != nil {
@@ -70,7 +85,7 @@ func newConfigCheckCmd() *cobra.Command {
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions)); err != nil {
 				return err
 			}
-			return printPlugins(cmd.OutOrStdout(), cfg.PluginsDir, plugins)
+			return show(cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().String("watches", "", watchesFlagHelp)

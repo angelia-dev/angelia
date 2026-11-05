@@ -121,7 +121,7 @@ func TestLoadPluginsNoGrantsAndMissingDir(t *testing.T) {
 	if err != nil || len(ps) != 1 || ps[0].Grants.AllowedHosts != nil || ps[0].Grants.Credentials != nil {
 		t.Fatalf("plugins = %+v, %v", ps, err)
 	}
-	if w := strings.Join(warns, "\n"); !strings.Contains(w, "README: not a directory, ignored") || strings.Contains(w, ".cache") {
+	if w := strings.Join(warns, "\n"); !strings.Contains(w, `"README": not a directory, ignored`) || strings.Contains(w, ".cache") {
 		t.Errorf("warnings = %q", w)
 	}
 }
@@ -290,5 +290,24 @@ func TestPluginsDir(t *testing.T) {
 	}
 	if got := Default().PluginsDir; got != "/var/lib/angelia/plugins" {
 		t.Errorf("Default().PluginsDir = %q", got)
+	}
+}
+
+// Review N4 (#184): a typo elsewhere does not hide the move message.
+func TestPluginsMovedReportedWithOtherErrors(t *testing.T) {
+	_, err := load(t, writeFile(t, "lisen: :9\nplugins:\n  crates: {}\n"))
+	if err == nil || !strings.Contains(err.Error(), `unknown key "lisen"`) || !strings.Contains(err.Error(), "<plugins_dir>/crates/grants.yaml") {
+		t.Fatalf("err = %v, want both errors", err)
+	}
+}
+
+func TestPluginsDirIsDefault(t *testing.T) {
+	cfg, err := load(t, "")
+	if err != nil || !cfg.PluginsDirIsDefault() || !Default().PluginsDirIsDefault() {
+		t.Fatalf("default: %v %v", cfg, err)
+	}
+	cfg, err = load(t, "", "ANGELIA_PLUGINS_DIR=/srv/p")
+	if err != nil || cfg.PluginsDirIsDefault() {
+		t.Fatalf("configured: %v", err)
 	}
 }

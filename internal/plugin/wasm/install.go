@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/angelia-dev/angelia/internal/netguard"
 )
 
 // Credential is a token the operator configured when installing a plugin,
@@ -30,9 +28,9 @@ type Credential struct {
 	// only.
 	Host string
 	// Header is the request header that carries the token. Empty means
-	// Authorization. Otherwise it must be a header netguard counts as a
-	// credential: netguard.IsCredentialHeader (PRIVATE-TOKEN) or one of
-	// Options.ExtraAuthHeaders.
+	// Authorization. Otherwise it must be a header the netguard client
+	// counts as a credential (PRIVATE-TOKEN, or one of its
+	// Config.ExtraAuthHeaders).
 	Header string
 	// Scheme, if set, is written before the token: "Bearer" gives
 	// "Authorization: Bearer <token>". Empty sends the token as is. Only
@@ -157,24 +155,17 @@ func (s *Source) credentialHeader(h string) (string, error) {
 		return "", fmt.Errorf("header %q is not a valid header name", h)
 	}
 	if !s.isCredentialHeader(h) {
-		return "", fmt.Errorf("header %q is not a credential header (Authorization, PRIVATE-TOKEN or one of ExtraAuthHeaders)", h)
+		return "", fmt.Errorf("header %q is not a credential header for the netguard client (Authorization, PRIVATE-TOKEN or one of its ExtraAuthHeaders)", h)
 	}
 	return http.CanonicalHeaderKey(h), nil
 }
 
-// isCredentialHeader reports whether netguard counts the header name as a
-// credential, which makes a request authenticated for its limiter. These
-// headers are reserved for the credentials the host injects.
+// isCredentialHeader reports whether the netguard client counts the header
+// name as a credential, which makes a request authenticated for its
+// limiter. These headers are reserved for the credentials the host
+// injects.
 func (s *Source) isCredentialHeader(name string) bool {
-	if netguard.IsCredentialHeader(name) {
-		return true
-	}
-	for _, n := range s.opts.ExtraAuthHeaders {
-		if strings.EqualFold(n, name) {
-			return true
-		}
-	}
-	return false
+	return s.credHdrs.IsCredentialHeader(name)
 }
 
 // Hosts returns the merged allowed_hosts, sorted, with where each entry

@@ -173,3 +173,67 @@ func TestConfigCheckOldPluginsKeyFails(t *testing.T) {
 		t.Fatalf("stderr=%q err=%v", errb, err)
 	}
 }
+
+// docBlock returns the body of the first fenced block with the given
+// opening fence that follows heading in docs/configuration.md.
+func docBlock(t *testing.T, heading, fence string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	i := strings.Index(s, heading)
+	if i < 0 {
+		t.Fatalf("heading %q not found", heading)
+	}
+	j := strings.Index(s[i:], fence+"\n")
+	if j < 0 {
+		t.Fatalf("no %s block after %q", fence, heading)
+	}
+	body := s[i+j+len(fence)+1:]
+	return body[:strings.Index(body, "```\n")]
+}
+
+// Review S2 (#184): the documented grants.yaml is valid, and the documented
+// config check output is what it prints.
+func TestConfigCheckDocumentedExample(t *testing.T) {
+	grants := docBlock(t, "### `grants.yaml`", "```yaml")
+	want := docBlock(t, "### `angelia config check` output", "```")
+	dir := t.TempDir()
+	writePlugin(t, dir, "crates", `{"kind":"crates","allowed_hosts":["crates.io"]}`, grants)
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
+	t.Setenv("CRATES_MIRROR_TOKEN", "mirror-token-123456")
+	t.Setenv("GITLAB_TOKEN", "")
+	out, errb, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v, stderr %q", err, errb)
+	}
+	want = strings.Replace(want, "/var/lib/angelia/plugins", dir, 1)
+	if out != want {
+		t.Errorf("out =\n%s\ndocumented\n%s", out, want)
+	}
+}
+
+// Q3 (#184): an unreadable default plugins_dir is a warning; a configured
+// one fails the check.
+func TestConfigCheckUnreadablePluginsDir(t *testing.T) {
+	data := t.TempDir()
+	if err := os.WriteFile(filepath.Join(data, "plugins"), nil, 0o600); err != nil { // not a directory
+		t.Fatal(err)
+	}
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv("ANGELIA_PLUGINS_DIR", "")
+	t.Setenv("ANGELIA_DATABASE_DSN", "sqlite://"+filepath.Join(data, "angelia.db"))
+	out, errb, err := runCheck(t)
+	if err != nil || !strings.Contains(out, "not readable, not checked") || !strings.Contains(errb, "warning: plugins_dir cannot be read") {
+		t.Fatalf("default: out=%q stderr=%q err=%v", out, errb, err)
+	}
+
+	t.Setenv("ANGELIA_PLUGINS_DIR", filepath.Join(data, "plugins"))
+	out, errb, err = runCheck(t)
+	if err == nil || strings.Contains(out, "configuration OK") || !strings.Contains(errb, "invalid plugins: plugins_dir cannot be read") {
+		t.Fatalf("configured: out=%q stderr=%q err=%v", out, errb, err)
+	}
+}

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,11 +31,12 @@ const (
 
 // Options configures a Source.
 type Options struct {
-	// HTTPClient sends every hop of every http_request. Production passes
-	// the netguard client (netguard.Client.HTTPClient), so the SSRF guard,
-	// the per-host rate limits and the retries apply. The host wraps its
-	// Transport to enforce allowed_hosts on every hop and drops its Jar.
-	// Required, with a non-nil Transport.
+	// HTTPClient sends every hop of every http_request. It must be the
+	// netguard client (netguard.Client.HTTPClient), so that the SSRF guard,
+	// the per-host rate limits and the retries apply: its Transport must
+	// implement CredentialHeaders, which decides the headers reserved for
+	// host-injected credentials. The host wraps the Transport to enforce
+	// allowed_hosts on every hop and drops its Jar. Required.
 	HTTPClient *http.Client
 	// Config is the plugin's config map (Extism config). Every key must be
 	// declared in the manifest's config_schema properties. It is visible
@@ -49,12 +49,6 @@ type Options struct {
 	// Credentials are injected by the host into the requests to the hosts
 	// they are bound to; the host never hands them to the plugin. Optional.
 	Credentials []Credential
-	// ExtraAuthHeaders must be the netguard client's
-	// netguard.Config.ExtraAuthHeaders. Like Authorization and
-	// PRIVATE-TOKEN, these headers make netguard use a host's
-	// authenticated budget, so a plugin may not set them; a Credential
-	// may name one as its Header. Optional.
-	ExtraAuthHeaders []string
 	// Logger receives the plugin's log host function calls and the host's
 	// warnings. Default: discard.
 	Logger *slog.Logger
@@ -84,6 +78,14 @@ type Options struct {
 	CompilationCache wazero.CompilationCache
 }
 
+// CredentialHeaders is implemented by the transport of the netguard client
+// (*netguard.Client): it reports whether a header name puts a request on a
+// host's authenticated budget. The host reserves those headers for the
+// credentials it injects (ADR 0011, amendment of #184).
+type CredentialHeaders interface {
+	IsCredentialHeader(name string) bool
+}
+
 // ErrHostNotAllowed is wrapped by the error of a call in which the plugin
 // tried to reach a host that is not in its manifest's allowed_hosts,
 // whatever the plugin did with the http_request error.
@@ -102,6 +104,7 @@ type Source struct {
 	allowed  map[string]bool
 	grants   map[string]*HostGrant
 	creds    map[string]Credential
+	credHdrs CredentialHeaders
 	opts     Options
 	client   *http.Client
 	log      *slog.Logger
@@ -121,6 +124,13 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 	}
 	if opts.HTTPClient == nil || opts.HTTPClient.Transport == nil {
 		return nil, errors.New("wasm: Options.HTTPClient with a Transport is required")
+	}
+	// Fail closed: without the client's own credential-header rule, a
+	// plugin could claim a host's authenticated budget with a header the
+	// host does not know to reserve.
+	creds, ok := opts.HTTPClient.Transport.(CredentialHeaders)
+	if !ok {
+		return nil, errors.New("wasm: Options.HTTPClient must be the netguard client: its Transport does not implement CredentialHeaders")
 	}
 	declared, err := m.configKeys()
 	if err != nil {
@@ -142,11 +152,11 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	opts.ExtraAuthHeaders = slices.Clone(opts.ExtraAuthHeaders)
 	s := &Source{
-		kind: m.Kind,
-		opts: opts,
-		log:  opts.Logger.With("plugin", m.Kind),
+		kind:     m.Kind,
+		credHdrs: creds,
+		opts:     opts,
+		log:      opts.Logger.With("plugin", m.Kind),
 	}
 	if err := s.install(m, opts); err != nil {
 		return nil, err

@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,23 +93,40 @@ var (
 	headerNameRE      = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 )
 
+// ErrPluginsDirUnreadable is wrapped when plugins_dir exists but cannot be
+// listed (not a directory, no permission).
+var ErrPluginsDirUnreadable = errors.New("plugins_dir cannot be read")
+
 // LoadPlugins reads every plugin folder of dir (the instance's plugins_dir):
 // each subdirectory is a plugin whose name is its kind, with a
 // manifest.json and an optional grants.yaml. It validates the grants and
 // reads the credentials' variables from environ ("KEY=value" pairs). A
-// missing dir means no plugins. Hidden entries are skipped; other files are
-// ignored with a warning. Problems are all reported at once, and never
-// quote a value that may be a token. Loading the plugins themselves is
-// angelia-dev/angelia#88.
+// missing dir means no plugins. Hidden entries are skipped; symbolic links
+// and other files are ignored with a warning. Except on Windows, dir, each
+// plugin folder and grants.yaml must be owned by this user or root and not
+// writable by group or others (a sticky directory may be), and grants.yaml
+// must not be a symbolic link (ADR 0025). Problems are all reported at
+// once, and never quote a value that may be a token. Loading the plugins
+// themselves is angelia-dev/angelia#88.
 func LoadPlugins(ctx context.Context, dir string, environ []string) ([]InstalledPlugin, []string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("load plugins: %w", err)
 	}
-	entries, err := os.ReadDir(dir)
+	info, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, nil
 	}
+	if err == nil && !info.IsDir() {
+		err = errors.New("not a directory")
+	}
+	var entries []fs.DirEntry
+	if err == nil {
+		entries, err = os.ReadDir(dir)
+	}
 	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %s: %w", ErrPluginsDirUnreadable, dir, err)
+	}
+	if err := checkTrust(dir, info); err != nil {
 		return nil, nil, fmt.Errorf("plugins_dir: %w", err)
 	}
 	env := environMap(environ)
@@ -123,13 +139,26 @@ func LoadPlugins(ctx context.Context, dir string, environ []string) ([]Installed
 		name := e.Name()
 		path := filepath.Join(dir, name)
 		switch {
+		// The name comes from the file system: it is quoted until it
+		// passed the kind rule, so it cannot write control characters.
 		case strings.HasPrefix(name, "."):
 			continue
+		case e.Type()&fs.ModeSymlink != 0:
+			warns = append(warns, fmt.Sprintf("%s: %q: symbolic link, ignored (a plugin folder must be a directory)", dir, name))
+			continue
 		case !e.IsDir():
-			warns = append(warns, fmt.Sprintf("%s: not a directory, ignored", path))
+			warns = append(warns, fmt.Sprintf("%s: %q: not a directory, ignored", dir, name))
 			continue
 		case !pluginKindRE.MatchString(name):
-			errs = append(errs, fmt.Errorf("%s: %q is not a valid plugin kind (want ^[a-z][a-z0-9-]{0,62}$)", path, name))
+			errs = append(errs, fmt.Errorf("%s: %q is not a valid plugin kind (want ^[a-z][a-z0-9-]{0,62}$)", dir, name))
+			continue
+		}
+		info, err := e.Info()
+		if err == nil {
+			err = checkTrust(path, info)
+		}
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		p, w, err := loadPlugin(path, name, env)
@@ -242,12 +271,12 @@ func validateCredential(k string, cr PluginCredential, allowed map[string]bool, 
 	}
 }
 
-// readGrantsFile reads grants.yaml. The file grants network access, so one
-// that the group or others can write is refused: tampering, not reading,
-// is the risk (it holds variable names, no secret). The mode is checked on
-// the opened file.
+// readGrantsFile reads grants.yaml. The file grants network access, so
+// one that someone else could change is refused: tampering, not reading,
+// is the risk (it holds variable names, no secret). A symbolic link is
+// refused, and the owner and mode are checked on the opened file.
 func readGrantsFile(path string) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: the operator's plugins_dir.
+	f, err := openNoFollow(path)
 	if err != nil {
 		return nil, err
 	}
@@ -259,8 +288,8 @@ func readGrantsFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
-	if perm := info.Mode().Perm(); perm&0o022 != 0 && runtime.GOOS != "windows" {
-		return nil, fmt.Errorf("%s grants network access but is writable by group or others (mode %04o); run: chmod go-w %s", path, perm, path)
+	if err := checkTrust(path, info); err != nil {
+		return nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxPluginFile+1))
 	if err != nil {

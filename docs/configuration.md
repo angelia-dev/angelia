@@ -84,9 +84,16 @@ The folder name is the plugin's kind:
 
 - `plugins_dir` defaults to `<data dir>/plugins`. The data directory is the directory of the sqlite database
   file (`/var/lib/angelia` with the default `database.dsn`), or `/var/lib/angelia` with Postgres. An empty
-  `ANGELIA_PLUGINS_DIR` means the default. A missing `plugins_dir` means no plugins are installed.
+  `ANGELIA_PLUGINS_DIR` means the default. A missing `plugins_dir` means no plugins are installed. A
+  `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
+  warning for the default (it may belong to the service user).
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`
-  are skipped, and plain files are ignored with a warning.
+  are skipped. Plain files and symbolic links are ignored with a warning: a plugin folder must be a real
+  directory, not a link.
+- **Ownership and mode** (not on Windows): `plugins_dir`, each plugin folder and `grants.yaml` must be owned by
+  the user Angelia runs as, or by root, and must not be writable by group or others. A directory with the
+  sticky bit may be group- or world-writable. `grants.yaml` must be a regular file, not a symbolic link.
+  Anything else is refused with the `chmod` or owner to fix.
 - `angelia serve` does not load plugins yet: installing and running them is
   [#88](https://github.com/angelia-dev/angelia/issues/88), which uses this layout. Today `angelia config check`
   reads the folders and validates `grants.yaml`.
@@ -97,7 +104,7 @@ The folder name is the plugin's kind:
 ### `grants.yaml`
 
 ```yaml
-allowed_hosts: [crates-mirror.example.com]   # added to the manifest's list
+allowed_hosts: [crates-mirror.example.com, gitlab.example.com]   # added to the manifest's list
 credentials:
   crates-mirror.example.com:
     token_env: CRATES_MIRROR_TOKEN           # the variable holding the token (port 443)
@@ -117,13 +124,16 @@ credentials:
 | `credentials.<host[:port]>.header` | `Authorization` | a header netguard counts as a credential: `Authorization` or `PRIVATE-TOKEN` (any case) |
 
 - Unknown keys are errors. There are no environment overrides.
-- **File mode:** `grants.yaml` holds no secret (only variable names), but it grants network access. A file
-  that the group or others can write is refused (`chmod go-w grants.yaml`). Readable by others is fine.
+- **File mode:** `grants.yaml` holds no secret (only variable names), but it grants network access, so the
+  risk is tampering: a file that the group or others can write, or that another user owns, is refused
+  (`chmod go-w grants.yaml`). Readable by others is fine.
 - Host names: matching is case-insensitive and ignores a trailing dot, everywhere. In this file write them in
   canonical form (lower case, no trailing dot, canonical IP literal); anything else is an error, so two keys
   cannot name the same host.
 - `allowed_hosts` extends the manifest's list, it never replaces it. Same rules: exact match on every hop,
-  redirects included, any port, no scheme, port, path or wildcard.
+  redirects included, any port, no scheme, port, path or wildcard. When the plugin host installs the plugin
+  it also logs the merged list, with where each entry comes from and the ports that get a credential
+  (`wasm plugin installed`).
 - A credential is bound to one host and port: `<host>` means port 443, `<host>:<port>` (`[addr]:port` for
   IPv6) another port, for example a mirror on 8443. The plugin host adds it as the `Authorization` header (or
   the `header` you name) of every request to that host and port, over https only: a plain http request to it
@@ -144,16 +154,18 @@ credentials:
 ### `angelia config check` output
 
 `config check` lists every plugin with the hosts it may reach and the hosts that get a credential. It names
-the variable that holds a token, never the token:
+the variable that holds a token, never the token. For the `crates` plugin (its manifest allows `crates.io`)
+with the `grants.yaml` above, `CRATES_MIRROR_TOKEN` set and `GITLAB_TOKEN` unset:
 
 ```
 configuration OK
 plugins in /var/lib/angelia/plugins: 1
   crates
-    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants)
+    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants), gitlab.example.com (grants)
     credentials:
       crates-mirror.example.com:443  Authorization: Bearer <token from $CRATES_MIRROR_TOKEN>
-      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $MIRROR_ALT_TOKEN, not set>
+      crates-mirror.example.com:8443  Authorization: <token from $CRATES_MIRROR_TOKEN>
+      gitlab.example.com:443  PRIVATE-TOKEN: <token from $GITLAB_TOKEN, not set>
 ```
 
 An invalid `grants.yaml` or manifest fails the check with `invalid plugins: ...`.

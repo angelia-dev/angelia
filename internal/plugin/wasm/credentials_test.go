@@ -110,14 +110,15 @@ func (a *echoUpstream) auth(host string) []string {
 
 // newCredentialed returns the hostile plugin with allowed.test from its
 // manifest, other.test added by the operator and a credential bound to
-// allowed.test (port 443) unless opts has others.
-func newCredentialed(t *testing.T, opts wasm.Options) (*echoUpstream, *wasm.Source) {
+// allowed.test (port 443) unless opts has others. extraAuth becomes the
+// netguard client's ExtraAuthHeaders.
+func newCredentialed(t *testing.T, opts wasm.Options, extraAuth ...string) (*echoUpstream, *wasm.Source) {
 	t.Helper()
 	rec := &echoUpstream{}
 	_, hc := newTestNet(t, map[string]http.Handler{
 		"allowed.test": rec.handler("allowed.test"),
 		"other.test":   rec.handler("other.test"),
-	})
+	}, extraAuth...)
 	opts.HTTPClient = hc
 	opts.AllowedHosts = []string{"other.test"}
 	if opts.Credentials == nil {
@@ -508,7 +509,7 @@ func TestInjectedCredentialUsesAuthenticatedBudget(t *testing.T) {
 // a plugin may not set a credential header itself, on any host: the
 // request is refused with bad_request before it reaches netguard.
 func TestPluginCredentialHeadersRefused(t *testing.T) {
-	rec, s := newCredentialed(t, wasm.Options{ExtraAuthHeaders: []string{"X-Api-Key"}})
+	rec, s := newCredentialed(t, wasm.Options{}, "X-Api-Key")
 	for _, tc := range []struct{ host, header string }{
 		{"allowed.test", "h:Authorization"},
 		{"other.test", "h:Authorization"},
@@ -596,11 +597,34 @@ func TestCredentialCustomHeader(t *testing.T) {
 		t.Errorf("err = %v, want the credential refused over http", err)
 	}
 
-	// One of netguard's ExtraAuthHeaders is accepted too.
-	rec2, s2 := newCredentialed(t, wasm.Options{
-		ExtraAuthHeaders: []string{"X-Api-Key"},
-		Credentials:      []wasm.Credential{{Host: "allowed.test", Header: "X-Api-Key", Token: staticToken(testToken)}},
+	// net/http forwards custom headers on a cross-host redirect (it strips
+	// only Authorization). The credential lives on the transport's per-hop
+	// copy, so it never follows a redirect to another host or port.
+	t.Run("redirect to another allowed host drops it", func(t *testing.T) {
+		before := len(rec.got("other.test"))
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://other.test/landing"); err != nil {
+			t.Fatal(err)
+		}
+		got := rec.got("other.test")[before:]
+		if len(got) != 1 || got[0].PrivateToken != "" {
+			t.Errorf("other.test saw %+v after a redirect, want no PRIVATE-TOKEN", got)
+		}
 	})
+	t.Run("redirect to another port of the bound host drops it", func(t *testing.T) {
+		before := len(rec.got("allowed.test"))
+		if _, err := fetch(t, s, "https://allowed.test/r?to=https://allowed.test:8443/landing"); err != nil {
+			t.Fatal(err)
+		}
+		got := rec.got("allowed.test")[before:]
+		if len(got) != 2 || got[0].PrivateToken != testToken || got[1].PrivateToken != "" {
+			t.Errorf("allowed.test saw %+v, want PRIVATE-TOKEN on the first hop only", got)
+		}
+	})
+
+	// One of the netguard client's ExtraAuthHeaders is accepted too.
+	rec2, s2 := newCredentialed(t, wasm.Options{
+		Credentials: []wasm.Credential{{Host: "allowed.test", Header: "X-Api-Key", Token: staticToken(testToken)}},
+	}, "X-Api-Key")
 	if _, err := fetch(t, s2, "https://allowed.test/a"); err != nil {
 		t.Fatal(err)
 	}

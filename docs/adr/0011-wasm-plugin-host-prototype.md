@@ -251,7 +251,7 @@ draft: their format is the one in [ADR 0025](0025-plugin-folder-and-grants-file.
 2. **A `header:` key: yes, limited to credential headers.** `credentials.<host[:port]>.header` names the
    header that carries the token. The default is `Authorization`. Otherwise it must be a header netguard
    counts as a credential: `netguard.IsCredentialHeader`, today `Authorization` and `PRIVATE-TOKEN`. In Go,
-   `wasm.Credential.Header` also accepts one of `wasm.Options.ExtraAuthHeaders` (below). `scheme` applies to
+   `wasm.Credential.Header` also accepts any header the netguard client counts (below). `scheme` applies to
    `Authorization` only. Injection, the https-only rule, the Range and encoding refusals and redaction are
    the same for every header. The header is set on the transport's copy of each hop, so net/http's redirect
    handling never carries it to another host, even though net/http would forward a custom header.
@@ -261,8 +261,10 @@ draft: their format is the one in [ADR 0025](0025-plugin-folder-and-grants-file.
    The request is never sent. Its requests can therefore no longer claim a host's authenticated budget with
    a dummy value. Refusing rather than stripping follows the Range rule above: a plugin that loses its
    header silently would drop to the anonymous budget, and its author would see confusing 401s or rate
-   limits instead of a clear error. The netguard client's `ExtraAuthHeaders` are passed to the host as
-   `wasm.Options.ExtraAuthHeaders`, so they are reserved too. This supersedes the answer to §10 Q1 above
+   limits instead of a clear error. The host asks the netguard client it is given which headers are
+   credentials (`(*netguard.Client).IsCredentialHeader`, which includes its `ExtraAuthHeaders`), and
+   `wasm.New` refuses an `Options.HTTPClient` whose transport is not the netguard client, so the reserved set
+   cannot drift from what the limiter counts. This supersedes the answer to §10 Q1 above
    ("the plugin sets them like any header"): auth headers now come only from the operator's credentials.
    The `crates` example plugin no longer reads a `token` config key or sets `Authorization`, and its
    manifest no longer declares `token`. Its `.wasm` was rebuilt with `bench/plugins/build.sh`, and
