@@ -148,6 +148,11 @@ type Options struct {
 	DecryptConfig func([]byte) ([]byte, error)
 	// Metrics receives attempt outcomes; nil discards them.
 	Metrics Metrics
+	// LookupEnv reads the environment variable named by each *_env key of a
+	// sink's configuration, for sink.Request.Secrets (ADR 0023 section 4).
+	// Nil means os.LookupEnv. It is called on every attempt: values are not
+	// cached.
+	LookupEnv func(string) (string, bool)
 }
 
 // Dispatcher is the "dispatcher" role: it leases due deliveries from the
@@ -222,6 +227,9 @@ func New(st Store, sinks Sinks, opts Options) (*Dispatcher, error) {
 	}
 	if opts.DecryptConfig == nil {
 		opts.DecryptConfig = func(b []byte) ([]byte, error) { return b, nil }
+	}
+	if opts.LookupEnv == nil {
+		opts.LookupEnv = os.LookupEnv
 	}
 	log := opts.Logger
 	if log == nil {
@@ -465,6 +473,10 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 	if err != nil { // a key the operator can still fix: retried
 		return sink.Result{}, fmt.Errorf("dispatch: decrypt config of sink %s: %w", ld.Sink.ID, err)
 	}
+	secrets, err := ResolveSecrets(cfg, d.opts.LookupEnv)
+	if err != nil { // the operator fixes it by setting the variable: retried
+		return sink.Result{}, err
+	}
 	ev := sink.ReleaseEvent{JSON: ld.Event.Payload}
 	if err := json.Unmarshal(ld.Event.Payload, &ev.Envelope); err != nil {
 		return sink.Result{}, sink.Permanent(fmt.Errorf("dispatch: decode event %s: %w", ld.Event.ID, err))
@@ -476,7 +488,7 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 		return sink.Result{}, fmt.Errorf("dispatch: render: %w", err)
 	}
 	res, err := s.Deliver(dctx, sink.Request{
-		Config: sink.Config(cfg), Event: ev, Rendered: rendered,
+		Config: sink.Config(cfg), Secrets: secrets, Event: ev, Rendered: rendered,
 		IdempotencyKey: sink.IdempotencyKey(ld.Event.ID, ld.Delivery.SubscriptionID),
 		DeliveryID:     ld.Delivery.ID, SubscriptionID: ld.Delivery.SubscriptionID, Attempt: ld.Delivery.Attempts,
 	})
