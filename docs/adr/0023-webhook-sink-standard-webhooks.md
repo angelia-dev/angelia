@@ -295,4 +295,31 @@ Recorded by the implementation; no decision above changes.
   (lower-case host names or IPv4 addresses), with comma-separated `ANGELIA_HTTP_ALLOW_NETWORKS` and
   `ANGELIA_HTTP_ALLOW_HTTP_HOSTS`. `allow_http_hosts` reaches the watch-file loader and the API;
   `HTTP.AllowPrefixes()` is ready for `netguard.Config.Allow`, which `angelia serve` passes once it wires
-  the dispatcher role (it still runs a stub, see `cmd/angelia/serve.go`).
+  the dispatcher role (it still runs a stub, see `cmd/angelia/serve.go`; follow-up #198).
+
+### Runtime choices after the review of #108 (2026-11-05)
+
+- **URL errors (§6).** netguard's URL-check errors that no retry can fix (scheme, missing host,
+  non-canonical numeric host) match the new `netguard.ErrInvalidURL`; the sink makes them permanent
+  (`webhook: <origin>: invalid URL (scheme or host not allowed)`). The sink's `Validate` and the
+  watch-file loader (so the API too) refuse non-canonical numeric hosts up front. DNS failures stay
+  retried.
+- **Transport errors (extends §5's "never the resolved IP address").** A request that got no response
+  fails with a fixed class plus scheme and host: `connection refused`, `connection reset`, `timeout`,
+  `DNS lookup failed`, `TLS handshake failed`, `canceled` or `request failed`. The dialled address and
+  port, the URL path and the cause's text never reach the sink's error or `last_error`; the cause stays
+  in the error chain (`errors.Is`). netguard's own `angelia.http` span still records the cause, refused
+  addresses included: spans are operator-side.
+- **Unsigned sinks (decided question 5).** Besides the load-time warnings, the sink logs one warning
+  per sink id, the first time the process delivers for it, through `webhook.Options.Logger`;
+  `sink.Request` gains `SinkID` for this. This covers API-created sinks, whose PUT drops warnings. The
+  log names the sink id and scheme://host only.
+- **D12 at delivery.** `webhook.Options.AllowHTTPHosts` (the instance's `http.allow_http_hosts`) is
+  checked on every delivery: `http://` to a host not on it is permanent. Removing a host therefore stops
+  cleartext even for sinks stored while it was listed. It reaches the sink the same way as `Allow`
+  reaches netguard: wired with the dispatcher role (#198).
+- **Timestamp.** `webhook-timestamp` is read just before the request is handed to the netguard client,
+  before its per-host rate-limit wait. The wait is bounded by the delivery deadline (at most 15 s with
+  the defaults), so the timestamp can trail the actual send by that much. This is far inside the 5 min
+  tolerance, and moving the read after the wait would need a hook inside netguard.
+- `http.allow_networks` refuses IPv4-mapped prefixes (`::ffff:a.b.c.d/n`), which would never match.

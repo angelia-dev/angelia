@@ -69,6 +69,13 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
   D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
 - Both lists live only here: the watch file and the REST API cannot widen them.
+- **Not in effect yet for delivery or polling.** `config check`, the watch file and the API already
+  apply `allow_http_hosts`. The client that sources and the webhook sink send through gets both lists
+  once `angelia serve` runs the dispatcher and scheduler roles instead of stubs
+  ([#198](https://github.com/angelia-dev/angelia/issues/198)). Until then, nothing is sent, so nothing
+  is allowed beyond the defaults.
+- Write IPv4 prefixes in IPv4 form: an IPv4-mapped prefix (`::ffff:10.0.0.0/104`) is refused, because
+  the guard checks mapped addresses as IPv4.
 - The guard checks the addresses a URL's host resolves to, then, for a direct connection, the address
   actually dialled, which defeats DNS rebinding. When `HTTPS_PROXY` or `HTTP_PROXY` is set (read once at
   start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private

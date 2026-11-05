@@ -499,8 +499,12 @@ func (c *Config) Validate() error {
 		bad("http.user_agent: must be non-empty and on one line")
 	}
 	for i, n := range c.HTTP.AllowNetworks {
-		if _, err := netip.ParsePrefix(n); err != nil {
+		if p, err := netip.ParsePrefix(n); err != nil {
 			bad("http.allow_networks[%d] %q: must be a CIDR prefix such as 10.0.0.0/8 or fd00::/8", i, n)
+		} else if p.Addr().Is4In6() {
+			// The guard checks IPv4-mapped addresses as IPv4, so such a
+			// prefix would never match.
+			bad("http.allow_networks[%d] %q: write an IPv4-mapped prefix in IPv4 form, such as 10.0.0.0/8", i, n)
 		}
 	}
 	for i, h := range c.HTTP.AllowHTTPHosts {

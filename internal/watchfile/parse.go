@@ -21,6 +21,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/dispatch"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -480,6 +481,9 @@ func (p *parser) webhookURL(s string, n *yaml.Node, jp string) bool {
 		return false
 	case u.User != nil:
 		p.errf(n, jp, "credentials in the URL are not allowed")
+		return false
+	case netguard.NonCanonicalIP(u.Hostname()):
+		p.errf(n, jp, "the host is an IP address in a non-canonical form; write it as a.b.c.d")
 		return false
 	case u.Scheme == "https":
 	case u.Scheme == "http":

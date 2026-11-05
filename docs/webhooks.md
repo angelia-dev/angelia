@@ -43,7 +43,8 @@ A missing, empty or invalid value does not stop the instance: each delivery fail
 Fix the variable and restart; the next retry succeeds.
 
 Without `secret_env` the sink sends **unsigned** deliveries. `angelia config check --watches` and
-`angelia serve` warn about it.
+`angelia serve --watches` warn about it, and the dispatcher logs one warning per unsigned sink the
+first time it delivers for it, so sinks created through the API are reported too.
 
 ### Rotating the secret
 
@@ -74,7 +75,10 @@ no effect; `config check` warns about it.
 
 Redirects are **not followed**: update the URL instead. The response body is read up to 64 KiB, discarded
 and never stored; `last_error` reads `webhook: https://host: HTTP 404 Not Found`, with the URL cut to
-scheme and host.
+scheme and host. A request that got no response reads `webhook: https://host:` followed by one of
+`connection refused`, `connection reset`, `timeout`, `DNS lookup failed`, `TLS handshake failed` or
+`request failed`, never the address or port it dialled. A URL whose host is an IP address in a
+non-canonical form (`2130706433`, `127.1`) is refused when the sink is stored.
 
 A `429` or `503` with `Retry-After` pauses that host for every request of the instance, sources included.
 
@@ -83,7 +87,8 @@ A `429` or `503` with `Retry-After` pauses that host for every request of the in
 Deliveries go through the same SSRF guard as sources. Loopback, private, link-local, CGNAT, multicast,
 reserved and IPv4-embedding IPv6 addresses are refused unless their prefix is listed in the instance
 configuration's [`http.allow_networks`](configuration.md#outgoing-http-and-private-networks); plain `http://`
-URLs are accepted only for hosts in `http.allow_http_hosts`. The watch file and the API cannot widen
+URLs are accepted only for hosts in `http.allow_http_hosts`, checked when the sink is stored and again at
+every delivery, so removing a host stops cleartext deliveries to it (dead at once). The watch file and the API cannot widen
 either list. A refused destination is dead at once, with `last_error`
 `webhook: destination not allowed (<host>)`; the resolved address is never shown. Allowlist it, then replay.
 

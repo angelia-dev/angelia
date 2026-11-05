@@ -273,6 +273,18 @@ func TestWebhookHTTPAllowlistAndWarnings(t *testing.T) {
 
 // ADR 0023 decided questions 3 and 5: a timeout above the dispatcher's
 // deliver timeout and an unsigned sink are reported as warnings.
+// Review of #108, SR1: a non-canonical numeric host never resolves to a
+// deliverable destination, so the file is refused.
+func TestWebhookNonCanonicalHostRejected(t *testing.T) {
+	for _, u := range []string{"https://2130706433/x", "https://0x7f000001/x", "https://127.1/x"} {
+		doc := base + "sinks:\n  - {name: a, kind: webhook, config: {url: '" + u + "'}}\n"
+		_, err := Parse([]byte(doc), "w.yaml", opts(t))
+		if err == nil || !strings.Contains(err.Error(), "non-canonical form") || strings.Contains(err.Error(), u) {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
+
 func TestWebhookTimeoutAboveDeliverTimeoutWarns(t *testing.T) {
 	doc := base + "sinks:\n  - {name: a, kind: webhook, config: {url: 'https://h.example.org/x', secret_env: HOOK, timeout: 15s}}\n" +
 		"  - {name: b, kind: webhook, config: {url: 'https://h.example.org/y', secret_env: HOOK, timeout: 1m}}\n"

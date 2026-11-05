@@ -416,6 +416,7 @@ func TestHTTPAllowlists(t *testing.T) {
 	}
 	for _, y := range []string{
 		"http:\n  allow_networks: [10.0.0.1]\n", "http:\n  allow_networks: [example.com/8]\n",
+		"http:\n  allow_networks: ['::ffff:10.0.0.0/104']\n",
 		"http:\n  allow_http_hosts: ['http://hooks.lan']\n", "http:\n  allow_http_hosts: ['hooks.lan:8080']\n",
 		"http:\n  allow_http_hosts: [Hooks.LAN]\n", "http:\n  allow_http_hosts: ['']\n",
 	} {
