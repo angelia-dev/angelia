@@ -411,11 +411,20 @@ func TestDeliverErrorHidesResolvedAddress(t *testing.T) {
 	}
 	_, port, _ := net.SplitHostPort(l.Addr().String())
 	_ = l.Close()
-	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip4", "localhost")
-	if err != nil || len(as) == 0 || !as[0].IsLoopback() {
-		t.Skip("localhost does not resolve to IPv4 loopback here")
+	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost")
+	if err != nil || len(as) == 0 {
+		t.Skipf("localhost does not resolve here: %v", err)
 	}
-	s := New(guarded(t, loopback, fakeResolver{"localhost": {netip.MustParseAddr("127.0.0.1")}}), Options{AllowHTTPHosts: testHTTPHosts})
+	for _, a := range as {
+		if !a.Unmap().IsLoopback() {
+			t.Skipf("localhost resolves to %s, not loopback", a)
+		}
+	}
+	// CI runners resolve localhost to ::1 as well as 127.0.0.1, and the
+	// dialler may try ::1 first: allow both loopbacks so either attempt ends
+	// in "connection refused", not in a refusal by the guard.
+	bothLoopbacks := append([]netip.Prefix{netip.MustParsePrefix("::1/128")}, loopback...)
+	s := New(guarded(t, bothLoopbacks, fakeResolver{"localhost": {netip.MustParseAddr("127.0.0.1")}}), Options{AllowHTTPHosts: testHTTPHosts})
 	_, err = s.Deliver(t.Context(), request("http://localhost:"+port+"/x", "", nil))
 	if err == nil || sink.IsPermanent(err) || err.Error() != "webhook: http://localhost:"+port+": connection refused" {
 		t.Fatalf("got %v", err)
