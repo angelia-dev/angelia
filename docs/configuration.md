@@ -21,9 +21,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
-| `plugins.<kind>.allowed_hosts` | none | empty | lower-case hostnames or IP literals, added to the plugin manifest's `allowed_hosts` |
-| `plugins.<kind>.credentials.<host[:port]>.token_env` | none | none | name of an environment variable; the host must be in the merged `allowed_hosts`; no port means 443 |
-| `plugins.<kind>.credentials.<host[:port]>.scheme` | none | empty | one word such as `Bearer`, written before the token |
+| `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
@@ -71,46 +69,94 @@ under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
   logged, and a path segment that looks like a credential is replaced with `[redacted]`. Replays
   also write an `api audit` record.
 
-## Installed plugins (draft)
+## Installed plugins
 
-> **Draft, for the maintainer to confirm (#145):** the `plugins` keys follow the WASM plugin host prototype
-> ([ADR 0011](adr/0011-wasm-plugin-host-prototype.md), amendment of #145) and may change with it. `angelia serve`
-> does not load plugins yet.
+Each installed plugin has its own folder in `plugins_dir` ([ADR 0025](adr/0025-plugin-folder-and-grants-file.md)).
+The folder name is the plugin's kind:
 
-`plugins.<kind>` configures the plugin whose manifest declares `kind`, when it is installed:
-
-```yaml
-plugins:
-  crates:
-    allowed_hosts: [crates-mirror.example.com]   # added to the manifest's list
-    credentials:
-      crates-mirror.example.com:
-        token_env: CRATES_MIRROR_TOKEN           # the variable holding the token (port 443)
-        scheme: Bearer                           # optional: "Authorization: Bearer <token>"
-      crates-mirror.example.com:8443:            # the same host on another port
-        token_env: CRATES_MIRROR_TOKEN
+```
+<plugins_dir>/
+  crates/
+    manifest.json   # from the plugin author: kind, allowed_hosts, config_schema (ADR 0011)
+    plugin.wasm     # the module
+    grants.yaml     # optional, from the operator: extra hosts and credentials
 ```
 
+- `plugins_dir` defaults to `<data dir>/plugins`. The data directory is the directory of the sqlite database
+  file (`/var/lib/angelia` with the default `database.dsn`), or `/var/lib/angelia` with Postgres. An empty
+  `ANGELIA_PLUGINS_DIR` means the default. A missing `plugins_dir` means no plugins are installed.
+- Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`
+  are skipped, and plain files are ignored with a warning.
+- `angelia serve` does not load plugins yet: installing and running them is
+  [#88](https://github.com/angelia-dev/angelia/issues/88), which uses this layout. Today `angelia config check`
+  reads the folders and validates `grants.yaml`.
+- The `plugins.<kind>` keys of the instance config (draft of #145) moved here. An instance config that still
+  has a `plugins` key fails with `plugins: moved to the plugin's folder: write allowed_hosts and credentials in
+  <plugins_dir>/<kind>/grants.yaml`.
+
+### `grants.yaml`
+
+```yaml
+allowed_hosts: [crates-mirror.example.com]   # added to the manifest's list
+credentials:
+  crates-mirror.example.com:
+    token_env: CRATES_MIRROR_TOKEN           # the variable holding the token (port 443)
+    scheme: Bearer                           # optional: "Authorization: Bearer <token>"
+  crates-mirror.example.com:8443:            # the same host on another port
+    token_env: CRATES_MIRROR_TOKEN
+  gitlab.example.com:
+    token_env: GITLAB_TOKEN
+    header: PRIVATE-TOKEN                    # optional: another credential header
+```
+
+| Key | Default | Allowed |
+|---|---|---|
+| `allowed_hosts` | empty | lower-case hostnames or IP literals, added to the manifest's `allowed_hosts` |
+| `credentials.<host[:port]>.token_env` | required | name of an environment variable; the host must be in the manifest's or this file's `allowed_hosts`; no port means 443 |
+| `credentials.<host[:port]>.scheme` | empty | one word such as `Bearer`, written before the token; only with the `Authorization` header |
+| `credentials.<host[:port]>.header` | `Authorization` | a header netguard counts as a credential: `Authorization` or `PRIVATE-TOKEN` (any case) |
+
+- Unknown keys are errors. There are no environment overrides.
+- **File mode:** `grants.yaml` holds no secret (only variable names), but it grants network access. A file
+  that the group or others can write is refused (`chmod go-w grants.yaml`). Readable by others is fine.
 - Host names: matching is case-insensitive and ignores a trailing dot, everywhere. In this file write them in
   canonical form (lower case, no trailing dot, canonical IP literal); anything else is an error, so two keys
   cannot name the same host.
 - `allowed_hosts` extends the manifest's list, it never replaces it. Same rules: exact match on every hop,
-  redirects included, any port, no scheme, port, path or wildcard. The merged list, with where each entry
-  comes from and the ports that get a credential, is logged when the plugin is installed (`wasm plugin installed`).
+  redirects included, any port, no scheme, port, path or wildcard.
 - A credential is bound to one host and port: `<host>` means port 443, `<host>:<port>` (`[addr]:port` for
-  IPv6) another port, for example a mirror on 8443. The host adds it as the `Authorization` header of every
-  request to that host and port, over https only (a plain http request to it fails), replacing any
-  `Authorization` the plugin set. It is never sent to another host or port, allowed or not, including after a
-  redirect, and it is not in the plugin's config map.
-- **Bind a credential only to a host that does not reflect the `Authorization` header** (in a body, a header,
-  an error page). The host redacts echoes of the token as `[REDACTED]`, refuses `Range` requests and compressed
+  IPv6) another port, for example a mirror on 8443. The plugin host adds it as the `Authorization` header (or
+  the `header` you name) of every request to that host and port, over https only: a plain http request to it
+  fails, even on a private network. It is never sent to another host or port, allowed or not, including after
+  a redirect, and it is not in the plugin's config map.
+- **A plugin cannot set a credential header itself.** A request in which the plugin sets `Authorization`,
+  `PRIVATE-TOKEN` or another header netguard counts as a credential is refused with `bad_request`, on every
+  host. Only credentials the host injects use a host's authenticated rate budget.
+- **Bind a credential only to a host that does not reflect the credential header** (in a body, a header, an
+  error page). The host redacts echoes of the token as `[REDACTED]`, refuses `Range` requests and compressed
   bodies it cannot redact on credentialed requests, but that is best effort: an encoded or transformed echo
   reaches the plugin. See the [ADR 0011 amendment](adr/0011-wasm-plugin-host-prototype.md#amendment-2026-11-04-145-operator-allowed_hosts-and-host-injected-credentials).
 - Credentials live only here, as an environment variable name; never in the watch file or the plugin config
   map. A `token:` key is an unknown key and an error. An unset or empty variable is a `config check` warning,
   and requests to that host then fail, as do tokens shorter than 8 bytes. The variable is read once, at
   start: a rotated token needs a restart. A secret-store reference will be an additional key (#75).
-- There are no `ANGELIA_PLUGINS_*` environment overrides.
+
+### `angelia config check` output
+
+`config check` lists every plugin with the hosts it may reach and the hosts that get a credential. It names
+the variable that holds a token, never the token:
+
+```
+configuration OK
+plugins in /var/lib/angelia/plugins: 1
+  crates
+    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants)
+    credentials:
+      crates-mirror.example.com:443  Authorization: Bearer <token from $CRATES_MIRROR_TOKEN>
+      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $MIRROR_ALT_TOKEN, not set>
+```
+
+An invalid `grants.yaml` or manifest fails the check with `invalid plugins: ...`.
 
 ## `angelia serve`
 

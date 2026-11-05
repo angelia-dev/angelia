@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -28,7 +29,10 @@ const (
 	DefaultDSN       = "sqlite:///var/lib/angelia/angelia.db"
 	DefaultLogLevel  = "info"
 	DefaultLogFormat = "json"
-	envPrefix        = "ANGELIA_"
+	// DefaultDataDir is the data directory when database.dsn is not a
+	// sqlite file (whose directory is the data directory otherwise).
+	DefaultDataDir = "/var/lib/angelia"
+	envPrefix      = "ANGELIA_"
 )
 
 // Valid roles, matching `angelia serve --roles`.
@@ -66,16 +70,26 @@ type Config struct {
 	Log      Log               `yaml:"log"`
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
-	Plugins  map[string]Plugin `yaml:"plugins"`
 	API      API               `yaml:"api"`
+	// PluginsDir holds one folder per installed plugin,
+	// <plugins_dir>/<kind>/ with manifest.json, plugin.wasm and grants.yaml
+	// (ADR 0025); read it with LoadPlugins. Load sets it to
+	// <data dir>/plugins when it is not configured.
+	PluginsDir string `yaml:"plugins_dir"`
 
 	// Tokens holds the values read from each source's token_env variable,
 	// keyed by kind. It is not part of the file format; use SourceToken.
-	Tokens map[string]secret `yaml:"-"`
-	// PluginTokens holds the values of plugins.<kind>.credentials.<host>.token_env.
-	// It is not part of the file format; use PluginToken.
-	PluginTokens map[string]secret `yaml:"-"`
-	warnings     []string
+	Tokens   map[string]secret `yaml:"-"`
+	warnings []string
+}
+
+// fileConfig is the instance file: the Config plus the keys that moved
+// out of it and are rejected with a pointer to their new place.
+type fileConfig struct {
+	Config `yaml:",inline"`
+	// Plugins is the plugins.<kind> map of #145, moved to
+	// <plugins_dir>/<kind>/grants.yaml (ADR 0025).
+	Plugins yaml.Node `yaml:"plugins"`
 }
 
 // Instance identifies this Angelia instance. Name is the <instance> part of
@@ -147,15 +161,25 @@ type Source struct {
 // Default returns the configuration used when nothing is configured.
 func Default() *Config {
 	return &Config{
-		Instance: Instance{Name: DefaultInstance},
-		Listen:   DefaultListen,
-		Roles:    []string{"all"},
-		Database: Database{DSN: DefaultDSN},
-		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
-		HTTP:     HTTP{UserAgent: "angelia/" + buildinfo.Version()},
-		Sources:  map[string]Source{},
-		Tokens:   map[string]secret{},
+		Instance:   Instance{Name: DefaultInstance},
+		Listen:     DefaultListen,
+		Roles:      []string{"all"},
+		Database:   Database{DSN: DefaultDSN},
+		Log:        Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		HTTP:       HTTP{UserAgent: "angelia/" + buildinfo.Version()},
+		Sources:    map[string]Source{},
+		PluginsDir: defaultPluginsDir(DefaultDSN),
+		Tokens:     map[string]secret{},
 	}
+}
+
+// defaultPluginsDir is <data dir>/plugins: the data directory is the
+// directory of a sqlite database file, else DefaultDataDir.
+func defaultPluginsDir(dsn string) string {
+	if p, err := (Database{DSN: dsn}).SQLitePath(); err == nil {
+		return filepath.Join(filepath.Dir(p), "plugins")
+	}
+	return filepath.Join(DefaultDataDir, "plugins")
 }
 
 // Options controls Load.
@@ -173,18 +197,28 @@ func Load(ctx context.Context, opts Options) (*Config, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 	cfg := Default()
+	cfg.PluginsDir = ""
+	var moved *movedKey
 	if opts.Path != "" {
 		data, err := os.ReadFile(opts.Path)
 		if err != nil {
 			return nil, fmt.Errorf("read config file: %w", err)
 		}
-		if err := decode(bytes.NewReader(data), opts.Path, cfg); err != nil {
+		if moved, err = decode(data, opts.Path, cfg); err != nil {
 			return nil, err
 		}
 	}
 	env := environMap(opts.Environ)
 	if err := applyEnv(cfg, env); err != nil {
 		return nil, err
+	}
+	if cfg.PluginsDir == "" {
+		cfg.PluginsDir = defaultPluginsDir(cfg.Database.DSN)
+	} else if filepath.IsAbs(cfg.PluginsDir) {
+		cfg.PluginsDir = filepath.Clean(cfg.PluginsDir)
+	}
+	if moved != nil {
+		return nil, pluginsMovedError(opts.Path, moved, cfg.PluginsDir)
 	}
 	cfg.Roles = dedupe(cfg.Roles)
 	if err := cfg.Validate(); err != nil {
@@ -194,31 +228,83 @@ func Load(ctx context.Context, opts Options) (*Config, error) {
 	return cfg, nil
 }
 
-func decode(r io.Reader, path string, cfg *Config) error {
-	dec := yaml.NewDecoder(r)
+// movedKey is a plugins key found in the instance file.
+type movedKey struct {
+	line  int
+	kinds []string
+}
+
+// decode reads the instance file into cfg. It returns the plugins key,
+// which moved to the plugin folders, so that Load can name the new
+// location once plugins_dir is known.
+func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
+	f := fileConfig{Config: *cfg}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-		var te *yaml.TypeError
-		if errors.As(err, &te) {
-			errs := make([]error, 0, len(te.Errors))
-			for _, m := range te.Errors {
-				if g := unknownRE.FindStringSubmatch(m); g != nil {
-					m = fmt.Sprintf("%s: unknown key %q", g[1], g[2])
-				}
-				errs = append(errs, fmt.Errorf("%s: %s", path, m))
-			}
-			return errors.Join(errs...)
-		}
-		return fmt.Errorf("%s: %w", path, err)
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+		return nil, yamlError(path, err)
 	}
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: multiple YAML documents are not supported", path)
+		return nil, fmt.Errorf("%s: multiple YAML documents are not supported", path)
 	}
+	*cfg = f.Config
 	if cfg.Sources == nil {
 		cfg.Sources = map[string]Source{}
 	}
-	return nil
+	if f.Plugins.Kind == 0 {
+		return nil, nil
+	}
+	m := &movedKey{line: f.Plugins.Line}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err == nil && len(root.Content) == 1 && root.Content[0].Kind == yaml.MappingNode {
+		top := root.Content[0].Content
+		for i := 0; i+1 < len(top); i += 2 {
+			if top[i].Value == "plugins" {
+				m.line = top[i].Line
+			}
+		}
+	}
+	if f.Plugins.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(f.Plugins.Content); i += 2 {
+			// Only valid kind names are echoed, never another value.
+			if k := f.Plugins.Content[i].Value; pluginKindRE.MatchString(k) {
+				m.kinds = append(m.kinds, k)
+			}
+		}
+	}
+	return m, nil
+}
+
+// yamlError names the file and line of a decoding error, and reports
+// unknown keys without Go type names.
+func yamlError(path string, err error) error {
+	var te *yaml.TypeError
+	if errors.As(err, &te) {
+		errs := make([]error, 0, len(te.Errors))
+		for _, m := range te.Errors {
+			if g := unknownRE.FindStringSubmatch(m); g != nil {
+				m = fmt.Sprintf("%s: unknown key %q", g[1], g[2])
+			}
+			errs = append(errs, fmt.Errorf("%s: %s", path, m))
+		}
+		return errors.Join(errs...)
+	}
+	return fmt.Errorf("%s: %w", path, err)
+}
+
+// pluginsMovedError refuses the plugins.<kind> keys of #145: they moved to
+// <plugins_dir>/<kind>/grants.yaml (ADR 0025).
+func pluginsMovedError(path string, m *movedKey, dir string) error {
+	where := make([]string, 0, len(m.kinds))
+	for _, k := range m.kinds {
+		where = append(where, filepath.Join(dir, k, GrantsFile))
+	}
+	if len(where) == 0 {
+		where = []string{filepath.Join(dir, "<kind>", GrantsFile)}
+	}
+	return fmt.Errorf("%s: line %d: plugins: moved to the plugin's folder: write allowed_hosts and credentials in %s (see docs/configuration.md, ADR 0025)",
+		path, m.line, strings.Join(where, ", "))
 }
 
 func dedupe(in []string) []string {
@@ -256,6 +342,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	str("LOG_LEVEL", &cfg.Log.Level)
 	str("LOG_FORMAT", &cfg.Log.Format)
 	str("HTTP_USER_AGENT", &cfg.HTTP.UserAgent)
+	str("PLUGINS_DIR", &cfg.PluginsDir)
 	if v, ok := env[envPrefix+"ROLES"]; ok {
 		cfg.Roles = nil
 		for _, r := range strings.Split(v, ",") {
@@ -389,7 +476,9 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	c.validatePlugins(bad)
+	if !filepath.IsAbs(c.PluginsDir) {
+		bad("plugins_dir %q: must be an absolute path", c.PluginsDir)
+	}
 	for i, n := range c.API.AllowedEnv {
 		switch {
 		case !envNameRE.MatchString(n):
@@ -440,7 +529,6 @@ func (c *Config) resolveTokens(env map[string]string) {
 		}
 		c.Tokens[k] = secret(env[name])
 	}
-	c.resolvePluginTokens(env)
 }
 
 // Warnings lists non-fatal findings, such as a token_env naming an unset variable.

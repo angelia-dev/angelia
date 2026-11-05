@@ -48,9 +48,11 @@ func TestRedirectDowngradeRefused(t *testing.T) {
 			plain.ServeHTTP(w, r)
 		}),
 	})
-	s := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{HTTPClient: hc})
-	_, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/start",
-		"authorization", "Bearer s3cret"), source.FetchState{})
+	s := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{
+		HTTPClient:  hc,
+		Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer", Token: staticToken(testToken)}},
+	})
+	_, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/start"), source.FetchState{})
 	if err == nil || !strings.Contains(err.Error(), "downgrades https") {
 		t.Fatalf("err = %v, want the downgrade refused", err)
 	}
@@ -62,7 +64,7 @@ func TestRedirectDowngradeRefused(t *testing.T) {
 	}
 }
 
-// A redirect to another allowed host that is not a subdomain loses the
+// A redirect to another allowed host does not carry the injected
 // Authorization header.
 func TestRedirectToOtherAllowedHostStripsAuthorization(t *testing.T) {
 	other := &authRecorder{}
@@ -70,9 +72,11 @@ func TestRedirectToOtherAllowedHostStripsAuthorization(t *testing.T) {
 		"allowed.test": redirectHandler("https://other.test/final"),
 		"other.test":   other,
 	})
-	s := newHostile(t, hostileManifest(t, "allowed.test", "other.test"), wasm.Options{HTTPClient: hc})
-	res, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/",
-		"authorization", "Bearer s3cret"), source.FetchState{})
+	s := newHostile(t, hostileManifest(t, "allowed.test", "other.test"), wasm.Options{
+		HTTPClient:  hc,
+		Credentials: []wasm.Credential{{Host: "allowed.test", Scheme: "Bearer", Token: staticToken(testToken)}},
+	})
+	res, err := s.List(t.Context(), hostileTarget("fetch", "url", "https://allowed.test/"), source.FetchState{})
 	if err != nil {
 		t.Fatal(err)
 	}

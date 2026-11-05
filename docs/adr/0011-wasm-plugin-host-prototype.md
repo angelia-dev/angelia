@@ -235,6 +235,51 @@ and errors, resolver errors, merged hosts, authenticated budget) and `internal/c
    `config check` or an install command print them?
 5. Plain http to a bound host is refused. Allow it for a mirror on a private network? Recommendation: no.
 
+## Amendment (2026-11-05, #184): answers to the open questions of the #145 amendment
+
+The maintainer answered the five open questions of the #145 amendment on 2026-11-04 (#184). The text above
+is unchanged. Where it conflicts with this section, this section wins. The plugin keys are no longer
+draft: their format is the one in [ADR 0025](0025-plugin-folder-and-grants-file.md).
+
+1. **Where the keys live: in the plugin's folder.** `allowed_hosts` and `credentials` move from
+   `plugins.<kind>` in the instance config to `<plugins_dir>/<kind>/grants.yaml`, next to the plugin's
+   `manifest.json` and `plugin.wasm`. The layout, the `plugins_dir` key, the file's rules and its mode check
+   are in [ADR 0025](0025-plugin-folder-and-grants-file.md) (decided 2026-11-05). Nobody used the draft keys,
+   so this breaks no one. An instance config with a `plugins` key now fails and points to the new file.
+   **#88** (loading plugins from disk) inherits this layout. The `configuration.md` anchor that the #145
+   amendment links to is now [Installed plugins](../configuration.md#installed-plugins).
+2. **A `header:` key: yes, limited to credential headers.** `credentials.<host[:port]>.header` names the
+   header that carries the token. The default is `Authorization`. Otherwise it must be a header netguard
+   counts as a credential: `netguard.IsCredentialHeader`, today `Authorization` and `PRIVATE-TOKEN`. In Go,
+   `wasm.Credential.Header` also accepts one of `wasm.Options.ExtraAuthHeaders` (below). `scheme` applies to
+   `Authorization` only. Injection, the https-only rule, the Range and encoding refusals and redaction are
+   the same for every header. The header is set on the transport's copy of each hop, so net/http's redirect
+   handling never carries it to another host, even though net/http would forward a custom header.
+3. **Rate budget: only host-injected credentials count, so the credential headers are reserved for the
+   host.** A plugin that sets `Authorization`, `PRIVATE-TOKEN` or one of netguard's `ExtraAuthHeaders` itself
+   gets `bad_request` ("reserved for credentials the host injects"), on every host and whatever the value.
+   The request is never sent. Its requests can therefore no longer claim a host's authenticated budget with
+   a dummy value. Refusing rather than stripping follows the Range rule above: a plugin that loses its
+   header silently would drop to the anonymous budget, and its author would see confusing 401s or rate
+   limits instead of a clear error. The netguard client's `ExtraAuthHeaders` are passed to the host as
+   `wasm.Options.ExtraAuthHeaders`, so they are reserved too. This supersedes the answer to §10 Q1 above
+   ("the plugin sets them like any header"): auth headers now come only from the operator's credentials.
+   The `crates` example plugin no longer reads a `token` config key or sets `Authorization`, and its
+   manifest no longer declares `token`. Its `.wasm` was rebuilt with `bench/plugins/build.sh`, and
+   `--check` reproduces it byte for byte. `TestCratesPaginationETagAuth` now injects the credential.
+4. **Showing the hosts: yes, in `config check`.** `angelia config check` lists each plugin in `plugins_dir`
+   with its allowed hosts (each marked `manifest` or `grants`) and its credential hosts (`host:port`,
+   header, scheme and the variable name, and whether it is set). It never prints a token value. The
+   `wasm plugin installed` log line and `Source.Hosts()` stay.
+5. **Plain http: keep refusing.** A credential is never sent over plain http, even to a mirror on a private
+   network. No change. The behaviour stays tested in `TestPluginCannotReadOrForwardCredential` ("not over
+   plain http") and `TestCredentialCustomHeader`.
+
+Tested in `internal/plugin/wasm/credentials_test.go` (`TestPluginCredentialHeadersRefused`,
+`TestPluginCannotClaimAuthenticatedBudget`, `TestCredentialCustomHeader`, `TestInstallErrors`,
+`TestInjectedCredentialUsesAuthenticatedBudget`), `internal/plugin/wasm/crates_test.go`,
+`internal/config/plugins_test.go` and `cmd/angelia/config_test.go`.
+
 ## Consequences
 
 ### Positive

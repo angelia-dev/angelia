@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -48,6 +49,12 @@ type Options struct {
 	// Credentials are injected by the host into the requests to the hosts
 	// they are bound to; the host never hands them to the plugin. Optional.
 	Credentials []Credential
+	// ExtraAuthHeaders must be the netguard client's
+	// netguard.Config.ExtraAuthHeaders. Like Authorization and
+	// PRIVATE-TOKEN, these headers make netguard use a host's
+	// authenticated budget, so a plugin may not set them; a Credential
+	// may name one as its Header. Optional.
+	ExtraAuthHeaders []string
 	// Logger receives the plugin's log host function calls and the host's
 	// warnings. Default: discard.
 	Logger *slog.Logger
@@ -135,6 +142,7 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 
+	opts.ExtraAuthHeaders = slices.Clone(opts.ExtraAuthHeaders)
 	s := &Source{
 		kind: m.Kind,
 		opts: opts,

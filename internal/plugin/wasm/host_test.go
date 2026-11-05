@@ -124,7 +124,7 @@ func TestHTTPRequestFeatures(t *testing.T) {
 		"allowed.test": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			b, _ := io.ReadAll(r.Body)
 			mu.Lock()
-			gotBody, gotAuth, gotMethod = string(b), r.Header.Get("Authorization"), r.Method
+			gotBody, gotAuth, gotMethod = string(b), r.Header.Get("X-Trace"), r.Method
 			mu.Unlock()
 			w.WriteHeader(http.StatusTeapot)
 			_, _ = io.WriteString(w, strings.Repeat("x", 100))
@@ -133,15 +133,15 @@ func TestHTTPRequestFeatures(t *testing.T) {
 	s := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{HTTPClient: hc})
 
 	res, err := s.List(t.Context(), hostileTarget("fetch", "url", "http://allowed.test/",
-		"method", "post", "body", `{"q":1}`, "authorization", "Bearer abc"), source.FetchState{})
+		"method", "post", "body", `{"q":1}`, "h:X-Trace", "abc"), source.FetchState{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	method, body, auth := gotMethod, gotBody, gotAuth
 	mu.Unlock()
-	if res.Versions[0].Raw != "418" || method != http.MethodPost || body != `{"q":1}` || auth != "Bearer abc" {
-		t.Fatalf("status %s, upstream saw %s %q auth %q", res.Versions[0].Raw, method, body, auth)
+	if res.Versions[0].Raw != "418" || method != http.MethodPost || body != `{"q":1}` || auth != "abc" {
+		t.Fatalf("status %s, upstream saw %s %q X-Trace %q", res.Versions[0].Raw, method, body, auth)
 	}
 
 	small := newHostile(t, hostileManifest(t, "allowed.test"), wasm.Options{HTTPClient: hc, MaxResponseBytes: 10})

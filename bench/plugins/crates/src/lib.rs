@@ -3,15 +3,15 @@
 //!
 //! All HTTP goes through the host's `http_request` (netguard, rate limits,
 //! `allowed_hosts`). It shows the three patterns of architecture.md §10 Q1:
-//!   - auth headers: an optional `token` plugin config value is sent as
-//!     `Authorization`;
+//!   - auth headers: the plugin sets none. A credential the operator binds
+//!     to a host in the plugin's grants.yaml is injected by the host, which
+//!     refuses credential headers set by the plugin (ADR 0011, #184);
 //!   - ETags: the first page is a conditional request built from the fetch
 //!     state; a 304 ends the call with `not_modified`;
 //!   - pagination: `meta.next_page` is followed, up to `MAX_PAGES` pages.
 //!
 //! Plugin config (Extism config map):
-//!   - `base_url`: default `https://crates.io`;
-//!   - `token`: optional crates.io API token.
+//!   - `base_url`: default `https://crates.io`.
 
 use std::collections::BTreeMap;
 
@@ -96,9 +96,6 @@ pub fn list(Json(input): Json<ListInput>) -> FnResult<Json<ListOutput>> {
 
     let mut headers = BTreeMap::new();
     headers.insert("Accept".to_string(), "application/json".to_string());
-    if let Some(token) = config::get("token")? {
-        headers.insert("Authorization".to_string(), token);
-    }
 
     let mut versions = Vec::new();
     let mut state = FetchState::default();
