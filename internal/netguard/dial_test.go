@@ -32,6 +32,22 @@ func dialClient(t *testing.T, resolver Resolver, allow []netip.Prefix, proxy fun
 	return c.HTTPClient()
 }
 
+// needLocalhost skips a test when the system resolver does not answer
+// "localhost" with loopback addresses only: the rebinding tests use it as
+// the name whose dial-time answer differs from the stub's.
+func needLocalhost(t *testing.T) {
+	t.Helper()
+	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost")
+	if err != nil || len(as) == 0 {
+		t.Skipf("localhost does not resolve here: %v", err)
+	}
+	for _, a := range as {
+		if !a.Unmap().IsLoopback() {
+			t.Skipf("localhost resolves to %s, not loopback", a)
+		}
+	}
+}
+
 func countingServer(t *testing.T, body string) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var hits atomic.Int64
@@ -56,6 +72,7 @@ func port(t *testing.T, srv *httptest.Server) string {
 // resolver answers a public address, the dialer's own lookup of "localhost"
 // answers 127.0.0.1, where a server is listening: the dial is refused.
 func TestDialRefusesRebindingToLoopback(t *testing.T) {
+	needLocalhost(t)
 	srv, hits := countingServer(t, "reached")
 	hc := dialClient(t, fakeResolver{"localhost": addrs("203.0.113.10")}, nil, noProxy)
 	resp, err := hc.Get("http://localhost:" + port(t, srv) + "/")
@@ -76,6 +93,7 @@ func TestDialRefusesRebindingToLoopback(t *testing.T) {
 
 // An allowlisted CIDR is accepted by the URL check and at dial time.
 func TestDialAllowlistedCIDR(t *testing.T) {
+	needLocalhost(t)
 	srv, hits := countingServer(t, "reached")
 	allow := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
 	hc := dialClient(t, fakeResolver{"localhost": addrs("127.0.0.1")}, allow, noProxy)

@@ -12,6 +12,21 @@ import (
 // ErrBlocked is wrapped by every error for a destination the guard refuses.
 var ErrBlocked = errors.New("destination address not allowed")
 
+// ErrInvalidURL is matched (errors.Is) by the guard's errors for a URL that
+// no retry can fix: a scheme other than http(s), no host, or a host that is
+// a non-canonical IPv4 literal. A failed DNS lookup does not match it.
+var ErrInvalidURL = errors.New("URL not allowed")
+
+// invalidURLError keeps its own message and matches ErrInvalidURL.
+type invalidURLError struct{ msg string }
+
+func (e invalidURLError) Error() string      { return e.msg }
+func (invalidURLError) Is(target error) bool { return target == ErrInvalidURL }
+
+func invalidURL(format string, a ...any) error {
+	return invalidURLError{fmt.Sprintf(format, a...)}
+}
+
 // BlockedError reports the address that was refused.
 type BlockedError struct {
 	Host string
@@ -112,11 +127,11 @@ var blockedPrefixes = []netip.Prefix{
 // every address it returns must pass; a lookup failure is an error.
 func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
-		return fmt.Errorf("netguard: scheme %q not allowed", u.Scheme)
+		return invalidURL("netguard: scheme %q not allowed", u.Scheme)
 	}
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("netguard: URL %q has no host", u.Redacted())
+		return invalidURL("netguard: URL %q has no host", u.Redacted())
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return g.CheckAddr(addr.String(), addr)
@@ -124,7 +139,7 @@ func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 	if isNumericHost(host) {
 		// Decimal, octal, hex or short IPv4 forms such as 2130706433,
 		// 0x7f000001 or 127.1: some resolvers read them as addresses.
-		return fmt.Errorf("netguard: host %q is not a canonical IP address", host)
+		return invalidURL("netguard: host %q is not a canonical IP address", host)
 	}
 	addrs, err := g.resolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
@@ -139,6 +154,17 @@ func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 		}
 	}
 	return nil
+}
+
+// NonCanonicalIP reports whether host (without port or brackets) is an IP
+// address in a form other than the canonical one, such as 2130706433,
+// 0x7f000001 or 127.1, which CheckURL refuses with ErrInvalidURL. Sinks use
+// it to reject such a URL when it is configured.
+func NonCanonicalIP(host string) bool {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return false
+	}
+	return isNumericHost(host)
 }
 
 // isNumericHost reports whether the last label of host is all digits or a

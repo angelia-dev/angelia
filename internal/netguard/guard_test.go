@@ -187,3 +187,23 @@ func TestGuardAddressSpellings(t *testing.T) {
 		}
 	}
 }
+
+// URL errors that only a configuration change can fix match ErrInvalidURL
+// (#108 review SR1); a DNS failure does not.
+func TestGuardInvalidURLErrors(t *testing.T) {
+	g := NewGuard(nil, fakeResolver{})
+	for _, raw := range []string{"ftp://h/", "http:///x", "http://2130706433/", "http://0x7f000001/", "http://127.1/"} {
+		u, _ := url.Parse(raw)
+		if err := g.CheckURL(t.Context(), u); !errors.Is(err, ErrInvalidURL) || errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: %v, want ErrInvalidURL", raw, err)
+		}
+	}
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "https", Host: "unknown.example"}); err == nil || errors.Is(err, ErrInvalidURL) {
+		t.Errorf("DNS failure: %v, want an error that is not ErrInvalidURL", err)
+	}
+	for host, want := range map[string]bool{"2130706433": true, "0x7f000001": true, "127.1": true, "127.0.0.1": false, "::1": false, "hooks.example.com": false, "10.0.0.1": false} {
+		if got := NonCanonicalIP(host); got != want {
+			t.Errorf("NonCanonicalIP(%q) = %v", host, got)
+		}
+	}
+}
