@@ -266,7 +266,7 @@ func TestRequestContent(t *testing.T) {
 		r.Event.Envelope.ID != "E0000" || r.Event.Envelope.Subject != "pypi:requests@2.33.0" ||
 		string(r.Rendered.Body) != string(payload("E0000")) || r.Rendered.ContentType != sink.CloudEventsContentType ||
 		r.Rendered.Templated || sink.CloudEventsContentType != "application/cloudevents+json; charset=utf-8" ||
-		r.IdempotencyKey != "E0000:s1" || r.DeliveryID != "DE0000" || r.SubscriptionID != "s1" || r.Attempt != 1 {
+		r.IdempotencyKey != "E0000:s1" || r.DeliveryID != "DE0000" || r.SubscriptionID != "s1" || r.SinkID != "k1" || r.Attempt != 1 {
 		t.Errorf("request = %+v", r)
 	}
 	if del := delivery(t, st, "E0000"); del.Status != store.DeliveryDelivered || del.LastError != "" {

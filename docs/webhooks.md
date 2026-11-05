@@ -43,8 +43,9 @@ A missing, empty or invalid value does not stop the instance: each delivery fail
 Fix the variable and restart; the next retry succeeds.
 
 Without `secret_env` the sink sends **unsigned** deliveries. `angelia config check --watches` and
-`angelia serve --watches` warn about it, and the dispatcher logs one warning per unsigned sink the
-first time it delivers for it, so sinks created through the API are reported too.
+`angelia serve --watches` warn about it, and, once the dispatcher role is wired
+([#198](https://github.com/angelia-dev/angelia/issues/198)), the sink logs one warning per unsigned sink
+the first time it delivers for it, so sinks created through the API are reported too.
 
 ### Rotating the secret
 

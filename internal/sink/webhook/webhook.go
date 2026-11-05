@@ -173,7 +173,7 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	}
 	var keys [][]byte
 	if cfg.SecretEnv == "" {
-		s.warnUnsigned(req.SinkID, origin)
+		s.warnUnsigned(ctx, req.SinkID, origin)
 	} else {
 		v, ok := req.Secrets[SecretPointer]
 		if !ok {
@@ -216,12 +216,18 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	return res, nil
 }
 
-// warnUnsigned logs once per sink id that the sink delivers unsigned.
-func (s *Sink) warnUnsigned(sinkID, origin string) {
-	if _, seen := s.unsigned.LoadOrStore(sinkID, struct{}{}); seen {
+// warnUnsigned logs once per sink id that the sink delivers unsigned. A
+// request without a sink id is keyed by its destination, so that unsigned
+// sinks are never folded into one key.
+func (s *Sink) warnUnsigned(ctx context.Context, sinkID, origin string) {
+	key := sinkID
+	if key == "" {
+		key = "origin:" + origin
+	}
+	if _, seen := s.unsigned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	s.log.Warn("webhook sink has no secret_env: deliveries are unsigned and receivers cannot verify them",
+	s.log.WarnContext(ctx, "webhook sink has no secret_env: deliveries are unsigned and receivers cannot verify them",
 		"sink", sinkID, "destination", origin)
 }
 
