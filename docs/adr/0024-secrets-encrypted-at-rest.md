@@ -27,17 +27,19 @@ What the code does today (main at `3e36650`):
   `Options.DecryptConfig` is a pass-through (maintainer decision on #107) and `internal/api/sinks.go`
   carries `TODO(#75)`. The watch-file apply and `PUT /v1/sinks` detect no-op updates with
   `bytes.Equal` on that column.
-- Resolved env values live in `config.secret`, a type that prints `[REDACTED]` under every `fmt` verb,
-  `slog` and JSON. `cmd/angelia/clientconfig.go` refuses a client config file that holds a token and
-  is readable by group or others.
+- Env values are resolved in two places: instance-config tokens at startup into `config.Tokens` /
+  `PluginTokens` (type `config.secret`, which prints `[REDACTED]` under every `fmt` verb, `slog` and
+  JSON), and the CLI's `ANGELIA_TOKEN` through `os.Getenv` in `cmd/angelia/clientconfig.go`, which also
+  refuses a client config file holding a token that group or others can read.
+- `internal/api` writes audit records (`Server.audit`, `audit=true`, with the principal) for replays.
 - `internal/secrets` is an empty package. Only SQLite migrations exist (next free: `00015`); the
   Postgres store is not written yet, so the design must be portable but only SQLite ships with it.
 
 Upcoming stories that need stored secrets: the webhook sink's `whsec_` signing secret (#108,
-ADR 0023 drafted in parallel), github-dispatch tokens, chat sinks whose URL *is* the credential
-(Slack, Discord, shoutrrr URLs), and private-registry credentials (#111: "auth referenced by secret
-name (stored with S-secrets)"). Env references stay useful, but they force every secret into the
-process environment of every node and cannot be managed through the API.
+ADR 0023), github-dispatch tokens, chat sinks whose URL carries a token (Slack, Discord, shoutrrr), and
+private-registry credentials (#111: "auth referenced by secret name (stored with S-secrets)"). Env
+references stay useful, but they put every secret into the environment of every node and cannot be
+managed through the API.
 
 ## Decision
 
@@ -45,83 +47,112 @@ process environment of every node and cannot be managed through the API.
 
 | Item | Stored by this ADR? | How |
 |---|---|---|
-| Webhook signing secret `whsec_…` (#108) | yes | `secret_ref` next to `secret_env` (exactly one) |
+| Webhook signing secret `whsec_…` (#108) | yes | `secret_ref` or `secret_env`, **at most one**; neither = unsigned, still allowed (ADR 0023) |
 | github-dispatch / GitHub App tokens | yes | `token_ref` / `token_env` |
-| Chat URLs with an embedded token (Slack, Discord, shoutrrr) | yes | the **whole URL** is the secret: `url_ref` |
-| Sensitive custom header values (`Authorization`, …) | yes | per-header reference; shape decided by ADR 0023 |
-| Registry credentials (#111): bearer, basic password, npm `_authToken` | yes | `token_ref` / `password_ref` on the per-watch or per-source auth block |
+| Chat sinks (Slack, Discord, shoutrrr) | yes | a **plain base URL** (host visible and checked at write) plus a referenced token or path segment (`token_ref`); no whole-URL secret |
+| Registry credentials (#111): bearer, basic password, npm `_authToken` | yes | `token_ref` / `password_ref` on the per-watch or per-source auth block; **host binding mandatory** (§2) |
 | Plugin host credentials (#145) | later, additive | `token_ref` beside `token_env` |
+| Custom credential headers (`Authorization`, `X-Api-Key`) | **future work** | deferred out of #108; a later story adds a reference shape |
 | API tokens (#72) | **no** | stored as a **hash** (SHA-256 of 256 random bits, #72's call): the server never needs the value back |
 | Bootstrap admin token, client config token (#74) | no | printed once / client-side file with the 0600 check |
 | The master key, DB DSN password, `OTEL_*` headers | no | instance config or env, outside the database |
-| `*_env` and `*_ref` names, sink names, URL hosts | no | references and metadata, returned by the API |
+| `*_env` and `*_ref` names, sink names, URL hosts | no | references and metadata |
 
-A secret is an **opaque byte string** of at most 64 KiB, stored once under a **name** and referenced
-from configuration by that name. Its format (for example, several space-separated `whsec_` values for
-signature rotation) belongs to the consumer: ADR 0023 owns the webhook secret format.
+A secret is an **opaque byte string** of at most 64 KiB, stored once under a **name**, with optional
+**`hosts`** metadata (§2), and referenced from configuration by its name. Its format belongs to the
+consumer. For the webhook, ADR 0023 owns it: one value holding one to three space-separated `whsec_`
+secrets, the first signing and all verifying. Rotation is a new write of that value. There are no
+per-secret key ids or expiry, and the value is never returned.
+
+If a future kind truly needs a whole URL as a secret, its schema marks the property, and the core
+validates the **resolved** URL at delivery before calling the sink: scheme `https` (or `http` only where
+the SSRF allowlist allows it), no userinfo, host allowed by netguard and by the secret's `hosts`. A
+failure is a retryable error whose message carries only the scheme and host.
 
 **Marking.** A configuration key whose name ends in `_ref` names a stored secret, exactly as a key ending
-in `_env` names an environment variable. The server validates the name (`^[a-z0-9][a-z0-9._-]{0,62}$`),
-never masks it and never treats it as a value. `x-angelia-secret: true` in a kind's `config_schema`
-keeps its meaning from spec decision 26 (a literal secret value: masked in every response, refused in
-API writes) as a fail-closed backstop; with references, no shipped kind needs it. `writeOnly: true` is
-used on the `value` property of the secret write request (the spec's Spectral rule already requires it
-for secret-named properties). See open question 1 for the alternative the spec anticipated.
+in `_env` names an environment variable. The server validates the name (`^[a-z0-9][a-z0-9._-]{0,62}$`)
+and never treats it as a value. This needs code: `maskStrings` in `internal/api/sinks.go` skips only
+`_env` keys today and must skip `_ref` too, and the watch-file parser must accept `*_ref` keys through
+`secretFree`. `x-angelia-secret: true` in a kind's `config_schema` keeps its meaning from spec
+decision 26 (a literal secret value: masked in every response, refused in API writes) as a fail-closed
+backstop; no shipped kind needs it. The secret write request's `value` and `value_base64` carry
+`writeOnly: true`. The spec's existing Spectral rule matches only secret-*named* properties and does not
+fire on `value`, so the spec PR adds an **explicit rule**: those two properties must be `writeOnly` and
+must not appear in any response schema or example.
 
-### 2. Crypto
+### 2. Who may reference a secret
+
+A reference sends a secret to wherever its config points, so `*_ref` gets two guards. Spec decision 25
+(`api.allowed_env`) does the same job for `*_env`.
+
+- **Admin scope for references.** An API write that **adds, removes or changes the value of any
+  `*_ref` key** needs `admin`. That covers watches and subscriptions as well as sinks. On an endpoint whose
+  scope is `write`, such a request from a `write` token gets `403` with `required_scope: admin`. Writes
+  that leave every `*_ref` unchanged keep the endpoint's scope. Watch-file apply goes through the
+  same rule (the apply token must be `admin` when the diff touches a `*_ref`).
+- **Host binding.** A secret may carry `hosts`: a list in the syntax of #145's credential keys, `host`
+  (port 443) or `host:port`, the host a lower-case hostname (IDNA as punycode) or an IP literal, with no
+  wildcards. `hosts` is **mandatory** for a secret referenced from a source or registry credential
+  (#111 `token_ref`, `password_ref`); the write of such a reference is refused with
+  `422 secret-host-binding-required` if the secret has none. It is optional for sink secrets. With no
+  `hosts`, the admin-only rule above is the guard.
+- **The check.** Resolution happens before any request is built. A bound secret is resolved only for a
+  destination whose canonical host (lower-cased, punycode, default port made explicit: 443 for https,
+  80 for http) **equals** one entry of `hosts`. For a sink the destination is the kind's URL property,
+  marked `x-angelia-destination: true` in its `config_schema`. For a source it is the target's base URL.
+  netguard then re-checks **every outgoing request that carries the secret**, including each redirect hop
+  a source follows. Sinks follow none (ADR 0017 §7). A request whose `URL.Host` does not match is not
+  sent. A mismatch is an error naming the secret and the host, never the value. For a sink it is
+  retryable, since the operator can fix the binding. For a source it is a fetch error.
+
+### 3. Crypto
 
 - **AES-256-GCM from the Go standard library** (`crypto/aes`, `crypto/cipher`, `crypto/rand`,
-  `crypto/hkdf`, `crypto/sha256`). No new dependency; FIPS-140-capable through Go's native module.
-- The configured 32-byte **master key** is not used directly: the data key is
-  `HKDF-SHA256(master, salt = nil, info = "angelia secrets v1 aes-256-gcm")`, so a later use of the same
-  master (for example a MAC) gets an independent key.
-- **Key id**: the first 8 bytes of `HKDF-SHA256(master, info = "angelia secrets v1 key id")`, shown in
-  hex. It identifies a key without revealing it and lets the server pick the right key during rotation.
-- **Nonce**: 12 bytes from `crypto/rand` per seal. Random nonces are safe far beyond this workload (the
-  NIST bound is 2^32 seals per key; an instance writes a handful of secrets per day). Never a counter,
-  never derived from the row.
-- **Envelope** (stored in `secret.ciphertext`):
-
-  ```
-  byte 0      version = 0x01
-  bytes 1–8   key id
-  bytes 9–20  nonce
-  bytes 21–   GCM ciphertext || 16-byte tag
-  ```
-
-- **AAD** binds the ciphertext to its row and to its header:
-  `"angelia/secret/v1" 0x00 || envelope[0:9] || 0x00 || secret.id || 0x00 || secret.name`. Copying a
-  ciphertext into another row, renaming a row in SQL, or editing the version or key-id byte makes `Open`
-  fail. A rename through the API re-seals with the new name.
+  `crypto/hkdf`, `crypto/sha256`). No new dependency.
+- The data key is `HKDF-SHA256(master, salt = nil, info = "angelia secrets v1 aes-256-gcm")`, so a later
+  use of the same master (for example a MAC) gets an independent key.
+- **Key id**: the first 8 bytes of `HKDF-SHA256(master, info = "angelia secrets v1 key id")`, in hex.
+- **Nonce**: 12 bytes from `crypto/rand` per seal, never a counter, never derived from the row. The NIST
+  bound of 2^32 random-nonce seals per key is far beyond this workload.
+- **Envelope** (stored in `secret.ciphertext`): byte 0 version `0x01`; bytes 1–8 key id; bytes 9–20
+  nonce; then GCM ciphertext and 16-byte tag.
+- **AAD** binds the ciphertext to its row and its header:
+  `"angelia/secret/v1" 0x00 || envelope[0:9] || 0x00 || secret.id || 0x00 || secret.name` (neither a ULID
+  nor a valid name contains NUL). Copying a ciphertext into another row, renaming a row in SQL, or
+  editing the version or key-id byte makes `Open` fail. A rename through the API re-seals.
 - Decryption errors are one sentinel (`secrets: cannot decrypt secret <name> (key id <hex>)`), never the
-  bytes, never the GCM detail. An unknown version byte or key id is its own error naming the key id, so
-  the operator knows which key file is missing.
-- Plaintext is held in a `secrets.Value` type with the same redacting `String`/`GoString`/`Format`/
-  `LogValue`/`MarshalJSON` as `config.secret` (moved into `internal/secrets` and shared), and an explicit
-  `Reveal() []byte` used only where a sink builds its request.
+  bytes or the GCM detail. An unknown version or key id has its own error naming the key id.
+- Plaintext lives in `secrets.Value` with the redacting `String`/`GoString`/`Format`/`LogValue`/
+  `MarshalJSON` of `config.secret` (moved into `internal/secrets` and shared). `Reveal()` returns a
+  **copy** of the bytes, so callers cannot mutate the held value, and is used only where a request is built.
 
-**age is not chosen**: `filippo.io/age` (BSD-3) is not in [§6](../architecture.md#6-language-and-framework-phase-0-assumptions)
-and would need approval; it is a file format with per-recipient X25519 stanzas (≈200 bytes overhead per
-value), and it has **no associated data**, so it cannot bind a ciphertext to its row without a second MAC
-we would design ourselves. Its strength (public-key recipients, so a CI job can encrypt without being
-able to decrypt) does not apply: only the server seals.
+**age is not chosen**: `filippo.io/age` (BSD-3) is not in [§6](../architecture.md#6-language-and-framework-phase-0-assumptions),
+adds ≈200 bytes per value, and has **no associated data**, so binding a ciphertext to its row would need
+a MAC of our own. Its public-key recipients do not help: only the server seals.
 
-### 3. Key source
+### 4. Key source
 
-- `secrets.key_file` (already parsed, env `ANGELIA_SECRETS_KEY_FILE`): the path of a file holding
-  **one standard-base64 encoding of 32 random bytes** (44 characters), optionally followed by one newline.
-  Anything else (wrong length, other content, URL-safe alphabet) is a startup error that never echoes
-  the content.
-- `ANGELIA_SECRETS_KEY`: the same base64 value inline, for platforms that only inject env. Setting both
-  is a startup error. After reading, the server calls `os.Unsetenv` so plugin subprocesses do not
-  inherit it. The file is the documented default (open question 3).
-- `secrets.previous_key_files` (env `ANGELIA_SECRETS_PREVIOUS_KEY_FILES`, comma-separated): extra keys
-  used **only to decrypt**, during rotation. New seals always use the primary key.
-- **Permissions** (not on Windows, like the client config check): the file, after following symlinks
-  (Kubernetes secret volumes are symlinks), must be a regular file; it is refused when writable by group
-  or others or readable by others (`chmod 600` hint in the error). Group-readable (`0440`, Kubernetes
-  `fsGroup`) is accepted with a warning. Ownership is not checked (containers run under arbitrary UIDs).
-- `angelia secrets keygen` writes a new key to stdout or `--out FILE` (created `0600`, refusing to
+- `secrets.key_file` (already parsed, env `ANGELIA_SECRETS_KEY_FILE`): **one standard-base64 encoding
+  of 32 random bytes** (44 characters), optionally followed by one newline. Anything else is a startup
+  error that never echoes the content.
+- `ANGELIA_SECRETS_KEY`: the same value inline, for platforms that only inject env. Setting both is a
+  startup error. After reading, the server calls `os.Unsetenv`. That only keeps the key out of children
+  spawned later: it does not scrub `/proc/self/environ` or the container runtime's record. Any exec-based
+  sink or plugin must pass an explicit environment anyway. The file is the documented default.
+- `secrets.previous_key_files` (env `ANGELIA_SECRETS_PREVIOUS_KEY_FILES`, comma-separated): keys used
+  **only to decrypt**, during rotation and to read restored backups.
+- **Permissions** (not on Windows). The server opens the file, following symlinks (Kubernetes secret
+  volumes are symlinks), and checks the mode with `f.Stat()` on the **opened file**, so there is no
+  time-of-check gap. It must be a regular file. It is **refused** when other users can read it or when
+  group or others can write it; the error says `chmod 600`. It is **accepted with a warning** when only
+  the group can read it. Ownership is not checked. The docs give working settings:
+  - Kubernetes: `defaultMode: 0400` on the secret volume, or `0440` with `fsGroup` (the default `0644`
+    is refused);
+  - Docker Swarm: `secrets: [{source: …, mode: 0400}]` (the default `0444` is refused), with `uid` set
+    to the container user;
+  - Compose file secrets are **bind mounts that keep host mode and ownership**: `chown` the host file to
+    the container UID (65532 for the distroless nonroot image) and `chmod 0400` it.
+- `angelia secrets keygen` writes a new key to stdout or to `--out FILE` (created `0600`, refusing to
   overwrite). It is the only command that ever prints key material.
 
 **Behaviour without a key** (checked at startup by every role, since all roles share the store):
@@ -130,107 +161,143 @@ able to decrypt) does not apply: only the server seals.
 |---|---|
 | No key, `secret` table empty | Starts. `config check` reports "secrets: no key configured (0 stored)". |
 | No key, rows exist | **Refuses to start**: `secrets: 3 stored secrets but no key configured; set secrets.key_file`. No plaintext fallback exists in code. |
-| Key configured, a row's key id is not among the configured keys | Refuses to start, listing the unknown key ids and their row counts. |
-| No key, a secret is written (API/CLI) | `422` problem `secrets-key-missing`; nothing stored. |
-| A reference names a secret that does not exist | Apply/`PUT` warning, as for an unset `*_env`; the delivery fails with a retryable error naming the reference until the secret is created. |
+| A row's key id is not among the configured keys | Refuses to start, listing the unknown key ids and their row counts. |
+| No key, a secret is written | `422 secrets-key-missing`; nothing stored. |
+| A reference names a secret that does not exist | Apply/`PUT` warning, as for an unset `*_env`; deliveries fail before `Deliver`, retryable (§6). |
 
-### 4. Key rotation
-
-Config-driven, two commands, crash-safe by construction:
+### 5. Key rotation
 
 1. `angelia secrets keygen --out new.key`.
 2. Configure `key_file: new.key`, `previous_key_files: [old.key]`, restart. With several nodes, first
-   roll out `old.key` primary + `new.key` previous everywhere, then swap: every node can then read
-   whatever any other node writes.
-3. `angelia secrets rotate` (instance-side command, reads the same config, needs the store; not an API
-   call): re-seals every row whose `key_id` is not the primary's, in **one transaction**. Each row is
-   updated with `WHERE id = ? AND revision = ?` and its `revision` incremented, so a concurrent API write
-   wins and the row is simply re-read. A crash rolls the transaction back: every row is still under a
-   configured key, and running `rotate` again is idempotent. Secrets are few (hundreds at most), so one
-   transaction is fine on SQLite (one writer; `BEGIN IMMEDIATE`) and on Postgres (default isolation plus
-   the revision guard). `--batch N` exists for very large stores, each batch its own transaction, with
-   the same guarantees per row.
-4. `angelia secrets status` prints counts per key id and marks which ids are configured. When the old
-   id has 0 rows, remove `previous_key_files` and restart.
+   roll out `old.key` as the primary and `new.key` as a previous key everywhere, then swap them, so every
+   node can read what any other node writes.
+3. `angelia secrets rotate` (instance-side, reads the same config, needs the store; not an API call)
+   re-seals every row whose `key_id` is not the primary's in **one transaction**, and audits the run.
+   - **Crash safety.** A crash rolls the transaction back, leaving every row under a configured key.
+     Rerunning is idempotent.
+   - **SQLite.** `BEGIN IMMEDIATE` serialises the run against every writer, so no write can interleave.
+   - **Postgres.** Each row is updated with `WHERE id = ? AND revision = ?` and its `revision` incremented.
+     If a concurrent API write wins, `rotate` re-reads that row and tries again, **at most 3 times**. A
+     row that still loses is reported and left alone, and the command exits non-zero, to be rerun.
+   - **Large stores.** `--batch N` gives each batch its own transaction, with the same per-row guarantees.
+4. `angelia secrets status` prints the row count per key id and marks which ids are configured. When
+   the old id has 0 rows, remove it from `previous_key_files`. **Keep the old key file archived** as
+   long as backups taken before the rotation are kept: restoring one needs it.
 
-`rotate --dry-run` reports what it would re-seal. Neither command prints values. Rotation of an
-individual secret's *value* is just a new write (`angelia secret set`), and the webhook's overlapping
-signature rotation is a value holding two `whsec_` entries (ADR 0023).
+`rotate --dry-run` reports what it would re-seal. Neither command prints values.
 
-### 5. Storage
+### 6. Storage and resolution
 
-Migration `00015_secret.sql` (SQLite now; the Postgres twin uses `BYTEA` and `BIGINT`):
+Migration `00015_secret.sql` (SQLite now; the Postgres twin uses `BYTEA`, `BIGINT`, `TEXT[]`/JSON):
 
 ```sql
 CREATE TABLE secret (
     id         TEXT    PRIMARY KEY,         -- ULID, immutable, part of the AAD
     name       TEXT    NOT NULL UNIQUE,     -- part of the AAD; referenced by *_ref keys
-    key_id     TEXT    NOT NULL,            -- hex, copy of envelope bytes 1–8, for status/rotate
-    ciphertext BLOB    NOT NULL,            -- envelope, §2
-    revision   INTEGER NOT NULL DEFAULT 1,  -- optimistic lock for rotate vs writes
+    hosts_json TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(hosts_json)), -- §2, not secret
+    key_id     TEXT    NOT NULL,            -- hex, copy of envelope bytes 1–8
+    ciphertext BLOB    NOT NULL,            -- envelope, §3
+    revision   INTEGER NOT NULL DEFAULT 1,  -- optimistic lock (Postgres), §5
     created_at INTEGER NOT NULL,            -- unix ms UTC (ADR 0008)
     updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX secret_key_id ON secret (key_id);
 ```
 
-- A **separate table** referenced by name, not encrypted columns on `sink` or a fully encrypted
-  `config_json_encrypted`: sink configuration stays plaintext and diffable (the watch-file apply and
-  `PUT` no-op detection compare bytes, which random nonces would break); an instance without secrets
-  needs no key; rotation touches one table; one secret can serve many sinks and watches (#111).
-- References are **not** foreign keys (they live inside JSON). Deleting a secret that a sink, watch or
-  source config references is refused (`409 secret-in-use`, listing the referrers by name); `--force`
-  is not offered.
-- **No data rewrite.** No stored secret value exists today (§Context): the migration only creates a
-  table, and the `Down` drops it (which destroys secrets; the Down is for development only, as for the
-  other migrations). As a fail-closed upgrade check, startup scans sink configs for any `x-angelia-secret`
-  path holding a literal and refuses to start if one is found, rather than silently re-encrypting.
-- `sink.config_json_encrypted` is a misnomer from 00001. A follow-up migration renames it `config_json`
-  and adds `CHECK (json_valid(config_json))`, and `dispatch.Options.DecryptConfig` is replaced by the
-  reference resolution below (open question 5). Renaming is data-preserving but touches a migration.
+- A **separate table**, referenced by name. The alternatives were encrypted columns on `sink` or a
+  fully encrypted `config_json_encrypted`. With the separate table:
+  - sink configuration stays plaintext and diffable (random nonces would break the `bytes.Equal` no-op
+    detection);
+  - an instance with no secrets needs no key;
+  - rotation touches one table;
+  - one secret can serve many sinks and watches.
+- References are not foreign keys (they live in JSON). Deleting a referenced secret is refused
+  (`409 secret-in-use`, listing referrers by name).
+- **No data rewrite**: no stored secret value exists today. The migration only creates a table. Its
+  `Down` drops it, which destroys the secrets; like the other migrations, it is for development only. As
+  a fail-closed upgrade check, startup refuses to start if any sink config holds a literal at an
+  `x-angelia-secret` path.
+- `sink.config_json_encrypted` is a misnomer. A follow-up migration renames it `config_json`
+  (open question 4). `dispatch.Options.DecryptConfig` is replaced by the resolution below.
 
-**Resolution.** The core, not each sink, resolves references. When the dispatcher leases a delivery it
-resolves every `*_env` and `*_ref` key of the sink config into `sink.Request.Secrets`, a
-`map[string]secrets.Value` keyed by the config key's JSON path (an additive field on the request struct
-of ADR 0017). Sinks read secrets only from there and never touch env or the store. Sources (#111) get
-the same through their fetch context. Decryption costs microseconds; values are not cached across
-deliveries, so a changed secret applies to the next attempt.
+**Resolution (`sink.Request.Secrets`, additive to ADR 0017).** When the dispatcher has leased a delivery
+and loaded its sink, the core walks the sink config and resolves every `*_env` and `*_ref` key:
 
-### 6. Write-only everywhere
+- **Keys.** `Request.Secrets` is a `map[string]secrets.Value` keyed by the **RFC 6901 JSON Pointer of the
+  reference key** (`/secret_ref`, `/auth/token_ref`).
+- **Arrays.** Arrays are walked, and an element's key uses its index (`/targets/0/token_ref`), so every
+  reference in an array resolves separately. A sink looks values up by the pointer of the key it read.
+- **Failure.** If any reference fails to resolve (missing secret, unset or empty env variable, host
+  mismatch §2, decryption error), the delivery fails **before `Deliver` is called** and is **retried** with
+  the normal backoff. `last_error` names the pointer and the secret or variable name, never a value.
+  Sinks (ADR 0023 is being amended accordingly) read secrets only from `Request.Secrets` and never touch
+  the environment or the store. Values are not cached across attempts.
+- **Scope of core resolution.** For now it covers **sink config only**:
+  - instance-config tokens (`sources.<kind>.token_env`, `plugins.<kind>.credentials.*.token_env`) keep
+    being resolved once at startup into `config.Tokens` / `PluginTokens`;
+  - the CLI's `ANGELIA_TOKEN` stays a client-side `os.Getenv` in `apiclient`/`cmd/angelia`, outside the
+    server;
+  - source `*_ref` credentials (#111) use the same resolver in the fetch path when that story lands;
+  - moving startup env tokens to the resolver is later work.
 
-- **API** (additions to the spec, admin scope): `PUT /v1/secrets/{name}` with
-  `{"value": "<string>"}` (`writeOnly`) or `{"value_base64": …}`; `GET /v1/secrets[/{name}]` returns
-  `name, key_id, created_at, updated_at, referenced_by` and **never** a value; `DELETE` as in §5. There is
-  no endpoint, scope or flag that returns a value. Problem details never echo the value (a too-long value
-  says its size only). The request-body logger, if any, is disabled for this route.
-- **Sinks in responses**: unchanged masking (`sinkJSONOf`, fail-closed when a schema is incomplete);
-  `*_ref` values are names and are returned like `*_env`.
-- **CLI**: `angelia secret set NAME --from-file PATH` (or `-` for stdin), `list`, `delete`. The value is
-  never accepted as an argument (visible in `ps` and shell history) and never printed; `set` echoes
-  `secret NAME stored (key id …)`. `secrets keygen|rotate|status` are the instance-side commands of §3–4.
-- **Watch file**: references only, as today. It gains `*_ref` keys beside `*_env`; inline values remain
-  refused, so watch files stay safe to commit. `angelia apply` does not upload secret values
-  (open question 6).
-- **Logs**: `secrets.Value` redacts itself; tests run the API write path, the dispatcher with a
-  webhook-style sink, `rotate` and the startup errors with a captured `slog` handler (and
-  `telemetrytest` spans) and assert that a canary plaintext, its base64 and the key never appear.
-- **Required tests** (acceptance "tampered ciphertext fails"): flipping each byte of an envelope fails;
-  swapping ciphertexts between two rows fails; renaming a row in SQL fails; a wrong or unknown key id
-  fails with the key id in the message; a truncated envelope fails; seal → open round trips; two seals
-  of the same plaintext differ; startup refusal with rows and no key; `422` on write without a key.
+### 7. Write-only everywhere
 
-### 7. Threat model
+- **API**. The new endpoints, all **admin** scope (names, hosts and referrers map the instance's
+  credentials):
+  - `PUT /v1/secrets/{name}` with `{"value": …}` or `{"value_base64": …}` (`writeOnly`) and an optional
+    `"hosts": [...]`;
+  - `GET /v1/secrets[/{name}]` returns `name, hosts, key_id, created_at, updated_at, referenced_by` and
+    **never** a value;
+  - `DELETE` as in §6.
 
-Protects against: theft or leak of the **database file, a backup, a dump, a Postgres replica or a
-DBA's read access** without the key file; accidental disclosure through the API, the CLI, logs, traces,
-`last_error` and events.
+  No endpoint, scope or flag returns a value. Problem details never echo it: a too-long value reports its
+  size only. Bodies of this route are never logged.
+- **Audit**. Every secret create, update (value or `hosts`), rename and delete, and every `rotate` run,
+  writes an audit record through the existing `Server.audit` path (`audit=true`, the principal, the
+  action, the secret name, the key id), never the value.
+- **Sinks in responses**: masking is unchanged and stays fail-closed. `*_ref` values are names and are
+  returned like `*_env` once `maskStrings` learns the suffix.
+- **CLI**:
+  - `angelia secret set NAME --from-file PATH|- [--host H]…`, plus `list` and `delete`.
+  - The value is never accepted as an argument, never printed.
+  - `--from-file` and stdin strip **exactly one trailing newline** (`\n` or `\r\n`), because editors
+    end files with one; anything else, including other whitespace, is stored as is. This is documented,
+    and ADR 0023's parser applies its own trimming on top.
+  - `secrets keygen|rotate|status` are the instance-side commands.
+- **Watch file**: references only, as today, now with `*_ref` beside `*_env`. Inline values stay
+  refused. `angelia apply` uploads no values (open question 5).
+- **Logs**: `secrets.Value` redacts itself. Tests capture `slog` output (and `telemetrytest` spans) on
+  the API write path, the dispatcher with a webhook-style sink, `rotate` and the startup errors. They
+  assert that a canary plaintext, its base64 and the key never appear.
+- **Required tests** (acceptance "tampered ciphertext fails"):
+  - flipping each byte of an envelope fails;
+  - swapping ciphertexts between rows fails;
+  - renaming a row in SQL fails;
+  - a wrong or unknown key id fails, naming it;
+  - a truncated envelope fails;
+  - seal → open round trips, and two seals of one plaintext differ;
+  - startup is refused with rows and no key, and a write with no key gets `422`;
+  - a `write` token changing a `*_ref` gets `403`;
+  - a bound secret is refused for another host, including on a redirect hop;
+  - `--from-file` strips one newline only.
 
-Does **not** protect against: an attacker on the host or in the process who can read the key file, the
-environment or memory (root, a debugger, a compromised plugin host); an attacker with **write** access
-to the database, who cannot forge or read secrets but can delete them, roll a row back to an older
-ciphertext of the same row, or edit a sink's plaintext URL so that a token-bearing request goes to their
-host (open question 7); loss of the key, which makes the stored secrets unrecoverable: operators back
-up the key separately from the database.
+### 8. Threat model
+
+Protects against:
+- theft or leak of the **database file, a backup, a dump, a Postgres replica or a DBA's read access**
+  without the key file;
+- accidental disclosure through the API, the CLI, logs, traces, `last_error` and events;
+- a `write`-scope API caller redirecting a secret: references need `admin`, and bound secrets only go to
+  their hosts.
+
+Does **not** protect against:
+- an attacker on the host or in the process who can read the key file, the environment or memory;
+- an attacker with database **write** access. They cannot read or forge secrets. They can delete them,
+  roll a row back to an older ciphertext of the same row, or point an **unbound** sink secret at their own
+  host. `hosts` defeats that last attack for bound secrets;
+- an `admin` token holder, who is trusted;
+- loss of the key, which makes the stored secrets unrecoverable. Back the key up separately from the
+  database.
 
 ## Consequences
 
@@ -238,71 +305,82 @@ up the key separately from the database.
 
 - Stdlib-only crypto, no new dependency; small, testable envelope with row binding.
 - Instances that only use `*_env` references need no key and see no change.
-- Configuration stays plaintext and diffable; watch files stay free of secret values.
-- One credential serves many sinks and watches; rotation of the key and of a value are both simple.
+- Configuration stays plaintext and diffable; watch files stay free of secret values; hosts stay visible.
+- One credential serves many sinks and watches. Host binding limits where it can go.
 
 ### Negative
 
-- A new public surface: `/v1/secrets`, `*_ref` keys, `secrets.*` config keys, CLI verbs, problem types.
-- A lost key loses every stored secret; a missing key stops every role from starting.
-- Two places can hold a credential (env and store); docs must explain when to use which.
-- The sink request struct (ADR 0017) and the dispatcher hook change.
+- New public contract to add to the spec and the config docs:
+  - `/v1/secrets`;
+  - `*_ref` keys and the admin rule for them;
+  - `x-angelia-destination`;
+  - the explicit Spectral rule;
+  - the instance config keys **`secrets.previous_key_files`**, **`ANGELIA_SECRETS_KEY`** and
+    `ANGELIA_SECRETS_PREVIOUS_KEY_FILES`;
+  - CLI verbs (`secret set|list|delete`, `secrets keygen|rotate|status`);
+  - problem types.
+- A lost key loses every stored secret. A missing key stops every role from starting.
+- Two places can hold a credential (env and store), and two env models (startup and per-delivery)
+  coexist for now. The docs must explain them.
+- Changes `sink.Request` (ADR 0017), the dispatcher hook, `maskStrings`, the watch-file parser and
+  netguard (a re-check on requests that carry a bound secret: a sensitive path).
 
 ### Open questions
 
 1. **Named secrets vs a per-sink `secrets` member.** Spec decision 24 anticipated a `secrets` member on
-   the sink resource. *Recommendation:* named secrets with `*_ref`, because #111 already asks for
-   credentials "referenced by secret name", one token often serves several sinks, and watch files can
-   reference a name but cannot hold a value. Needs a spec PR either way.
-2. **Suffix `_ref`** (`secret_ref`, `token_ref`, `url_ref`) vs a structured value
-   (`{"secret": "name"}`) vs `${secret:name}` interpolation. *Recommendation:* the suffix, mirroring
-   `_env`, which the masking code, the watch-file parser and `api.allowed_env` already understand.
-   Interpolation invites partial-string secrets that masking cannot see.
+   the sink resource. *Recommendation:* named secrets with `*_ref`, because #111 asks for credentials
+   "referenced by secret name", one token often serves several sinks, watch files can reference a name
+   but cannot hold a value, and `hosts` binding needs a per-secret record. Needs a spec PR either way.
+2. **Suffix `_ref`** vs a structured value (`{"secret": "name"}`) vs `${secret:name}` interpolation.
+   *Recommendation:* the suffix, mirroring `_env`. Interpolation invites partial-string secrets that
+   masking cannot see.
 3. **Raw key in env** (`ANGELIA_SECRETS_KEY`). *Recommendation:* support it (the issue and §8 say "env or
-   file") but document the file as preferred; env leaks through `/proc/*/environ`, `docker inspect` and
-   crash reports.
-4. **Group-readable key file**: warn (proposed) or refuse? *Recommendation:* warn, so Kubernetes
-   `fsGroup` mounts work; refuse world-readable.
-5. **Rename `sink.config_json_encrypted` to `config_json`** in a migration of this story or a separate
-   one? *Recommendation:* separate small story after this ADR is accepted, so this story's migration
-   only adds a table.
-6. **`angelia apply` uploading values** (`value_from: {file: …}` resolved client-side). *Recommendation:*
-   no for v0.1; operators run `angelia secret set` once. Revisit with the UI.
-7. **Binding token secrets to hosts** (like #145's per-host plugin credentials) so a tampered sink URL
-   cannot redirect a token. *Recommendation:* add optional `hosts` metadata to a secret later; for v0.1
-   rely on admin-only sink writes and netguard. Note it in the docs' threat model.
-8. **Problem types** `secrets-key-missing` (422) and `secret-in-use` (409), and whether a missing
-   reference at apply time is a warning (proposed, like `*_env`) or an error. *Recommendation:* as
-   proposed.
-9. **Who resolves secrets for sinks**: the core into `Request.Secrets` (proposed, amends ADR 0017
-   additively) or each sink via a resolver interface. *Recommendation:* the core, so sinks cannot reach
-   the store or the environment; ADR 0023 should read secrets from the request.
+   file"), with the file as the documented default and the `os.Unsetenv` caveat in the docs.
+4. **Rename `sink.config_json_encrypted` to `config_json`**: this story or a separate one?
+   *Recommendation:* a separate small story, so this story's migration only adds a table.
+5. **`angelia apply` uploading values** (`value_from: {file: …}` resolved client-side).
+   *Recommendation:* no for v0.1; operators run `angelia secret set` once.
+6. **Host matching**: exact host (and port) only, as proposed, or also `*.example.com` wildcards?
+   *Recommendation:* exact only for v0.1. A registry behind several hosts lists each one.
+7. **Problem types and severities**: `secrets-key-missing` (422), `secret-in-use` (409),
+   `secret-host-binding-required` (422), and a missing reference at apply time as a warning (like
+   `*_env`) rather than an error. *Recommendation:* as proposed.
+8. **`GET /v1/secrets` scope**: `admin` (proposed) or `read`. *Recommendation:* `admin`, because names,
+   hosts and referrers map the credentials of the instance. `read` callers still see `*_ref` names in
+   sink configs.
+9. **Host-binding mismatch on a sink**: retryable (proposed, the operator can fix the binding) or
+   immediately `dead`? *Recommendation:* retryable, like the other resolution failures. The delivery goes
+   dead after the normal 8 attempts.
 
 ## Alternatives considered
 
-- **age** (`filippo.io/age`). New dependency, no associated data, recipient model not needed (§2).
+- **age** (`filippo.io/age`). New dependency, no associated data, recipient model not needed (§3).
 - **Encrypt the whole `sink.config_json_encrypted` blob.** Every sink would need the key, random nonces
-  break the byte-equality no-op diff of apply and `PUT`, the read API would need the key, and secrets
-  could not be shared across sinks and watches.
-- **Encrypted columns per secret field.** Spreads ciphertexts over many tables and makes rotation a
-  schema-wide walk; AAD per column is easy but the rotation and status queries are not.
-- **Envelope encryption with a per-row data key wrapped by the master.** Rotation would re-wrap only the
-  32-byte data keys, but the values are already small; one layer is simpler to audit.
-- **Deterministic nonces (SIV) or nonce counters.** Not in the stdlib (AES-GCM-SIV) or need persistent
-  state across nodes; random 96-bit nonces are sufficient at this volume.
-- **`angelia secrets rotate --new-key-file`** writing the new key into config itself. The command would
-  have to edit config files and coordinate nodes; the config-driven flow keeps the command a pure
-  re-seal that is safe to rerun.
-- **Env references only, no stored secrets.** Meets nothing in the issue's API/rotation criteria and
+  break the no-op diff, the read API would need the key, and hosts would be hidden.
+- **Whole-URL secrets (`url_ref`) for chat sinks.** They hide the host from write-time validation, from
+  the diff and from `url_redacted`, and make host binding impossible. Replaced by a plain base URL and a
+  referenced token.
+- **`api.allowed_refs`** (an allowlist like `api.allowed_env`) instead of admin scope plus `hosts`. It
+  limits *which* secrets but not *where* they go; host binding addresses the actual exfiltration.
+- **Encrypted columns per secret field.** Spreads ciphertexts over many tables; rotation becomes a
+  schema-wide walk.
+- **Envelope encryption with per-row data keys.** Re-wrapping saves nothing at this size; one layer is
+  simpler to audit.
+- **Deterministic or counter nonces.** AES-GCM-SIV is not in the stdlib; counters need state shared
+  across nodes.
+- **`angelia secrets rotate --new-key-file`** editing config itself. The config-driven flow keeps the
+  command a pure re-seal that is safe to rerun.
+- **Env references only, no stored secrets.** Meets nothing in the issue's API and rotation criteria, and
   cannot serve per-watch registry credentials (#111) managed through the API.
 
 ## References
 
 - [architecture.md §6](../architecture.md#6-language-and-framework-phase-0-assumptions),
-  [§8](../architecture.md#8-security); [prd.md §7](../prd.md#7-non-functional-requirements)
+  [§7](../architecture.md#7-deployment), [§8](../architecture.md#8-security);
+  [prd.md §7](../prd.md#7-non-functional-requirements)
 - Issues #75, #72 (API tokens, hashed), #74 (CLI, client config), #108 / ADR 0023 (webhook `whsec_`),
   #111 (registry credentials), #145 (plugin credentials)
 - [ADR 0005](0005-standard-webhooks-signing.md), [ADR 0008](0008-store-history-rows-and-event-cursor.md),
   [ADR 0017](0017-dispatcher-delivery-leases-and-retries.md), [ADR 0022](0022-rest-api-in-house-spec-driven-validation.md)
 - Spec `docs/api.md` decisions 22, 24, 25, 26 and the Secrets section
-- NIST SP 800-38D (GCM, nonce limits); RFC 5869 (HKDF); Go `crypto/hkdf` (Go 1.24+)
+- NIST SP 800-38D (GCM, nonce limits); RFC 5869 (HKDF); RFC 6901 (JSON Pointer)
