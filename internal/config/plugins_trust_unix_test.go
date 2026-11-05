@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -133,5 +134,35 @@ func TestPluginFolderNamesQuotedAndSymlinksIgnored(t *testing.T) {
 	ps, warns, err := loadPlugins(t, dir)
 	if err != nil || len(ps) != 1 || !strings.Contains(strings.Join(warns, "\n"), `"linked": symbolic link, ignored`) {
 		t.Fatalf("plugins %+v, warnings %q, err %v", ps, warns, err)
+	}
+}
+
+// fakeInfo is an os.FileInfo with a chosen owner, so the owner check runs
+// without root (review N-R3, #184).
+type fakeInfo struct {
+	os.FileInfo
+	uid uint32
+}
+
+func (f fakeInfo) Sys() any { return &syscall.Stat_t{Uid: f.uid} }
+
+func TestCheckTrustAsOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "grants.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkTrustAs(path, fakeInfo{st, 998}, 998); err != nil {
+		t.Errorf("owner = euid: %v", err)
+	}
+	if err := checkTrustAs(path, fakeInfo{st, 0}, 998); err != nil {
+		t.Errorf("owner root: %v", err)
+	}
+	err = checkTrustAs(path, fakeInfo{st, 998}, 0)
+	if err == nil || !strings.Contains(err.Error(), "owned by uid 998") || !strings.Contains(err.Error(), "sudo -u angelia") {
+		t.Errorf("foreign owner as root: err = %v", err)
 	}
 }

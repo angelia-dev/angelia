@@ -93,7 +93,9 @@ The folder name is the plugin's kind:
 - **Ownership and mode** (not on Windows): `plugins_dir`, each plugin folder and `grants.yaml` must be owned by
   the user Angelia runs as, or by root, and must not be writable by group or others. A directory with the
   sticky bit may be group- or world-writable. `grants.yaml` must be a regular file, not a symbolic link.
-  Anything else is refused with the `chmod` or owner to fix.
+  Anything else is refused with the `chmod` or owner to fix. Run `angelia config check` as the user Angelia
+  runs as (for example `sudo -u angelia angelia config check`): run as root or another user, it refuses files
+  owned by the service user.
 - `angelia serve` does not load plugins yet: installing and running them is
   [#88](https://github.com/angelia-dev/angelia/issues/88), which uses this layout. Today `angelia config check`
   reads the folders and validates `grants.yaml`.

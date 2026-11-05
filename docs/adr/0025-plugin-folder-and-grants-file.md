@@ -101,8 +101,10 @@ credentials need no wiring: the WASM host takes them from the netguard client it
 ### Negative
 
 - One more file, and two folders, whose owner and permissions an operator must get right. The refusal
-  message gives the `chmod` or the owner to fix. A deployment that runs `config check` as another non-root
-  user than the service user is refused unless the files are owned by root.
+  message gives the `chmod` or the owner to fix. Running `config check` as a user other than the
+  service user (root included) refuses files owned by the service user, unless they are owned by root; the
+  error says to run it as the service user (`sudo -u angelia angelia config check`). The check stays strict
+  because a root process must not trust files another user can change.
 - `grants.yaml` has no environment overrides. A container deployment mounts the file instead.
 - The checks stop at `plugins_dir`: a writable parent directory could still swap the whole tree. The
   operator owns the instance config that names `plugins_dir` and is trusted to place it sensibly.

@@ -16,6 +16,7 @@ import (
 	extism "github.com/extism/go-sdk"
 	"github.com/tetratelabs/wazero"
 
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
 )
 
@@ -34,7 +35,7 @@ type Options struct {
 	// HTTPClient sends every hop of every http_request. It must be the
 	// netguard client (netguard.Client.HTTPClient), so that the SSRF guard,
 	// the per-host rate limits and the retries apply: its Transport must
-	// implement CredentialHeaders, which decides the headers reserved for
+	// be the *netguard.Client, whose CredentialHeaders method decides the headers reserved for
 	// host-injected credentials. The host wraps the Transport to enforce
 	// allowed_hosts on every hop and drops its Jar. Required.
 	HTTPClient *http.Client
@@ -128,9 +129,11 @@ func New(ctx context.Context, m Manifest, wasm []byte, opts Options) (*Source, e
 	// Fail closed: without the client's own credential-header rule, a
 	// plugin could claim a host's authenticated budget with a header the
 	// host does not know to reserve.
-	creds, ok := opts.HTTPClient.Transport.(CredentialHeaders)
+	// Requiring the netguard client itself (not any CredentialHeaders)
+	// also keeps its SSRF guard in the path.
+	creds, ok := opts.HTTPClient.Transport.(*netguard.Client)
 	if !ok {
-		return nil, errors.New("wasm: Options.HTTPClient must be the netguard client: its Transport does not implement CredentialHeaders")
+		return nil, errors.New("wasm: Options.HTTPClient must be the netguard client: its Transport is not a *netguard.Client")
 	}
 	declared, err := m.configKeys()
 	if err != nil {

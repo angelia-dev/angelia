@@ -15,6 +15,11 @@ import (
 // sticky bit may be group- or world-writable (others cannot replace
 // entries they do not own).
 func checkTrust(path string, info os.FileInfo) error {
+	return checkTrustAs(path, info, int64(os.Geteuid()))
+}
+
+// checkTrustAs is checkTrust for a process running as euid.
+func checkTrustAs(path string, info os.FileInfo, euid int64) error {
 	perm := info.Mode().Perm()
 	if perm&0o022 != 0 && (!info.IsDir() || info.Mode()&os.ModeSticky == 0) {
 		return fmt.Errorf("%s grants network access but is writable by group or others (mode %04o); run: chmod go-w %s", path, perm, path)
@@ -23,8 +28,9 @@ func checkTrust(path string, info os.FileInfo) error {
 	if !ok {
 		return fmt.Errorf("%s: cannot read its owner", path)
 	}
-	if euid := os.Geteuid(); euid >= 0 && !ownerTrusted(int64(st.Uid), int64(euid)) {
-		return fmt.Errorf("%s grants network access but is owned by uid %d, not by this user (uid %d) or root", path, st.Uid, euid)
+	if euid >= 0 && !ownerTrusted(int64(st.Uid), euid) {
+		return fmt.Errorf("%s grants network access but is owned by uid %d, not by this user (uid %d) or root; "+
+			"run config check as the user Angelia runs as (e.g. sudo -u angelia angelia config check)", path, st.Uid, euid)
 	}
 	return nil
 }

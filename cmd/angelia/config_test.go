@@ -192,7 +192,11 @@ func docBlock(t *testing.T, heading, fence string) string {
 		t.Fatalf("no %s block after %q", fence, heading)
 	}
 	body := s[i+j+len(fence)+1:]
-	return body[:strings.Index(body, "```\n")]
+	end := strings.Index(body, "```\n")
+	if end < 0 {
+		t.Fatalf("unclosed %s block after %q", fence, heading)
+	}
+	return body[:end]
 }
 
 // Review S2 (#184): the documented grants.yaml is valid, and the documented
