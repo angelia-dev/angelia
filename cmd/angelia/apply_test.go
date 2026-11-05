@@ -169,7 +169,7 @@ func TestApplyDryRunAndPrune(t *testing.T) {
 		}
 	}
 	out = a.must("apply", "-f", next, "--prune", "-l", "team=platform", "--dry-run")
-	if got, want := summary(out), "0 created, 0 updated, 7 unchanged, 0 deleted, 2 kept (dry run: nothing was written)"; got != want {
+	if got, want := summary(out), "0 created, 0 updated, 7 unchanged, 0 deleted, 1 kept (dry run: nothing was written)"; got != want {
 		t.Errorf("apply after prune: %q, want %q\n%s", got, want, out)
 	}
 }

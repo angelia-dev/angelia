@@ -167,10 +167,11 @@ func (r *applyRun) run(ctx context.Context, set *apply.Set) error {
 		}
 	}
 	if r.prune {
-		if err := r.pruneWatches(ctx, apply.PruneWatches(r.current, set, r.sel)); err != nil {
+		err := r.pruneWatches(ctx, apply.PruneWatches(r.current, set, r.sel))
+		r.report.Changes = append(r.report.Changes, apply.Kept(r.current, set, r.sel)...)
+		if err != nil {
 			return err
 		}
-		r.report.Changes = append(r.report.Changes, apply.Kept(r.current, set, r.sel)...)
 	}
 	if n := r.report.Count(apply.ChangeFailed); n > 0 {
 		return fmt.Errorf("%d of %d objects failed", n, len(r.report.Changes))
@@ -289,7 +290,7 @@ func (r *applyRun) deleteWatch(ctx context.Context, name string) (apply.Change, 
 	resp, err := r.e.API.GetWatch(ctx, name) //nolint:bodyclose // Decode closes it
 	if _, err := apiclient.Decode(resp, err, &w); err != nil {
 		if isNotFound(err) {
-			c.Note = "already gone"
+			c.Change, c.Note = apply.ChangeGone, "deleted by someone else before this run"
 			return c, nil
 		}
 		return c, err
@@ -301,7 +302,7 @@ func (r *applyRun) deleteWatch(ctx context.Context, name string) (apply.Change, 
 	resp, err = r.e.API.DeleteWatch(ctx, name, &apiclient.DeleteWatchParams{}) //nolint:bodyclose // Decode closes it
 	if _, err := apiclient.Decode(resp, err, nil); err != nil {
 		if isNotFound(err) {
-			c.Note = "already gone"
+			c.Change, c.Note = apply.ChangeGone, "deleted by someone else before this run"
 			return c, nil
 		}
 		return c, err

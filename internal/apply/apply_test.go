@@ -173,7 +173,8 @@ func TestPruneWatchesAndKept(t *testing.T) {
 		}
 		got = append(got, c.Kind+"/"+c.Name)
 	}
-	if s := strings.Join(got, ","); s != "subscription/listens-to-p,sink/moved-from,sink/unused" {
+	// unused is idle but no subscription of the scope used it: another team's
+	if s := strings.Join(got, ","); s != "subscription/listens-to-p,sink/moved-from" {
 		t.Errorf("Kept = %s", s)
 	}
 	if !Prunable(cur[Watch]["gone"], sel) || Prunable(cur[Watch]["by-file"], sel) || Prunable(cur[Watch]["other-team"], sel) {
@@ -196,8 +197,8 @@ func TestDiffWriteKeys(t *testing.T) {
 }
 
 func TestReportSummary(t *testing.T) {
-	r := Report{Changes: []Change{{Change: ChangeCreated}, {Change: ChangeKept}, {Change: ChangeFailed}}}
-	if s := r.Summary(); s != "1 created, 0 updated, 0 unchanged, 0 deleted, 1 kept, 1 failed" {
+	r := Report{Changes: []Change{{Change: ChangeCreated}, {Change: ChangeGone}, {Change: ChangeKept}, {Change: ChangeFailed}}}
+	if s := r.Summary(); s != "1 created, 0 updated, 0 unchanged, 0 deleted, 1 gone, 1 kept, 1 failed" {
 		t.Errorf("Summary = %q", s)
 	}
 	r = Report{DryRun: true}

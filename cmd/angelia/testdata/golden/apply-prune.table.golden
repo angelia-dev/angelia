@@ -10,5 +10,4 @@ subscription/platform-to-ci unchanged
 subscription/new-sub created
 watch/pypi-old deleted
 subscription/old-sub kept (not pruned: subscriptions carry no owner labels in API v1; if it is yours, run: angelia sub delete old-sub)
-sink/idle-sink kept (not pruned: no subscription uses it, and sinks carry no owner labels in API v1; if it is yours, run: angelia sink delete idle-sink)
-3 created, 1 updated, 3 unchanged, 1 deleted, 2 kept
+3 created, 1 updated, 3 unchanged, 1 deleted, 1 kept

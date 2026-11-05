@@ -173,7 +173,8 @@ func readLimited(in io.Reader, path string) ([]byte, error) {
 }
 
 // decodeDocuments decodes every YAML (or JSON) document of raw, in order. An
-// empty document is skipped. `apply` reads multi-document files with it.
+// empty document is skipped. (`apply` reads watch files with internal/apply,
+// which allows one document per file.)
 func decodeDocuments(raw []byte) ([]any, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var docs []any

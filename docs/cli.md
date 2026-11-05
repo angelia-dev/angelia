@@ -37,8 +37,10 @@ angelia apply -f config/ --prune -l team=platform       # also delete watches th
 - **Format.** Apply reads the [watch file](watch-file.md) format of
   `angelia serve --watches` unchanged: `version: 1` and the lists `sinks`,
   `watches`, `subscriptions`. The format is not deprecated and prints no
-  warning, and apply needs no new key (no `kind:`). A file that apply accepts is
-  also a valid `--watches` file. Each file holds exactly one YAML document, as
+  warning, and apply needs no new key (no `kind:`). A file that `serve
+  --watches` accepts is also accepted by apply. The reverse is not always
+  true: a subscription in an applied file may name a sink that is on the
+  server or in another file, which a `--watches` file does not allow. Each file holds exactly one YAML document, as
   the watch file requires. To split a configuration, use several files: `-f`
   takes a file, a directory (its `.yaml`, `.yml` and `.json` files, sorted, not
   recursive) or `-` for stdin (one document), and may be repeated. Names must
@@ -54,7 +56,7 @@ angelia apply -f config/ --prune -l team=platform       # also delete watches th
   `unchanged` when nothing differs, so applying the same files twice changes
   nothing.
 - **Report.** Each object gets one line,
-  `kind/name created|updated|unchanged|deleted|kept|skipped|failed`, and a
+  `kind/name created|updated|unchanged|deleted|gone|kept|skipped|failed`, and a
   count line ends the report. An `updated` line is followed by the changed
   fields, as dotted paths with the old and new value
   (`interval: "1h" -> "30m"`). They are compared on what the API returns, with
@@ -83,7 +85,10 @@ another team's subscription can match your scope. Apply reports the likely
 leftovers as `kept`, each with the command that deletes it:
 
 - each API subscription not in the files whose `filter.labels` carry the scope;
-- each API sink not in the files that no subscription uses.
+- each API sink not in the files that no subscription uses after the run, but
+  that an API subscription in the scope used before it (typically a sink the
+  files' subscriptions moved away from). Idle sinks of other teams are not
+  listed.
 
 Delete them with `angelia sub delete NAME` and `angelia sink delete NAME` if
 they are yours. Owner `labels` on sinks and subscriptions are a planned
@@ -103,9 +108,10 @@ Safety rules:
   the API or left the scope. A short window between that read and the
   `DELETE` remains, because API v0 has no `If-Match`. Do not run two applies
   with overlapping scopes at the same time.
-- A watch already gone is reported as `deleted (already gone)`. On any other
-  failure the prune stops: the failed watch is `failed`, the rest are `skipped`,
-  and the error lists every watch that was not deleted.
+- A watch someone else deleted first is reported as `gone`, counted apart from
+  `deleted`. On any other failure the prune stops: the failed watch is
+  `failed`, the rest are `skipped`, the `kept` lines are still printed, and
+  the error lists every watch that was not deleted.
 
 Sinks need a token with the `admin` scope, and a sink's `secret_env` must be
 listed in the instance's `api.allowed_env`. Watches and subscriptions need
@@ -124,6 +130,9 @@ objects to the API:
      `subscription removed`;
    - a watch's target and its known versions are deleted when no other watch
      uses the target;
+   - releases a removed watch held in cooldown are deleted with it (the
+     `pending_release` rows cascade) and are never emitted: the new watch does
+     not inherit them, and its baseline records those versions as known;
    - events and deliveries already recorded stay as history.
 2. Run `angelia apply` with the same objects right away. They are created anew,
    with new ids. Events of a new watch carry the new id in `data.watch.id`.
@@ -131,10 +140,12 @@ objects to the API:
 
 **Version baseline.** A new watch starts with `baseline_done` false, and a
 watch's first check is always a baseline ([policy.md](policy.md)): the versions
-known at that check are recorded without events. When the old target was
-deleted in step 1, a version published between that restart and the new
-watch's first check is recorded as part of the baseline and emits no event.
-Keep the gap between the restart and the apply short.
+known at that check are recorded without events, whatever the state of the
+target. So a version found between the restart and the new watch's first check
+emits no event for the new watch. This holds in both cases: when the old target
+was deleted in step 1, and when another watch kept it (the other watch's checks
+may find the version, but only that watch emits for it). Keep the gap between
+the restart and the apply short.
 
 ## Connection
 

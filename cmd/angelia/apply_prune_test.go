@@ -101,7 +101,10 @@ func (f *pruneFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			items = append(items, watch(n, "p"))
 		}
 		_, _ = io.WriteString(w, `{"items":[`+strings.Join(items, ",")+`],"next_cursor":null}`)
-	case r.Method == http.MethodGet && (r.URL.Path == "/v1/sinks" || r.URL.Path == "/v1/subscriptions"):
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions":
+		// in the scope and not in the file: reported kept even when the prune stops
+		_, _ = io.WriteString(w, `{"items":[{"name":"listens","managed_by":"api","sink":"s","filter":{"labels":{"team":"p"}}}],"next_cursor":null}`)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/sinks":
 		_, _ = io.WriteString(w, `{"items":[],"next_cursor":null}`)
 	case r.Method == http.MethodPut:
 		w.Header().Set("Angelia-Change", "unchanged")
@@ -123,7 +126,8 @@ func (f *pruneFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// S2, S3, N3: the re-read before each delete, the 404 paths and the stop path.
+// S2, S3, N3, R5, R6: the re-read before each delete, the 404 paths (gone,
+// counted apart from deleted) and the stop path, which still prints the kept lines.
 func TestApplyPrunePaths(t *testing.T) {
 	isolate(t)
 	fake := &pruneFake{}

@@ -64,12 +64,6 @@
       "name": "old-sub",
       "change": "kept",
       "note": "not pruned: subscriptions carry no owner labels in API v1; if it is yours, run: angelia sub delete old-sub"
-    },
-    {
-      "kind": "sink",
-      "name": "idle-sink",
-      "change": "kept",
-      "note": "not pruned: no subscription uses it, and sinks carry no owner labels in API v1; if it is yours, run: angelia sink delete idle-sink"
     }
   ]
 }

@@ -113,23 +113,29 @@ func PruneWatches(cur Current, set *Set, sel Selector) []string {
 // may be left over, each with a note on how to delete it by hand:
 //   - an API subscription not in the files whose filter.labels match the
 //     scope (filter.labels select events; they do not say who owns it);
-//   - an API sink not in the files that no subscription uses after the apply.
+//   - an API sink not in the files that no subscription uses after the apply
+//     and that an API subscription in the scope used before it (a sink the
+//     files' subscriptions moved away from). Unused sinks of other teams are
+//     not listed.
 func Kept(cur Current, set *Set, sel Selector) []Change {
 	var out []Change
-	used := map[string]bool{}
+	used, usedInScope := map[string]bool{}, map[string]bool{}
 	for _, o := range set.Objects[Subscription] {
 		used[o.Sink] = true
 	}
 	for _, name := range sortedKeys(cur[Subscription]) {
 		s := cur[Subscription][name]
+		sink, _ := s["sink"].(string)
+		f, _ := s["filter"].(map[string]any)
+		inScope := byAPI(s) && sel.Matches(Labels(f["labels"]))
+		if inScope {
+			usedInScope[sink] = true
+		}
 		if set.Has(Subscription, name) {
 			continue
 		}
-		if sink, ok := s["sink"].(string); ok {
-			used[sink] = true
-		}
-		f, _ := s["filter"].(map[string]any)
-		if byAPI(s) && sel.Matches(Labels(f["labels"])) {
+		used[sink] = true
+		if inScope {
 			out = append(out, Change{
 				Kind: "subscription", Name: name, Change: ChangeKept,
 				Note: fmt.Sprintf("not pruned: subscriptions carry no owner labels in API v1; if it is yours, run: angelia sub delete %s", name),
@@ -137,10 +143,10 @@ func Kept(cur Current, set *Set, sel Selector) []Change {
 		}
 	}
 	for _, name := range sortedKeys(cur[Sink]) {
-		if k := cur[Sink][name]; byAPI(k) && !set.Has(Sink, name) && !used[name] {
+		if k := cur[Sink][name]; byAPI(k) && !set.Has(Sink, name) && !used[name] && usedInScope[name] {
 			out = append(out, Change{
 				Kind: "sink", Name: name, Change: ChangeKept,
-				Note: fmt.Sprintf("not pruned: no subscription uses it, and sinks carry no owner labels in API v1; if it is yours, run: angelia sink delete %s", name),
+				Note: fmt.Sprintf("not pruned: a subscription in the scope used it and none does now, but sinks carry no owner labels in API v1; if it is yours, run: angelia sink delete %s", name),
 			})
 		}
 	}
@@ -153,6 +159,7 @@ const (
 	ChangeUpdated   = "updated"
 	ChangeUnchanged = "unchanged"
 	ChangeDeleted   = "deleted"
+	ChangeGone      = "gone"    // a prune candidate someone else deleted first
 	ChangeKept      = "kept"    // a prune candidate left alone
 	ChangeSkipped   = "skipped" // not deleted because the prune stopped
 	ChangeFailed    = "failed"
@@ -196,7 +203,7 @@ func (r *Report) Count(change string) int {
 // the others when they occur.
 func (r *Report) Summary() string {
 	var parts []string
-	order := []string{ChangeCreated, ChangeUpdated, ChangeUnchanged, ChangeDeleted, ChangeKept, ChangeSkipped, ChangeFailed}
+	order := []string{ChangeCreated, ChangeUpdated, ChangeUnchanged, ChangeDeleted, ChangeGone, ChangeKept, ChangeSkipped, ChangeFailed}
 	for i, ch := range order {
 		if n := r.Count(ch); n > 0 || i < 4 {
 			parts = append(parts, fmt.Sprintf("%d %s", n, ch))
