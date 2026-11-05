@@ -9,4 +9,10 @@ ARG TARGETPLATFORM
 COPY ${TARGETPLATFORM}/angelia /usr/local/bin/angelia
 
 USER 65532:65532
+
+# No shell and no curl in the image: the probe is the binary itself, GET /healthz. Its URL
+# follows ANGELIA_LISTEN, else 127.0.0.1:8080. A listen address set only in the config file
+# is not seen: pass --url to `angelia healthcheck` then (see deploy/compose/README.md).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/angelia","healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/angelia"]

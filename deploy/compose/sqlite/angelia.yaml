@@ -1,0 +1,16 @@
+# Instance configuration for the SQLite example (docs/configuration.md).
+# Mounted read-only at /etc/angelia/angelia.yaml by compose.yaml.
+instance:
+  name: homelab
+
+listen: ":8080"
+
+database:
+  # The named volume angelia-data is mounted on /var/lib/angelia.
+  dsn: sqlite:///var/lib/angelia/angelia.db
+
+roles: [all]
+
+log:
+  format: json
+  level: info

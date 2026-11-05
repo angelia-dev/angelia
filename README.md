@@ -29,6 +29,12 @@ Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/pro
 | `plugin-sdk` | WASM plugin SDKs and conformance kit (later) |
 | `ui` | Web UI (later) |
 
+## Run it
+
+Container images and Docker Compose examples are in [deploy/compose/](deploy/compose/README.md):
+one container with SQLite on a volume, and a full stack with Postgres (placeholder until the
+Postgres store lands). The image is not published yet.
+
 ## Development
 
 Requires Go 1.27 or newer (the toolchain pinned in [go.mod](go.mod); Go downloads it automatically) and golangci-lint v2.15.0 or newer, built with Go 1.27 or newer. Run these from the repository root (`make help` lists them):

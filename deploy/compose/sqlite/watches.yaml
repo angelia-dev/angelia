@@ -1,0 +1,27 @@
+# Watch file for the SQLite example (format: docs/watch-file.md). Applied at every start
+# of the angelia container through `serve --watches`. Edit it and restart the container.
+#
+# No sink is listed here: events are detected and stored, and they are delivered once a sink
+# is added (for example with `angelia apply`, docs/cli.md). Delivery to a webhook needs the
+# webhook sink (#108).
+version: 1
+
+watches:
+  - name: pypi-requests
+    source: pypi
+    coordinates:
+      name: requests
+    interval: 1h
+    labels:
+      team: homelab
+    policy:
+      prerelease: none
+      cooldown: 72h
+
+  - name: gh-cli
+    source: github-release
+    coordinates:
+      repo: cli/cli
+    interval: 6h
+    labels:
+      team: homelab
