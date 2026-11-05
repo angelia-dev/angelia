@@ -7,8 +7,13 @@
 #                      go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
 #   threshold-percent  default 80
 #
-# Generated code (files named *.gen.go: oapi-codegen, sqlc) is left out: its
-# statements say nothing about the tests of the code written by hand.
+# Generated code is left out: its statements say nothing about the tests of
+# the code written by hand. A file counts as generated only when it is named
+# *.gen.go AND its first lines hold the Go convention header
+# "// Code generated ... DO NOT EDIT." A *.gen.go file without the header
+# fails the gate, so hand-written code cannot hide behind the name. This
+# covers every generated file under internal/: the REST server
+# (internal/api), the client (internal/apiclient) and the sqlc store code.
 #
 # Packages without statements (for example doc.go-only packages) have no
 # blocks in the profile. They are listed as ignored and never fail the gate.
@@ -27,7 +32,19 @@ fi
 # deduplicated by their full key ($1), keeping the highest count. Then the
 # statements and covered statements are summed per package directory under
 # internal/. Packages with no statements are skipped.
-report="$(awk '
+# Generated files: *.gen.go with the header; one without it is an error.
+generated=""
+while IFS= read -r f; do
+	if head -n 10 "$f" | grep -Eq '^// Code generated .* DO NOT EDIT\.$'; then
+		generated+="$f "
+	else
+		echo "coverage-gate: $f is named *.gen.go but lacks the '// Code generated ... DO NOT EDIT.' header in its first lines" >&2
+		exit 2
+	fi
+done < <(find internal -name '*.gen.go' -type f | sort)
+
+report="$(awk -v generated="$generated" '
+	BEGIN { n = split(generated, g, " ") }
 	NR == 1 && /^mode:/ { next }
 	{
 		key = $1
@@ -38,7 +55,12 @@ report="$(awk '
 		for (k in nst) {
 			file = k
 			sub(/:.*/, "", file)
-			if (file ~ /\.gen\.go$/) continue
+			skip = 0
+			for (i = 1; i <= n; i++) {
+				suffix = "/" g[i]
+				if (length(file) >= length(suffix) && substr(file, length(file) - length(suffix) + 1) == suffix) skip = 1
+			}
+			if (skip) continue
 			dir = file
 			sub(/\/[^\/]*$/, "", dir)
 			if (index(dir, "/internal/") == 0) continue

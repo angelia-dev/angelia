@@ -44,8 +44,30 @@ token: <api token>
 
 It is not the instance configuration of `angelia serve` (`--config`). A file
 that holds a `token` must not be readable by group or others (`chmod 600`);
-otherwise the command fails, as `ssh` does for a private key. The token is
-never printed, not even in errors.
+otherwise the command fails (the idea of ssh's private key check, but weaker:
+only the mode of the file is checked, not its owner or its directory). The
+check runs even when a flag or variable supplies the token. The token is never
+printed, not even in errors, and an invalid server URL is never echoed.
+
+### Plain http
+
+The token is sent as a bearer header, so with `http://` it travels in clear
+text. The client refuses to send a token over `http://` to a host that is not
+loopback (`localhost`, `127.0.0.0/8`, `::1`) and names `--insecure-http`, which
+allows it for one command. Use an `https://` server URL instead.
+
+## Event stream
+
+`event stream` reconnects without limit after a connection error, a clean end
+of stream, 5xx and 429 answers (honouring `Retry-After`), resuming after the
+last event seen, and prints one `reconnecting in ...` line on stderr each time.
+The wait is the server's `retry:` hint, clamped to 100 ms-5 min. A connection
+silent for 45 s (three keep-alives) is dropped and reopened. Other 4xx answers
+(401, 403, 410) end the command. Ctrl-C stops it. `--no-reconnect` exits when
+the stream ends.
+
+`--all` of `event list` and the other lists stops with an error when the server
+repeats a cursor or `next_after` does not grow.
 
 ## Output
 

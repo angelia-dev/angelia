@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -142,9 +143,13 @@ func newEventListCmd() *cobra.Command {
 					return err
 				}
 				out.Items = append(out.Items, pg.Items...)
+				grew := pg.NextAfter > after
 				out.NextAfter, out.HasMore = pg.NextAfter, pg.HasMore
 				if !all || !pg.HasMore {
 					break
+				}
+				if !grew {
+					return fmt.Errorf("the server returned next_after %d after %d; stopping", pg.NextAfter, after)
 				}
 			}
 			if err := render(e.Out, e.Format, out, eventTable(out.Items)); err != nil {
@@ -189,7 +194,14 @@ stop it with Ctrl-C.`,
 				p.After = &ff.after
 			}
 			printEvent := streamPrinter(e)
-			return e.API.Stream(cmd.Context(), p, apiclient.StreamOptions{Reconnect: !noReconnect}, printEvent)
+			opts := apiclient.StreamOptions{Reconnect: !noReconnect, OnReconnect: func(err error, wait time.Duration) {
+				reason := "stream ended"
+				if err != nil {
+					reason = err.Error()
+				}
+				_, _ = fmt.Fprintf(e.Err, "reconnecting in %s: %s\n", wait.Round(time.Millisecond), reason)
+			}}
+			return e.API.Stream(cmd.Context(), p, opts, printEvent)
 		},
 	}
 	ff.add(cmd)
@@ -211,6 +223,7 @@ func streamPrinter(e *cliEnv) func(apiclient.EventRecord) error {
 		for i, c := range cells {
 			c = cell(c)
 			if i < len(widths) {
+				c = truncate(c, widths[i])
 				fmt.Fprintf(&b, "%-*s  ", widths[i], c)
 			} else {
 				b.WriteString(c)

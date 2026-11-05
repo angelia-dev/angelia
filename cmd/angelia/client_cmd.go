@@ -20,7 +20,9 @@ const maxBodyBytes = 1 << 20
 
 // cliEnv is what a client command needs: an API client, the output format and
 // the streams. It is the unit the commands of #73 (apply) and #115 (replay)
-// reuse.
+// reuse. newCLIEnv reads the flags of addClientFlags: a subcommand of watch,
+// sink, ... inherits them, but a new top-level command (apply) must call
+// addClientFlags on itself.
 type cliEnv struct {
 	API    *apiclient.API
 	Format string
@@ -33,6 +35,7 @@ func addClientFlags(cmd *cobra.Command) {
 	pf := cmd.PersistentFlags()
 	pf.String("server", "", "base URL of the instance; env "+envServer+", then the client config file, default "+DefaultServer)
 	pf.String("token", "", "API token; env "+envToken+", then the client config file (a flag is visible in process lists)")
+	pf.Bool("insecure-http", false, "allow sending the token over plain http to a host that is not loopback")
 	pf.StringP("output", "o", formatTable, "output format: table or json")
 	_ = cmd.RegisterFlagCompletionFunc("output", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{formatTable, formatJSON}, cobra.ShellCompDirectiveNoFileComp
@@ -59,8 +62,15 @@ func newCLIEnv(cmd *cobra.Command) (*cliEnv, error) {
 	if err != nil {
 		return nil, err
 	}
+	insecure, err := fl.GetBool("insecure-http")
+	if err != nil {
+		return nil, err
+	}
 	conn, err := resolveConnection(server, token, os.Getenv)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkTokenTransport(conn, insecure); err != nil {
 		return nil, err
 	}
 	a, err := apiclient.New(apiclient.Options{Server: conn.Server, Token: conn.Token, UserAgent: "angelia-cli"})
@@ -90,6 +100,9 @@ func collect[T any](ctx context.Context, fetch fetchPage[T], cursor string, all 
 		out.NextCursor = next
 		if !all || next == nil {
 			return out, nil
+		}
+		if cur != nil && *cur == *next {
+			return page[T]{}, fmt.Errorf("the server returned the cursor %q twice; stopping", *next)
 		}
 		cur = next
 	}
@@ -131,10 +144,17 @@ func (e *cliEnv) printList(p any, next *string, t table) error {
 // readResourceFile reads the JSON or YAML document of a `put` (a file, or "-"
 // for stdin) and returns it as JSON. Anything but an object is refused.
 func readResourceFile(in io.Reader, path string) ([]byte, error) {
-	var r io.Reader
-	if path == "-" {
-		r = in
-	} else {
+	raw, err := readLimited(in, path)
+	if err != nil {
+		return nil, err
+	}
+	return toJSONObject(raw)
+}
+
+// readLimited reads a file, or stdin for "-", up to maxBodyBytes.
+func readLimited(in io.Reader, path string) ([]byte, error) {
+	r := in
+	if path != "-" {
 		f, err := os.Open(path) //nolint:gosec // the file the user named
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
@@ -149,16 +169,43 @@ func readResourceFile(in io.Reader, path string) ([]byte, error) {
 	if len(raw) > maxBodyBytes {
 		return nil, fmt.Errorf("%s is larger than the server accepts (1 MiB)", path)
 	}
-	return toJSONObject(raw)
+	return raw, nil
 }
 
-// toJSONObject turns a YAML or JSON document into a JSON object. YAML is a
-// superset of JSON, so one decoder reads both.
-func toJSONObject(raw []byte) ([]byte, error) {
-	var doc any
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse resource file: %w", err)
+// decodeDocuments decodes every YAML (or JSON) document of raw, in order. An
+// empty document is skipped. `apply` reads multi-document files with it.
+func decodeDocuments(raw []byte) ([]any, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	var docs []any
+	for {
+		var doc any
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse resource file: %w", err)
+		}
+		if doc != nil {
+			docs = append(docs, doc)
+		}
 	}
+}
+
+// toJSONObject turns a single YAML or JSON object document into JSON.
+func toJSONObject(raw []byte) ([]byte, error) {
+	docs, err := decodeDocuments(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(docs) != 1 {
+		return nil, errors.New("the resource file must hold exactly one document")
+	}
+	return objectJSON(docs[0])
+}
+
+// objectJSON converts a decoded document to JSON, if it is an object.
+func objectJSON(doc any) ([]byte, error) {
 	obj, ok := doc.(map[string]any)
 	if !ok {
 		return nil, errors.New("the resource file must hold one object (JSON or YAML)")

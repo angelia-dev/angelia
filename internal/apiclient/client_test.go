@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -241,9 +242,9 @@ func TestStreamHonoursRetryHint(t *testing.T) {
 }
 
 func TestStreamDoesNotRetryRefusals(t *testing.T) {
-	var calls int
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		calls.Add(1)
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusGone)
 		_, _ = fmt.Fprint(w, `{"type":"`+problemPrefix+`cursor-expired","title":"Cursor expired","status":410,"oldest_seq":9}`)
@@ -255,8 +256,8 @@ func TestStreamDoesNotRetryRefusals(t *testing.T) {
 	if !errors.As(err, &ae) || ae.Status != 410 || ae.Type() != "cursor-expired" || ae.Problem.OldestSeq == nil || *ae.Problem.OldestSeq != 9 {
 		t.Fatalf("err = %v", err)
 	}
-	if calls != 1 {
-		t.Errorf("%d requests", calls)
+	if calls.Load() != 1 {
+		t.Errorf("%d requests", calls.Load())
 	}
 }
 
@@ -290,13 +291,13 @@ func TestStreamBadData(t *testing.T) {
 }
 
 func TestStreamSendsAfterAndFilters(t *testing.T) {
-	var uri string
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { uri = r.URL.RequestURI() }))
+	var uriV atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { uriV.Store(r.URL.RequestURI()) }))
 	defer srv.Close()
 	a, _ := New(Options{Server: srv.URL})
 	after := int64(42)
 	_ = a.Stream(t.Context(), StreamEventsParams{After: &after, Watch: &[]string{"requests"}}, StreamOptions{}, func(EventRecord) error { return nil })
-	if uri != "/v1/events/stream?after=42&watch=requests" {
+	if uri, _ := uriV.Load().(string); uri != "/v1/events/stream?after=42&watch=requests" {
 		t.Errorf("uri = %s", uri)
 	}
 }

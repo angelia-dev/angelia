@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -145,21 +146,38 @@ func resolveConnection(flagServer, flagToken string, getenv func(string) string)
 }
 
 func checkServerURL(s string) error {
+	// The input is never echoed: it may hold credentials, and userinfo ends
+	// at the last "@", which a partial redaction easily gets wrong.
+	const want = "want http://host[:port] or https://host[:port]"
 	u, err := url.Parse(s)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("invalid server URL %q: want http://host[:port] or https://host[:port]", redactURL(s))
+		return errors.New("invalid server URL: " + want)
 	}
 	if u.User != nil {
-		return errors.New("invalid server URL: credentials in the URL are not supported; use --token or ANGELIA_TOKEN")
+		return errors.New("invalid server URL: credentials in the URL are not supported; use --token or " + envToken)
 	}
 	return nil
 }
 
-// redactURL drops anything after the host so that an error never echoes
-// credentials a user pasted into the URL.
-func redactURL(s string) string {
-	if i := strings.Index(s, "@"); i >= 0 {
-		return "..." + s[i+1:]
+// isLoopbackHost reports whether host is localhost or a loopback address
+// (127.0.0.0/8, ::1).
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
 	}
-	return s
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkTokenTransport refuses to send a token in clear text over http to a
+// host that is not loopback, unless insecure is set (--insecure-http).
+func checkTokenTransport(c Connection, insecure bool) error {
+	if c.Token == "" || insecure {
+		return nil
+	}
+	u, err := url.Parse(c.Server)
+	if err != nil || u.Scheme != "http" || isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send the API token over plain http to %s: use an https:// server URL, or pass --insecure-http to allow it", u.Hostname())
 }

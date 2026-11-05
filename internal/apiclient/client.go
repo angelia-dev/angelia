@@ -26,9 +26,13 @@ type Options struct {
 	// Token is the API token, sent as "Authorization: Bearer <token>". Empty
 	// sends no Authorization header.
 	Token string
-	// HTTPClient performs the requests, including event streams. Nil uses a
-	// client with DefaultTimeout for requests and none for streams.
+	// HTTPClient performs the requests. Nil uses a client with
+	// DefaultTimeout.
 	HTTPClient *http.Client
+	// StreamHTTPClient performs event streams, which must have no Timeout
+	// (it would cut the stream). Nil uses a copy of HTTPClient without its
+	// Timeout, or a plain client when HTTPClient is nil too.
+	StreamHTTPClient *http.Client
 	// UserAgent is sent with every request. Empty means "angelia".
 	UserAgent string
 }
@@ -58,10 +62,17 @@ func New(o Options) (*API, error) {
 		}
 		return nil
 	}
-	reqHC, streamHC := o.HTTPClient, o.HTTPClient
-	if o.HTTPClient == nil {
+	reqHC, streamHC := o.HTTPClient, o.StreamHTTPClient
+	if reqHC == nil {
 		reqHC = &http.Client{Timeout: DefaultTimeout}
-		streamHC = &http.Client{}
+	}
+	if streamHC == nil {
+		c := *reqHC
+		c.Timeout = 0
+		streamHC = &c
+		if o.HTTPClient == nil {
+			streamHC = &http.Client{}
+		}
 	}
 	api, err := NewClient(o.Server, WithHTTPClient(reqHC), WithRequestEditorFn(edit))
 	if err != nil {
