@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
@@ -418,7 +419,13 @@ func (s *Server) parseSinkBody(name string, raw []byte) (k watchfile.Sink, inval
 	kind, _ := obj["kind"].(string)
 	cfg, _ := obj["config"].(map[string]any)
 	secret, env := s.checkSinkConfig(kind, cfg)
-	return k, append(append(invalid, parseErrors(perrs)...), secret...), env
+	// The watch file refuses an ANGELIA_ *_env name as invalid; the API
+	// reports every refused name as env-not-allowed (spec decision 25).
+	parsed := slices.DeleteFunc(parseErrors(perrs), func(fe fieldError) bool {
+		return strings.HasPrefix(fe.Detail, config.ReservedEnvRefusal) &&
+			slices.ContainsFunc(env, func(e fieldError) bool { return e.Pointer == fe.Pointer })
+	})
+	return k, append(append(invalid, parsed...), secret...), env
 }
 
 // PutSink implements StrictServerInterface.

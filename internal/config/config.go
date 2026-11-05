@@ -565,6 +565,9 @@ func IsEnvName(s string) bool { return envNameRE.MatchString(s) }
 // a grants.yaml, the watch file or the API.
 func ReservedEnvName(s string) bool { return strings.HasPrefix(s, envPrefix) }
 
+// ReservedEnvRefusal starts the error of a reference to an ANGELIA_ name.
+const ReservedEnvRefusal = "names starting with " + envPrefix + " are always refused"
+
 // LooksLikeToken reports whether v starts with a well-known credential prefix.
 // Callers must not echo v when it does.
 func LooksLikeToken(v string) bool { return hasTokenPrefix(v) }
