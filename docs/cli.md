@@ -31,59 +31,110 @@ matching `PUT` operation. It is idempotent: the change the server made
 ```
 angelia apply -f watches.yaml --dry-run                 # show the plan, write nothing
 angelia apply -f watches.yaml                           # create and update
-angelia apply -f config/ --prune -l team=platform       # also delete what left the files
+angelia apply -f config/ --prune -l team=platform       # also delete watches that left the files
 ```
 
-- **Format.** The [watch file](watch-file.md) of `angelia serve --watches`, as it
-  is: `version: 1` and the lists `sinks`, `watches`, `subscriptions`. Nothing is
-  deprecated and no `kind:` key is needed. `-f` takes a file, a directory (its
-  `.yaml`, `.yml` and `.json` files, sorted, not recursive) or `-` for stdin,
-  and may be repeated. A file may hold several YAML documents, each a watch
-  file. Names must be unique per kind across all of them. The structure is
-  checked before any request; each object is then validated by the server.
+- **Format.** Apply reads the [watch file](watch-file.md) format of
+  `angelia serve --watches` unchanged: `version: 1` and the lists `sinks`,
+  `watches`, `subscriptions`. The format is not deprecated and prints no
+  warning, and apply needs no new key (no `kind:`). A file that apply accepts is
+  also a valid `--watches` file. Each file holds exactly one YAML document, as
+  the watch file requires. To split a configuration, use several files: `-f`
+  takes a file, a directory (its `.yaml`, `.yml` and `.json` files, sorted, not
+  recursive) or `-` for stdin (one document), and may be repeated. Names must
+  be unique per kind across all files. Apply checks the structure, names and
+  label types before it sends any request; the server then validates each
+  object.
 - **Order.** One `PUT` per object: every sink, then every watch, then every
-  subscription, each in file order; `--prune` deletes afterwards, in reverse
-  order (subscriptions, watches, sinks). The sequence is not atomic: a failure
-  stops the run, and the objects before it stay applied. Running apply again
-  after a fix continues.
+  subscription, each in file order. `--prune` deletes watches afterwards. The
+  sequence is not atomic: a failure stops the run, and the objects before it
+  stay applied. A run that failed does not prune. Run apply again after a fix to
+  continue. The error names the object and the server's reason.
 - **Idempotent.** `PUT` replaces the whole object, and the server answers
   `unchanged` when nothing differs, so applying the same files twice changes
   nothing.
-- **Report.** One line per object, `kind/name created|updated|unchanged|deleted|failed`,
-  then a count. An `updated` line is followed by the changed fields, as dotted
-  paths with the old and new value (`interval: "1h" -> "30m"`), compared on what
-  the API returns, with every default filled in. `-o json` prints the same as
+- **Report.** Each object gets one line,
+  `kind/name created|updated|unchanged|deleted|kept|skipped|failed`, and a
+  count line ends the report. An `updated` line is followed by the changed
+  fields, as dotted paths with the old and new value
+  (`interval: "1h" -> "30m"`). They are compared on what the API returns, with
+  every default filled in. `-o json` prints the same report as
   `{"dry_run", "changes": [{"kind", "name", "change", "diff", "note", "error"}]}`.
-- **`--dry-run`** sends every `PUT` with `?dry_run=true`, so the server validates
-  each object and says what it would do, and writes nothing. It reports every
-  failure instead of stopping at the first. Two limits: a subscription on a sink
-  that the run would create is reported without server validation (the sink does
-  not exist yet; the line says so), and deletions are computed from the lists,
-  without a request.
+- **`--dry-run`** sends every `PUT` with `?dry_run=true`. The server validates
+  each object and says what it would do, and nothing is written. A dry run
+  reports every failure instead of stopping at the first. It has two limits:
+  - A subscription on a sink that the same run would create is reported
+    without server validation, because the sink does not exist yet. Its line
+    says so.
+  - Deletions are computed from the lists, without a request.
 - **Labels.** A watch's `labels` come from the file; `watch list --label k=v` finds them.
 
 ### Prune scope
 
 `--prune` needs a label scope, `-l key=value` (repeatable; every pair must
-match). Only objects created through the API (`managed_by: api`) and absent
-from the files are deleted; objects loaded by `angelia serve --watches`
-(`managed_by: file`) are never touched. In API v1 only watches carry labels, so
-the scope reaches sinks and subscriptions through the watches:
+match). **It deletes watches only:** a watch is deleted when it is managed by
+the API (`managed_by: api`), carries every pair of the scope in its `labels`,
+and is not in the files. Objects loaded by `angelia serve --watches`
+(`managed_by: file`) are never touched.
 
-| Object | Deleted when |
-|---|---|
-| watch | its `labels` carry the scope |
-| subscription | its `filter.labels` carry the scope: it can only route events of watches in the scope |
-| sink | at least one subscription in the scope used it before the apply, and no subscription uses it after |
+Apply never deletes sinks or subscriptions. In API v1 they carry no owner labels.
+A subscription's `filter.labels` say which events it wants, not who owns it, so
+another team's subscription can match your scope. Apply reports the likely
+leftovers as `kept`, each with the command that deletes it:
 
-A sink that no subscription uses is never pruned: nothing ties it to the scope.
-Delete it with `angelia sink delete`. Apply warns on stderr about a watch or
-subscription in the files that lacks the scope's labels, because a later prune
-with that scope would never delete it.
+- each API subscription not in the files whose `filter.labels` carry the scope;
+- each API sink not in the files that no subscription uses.
+
+Delete them with `angelia sub delete NAME` and `angelia sink delete NAME` if
+they are yours. Owner `labels` on sinks and subscriptions are a planned
+(additive) change of the API specification; with them, prune can cover all
+three kinds.
+
+Safety rules:
+
+- A real `--prune` run is refused when the files hold no watch in the scope.
+  Without this rule, an empty file or a wrong `-f` or `-l` would delete every
+  watch in the scope. `--prune-allow-empty` overrides the check. A dry run only
+  warns.
+- Apply warns on stderr about a watch in the files that lacks the scope's
+  labels: it is applied, but a prune with that scope would never delete it.
+- Apply reads the lists once, before the `PUT`s. Right before deleting a watch,
+  it reads the watch again and keeps it (`kept`) if it is no longer managed by
+  the API or left the scope. A short window between that read and the
+  `DELETE` remains, because API v0 has no `If-Match`. Do not run two applies
+  with overlapping scopes at the same time.
+- A watch already gone is reported as `deleted (already gone)`. On any other
+  failure the prune stops: the failed watch is `failed`, the rest are `skipped`,
+  and the error lists every watch that was not deleted.
 
 Sinks need a token with the `admin` scope, and a sink's `secret_env` must be
-listed in the instance's `api.allowed_env`; watches and subscriptions need
+listed in the instance's `api.allowed_env`. Watches and subscriptions need
 `write`. An example is [examples/apply.yaml](../examples/apply.yaml).
+
+### Moving from `serve --watches` to `apply`
+
+A name is unique per kind across owners, and the API refuses to change
+file-managed objects. So `apply` on objects that `serve --watches` still loads
+fails with `409 managed-by-file`, or `name taken` at the next startup. To move
+objects to the API:
+
+1. Remove them from the `--watches` file (or drop `--watches`) and restart
+   `angelia serve`. The startup apply deletes the file-managed rows:
+   - pending deliveries of the removed subscriptions become `dead` with
+     `subscription removed`;
+   - a watch's target and its known versions are deleted when no other watch
+     uses the target;
+   - events and deliveries already recorded stay as history.
+2. Run `angelia apply` with the same objects right away. They are created anew,
+   with new ids. Events of a new watch carry the new id in `data.watch.id`.
+   Subscriptions start with no deliveries.
+
+**Version baseline.** A new watch starts with `baseline_done` false, and a
+watch's first check is always a baseline ([policy.md](policy.md)): the versions
+known at that check are recorded without events. When the old target was
+deleted in step 1, a version published between that restart and the new
+watch's first check is recorded as part of the baseline and emits no event.
+Keep the gap between the restart and the apply short.
 
 ## Connection
 

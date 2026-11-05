@@ -1,0 +1,8 @@
+watch/keep unchanged
+watch/gone-0 deleted (already gone)
+watch/gone-a deleted (already gone)
+watch/gone-b kept (changed since the plan: no longer managed by the API or in the scope)
+watch/gone-c failed
+    500 internal-error (internal-error)
+watch/gone-d skipped (not deleted: the prune stopped)
+0 created, 0 updated, 1 unchanged, 2 deleted, 1 kept, 1 skipped, 1 failed

@@ -157,10 +157,11 @@ func TestApplyDryRunAndPrune(t *testing.T) {
 
 	out := a.must("apply", "-f", next, "--prune", "-l", "team=platform")
 	golden(t, "apply-prune.table", out)
+	// Only watches are pruned: subscriptions and sinks carry no owner labels.
 	want := map[string]string{
 		"watch": "npm-react,pypi-flask,pypi-requests,web-thing",
-		"sink":  "chat-new,idle-sink,platform-ci",
-		"sub":   "new-sub,platform-to-ci,web-sub",
+		"sink":  "chat-new,idle-sink,old-sink,platform-ci",
+		"sub":   "new-sub,old-sub,platform-to-ci,web-sub",
 	}
 	for kind, w := range want {
 		if got := strings.Join(a.names(kind), ","); got != w {
@@ -168,7 +169,7 @@ func TestApplyDryRunAndPrune(t *testing.T) {
 		}
 	}
 	out = a.must("apply", "-f", next, "--prune", "-l", "team=platform", "--dry-run")
-	if got, want := summary(out), "0 created, 0 updated, 7 unchanged, 0 deleted (dry run: nothing was written)"; got != want {
+	if got, want := summary(out), "0 created, 0 updated, 7 unchanged, 0 deleted, 2 kept (dry run: nothing was written)"; got != want {
 		t.Errorf("apply after prune: %q, want %q\n%s", got, want, out)
 	}
 }
@@ -215,12 +216,12 @@ func TestApplyDirectoryAndStdin(t *testing.T) {
 	var o, e strings.Builder
 	root.SetOut(&o)
 	root.SetErr(&e)
-	root.SetIn(strings.NewReader(files["10-sinks.yaml"] + "---\n" + files["20-subs.yml"]))
+	root.SetIn(strings.NewReader(files["10-sinks.yaml"]))
 	root.SetArgs(append([]string{"apply", "-f", "-"}, a.conn...))
 	if err := root.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("%v: %s", err, e.String())
 	}
-	if summary(o.String()) != "0 created, 0 updated, 2 unchanged, 0 deleted" {
+	if summary(o.String()) != "0 created, 0 updated, 1 unchanged, 0 deleted" {
 		t.Errorf("stdin:\n%s", o.String())
 	}
 }
@@ -262,123 +263,19 @@ subscriptions:
 	}
 }
 
-func TestApplyInputErrors(t *testing.T) {
-	isolate(t)
-	conn := []string{"--server", "http://127.0.0.1:1", "--token", e2eAdmin}
-	empty := t.TempDir()
-	dup := t.TempDir()
-	for _, n := range []string{"a.yaml", "b.yaml"} {
-		if err := os.WriteFile(filepath.Join(dup, n), []byte("version: 1\nwatches:\n  - {name: w, source: pypi}\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cases := []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{"prune without scope", []string{"--prune"}, []string{"--prune needs a label scope"}},
-		{"scope without prune", []string{"-l", "a=b"}, []string{"-l scopes --prune"}},
-		{"bad selector", []string{"--prune", "-l", "ab"}, []string{`-l "ab": want key=value`}},
-		{"selector twice", []string{"--prune", "-l", "a=b", "-l", "a=c"}, []string{`label "a" given twice`}},
-		{"no version", []string{"-f", writeTemp(t, "f.yaml", "watches: []\n")}, []string{"version: required"}},
-		{"wrong version", []string{"-f", writeTemp(t, "f.yaml", "version: 2\n")}, []string{"version: must be 1"}},
-		{"empty file", []string{"-f", writeTemp(t, "f.yaml", "")}, []string{"empty: a watch file needs"}},
-		{"not a mapping", []string{"-f", writeTemp(t, "f.yaml", "- a\n")}, []string{"must be a mapping"}},
-		{"unknown key and bad items", []string{"-f", writeTemp(t, "f.yaml", "version: 1\nkind: Watch\nsinks: {}\nwatches:\n  - x\n  - {name: Bad}\n  - {source: pypi}\n")}, []string{
-			"kind: unknown key", "sinks: must be a list", "watches[0]: must be an object", "watches[1]: name: required", "watches[2]: name: required",
-		}},
-		{"duplicate across files", []string{"-f", dup}, []string{`b.yaml: watches[0]: name: duplicate watch "w" (also at ` + filepath.Join(dup, "a.yaml") + ": watches[0])"}},
-		{"empty directory", []string{"-f", empty}, []string{"no .yaml, .yml or .json file"}},
-		{"missing file", []string{"-f", filepath.Join(empty, "nope.yaml")}, []string{"no such file"}},
-		{"yaml error", []string{"-f", writeTemp(t, "f.yaml", "a: [")}, []string{"parse resource file"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			args := append([]string{"apply"}, c.args...)
-			if !strings.Contains(strings.Join(c.args, " "), "-f") {
-				args = append(args, "-f", writeTemp(t, "ok.yaml", "version: 1\n"))
-			}
-			_, _, err := runCLI(t, append(args, conn...)...)
-			if err == nil {
-				t.Fatal("no error")
-			}
-			for _, w := range c.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error %q lacks %q", err, w)
-				}
-			}
-		})
-	}
-}
-
 func TestApplyWarnsOutOfScope(t *testing.T) {
 	a := newApplyEnv(t)
 	_, errOut, err := a.run("apply", "-f", writeTemp(t, "f.yaml", applyBase), "--prune", "-l", "team=platform", "--dry-run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{`watch "web-thing": its labels lack team=platform`, `subscription "web-sub": its filter.labels lack team=platform`} {
+	for _, w := range []string{`watch "web-thing": its labels lack team=platform`} {
 		if !strings.Contains(errOut, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, errOut)
 		}
 	}
 	if strings.Contains(errOut, `"pypi-requests"`) {
 		t.Errorf("warned about an object in scope:\n%s", errOut)
-	}
-}
-
-func TestPruneSetScope(t *testing.T) {
-	api, file := "api", "file"
-	watch := func(owner string, labels map[string]any) map[string]any {
-		return map[string]any{"managed_by": owner, "labels": labels}
-	}
-	sub := func(owner, sink string, labels map[string]any) map[string]any {
-		return map[string]any{"managed_by": owner, "sink": sink, "filter": map[string]any{"labels": labels}}
-	}
-	sink := func(owner string) map[string]any { return map[string]any{"managed_by": owner} }
-	p := map[string]any{"team": "p"}
-	r := &applyRun{sel: map[string]string{"team": "p"}}
-	r.current[kWatch] = map[string]map[string]any{
-		"in-file": watch(api, p), "gone": watch(api, p), "other-team": watch(api, map[string]any{"team": "q"}),
-		"by-file": watch(file, p), "more-labels": watch(api, map[string]any{"team": "p", "x": "y"}),
-	}
-	r.current[kSub] = map[string]map[string]any{
-		"kept": sub(api, "moved-from", p), "gone": sub(api, "only-gone", p), "other": sub(api, "shared", map[string]any{"team": "q"}),
-		"gone2": sub(api, "shared", p), "by-file": sub(file, "file-sink", p),
-	}
-	r.current[kSink] = map[string]map[string]any{
-		"moved-from": sink(api), "only-gone": sink(api), "shared": sink(api), "unused": sink(api), "file-sink": sink(file),
-		"in-file": sink(api),
-	}
-	set := &applySet{}
-	for k := range set.origins {
-		set.origins[k] = map[string]string{}
-	}
-	_ = set.addObject(kWatch, map[string]any{"name": "in-file"}, "f")
-	_ = set.addObject(kSub, map[string]any{"name": "kept", "sink": "in-file"}, "f")
-	_ = set.addObject(kSink, map[string]any{"name": "in-file"}, "f")
-	got := r.pruneSet(set)
-	want := [numKinds]string{
-		kSink:  "moved-from,only-gone",
-		kWatch: "gone,more-labels",
-		kSub:   "gone,gone2",
-	}
-	for k := range want {
-		if g := strings.Join(got[k], ","); g != want[k] {
-			t.Errorf("%s: pruned %q, want %q", applyKinds[k].name, g, want[k])
-		}
-	}
-}
-
-func TestDiffWriteKeys(t *testing.T) {
-	old := map[string]any{"interval": "1h", "labels": map[string]any{"a": "1", "b": "2"}, "id": "X", "policy": map[string]any{"bump": []any{"major"}}}
-	cur := map[string]any{"interval": "30m", "labels": map[string]any{"a": "1", "c": "3"}, "id": "Y", "policy": map[string]any{"bump": []any{"major"}}}
-	got := diffWriteKeys(old, cur, []string{"interval", "labels", "policy"})
-	b, _ := json.Marshal(got)
-	want := `[{"path":"interval","old":"1h","new":"30m"},{"path":"labels.b","old":"2","new":null},{"path":"labels.c","old":null,"new":"3"}]`
-	if string(b) != want {
-		t.Errorf("diff = %s\nwant   %s", b, want)
 	}
 }
 

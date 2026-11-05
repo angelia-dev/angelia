@@ -8,9 +8,9 @@
 #
 #   angelia apply -f examples/apply.yaml --prune -l team=platform
 #
-# --prune only touches objects created through the API: watches whose labels match the scope,
-# subscriptions whose filter.labels match it, and the sinks only those subscriptions used.
-# The sink's secret_env must be listed in the instance's api.allowed_env.
+# --prune deletes only watches created through the API whose labels match the scope. Sinks and
+# subscriptions carry no owner labels in API v1: apply lists likely leftovers as "kept" and never
+# deletes them. The sink's secret_env must be listed in the instance's api.allowed_env.
 version: 1
 
 sinks:
