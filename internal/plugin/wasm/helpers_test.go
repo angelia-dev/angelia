@@ -75,7 +75,9 @@ func (n *testNet) requests() []string {
 
 // newTestNet returns the network and a netguard HTTP client over it. The
 // resolver knows a few public (TEST-NET) and private names.
-func newTestNet(t *testing.T, handlers map[string]http.Handler) (*testNet, *http.Client) {
+// newTestNet returns the fake network and a netguard client over it;
+// extraAuth becomes the client's ExtraAuthHeaders.
+func newTestNet(t *testing.T, handlers map[string]http.Handler, extraAuth ...string) (*testNet, *http.Client) {
 	t.Helper()
 	n := &testNet{handlers: handlers}
 	res := fakeResolver{
@@ -92,10 +94,11 @@ func newTestNet(t *testing.T, handlers map[string]http.Handler) (*testNet, *http
 		limits[h] = fastLimit
 	}
 	nc, err := netguard.New(netguard.Config{
-		Transport:   n,
-		Resolver:    res,
-		HostLimits:  limits,
-		MaxAttempts: 1,
+		Transport:        n,
+		Resolver:         res,
+		HostLimits:       limits,
+		MaxAttempts:      1,
+		ExtraAuthHeaders: extraAuth,
 	})
 	if err != nil {
 		t.Fatal(err)
