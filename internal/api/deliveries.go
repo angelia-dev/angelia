@@ -200,7 +200,7 @@ func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestOb
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, "replay", slog.String("delivery", req.Id))
+	s.audit(ctx, "replay", slog.String("delivery", req.Id), slog.Int("deliveries", 1))
 	return jsonOK(body), nil
 }
 
@@ -297,9 +297,29 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 	}
 	res.Truncated = res.Replayed > len(res.Deliveries)
 	if !in.DryRun {
-		s.audit(ctx, "replay", slog.Int("deliveries", len(ids)), slog.Any("ids", firstN(ids, replayListMax)))
+		attrs := replaySelector(in.Event, in.Subscription, in.Since, in.Until, q.Statuses)
+		if ids == nil {
+			ids = []string{}
+		}
+		attrs = append(attrs, slog.Int("deliveries", len(ids)), slog.Any("ids", firstN(ids, replayListMax)))
+		s.audit(ctx, "replay", attrs...)
 	}
 	return jsonOK(res), nil
+}
+
+// replaySelector is what a bulk replay asked for, for its audit record: the
+// members given, as given, and the statuses it selected.
+func replaySelector(event, subscription, since, until *string, statuses []string) []slog.Attr {
+	var attrs []slog.Attr
+	for _, f := range []struct {
+		key string
+		val *string
+	}{{"event", event}, {"subscription", subscription}, {"since", since}, {"until", until}} {
+		if f.val != nil {
+			attrs = append(attrs, slog.String(f.key, *f.val))
+		}
+	}
+	return append(attrs, slog.Any("status", statuses))
 }
 
 // eventTimeIn reports whether the CloudEvents time of a stored envelope is in
