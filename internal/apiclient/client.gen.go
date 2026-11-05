@@ -540,7 +540,9 @@ type SecretWrite struct {
 	// carries it is checked again, including each redirect hop. Empty or absent: unbound,
 	// and only the `admin` scope needed to reference it guards where it goes. A secret
 	// referenced from a source or registry credential must be bound
-	// (`422 secret-host-binding-required`).
+	// (`422 secret-host-binding-required`). This is the contract; it is enforced once
+	// delivery resolves stored secrets (core #108) and source and registry credentials can
+	// reference them (core #111). Until then `hosts` is stored and validated only.
 	Hosts *[]string `json:"hosts,omitempty"`
 
 	// Name Optional; when given it must equal the name in the path.
@@ -1779,10 +1781,11 @@ type ClientInterface interface {
 	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-	// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-	// are retried until it is stored. Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+	// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+	// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -1795,10 +1798,11 @@ type ClientInterface interface {
 	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-	// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-	// are retried until it is stored. Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+	// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+	// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2340,10 +2344,11 @@ func (c *Client) GetSink(ctx context.Context, name SinkName, reqEditors ...Reque
 // the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 // key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 // instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-// are retried until it is stored. Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes any type of body and a specified content type.
 //
@@ -2366,10 +2371,11 @@ func (c *Client) PutSinkWithBody(ctx context.Context, name SinkName, params *Put
 // the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 // key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 // instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-// are retried until it is stored. Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -4578,10 +4584,11 @@ type ClientWithResponsesInterface interface {
 	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-	// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-	// are retried until it is stored. Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+	// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+	// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -4594,10 +4601,11 @@ type ClientWithResponsesInterface interface {
 	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-	// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-	// are retried until it is stored. Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+	// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+	// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -7720,10 +7728,11 @@ func (c *ClientWithResponses) GetSinkWithResponse(ctx context.Context, name Sink
 // the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 // key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 // instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-// are retried until it is stored. Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -7742,10 +7751,11 @@ func (c *ClientWithResponses) PutSinkWithBodyWithResponse(ctx context.Context, n
 // the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
 // key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
 // instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-// refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-// are retried until it is stored. Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+// resolve stored secrets (core #108), they fail and are retried until it is stored; until
+// then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //

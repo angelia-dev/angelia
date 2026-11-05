@@ -539,7 +539,9 @@ type SecretWrite struct {
 	// carries it is checked again, including each redirect hop. Empty or absent: unbound,
 	// and only the `admin` scope needed to reference it guards where it goes. A secret
 	// referenced from a source or registry credential must be bound
-	// (`422 secret-host-binding-required`).
+	// (`422 secret-host-binding-required`). This is the contract; it is enforced once
+	// delivery resolves stored secrets (core #108) and source and registry credentials can
+	// reference them (core #111). Until then `hosts` is stored and validated only.
 	Hosts *[]string `json:"hosts,omitempty"`
 
 	// Name Optional; when given it must equal the name in the path.

@@ -1,9 +1,9 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `e2218a7` ("feat(openapi): write-only stored secrets and *_ref references", branch
-`story/75-secrets-api`, the spec pull request of angelia-dev/angelia#75; record the merge commit here
-once it lands on the spec repository's `main`). Only `openapi/angelia.v1.yaml` changed since
+at commit `f94b38b` ("docs(openapi): host binding and *_ref resolution apply from core
+#108/#111; 0.2.0", on top of `e2218a7`, branch `story/75-secrets-api`, the spec pull request of
+angelia-dev/angelia#75; record the merge commit here once it lands on the spec repository's `main`). Only `openapi/angelia.v1.yaml` changed since
 `836646a` ("feat(openapi): REST API v1 specification draft (#7)"):
 
 | Here | In the spec repository |

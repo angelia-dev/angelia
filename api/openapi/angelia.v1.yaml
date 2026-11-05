@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.1.0
+  version: 0.2.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -497,10 +497,11 @@ paths:
         the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
         key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
         instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
-        refused). A `*_ref` naming a secret that does not exist is accepted: deliveries fail and
-        are retried until it is stored. Needs the `admin` scope: a sink names
-        secrets and decides where the instance sends requests. The next delivery attempt uses the
-        new configuration.
+        refused). A `*_ref` naming a secret that does not exist is accepted: once deliveries
+        resolve stored secrets (core #108), they fail and are retried until it is stored; until
+        then every delivery of a sink with a `*_ref` fails before sending and is retried. Needs
+        the `admin` scope: a sink names secrets and decides where the instance sends requests.
+        The next delivery attempt uses the new configuration.
       tags: [sinks]
       security:
         - bearerAuth: [admin]
@@ -1889,7 +1890,9 @@ components:
             carries it is checked again, including each redirect hop. Empty or absent: unbound,
             and only the `admin` scope needed to reference it guards where it goes. A secret
             referenced from a source or registry credential must be bound
-            (`422 secret-host-binding-required`).
+            (`422 secret-host-binding-required`). This is the contract; it is enforced once
+            delivery resolves stored secrets (core #108) and source and registry credentials can
+            reference them (core #111). Until then `hosts` is stored and validated only.
           type: array
           maxItems: 32
           uniqueItems: true

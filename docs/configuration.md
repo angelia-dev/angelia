@@ -189,6 +189,12 @@ config with a `*_ref` key (such as the webhook's `secret_ref`). The design is
 log line contains one. Manage them with [`angelia secret`](cli.md#stored-secrets) (through the API, `admin`
 scope) and the keys with `angelia secrets` (instance-side).
 
+> **Not wired yet.** Delivery does not resolve stored secrets yet: that lands with the webhook sink and the
+> dispatcher wiring (#108), and for source and registry credentials with #111. Until then `secret_ref` and
+> a secret's `hosts` are stored and validated, but a delivery whose sink names a stored secret fails before
+> it is sent, and is retried, with a `last_error` saying so; it is never sent unsigned. The host binding,
+> the redirect re-check and `422 secret-host-binding-required` take effect with that wiring.
+
 ### The key
 
 - `secrets.key_file` (the documented default) holds **one standard-base64 encoding of 32 random bytes**
@@ -230,7 +236,7 @@ Every role checks the key at startup, since all roles share the store.
 | No key, stored secrets exist | Refuses to start: `secrets: 3 stored secrets but no key configured; set secrets.key_file`. There is no plaintext fallback. |
 | A stored secret is sealed with a key that is not configured | Refuses to start, listing the unknown key ids and their row counts. |
 | No key, a secret is written through the API | `422 secrets-key-missing`; nothing is stored. |
-| A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the delivery fails, and is retried. |
+| A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the API accepts it without a warning. Once delivery resolves stored secrets ([not wired yet](#stored-secrets)), the delivery fails, and is retried. |
 
 The startup check reads SQLite databases; a Postgres store is not checked yet.
 

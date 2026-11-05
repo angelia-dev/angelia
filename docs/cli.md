@@ -254,6 +254,9 @@ angelia secrets status [--config FILE]
 `angelia secret` manages the instance's [stored secrets](configuration.md#stored-secrets)
 through the API (`/v1/secrets`, `admin` scope). A sink names one with a `*_ref`
 key, such as the webhook's `secret_ref: ci-webhook`.
+**Not wired yet:** delivery does not resolve stored secrets until #108 lands;
+until then a sink that names one fails before sending, and `--host` is stored
+but not enforced. See [Stored secrets](configuration.md#stored-secrets).
 
 - The value is read from `--from-file` (a path, or `-` for stdin), never from
   an argument, so it stays out of the shell history and the process list.
