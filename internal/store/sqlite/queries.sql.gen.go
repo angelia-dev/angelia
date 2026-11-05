@@ -141,6 +141,38 @@ func (q *Queries) CountLeasableDueTargets(ctx context.Context, now int64) (int64
 	return count, err
 }
 
+const countSecretsByKeyID = `-- name: CountSecretsByKeyID :many
+SELECT key_id, COUNT(*) AS n FROM secret GROUP BY key_id ORDER BY key_id
+`
+
+type CountSecretsByKeyIDRow struct {
+	KeyID string
+	N     int64
+}
+
+func (q *Queries) CountSecretsByKeyID(ctx context.Context) ([]CountSecretsByKeyIDRow, error) {
+	rows, err := q.db.QueryContext(ctx, countSecretsByKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountSecretsByKeyIDRow
+	for rows.Next() {
+		var i CountSecretsByKeyIDRow
+		if err := rows.Scan(&i.KeyID, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createDelivery = `-- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
                       held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input,
@@ -208,6 +240,36 @@ func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) error 
 		arg.PayloadJson,
 		arg.CreatedAt,
 		arg.RefEventID,
+	)
+	return err
+}
+
+const createSecret = `-- name: CreateSecret :exec
+
+INSERT INTO secret (id, name, hosts_json, key_id, ciphertext, revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+`
+
+type CreateSecretParams struct {
+	ID         string
+	Name       string
+	HostsJson  string
+	KeyID      string
+	Ciphertext []byte
+	CreatedAt  int64
+	UpdatedAt  int64
+}
+
+// Stored secrets (story #75, ADR 0024 section 6).
+func (q *Queries) CreateSecret(ctx context.Context, arg CreateSecretParams) error {
+	_, err := q.db.ExecContext(ctx, createSecret,
+		arg.ID,
+		arg.Name,
+		arg.HostsJson,
+		arg.KeyID,
+		arg.Ciphertext,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }
@@ -392,6 +454,18 @@ DELETE FROM pending_release WHERE watch_id = ?
 
 func (q *Queries) DeletePendingReleasesOfWatch(ctx context.Context, watchID string) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deletePendingReleasesOfWatch, watchID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteSecret = `-- name: DeleteSecret :execrows
+DELETE FROM secret WHERE id = ?
+`
+
+func (q *Queries) DeleteSecret(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSecret, id)
 	if err != nil {
 		return 0, err
 	}
@@ -616,6 +690,46 @@ func (q *Queries) GetLatestEventBySubject(ctx context.Context, arg GetLatestEven
 		&i.PayloadJson,
 		&i.CreatedAt,
 		&i.RefEventID,
+	)
+	return i, err
+}
+
+const getSecret = `-- name: GetSecret :one
+SELECT id, name, hosts_json, key_id, ciphertext, revision, created_at, updated_at FROM secret WHERE id = ?
+`
+
+func (q *Queries) GetSecret(ctx context.Context, id string) (Secret, error) {
+	row := q.db.QueryRowContext(ctx, getSecret, id)
+	var i Secret
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.HostsJson,
+		&i.KeyID,
+		&i.Ciphertext,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSecretByName = `-- name: GetSecretByName :one
+SELECT id, name, hosts_json, key_id, ciphertext, revision, created_at, updated_at FROM secret WHERE name = ?
+`
+
+func (q *Queries) GetSecretByName(ctx context.Context, name string) (Secret, error) {
+	row := q.db.QueryRowContext(ctx, getSecretByName, name)
+	var i Secret
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.HostsJson,
+		&i.KeyID,
+		&i.Ciphertext,
+		&i.Revision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1400,6 +1514,42 @@ func (q *Queries) ListReplayCandidates(ctx context.Context, arg ListReplayCandid
 	return items, nil
 }
 
+const listSecrets = `-- name: ListSecrets :many
+SELECT id, name, hosts_json, key_id, ciphertext, revision, created_at, updated_at FROM secret ORDER BY name
+`
+
+func (q *Queries) ListSecrets(ctx context.Context) ([]Secret, error) {
+	rows, err := q.db.QueryContext(ctx, listSecrets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Secret
+	for rows.Next() {
+		var i Secret
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.HostsJson,
+			&i.KeyID,
+			&i.Ciphertext,
+			&i.Revision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSinksManagedBy = `-- name: ListSinksManagedBy :many
 SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE managed_by = ? ORDER BY name
 `
@@ -1894,6 +2044,37 @@ func (q *Queries) TargetExists(ctx context.Context, id string) (bool, error) {
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const updateSecret = `-- name: UpdateSecret :execrows
+UPDATE secret SET hosts_json = ?, key_id = ?, ciphertext = ?, updated_at = ?, revision = revision + 1
+WHERE id = ? AND revision = ?
+`
+
+type UpdateSecretParams struct {
+	HostsJson  string
+	KeyID      string
+	Ciphertext []byte
+	UpdatedAt  int64
+	ID         string
+	Revision   int64
+}
+
+// An update fenced by the row's revision (ADR 0024 section 5): it writes only
+// while the row is still at the revision the caller read, and increments it.
+func (q *Queries) UpdateSecret(ctx context.Context, arg UpdateSecretParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSecret,
+		arg.HostsJson,
+		arg.KeyID,
+		arg.Ciphertext,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.Revision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateSink = `-- name: UpdateSink :execrows
