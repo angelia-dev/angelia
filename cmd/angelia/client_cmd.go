@@ -153,6 +153,11 @@ func readResourceFile(in io.Reader, path string) ([]byte, error) {
 
 // readLimited reads a file, or stdin for "-", up to maxBodyBytes.
 func readLimited(in io.Reader, path string) ([]byte, error) {
+	return readLimitedN(in, path, maxBodyBytes)
+}
+
+// readLimitedN reads a file, or stdin for "-", up to limit bytes.
+func readLimitedN(in io.Reader, path string, limit int) ([]byte, error) {
 	r := in
 	if path != "-" {
 		f, err := os.Open(path) //nolint:gosec // the file the user named
@@ -162,12 +167,12 @@ func readLimited(in io.Reader, path string) ([]byte, error) {
 		defer func() { _ = f.Close() }()
 		r = f
 	}
-	raw, err := io.ReadAll(io.LimitReader(r, maxBodyBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if len(raw) > maxBodyBytes {
-		return nil, fmt.Errorf("%s is larger than the server accepts (1 MiB)", path)
+	if len(raw) > limit {
+		return nil, fmt.Errorf("%s is larger than the %d KiB limit", path, limit>>10)
 	}
 	return raw, nil
 }

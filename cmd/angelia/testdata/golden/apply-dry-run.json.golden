@@ -1,0 +1,73 @@
+{
+  "dry_run": true,
+  "changes": [
+    {
+      "kind": "sink",
+      "name": "platform-ci",
+      "change": "unchanged"
+    },
+    {
+      "kind": "sink",
+      "name": "chat-new",
+      "change": "created"
+    },
+    {
+      "kind": "watch",
+      "name": "pypi-requests",
+      "change": "updated",
+      "diff": [
+        {
+          "path": "interval",
+          "old": "1h",
+          "new": "30m"
+        },
+        {
+          "path": "labels.tier",
+          "old": null,
+          "new": "critical"
+        },
+        {
+          "path": "policy.cooldown",
+          "old": "72h",
+          "new": "0"
+        }
+      ]
+    },
+    {
+      "kind": "watch",
+      "name": "npm-react",
+      "change": "unchanged"
+    },
+    {
+      "kind": "watch",
+      "name": "pypi-flask",
+      "change": "created"
+    },
+    {
+      "kind": "subscription",
+      "name": "platform-to-ci",
+      "change": "unchanged"
+    },
+    {
+      "kind": "subscription",
+      "name": "new-sub",
+      "change": "created",
+      "note": "sink \"chat-new\" is created by this apply; not validated by the server"
+    },
+    {
+      "kind": "subscription",
+      "name": "old-sub",
+      "change": "deleted"
+    },
+    {
+      "kind": "watch",
+      "name": "pypi-old",
+      "change": "deleted"
+    },
+    {
+      "kind": "sink",
+      "name": "old-sink",
+      "change": "deleted"
+    }
+  ]
+}

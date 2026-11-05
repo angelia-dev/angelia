@@ -36,6 +36,12 @@ func (e2eAuth) Authenticate(_ context.Context, token string) (api.Principal, err
 // newE2EServer runs the real REST API handler on an empty SQLite store.
 func newE2EServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return newE2EServerEnv(t, "CI_WEBHOOK_SECRET")
+}
+
+// newE2EServerEnv is newE2EServer with these api.allowed_env names.
+func newE2EServerEnv(t *testing.T, allowedEnv ...string) *httptest.Server {
+	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "api.db"), log)
 	if err != nil {
@@ -48,7 +54,7 @@ func newE2EServer(t *testing.T) *httptest.Server {
 	}
 	h, err := api.New(api.Options{
 		Store: st, Auth: e2eAuth{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
-		API: config.API{AllowedEnv: []string{"CI_WEBHOOK_SECRET"}}, Logger: log,
+		API: config.API{AllowedEnv: allowedEnv}, Logger: log,
 	})
 	if err != nil {
 		t.Fatal(err)

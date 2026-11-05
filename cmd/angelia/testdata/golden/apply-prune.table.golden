@@ -1,0 +1,14 @@
+sink/platform-ci unchanged
+sink/chat-new created
+watch/pypi-requests updated
+    interval: "1h" -> "30m"
+    labels.tier: (none) -> "critical"
+    policy.cooldown: "72h" -> "0"
+watch/npm-react unchanged
+watch/pypi-flask created
+subscription/platform-to-ci unchanged
+subscription/new-sub created
+subscription/old-sub deleted
+watch/pypi-old deleted
+sink/old-sink deleted
+3 created, 1 updated, 3 unchanged, 3 deleted
