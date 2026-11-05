@@ -1,12 +1,11 @@
 # ADR 0024: Secret values are named, write-only rows sealed with AES-256-GCM under a key from a file; configuration references them by name
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-05, maintainer decision on #195: "go with what proposed")
 - **Date:** 2026-11-05
 - **Story:** angelia-dev/angelia#75
 
-> Design note for a **Human-led** story: nothing here is implemented. Every public-contract choice
-> (API resource, config keys, problem types, CLI verbs) and every crypto or key-handling choice waits
-> for the maintainer. The numbered open questions at the end each carry a recommendation.
+> Written as the design note for a **Human-led** story; the maintainer accepted it, with every open
+> question settled as recommended, before the implementation.
 
 ## Context
 
@@ -218,7 +217,7 @@ CREATE INDEX secret_key_id ON secret (key_id);
   a fail-closed upgrade check, startup refuses to start if any sink config holds a literal at an
   `x-angelia-secret` path.
 - `sink.config_json_encrypted` is a misnomer. A follow-up migration renames it `config_json`
-  (open question 4). `dispatch.Options.DecryptConfig` is replaced by the resolution below.
+  (decided question 4). `dispatch.Options.DecryptConfig` is replaced by the resolution below.
 
 **Resolution (`sink.Request.Secrets`, additive to ADR 0017).** When the dispatcher has leased a delivery
 and loaded its sink, the core walks the sink config and resolves every `*_env` and `*_ref` key:
@@ -265,7 +264,7 @@ and loaded its sink, the core walks the sink config and resolves every `*_env` a
     and ADR 0023's parser applies its own trimming on top.
   - `secrets keygen|rotate|status` are the instance-side commands.
 - **Watch file**: references only, as today, now with `*_ref` beside `*_env`. Inline values stay
-  refused. `angelia apply` uploads no values (open question 5).
+  refused. `angelia apply` uploads no values (decided question 5).
 - **Logs**: `secrets.Value` redacts itself. Tests capture `slog` output (and `telemetrytest` spans) on
   the API write path, the dispatcher with a webhook-style sink, `rotate` and the startup errors. They
   assert that a canary plaintext, its base64 and the key never appear.
@@ -325,32 +324,23 @@ Does **not** protect against:
 - Changes `sink.Request` (ADR 0017), the dispatcher hook, `maskStrings`, the watch-file parser and
   netguard (a re-check on requests that carry a bound secret: a sensitive path).
 
-### Open questions
+### Decided questions
 
-1. **Named secrets vs a per-sink `secrets` member.** Spec decision 24 anticipated a `secrets` member on
-   the sink resource. *Recommendation:* named secrets with `*_ref`, because #111 asks for credentials
-   "referenced by secret name", one token often serves several sinks, watch files can reference a name
-   but cannot hold a value, and `hosts` binding needs a per-secret record. Needs a spec PR either way.
-2. **Suffix `_ref`** vs a structured value (`{"secret": "name"}`) vs `${secret:name}` interpolation.
-   *Recommendation:* the suffix, mirroring `_env`. Interpolation invites partial-string secrets that
-   masking cannot see.
-3. **Raw key in env** (`ANGELIA_SECRETS_KEY`). *Recommendation:* support it (the issue and §8 say "env or
-   file"), with the file as the documented default and the `os.Unsetenv` caveat in the docs.
-4. **Rename `sink.config_json_encrypted` to `config_json`**: this story or a separate one?
-   *Recommendation:* a separate small story, so this story's migration only adds a table.
-5. **`angelia apply` uploading values** (`value_from: {file: …}` resolved client-side).
-   *Recommendation:* no for v0.1; operators run `angelia secret set` once.
-6. **Host matching**: exact host (and port) only, as proposed, or also `*.example.com` wildcards?
-   *Recommendation:* exact only for v0.1. A registry behind several hosts lists each one.
-7. **Problem types and severities**: `secrets-key-missing` (422), `secret-in-use` (409),
-   `secret-host-binding-required` (422), and a missing reference at apply time as a warning (like
-   `*_env`) rather than an error. *Recommendation:* as proposed.
-8. **`GET /v1/secrets` scope**: `admin` (proposed) or `read`. *Recommendation:* `admin`, because names,
-   hosts and referrers map the credentials of the instance. `read` callers still see `*_ref` names in
-   sink configs.
-9. **Host-binding mismatch on a sink**: retryable (proposed, the operator can fix the binding) or
-   immediately `dead`? *Recommendation:* retryable, like the other resolution failures. The delivery goes
-   dead after the normal 8 attempts.
+The maintainer accepted every recommendation on #195 (2026-11-05).
+
+1. **Named secrets** referenced with `*_ref`, not a per-sink `secrets` member. The spec change lands as
+   a spec PR with the implementation.
+2. **The `_ref` suffix**, mirroring `_env`; no structured value, no interpolation.
+3. **Raw key in env** (`ANGELIA_SECRETS_KEY`) is supported; the key file is the documented default, and
+   the docs carry the `os.Unsetenv` caveat.
+4. **Renaming `sink.config_json_encrypted`** is a separate small story; this story's migration only
+   adds a table.
+5. **`angelia apply` uploads no values** in v0.1; operators run `angelia secret set`.
+6. **Host matching** is exact host (and port) only in v0.1; no wildcards.
+7. **Problem types** as proposed: `secrets-key-missing` (422), `secret-in-use` (409),
+   `secret-host-binding-required` (422); a missing reference at apply time is a warning.
+8. **`GET /v1/secrets`** needs the `admin` scope.
+9. **A host-binding mismatch** on a sink is retryable; the delivery goes dead after the normal attempts.
 
 ## Alternatives considered
 
