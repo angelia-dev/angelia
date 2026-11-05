@@ -13,7 +13,7 @@
 #   chat sink exists (#120). Start it with `--profile not-wired`.
 services:
   postgres:
-    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17-alpine@sha256:562a6e0a66b5136bc28bef5944bbc2ddddf8ea0058d4016b96cee63f2edaf143
     environment:
       POSTGRES_DB: angelia
       POSTGRES_USER: angelia
@@ -28,7 +28,8 @@ services:
       retries: 5
 
   # PLACEHOLDER: the DSN below is the intended shape. The password is interpolated here,
-  # not in angelia.yaml. Secret references for DSNs come with #75.
+  # not in angelia.yaml. It goes into the DSN unescaped, so use hex only (or URL-encode it).
+  # It is visible in `docker inspect` of this container. Secret references for DSNs: #75.
   angelia:
     profiles: ["placeholder"]
     image: ghcr.io/angelia-dev/angelia:0.1.0

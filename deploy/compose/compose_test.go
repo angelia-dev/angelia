@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -238,7 +239,7 @@ func TestComposeThirdPartyImagesArePinnedByDigest(t *testing.T) {
 			if strings.HasPrefix(s.Image, "ghcr.io/angelia-dev/angelia:") {
 				continue
 			}
-			if !strings.Contains(s.Image, "@sha256:") {
+			if !digestRE.MatchString(s.Image) {
 				t.Errorf("%s %s: image %q is not pinned by digest", file, name, s.Image)
 			}
 		}
@@ -252,14 +253,50 @@ func TestComposeFilesValidateWithDockerWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Skip("docker not on PATH")
 	}
+	// A docker CLI without the compose plugin is common (CI runners, dev boxes).
+	if err := exec.Command(docker, "compose", "version").Run(); err != nil { //nolint:gosec // docker from PATH
+		t.Skip("docker compose plugin not available")
+	}
 	// The full stack refuses to render without a password.
 	t.Setenv("POSTGRES_PASSWORD", "test-only-not-a-secret")
 	for _, file := range []string{"sqlite/compose.yaml", "full/compose.yaml"} {
+		// All profiles, so the placeholder and not-wired services are validated too.
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		out, err := exec.CommandContext(ctx, docker, "compose", "-f", file, "config", "--quiet").CombinedOutput() //nolint:gosec // docker from PATH, fixed fixture paths
+		out, err := exec.CommandContext(ctx, docker, "compose", "-f", file, "--profile", "*", "config", "--quiet").CombinedOutput() //nolint:gosec // docker from PATH, fixed fixture paths
 		cancel()
 		if err != nil {
 			t.Errorf("docker compose config %s: %v\n%s", file, err, out)
 		}
 	}
 }
+
+// AC (review S5): the image HEALTHCHECK runs the binary's probe. Pinned here so
+// that a change to the Dockerfile (a sensitive path) shows up in a test.
+func TestDockerfileHealthcheckRunsTheBinaryProbe(t *testing.T) {
+	raw, err := os.ReadFile("../../Dockerfile") //nolint:gosec // fixed path of this repository
+	if err != nil {
+		t.Fatal(err)
+	}
+	var healthchecks []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "HEALTHCHECK") {
+			healthchecks = append(healthchecks, line)
+		}
+	}
+	if len(healthchecks) != 1 {
+		t.Fatalf("want exactly one HEALTHCHECK line, got %d: %q", len(healthchecks), healthchecks)
+	}
+	if !healthcheckLineRE.MatchString(healthchecks[0]) {
+		t.Fatalf("HEALTHCHECK = %q, want CMD [\"/usr/local/bin/angelia\",\"healthcheck\"]", healthchecks[0])
+	}
+	if !strings.Contains(string(raw), "COPY ${TARGETPLATFORM}/angelia /usr/local/bin/angelia") {
+		t.Error("the binary is not copied to /usr/local/bin/angelia, the path the HEALTHCHECK runs")
+	}
+}
+
+var (
+	// Images are pinned by digest: sha256 of a manifest, 64 lower-case hex digits.
+	digestRE = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+	// The Dockerfile HEALTHCHECK: optional flags, then the exec form of the probe.
+	healthcheckLineRE = regexp.MustCompile(`^HEALTHCHECK (--[\w-]+=\S+ )*CMD \["/usr/local/bin/angelia","healthcheck"\]$`)
+)

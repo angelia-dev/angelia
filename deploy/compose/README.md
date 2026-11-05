@@ -14,6 +14,9 @@ pipeline, see [docs/operations/release.md](../../docs/operations/release.md)):
   doc). Until `ghcr.io/angelia-dev/angelia:0.1.0` exists, `docker compose up` fails with a pull
   error. The compose files pin a version tag. Add the digest of the released image once it is
   published and verified (`cosign verify`, see the release doc).
+- **Pins are refreshed by hand** until Dependabot covers compose files. Third-party images
+  (postgres, busybox, apprise) carry a tag and a `@sha256:` digest. The digest moves with the
+  tag, so re-pin the digest when you bump a tag, and check that it matches the registry.
 - Compose v2 (`docker compose`).
 
 ## SQLite (homelab)
@@ -34,8 +37,15 @@ docker compose logs -f angelia
 - The port is published on `127.0.0.1:8080` only. The REST API needs a bearer token, and token
   storage is not built yet, so every API request is refused for now (see
   [docs/configuration.md](../../docs/configuration.md#rest-api)).
-- The healthcheck runs `angelia healthcheck` against `http://127.0.0.1:8080/healthz`. The
-  image has no shell or curl, so the binary is its own probe. Exit 0 means a 2xx answer.
+- The healthcheck runs `angelia healthcheck`. The image has no shell or curl, so the binary is
+  its own probe. Exit 0 means a 2xx answer; a redirect, a timeout (3s) or a refused connection
+  is exit 1.
+- **The probe URL.** Without `--url`, it is built from `ANGELIA_LISTEN`: the port is taken from
+  it, and an empty or `0.0.0.0` / `::` host becomes `127.0.0.1`. Without `ANGELIA_LISTEN`, it is
+  `http://127.0.0.1:8080/healthz`. If `listen` is set only in the config file, the probe does not
+  see it: give the URL explicitly with `--url`, for example `angelia healthcheck --url
+  http://127.0.0.1:9000/healthz`, and override the healthcheck in the compose file with the same
+  command. A `--url` with credentials is refused.
 
 Check the two files without starting anything:
 
@@ -64,11 +74,15 @@ docker compose up -d       # starts postgres only
   `docker compose --profile placeholder up` only to see the wiring; it exits until #85 lands.
 - **apprise** (`caronc/apprise`, the apprise-api image) is in the `not-wired` profile. Nothing
   calls it: the chat sink that would use it does not exist yet (#120).
-- The password is interpolated into `ANGELIA_DATABASE_DSN` from `.env`. Secret references for
-  DSNs are not decided (#75). Do not commit `.env`.
+- The password is interpolated into `ANGELIA_DATABASE_DSN` from `.env`, unescaped. Use hex only
+  (the `openssl rand -hex` above), or URL-encode it: characters such as `@ : / #` break the DSN.
+  The password is visible in `docker inspect` of the angelia container. That is acceptable for
+  a placeholder; secret references for DSNs are not decided (#75). Do not commit `.env`.
 
 ## Checks
 
-The Go test `go test ./deploy/compose/` checks the structure of both files: services, volumes,
-mounts, healthchecks, profiles and pinned images. When the `docker` CLI is on PATH it also runs
-`docker compose config --quiet` on each file. It needs no daemon and no network.
+The Go tests check the files without starting anything. `go test ./deploy/compose/` checks the
+structure of both files: services, volumes, mounts, healthchecks, profiles, digest pins, and the
+Dockerfile HEALTHCHECK. When the `docker` CLI and its compose plugin are available, it also runs
+`docker compose config --quiet` on each file with all profiles. `go test ./cmd/angelia/` loads
+the example configs with the real loaders. Neither needs a daemon or the network.
