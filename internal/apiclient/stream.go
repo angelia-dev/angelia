@@ -200,7 +200,10 @@ func (a *API) streamOnce(ctx context.Context, params *StreamEventsParams, idle t
 				rec.Seq = n
 			}
 		}
-		if err := fn(rec); err != nil {
+		timer.Stop() // a slow callback is not an idle connection
+		err := fn(rec)
+		timer.Reset(idle)
+		if err != nil {
 			return &stopError{err: err}
 		}
 		s := rec.Seq

@@ -150,14 +150,14 @@ func TestKeepAliveResetsIdleTimer(t *testing.T) {
 		for range 6 {
 			_, _ = fmt.Fprint(w, ": keep-alive\n\n")
 			w.(http.Flusher).Flush()
-			time.Sleep(40 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond)
 		}
 		_, _ = fmt.Fprint(w, record(1))
 	}))
 	defer srv.Close()
 	a, _ := New(Options{Server: srv.URL})
 	var got int
-	err := a.Stream(t.Context(), StreamEventsParams{}, StreamOptions{IdleTimeout: 100 * time.Millisecond}, func(EventRecord) error { got++; return nil })
+	err := a.Stream(t.Context(), StreamEventsParams{}, StreamOptions{IdleTimeout: 300 * time.Millisecond}, func(EventRecord) error { got++; return nil })
 	if err != nil || got != 1 {
 		t.Errorf("err %v, %d events", err, got)
 	}

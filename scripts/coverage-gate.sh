@@ -22,6 +22,11 @@ set -euo pipefail
 profile="${1:-coverage.out}"
 threshold="${2:-80}"
 
+# The scan for generated files and the profile paths are relative to the
+# repository root: make the profile path absolute, then go there.
+[[ "$profile" = /* ]] || profile="$PWD/$profile"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 if [[ ! -s "$profile" ]]; then
 	echo "coverage-gate: profile '$profile' is missing or empty" >&2
 	exit 2

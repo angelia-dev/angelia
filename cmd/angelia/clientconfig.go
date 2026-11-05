@@ -162,6 +162,8 @@ func checkServerURL(s string) error {
 // isLoopbackHost reports whether host is localhost or a loopback address
 // (127.0.0.0/8, ::1).
 func isLoopbackHost(host string) bool {
+	// "localhost." and "*.localhost" stay refused: a resolver may send them
+	// anywhere.
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

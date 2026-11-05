@@ -38,6 +38,8 @@ func TestCheckTokenTransport(t *testing.T) {
 		{"http://angelia.example.com", "t", false, true},
 		{"http://10.0.0.5:8080", "t", false, true},
 		{"http://localhost.example.com", "t", false, true},
+		{"http://localhost.:8080", "t", false, true},
+		{"http://api.localhost:8080", "t", false, true},
 		{"http://angelia.example.com", "t", true, false},
 	}
 	for _, c := range cases {

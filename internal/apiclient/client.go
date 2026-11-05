@@ -24,7 +24,9 @@ type Options struct {
 	// Server is the base URL of the instance, e.g. http://localhost:8080.
 	Server string
 	// Token is the API token, sent as "Authorization: Bearer <token>". Empty
-	// sends no Authorization header.
+	// sends no Authorization header. The client does not check the scheme of
+	// Server: refusing a token over plain http to a non-loopback host is the
+	// CLI's job (checkTokenTransport in cmd/angelia).
 	Token string
 	// HTTPClient performs the requests. Nil uses a client with
 	// DefaultTimeout.
@@ -74,6 +76,9 @@ func New(o Options) (*API, error) {
 			streamHC = &http.Client{}
 		}
 	}
+	// The API never redirects. Refusing every redirect keeps the token from
+	// following one, including an https to http downgrade.
+	reqHC, streamHC = withNoRedirect(reqHC), withNoRedirect(streamHC)
 	api, err := NewClient(o.Server, WithHTTPClient(reqHC), WithRequestEditorFn(edit))
 	if err != nil {
 		return nil, fmt.Errorf("apiclient: %w", err)
@@ -175,6 +180,15 @@ func Decode(resp *http.Response, err error, out any) (Result, error) {
 		return res, fmt.Errorf("decode response: %w", err)
 	}
 	return res, nil
+}
+
+// withNoRedirect returns a copy of c that fails on any redirect.
+func withNoRedirect(c *http.Client) *http.Client {
+	cc := *c
+	cc.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("the server redirected to %s; the API never redirects, check the server URL", req.URL.Redacted())
+	}
+	return &cc
 }
 
 func newError(status int, body []byte) *Error {
