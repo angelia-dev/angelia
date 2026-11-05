@@ -465,6 +465,9 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 	if err != nil { // a key the operator can still fix: retried
 		return sink.Result{}, fmt.Errorf("dispatch: decrypt config of sink %s: %w", ld.Sink.ID, err)
 	}
+	if p := secretRef(cfg); p != "" { // fail closed until *_ref is resolved (#108)
+		return sink.Result{}, fmt.Errorf("dispatch: config of sink %s at %s %s", ld.Sink.ID, p, errSecretRefNotWired)
+	}
 	ev := sink.ReleaseEvent{JSON: ld.Event.Payload}
 	if err := json.Unmarshal(ld.Event.Payload, &ev.Envelope); err != nil {
 		return sink.Result{}, sink.Permanent(fmt.Errorf("dispatch: decode event %s: %w", ld.Event.ID, err))
