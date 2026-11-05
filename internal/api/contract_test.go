@@ -353,7 +353,7 @@ func seedExamples(c *contract) {
 
 // TestContract runs every operation of the specification.
 func TestContract(t *testing.T) {
-	e := newEnv(t, func(o *Options) {
+	e := newEnv(t, withKeys, func(o *Options) {
 		o.Plugins = append(o.Plugins, PluginInfo{
 			Kind: "crates", Interface: "source", Runtime: "wasm", Version: "0.3.1", ABI: "angelia:host/v0",
 			ConfigSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
@@ -447,6 +447,40 @@ func TestContract(t *testing.T) {
 	if r.Status != 415 || !jsonSame(c.example("ProblemUnsupportedMediaType"), toJSON(t, r.json(t))) {
 		t.Errorf("415: %d %s", r.Status, r.Body)
 	}
+
+	// Secrets: never a value in a response; the key id depends on the key.
+	e.now = time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	r, v = c.call("putSecret", 201, "/v1/secrets/ci-webhook-signing", tokAdmin, c.exampleBody("SecretPut"))
+	if r.Header.Get("Location") != "/v1/secrets/ci-webhook-signing" {
+		t.Errorf("putSecret Location %v", r.Header)
+	}
+	c.sameAsExample("SecretCreated", v, "key_id")
+	r, v = c.call("putSecret", 200, "/v1/secrets/ci-webhook-signing", tokAdmin, c.exampleBody("SecretPut"))
+	if r.Header.Get("Angelia-Change") != "unchanged" {
+		t.Errorf("second putSecret: %v", r.Header)
+	}
+	c.sameAsExample("SecretCreated", v, "key_id")
+	e.now = time.Date(2026, 11, 5, 9, 5, 0, 0, time.UTC)
+	c.call("putSecret", 201, "/v1/secrets/registry-token", tokAdmin, c.exampleBody("SecretPutBound"))
+	refSink := c.exampleBody("SinkPut")
+	cfg := refSink["config"].(map[string]any)
+	delete(cfg, "secret_env")
+	cfg["secret_ref"] = "ci-webhook-signing"
+	c.call("putSink", 200, "/v1/sinks/ci-webhook", tokAdmin, refSink)
+	_, v = c.call("getSecret", 200, "/v1/secrets/ci-webhook-signing", tokAdmin, nil)
+	c.sameAsExample("Secret", v, "key_id")
+	_, v = c.call("listSecrets", 200, "/v1/secrets", tokAdmin, nil)
+	c.sameAsExample("SecretPage", v, "key_id")
+	_, v = c.call("deleteSecret", 409, "/v1/secrets/ci-webhook-signing", tokAdmin, nil)
+	c.sameAsExample("ProblemSecretInUse", v)
+	c.call("putSink", 200, "/v1/sinks/ci-webhook", tokAdmin, c.exampleBody("SinkPut"))
+	c.call("deleteSecret", 204, "/v1/secrets/ci-webhook-signing?dry_run=true", tokAdmin, nil)
+	c.call("deleteSecret", 204, "/v1/secrets/ci-webhook-signing", tokAdmin, nil)
+	c.call("getSecret", 404, "/v1/secrets/ci-webhook-signing", tokAdmin, nil)
+	noKey := newEnv(t)
+	nc := &contract{t: t, e: noKey, covered: c.covered}
+	_, v = nc.call("putSecret", 422, "/v1/secrets/ci-webhook-signing", tokAdmin, c.exampleBody("SecretPut"))
+	c.sameAsExample("ProblemSecretsKeyMissing", v)
 
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)

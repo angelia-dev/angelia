@@ -92,6 +92,27 @@ func (s *Server) readWatch(ctx context.Context, r watchReader, name string) (sto
 	return w, t, nil
 }
 
+// watchBody is the watch named name in the shape of its PUT body, nil when
+// there is none, for checkRefScope.
+func watchBody(ctx context.Context, tx store.APITx, name string) (any, error) {
+	w, err := tx.WatchByName(ctx, name)
+	if isNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t, err := tx.GetTarget(ctx, w.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	wj, err := watchJSONOf(w, t)
+	if err != nil {
+		return nil, err
+	}
+	return asBody(wj), nil
+}
+
 // GetWatch implements StrictServerInterface.
 func (s *Server) GetWatch(ctx context.Context, req GetWatchRequestObject) (GetWatchResponseObject, error) {
 	w, t, err := s.readWatch(ctx, s.opts.Store, req.Name)
@@ -224,7 +245,14 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 	var body watchJSON
 	var change Change
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		var err error
+		before, err := watchBody(ctx, tx, w.Name)
+		if err != nil {
+			return err
+		}
+		after, _ := decodeJSON(stateFrom(ctx).body)
+		if err := checkRefScope(ctx, before, after); err != nil {
+			return err
+		}
 		change, err = s.applyWatch(ctx, tx, w)
 		if err != nil {
 			return err
@@ -339,6 +367,13 @@ func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) 
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no watch named %s", req.Name)
+		}
+		before, err := watchBody(ctx, tx, req.Name)
+		if err != nil {
+			return err
+		}
+		if err := checkRefScope(ctx, before, nil); err != nil {
+			return err
 		}
 		if err := tx.DeleteWatch(ctx, cur.ID); err != nil {
 			return err

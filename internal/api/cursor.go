@@ -19,6 +19,7 @@ type pageCursor struct {
 const (
 	cursorWatches       = "w"
 	cursorSinks         = "k"
+	cursorSecrets       = "x"
 	cursorSubscriptions = "s"
 	cursorVersions      = "v"
 	cursorDeliveries    = "d"

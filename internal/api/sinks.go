@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
@@ -247,12 +248,13 @@ func (s *Server) sinkJSONOf(k store.Sink, scope Scope) (sinkJSON, error) {
 }
 
 // maskStrings masks every string value of v that is not under a key ending
-// in _env, which names a variable and is never a secret.
+// in _env or _ref, which name a variable or a stored secret and are never a
+// secret themselves (ADR 0024 §7).
 func maskStrings(v any, at []string, mask func([]string, func(any))) {
 	switch x := v.(type) {
 	case map[string]any:
 		for _, k := range slices.Sorted(maps.Keys(x)) {
-			if strings.HasSuffix(k, "_env") {
+			if strings.HasSuffix(k, "_env") || isRefKey(k) {
 				continue
 			}
 			next := append(slices.Clone(at), k)
@@ -307,9 +309,10 @@ func redactURLs(v any) any {
 }
 
 // checkSinkConfig applies the API's own rules to a sink configuration: no
-// value the kind marks secret, and every *_env key, at any depth, a string
+// value the kind marks secret; every *_env key, at any depth, a string
 // naming a variable on the allowlist api.allowed_env (names starting with
-// ANGELIA_ never).
+// ANGELIA_ never); every *_ref key a string naming a stored secret (which
+// need not exist yet: deliveries fail until it does, ADR 0024 §4).
 func (s *Server) checkSinkConfig(kind string, cfg map[string]any) (invalid, env []fieldError) {
 	sch, _ := s.configSchema(kind)
 	for _, p := range secretPaths(sch, nil, 0) {
@@ -323,6 +326,12 @@ func (s *Server) checkSinkConfig(kind string, cfg map[string]any) (invalid, env 
 		case map[string]any:
 			for _, k := range slices.Sorted(maps.Keys(x)) {
 				next := append(slices.Clone(at), k)
+				if isRefKey(k) {
+					if name, ok := x[k].(string); !ok || !secrets.ValidName(name) {
+						invalid = append(invalid, fieldError{Pointer: configPointer(next), Detail: "must name a stored secret (pattern ^[a-z0-9][a-z0-9._-]{0,62}$)"})
+					}
+					continue
+				}
 				if !strings.HasSuffix(k, "_env") {
 					walk(x[k], next)
 					continue

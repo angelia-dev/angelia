@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/ulid"
@@ -56,6 +57,9 @@ type Options struct {
 	Plugins []PluginInfo
 	// API is the instance configuration's api section (api.allowed_env).
 	API config.API
+	// Secrets seals the values of /v1/secrets; nil means no key is
+	// configured, and a write gets 422 secrets-key-missing.
+	Secrets *secrets.Keyring
 	// Logger receives the access log and the audit records; nil discards.
 	Logger *slog.Logger
 	// Now and NewID default to the real clock and random ULIDs.

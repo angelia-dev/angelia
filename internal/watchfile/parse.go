@@ -22,6 +22,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/render"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version"
@@ -424,13 +425,14 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 }
 
 func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
-	m := p.mapping(n, jp, "url", "secret_env", "timeout")
+	m := p.mapping(n, jp, "url", "secret_env", "secret_ref", "timeout")
 	if m == nil {
 		return nil
 	}
 	cfg := struct {
 		URL       string `json:"url"`
 		SecretEnv string `json:"secret_env,omitempty"`
+		SecretRef string `json:"secret_ref,omitempty"`
 		Timeout   string `json:"timeout"`
 	}{Timeout: DefaultWebhookTimeout.String()}
 	if un := p.need(m, "url", jp+".url", n); un != nil {
@@ -453,8 +455,23 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 				}
 			}
 		}
-	} else {
-		p.warnf(n, jp, "no secret_env: the webhook is delivered unsigned")
+	}
+	if rn := m["secret_ref"]; rn != nil {
+		// A stored secret's name (ADR 0024): `angelia secret set` stores
+		// the value; the file never holds it.
+		if s, ok := p.secretFree(rn, jp+".secret_ref"); ok {
+			switch {
+			case !secrets.ValidName(s):
+				p.errf(rn, jp+".secret_ref", "must be the name of a stored secret (pattern ^[a-z0-9][a-z0-9._-]{0,62}$), not the secret itself")
+			case m["secret_env"] != nil:
+				p.errf(rn, jp+".secret_ref", "set at most one of secret_env and secret_ref")
+			default:
+				cfg.SecretRef = s
+			}
+		}
+	}
+	if m["secret_env"] == nil && m["secret_ref"] == nil {
+		p.warnf(n, jp, "no secret_env or secret_ref: the webhook is delivered unsigned")
 	}
 	if tn := m["timeout"]; tn != nil {
 		if d, ok := p.duration(tn, jp+".timeout", MinWebhookTimeout, MaxWebhookTimeout, false); ok {

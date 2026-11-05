@@ -175,6 +175,27 @@ func (e ReplayRequestStatus) Valid() bool {
 	}
 }
 
+// Defines values for SecretReferrerResource.
+const (
+	SecretReferrerResourceSink         SecretReferrerResource = "sink"
+	SecretReferrerResourceSubscription SecretReferrerResource = "subscription"
+	SecretReferrerResourceWatch        SecretReferrerResource = "watch"
+)
+
+// Valid indicates whether the value is a known member of the SecretReferrerResource enum.
+func (e SecretReferrerResource) Valid() bool {
+	switch e {
+	case SecretReferrerResourceSink:
+		return true
+	case SecretReferrerResourceSubscription:
+		return true
+	case SecretReferrerResourceWatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ShortEventType.
 const (
 	ReleasePrerelease ShortEventType = "release.prerelease"
@@ -456,6 +477,88 @@ type ReplayResult struct {
 	Truncated bool `json:"truncated"`
 }
 
+// Secret A stored secret as the server returns it: metadata only. No scope, flag or parameter
+// returns its value.
+type Secret struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Hosts The host binding, as written; empty when the secret is unbound.
+	Hosts []string `json:"hosts"`
+
+	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
+	KeyId string `json:"key_id"`
+
+	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
+	ReferencedBy []SecretReferrer `json:"referenced_by"`
+
+	// UpdatedAt When the value or the hosts were last written.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// SecretPage defines model for SecretPage.
+type SecretPage struct {
+	Items []Secret `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// SecretReferrer defines model for SecretReferrer.
+type SecretReferrer struct {
+	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
+	//
+	// Examples: /config/secret_ref
+	Pointer string `json:"pointer"`
+
+	// Resource The kind of resource that holds the reference.
+	Resource SecretReferrerResource `json:"resource"`
+}
+
+// SecretReferrerResource The kind of resource that holds the reference.
+type SecretReferrerResource string
+
+// SecretWrite The body of `PUT /v1/secrets/{name}`: exactly one of `value` (text) and `value_base64` (any
+// bytes), at most 64 KiB once decoded, and optional `hosts`. Both value members are
+// write-only: no response, log, audit record or problem detail ever carries them.
+type SecretWrite struct {
+	// Hosts The hosts the secret may be sent to (the host binding). Each entry is `host` (port
+	// 443) or `host:port`: a lower-case hostname (IDNA as punycode, no trailing dot) or an IP
+	// literal (`[addr]:port` for IPv6 with a port); no wildcards. A bound secret is resolved
+	// only for a destination whose host and port equal an entry, and every request that
+	// carries it is checked again, including each redirect hop. Empty or absent: unbound,
+	// and only the `admin` scope needed to reference it guards where it goes. A secret
+	// referenced from a source or registry credential must be bound
+	// (`422 secret-host-binding-required`).
+	Hosts *[]string `json:"hosts,omitempty"`
+
+	// Name Optional; when given it must equal the name in the path.
+	Name *Name `json:"name,omitempty"`
+
+	// Value The secret as text, stored as its UTF-8 bytes exactly (nothing is trimmed). 1 byte to 64 KiB.
+	Value *string `json:"value,omitempty"`
+
+	// ValueBase64 The secret as the standard base64 encoding of its bytes (RFC 4648 section 4, padded). 1 byte to 64 KiB once decoded.
+	ValueBase64 *string `json:"value_base64,omitempty"`
+	union       json.RawMessage
+}
+
+// SecretWrite0 defines model for SecretWrite.0.
+type SecretWrite0 = interface{}
+
+// SecretWrite1 defines model for SecretWrite.1.
+type SecretWrite1 = interface{}
+
 // Seq An event's position in the log, assigned in commit order (`event.seq`). Strictly increasing; there may be gaps.
 //
 // Examples: 4182
@@ -471,9 +574,12 @@ type ShortEventType string
 type Sink struct {
 	// Config Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 	// (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-	// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-	// and a name set through the API must be allowed by the instance configuration
-	// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+	// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+	// (an environment variable of the instance, as in the watch file); a `*_env` name set
+	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 	// be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
@@ -501,9 +607,12 @@ type Sink struct {
 
 // SinkConfig Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 // (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-// and a name set through the API must be allowed by the instance configuration
-// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+// (an environment variable of the instance, as in the watch file); a `*_env` name set
+// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 // be set through the API. The configuration of each built-in kind is listed in
 // `x-angelia-kind-config`.
 type SinkConfig map[string]interface{}
@@ -517,13 +626,16 @@ type SinkPage struct {
 }
 
 // SinkWrite The body of `PUT /v1/sinks/{name}`: the keys of `sinks[]` in the watch file. It carries no
-// secret values: a secret is named by a `*_env` key of `config`.
+// secret values: a secret is named by a `*_ref` or `*_env` key of `config`.
 type SinkWrite struct {
 	// Config Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 	// (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-	// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-	// and a name set through the API must be allowed by the instance configuration
-	// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+	// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+	// (an environment variable of the instance, as in the watch file); a `*_env` name set
+	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 	// be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
@@ -797,6 +909,9 @@ type LabelFilter = []string
 // Limit defines model for Limit.
 type Limit = int
 
+// SecretName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+type SecretName = Name
+
 // SinkName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
 type SinkName = Name
 
@@ -943,6 +1058,27 @@ type ListPluginsParams struct {
 	Interface *PluginInterface `form:"interface,omitempty" json:"interface,omitempty"`
 }
 
+// ListSecretsParams defines parameters for ListSecrets.
+type ListSecretsParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteSecretParams defines parameters for DeleteSecret.
+type DeleteSecretParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// PutSecretParams defines parameters for PutSecret.
+type PutSecretParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
 // ListSinksParams defines parameters for ListSinks.
 type ListSinksParams struct {
 	// Limit Page size.
@@ -1038,6 +1174,9 @@ type ReplayDeliveryJSONRequestBody = ReplayDeliveryJSONBody
 
 // CreateReplayJSONRequestBody defines body for CreateReplay for application/json ContentType.
 type CreateReplayJSONRequestBody = ReplayRequest
+
+// PutSecretJSONRequestBody defines body for PutSecret for application/json ContentType.
+type PutSecretJSONRequestBody = SecretWrite
 
 // PutSinkJSONRequestBody defines body for PutSink for application/json ContentType.
 type PutSinkJSONRequestBody = SinkWrite
@@ -1214,6 +1353,144 @@ func (t *ReplayRequest) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsSecretWrite0 returns the union data inside the SecretWrite as a SecretWrite0
+func (t SecretWrite) AsSecretWrite0() (SecretWrite0, error) {
+	var body SecretWrite0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSecretWrite0 overwrites any union data inside the SecretWrite as the provided SecretWrite0
+func (t *SecretWrite) FromSecretWrite0(v SecretWrite0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSecretWrite0 performs a merge with any union data inside the SecretWrite, using the provided SecretWrite0
+func (t *SecretWrite) MergeSecretWrite0(v SecretWrite0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSecretWrite1 returns the union data inside the SecretWrite as a SecretWrite1
+func (t SecretWrite) AsSecretWrite1() (SecretWrite1, error) {
+	var body SecretWrite1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSecretWrite1 overwrites any union data inside the SecretWrite as the provided SecretWrite1
+func (t *SecretWrite) FromSecretWrite1(v SecretWrite1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSecretWrite1 performs a merge with any union data inside the SecretWrite, using the provided SecretWrite1
+func (t *SecretWrite) MergeSecretWrite1(v SecretWrite1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SecretWrite) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	object := make(map[string]json.RawMessage)
+	if t.union != nil {
+		err = json.Unmarshal(b, &object)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if t.Hosts != nil {
+		object["hosts"], err = json.Marshal(t.Hosts)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'hosts': %w", err)
+		}
+	}
+
+	if t.Name != nil {
+		object["name"], err = json.Marshal(t.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if t.Value != nil {
+		object["value"], err = json.Marshal(t.Value)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'value': %w", err)
+		}
+	}
+
+	if t.ValueBase64 != nil {
+		object["value_base64"], err = json.Marshal(t.ValueBase64)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'value_base64': %w", err)
+		}
+	}
+	b, err = json.Marshal(object)
+	return b, err
+}
+
+func (t *SecretWrite) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	if err != nil {
+		return err
+	}
+	object := make(map[string]json.RawMessage)
+	err = json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["hosts"]; found {
+		err = json.Unmarshal(raw, &t.Hosts)
+		if err != nil {
+			return fmt.Errorf("error reading 'hosts': %w", err)
+		}
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &t.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+	}
+
+	if raw, found := object["value"]; found {
+		err = json.Unmarshal(raw, &t.Value)
+		if err != nil {
+			return fmt.Errorf("error reading 'value': %w", err)
+		}
+	}
+
+	if raw, found := object["value_base64"]; found {
+		err = json.Unmarshal(raw, &t.ValueBase64)
+		if err != nil {
+			return fmt.Errorf("error reading 'value_base64': %w", err)
+		}
+	}
+
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// ListDeliveries List deliveries
@@ -1243,6 +1520,18 @@ type ServerInterface interface {
 	// CreateReplay Replay deliveries in bulk
 	// (POST /v1/replays)
 	CreateReplay(w http.ResponseWriter, r *http.Request)
+	// ListSecrets List secrets
+	// (GET /v1/secrets)
+	ListSecrets(w http.ResponseWriter, r *http.Request, params ListSecretsParams)
+	// DeleteSecret Delete a secret
+	// (DELETE /v1/secrets/{name})
+	DeleteSecret(w http.ResponseWriter, r *http.Request, name SecretName, params DeleteSecretParams)
+	// GetSecret Get a secret's metadata
+	// (GET /v1/secrets/{name})
+	GetSecret(w http.ResponseWriter, r *http.Request, name SecretName)
+	// PutSecret Create or replace a secret
+	// (PUT /v1/secrets/{name})
+	PutSecret(w http.ResponseWriter, r *http.Request, name SecretName, params PutSecretParams)
 	// ListSinks List sinks
 	// (GET /v1/sinks)
 	ListSinks(w http.ResponseWriter, r *http.Request, params ListSinksParams)
@@ -1339,6 +1628,30 @@ func (_ Unimplemented) GetPlugin(w http.ResponseWriter, r *http.Request, pInterf
 // CreateReplay Replay deliveries in bulk
 // (POST /v1/replays)
 func (_ Unimplemented) CreateReplay(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSecrets List secrets
+// (GET /v1/secrets)
+func (_ Unimplemented) ListSecrets(w http.ResponseWriter, r *http.Request, params ListSecretsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteSecret Delete a secret
+// (DELETE /v1/secrets/{name})
+func (_ Unimplemented) DeleteSecret(w http.ResponseWriter, r *http.Request, name SecretName, params DeleteSecretParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetSecret Get a secret's metadata
+// (GET /v1/secrets/{name})
+func (_ Unimplemented) GetSecret(w http.ResponseWriter, r *http.Request, name SecretName) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutSecret Create or replace a secret
+// (PUT /v1/secrets/{name})
+func (_ Unimplemented) PutSecret(w http.ResponseWriter, r *http.Request, name SecretName, params PutSecretParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1869,6 +2182,162 @@ func (siw *ServerInterfaceWrapper) CreateReplay(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateReplay(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSecrets operation middleware
+func (siw *ServerInterfaceWrapper) ListSecrets(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSecretsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSecrets(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteSecret operation middleware
+func (siw *ServerInterfaceWrapper) DeleteSecret(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name SecretName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteSecretParams
+
+	// ------------- Optional query parameter "dry_run" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dry_run", r.URL.Query(), &params.DryRun, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "dry_run"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteSecret(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSecret operation middleware
+func (siw *ServerInterfaceWrapper) GetSecret(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name SecretName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSecret(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutSecret operation middleware
+func (siw *ServerInterfaceWrapper) PutSecret(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name SecretName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutSecretParams
+
+	// ------------- Optional query parameter "dry_run" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dry_run", r.URL.Query(), &params.DryRun, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "dry_run"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutSecret(w, r, name, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2629,6 +3098,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/v1/sinks/{name}", wrapper.PutSink)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/secrets", wrapper.ListSecrets)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/secrets/{name}", wrapper.DeleteSecret)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/secrets/{name}", wrapper.GetSecret)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/secrets/{name}", wrapper.PutSecret)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/subscriptions", wrapper.ListSubscriptions)
 	})
 	r.Group(func(r chi.Router) {
@@ -2770,6 +3251,41 @@ type CreateReplayRequestObject struct {
 
 type CreateReplayResponseObject interface {
 	VisitCreateReplayResponse(w http.ResponseWriter) error
+}
+
+type ListSecretsRequestObject struct {
+	Params ListSecretsParams
+}
+
+type ListSecretsResponseObject interface {
+	VisitListSecretsResponse(w http.ResponseWriter) error
+}
+
+type DeleteSecretRequestObject struct {
+	Name   SecretName `json:"name"`
+	Params DeleteSecretParams
+}
+
+type DeleteSecretResponseObject interface {
+	VisitDeleteSecretResponse(w http.ResponseWriter) error
+}
+
+type GetSecretRequestObject struct {
+	Name SecretName `json:"name"`
+}
+
+type GetSecretResponseObject interface {
+	VisitGetSecretResponse(w http.ResponseWriter) error
+}
+
+type PutSecretRequestObject struct {
+	Name   SecretName `json:"name"`
+	Params PutSecretParams
+	Body   *PutSecretJSONRequestBody
+}
+
+type PutSecretResponseObject interface {
+	VisitPutSecretResponse(w http.ResponseWriter) error
 }
 
 type ListSinksRequestObject struct {
@@ -2915,6 +3431,18 @@ type StrictServerInterface interface {
 	// CreateReplay Replay deliveries in bulk
 	// (POST /v1/replays)
 	CreateReplay(ctx context.Context, request CreateReplayRequestObject) (CreateReplayResponseObject, error)
+	// ListSecrets List secrets
+	// (GET /v1/secrets)
+	ListSecrets(ctx context.Context, request ListSecretsRequestObject) (ListSecretsResponseObject, error)
+	// DeleteSecret Delete a secret
+	// (DELETE /v1/secrets/{name})
+	DeleteSecret(ctx context.Context, request DeleteSecretRequestObject) (DeleteSecretResponseObject, error)
+	// GetSecret Get a secret's metadata
+	// (GET /v1/secrets/{name})
+	GetSecret(ctx context.Context, request GetSecretRequestObject) (GetSecretResponseObject, error)
+	// PutSecret Create or replace a secret
+	// (PUT /v1/secrets/{name})
+	PutSecret(ctx context.Context, request PutSecretRequestObject) (PutSecretResponseObject, error)
 	// ListSinks List sinks
 	// (GET /v1/sinks)
 	ListSinks(ctx context.Context, request ListSinksRequestObject) (ListSinksResponseObject, error)
@@ -3238,6 +3766,119 @@ func (sh *strictHandler) CreateReplay(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateReplayResponseObject); ok {
 		if err := validResponse.VisitCreateReplayResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSecrets operation middleware
+func (sh *strictHandler) ListSecrets(w http.ResponseWriter, r *http.Request, params ListSecretsParams) {
+	var request ListSecretsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSecrets(ctx, request.(ListSecretsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSecrets")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSecretsResponseObject); ok {
+		if err := validResponse.VisitListSecretsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteSecret operation middleware
+func (sh *strictHandler) DeleteSecret(w http.ResponseWriter, r *http.Request, name SecretName, params DeleteSecretParams) {
+	var request DeleteSecretRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteSecret(ctx, request.(DeleteSecretRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteSecret")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteSecretResponseObject); ok {
+		if err := validResponse.VisitDeleteSecretResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSecret operation middleware
+func (sh *strictHandler) GetSecret(w http.ResponseWriter, r *http.Request, name SecretName) {
+	var request GetSecretRequestObject
+
+	request.Name = name
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSecret(ctx, request.(GetSecretRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSecret")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSecretResponseObject); ok {
+		if err := validResponse.VisitGetSecretResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutSecret operation middleware
+func (sh *strictHandler) PutSecret(w http.ResponseWriter, r *http.Request, name SecretName, params PutSecretParams) {
+	var request PutSecretRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	var body PutSecretJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutSecret(ctx, request.(PutSecretRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutSecret")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutSecretResponseObject); ok {
+		if err := validResponse.VisitPutSecretResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

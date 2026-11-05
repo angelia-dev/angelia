@@ -19,6 +19,7 @@ var wantScopes = map[string]Scope{
 	"listSubscriptions": ScopeRead, "getSubscription": ScopeRead, "putSubscription": ScopeWrite, "deleteSubscription": ScopeWrite,
 	"listDeliveries": ScopeRead, "getDelivery": ScopeRead, "replayDelivery": ScopeWrite, "createReplay": ScopeWrite,
 	"listPlugins": ScopeRead, "getPlugin": ScopeRead,
+	"listSecrets": ScopeAdmin, "getSecret": ScopeAdmin, "putSecret": ScopeAdmin, "deleteSecret": ScopeAdmin,
 }
 
 // concretePath fills the path parameters of an operation with valid values
