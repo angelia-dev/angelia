@@ -8,6 +8,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
@@ -18,7 +19,7 @@ import (
 // Every request gets 401 for now: the authenticator is api.DenyAll until API
 // tokens (#72, human-led) exist, so no token is accepted and nothing is
 // exposed.
-func newAPIServer(ctx context.Context, cfg *config.Config, log *slog.Logger) (*api.Server, func(), error) {
+func newAPIServer(ctx context.Context, cfg *config.Config, keys *secrets.Keyring, log *slog.Logger) (*api.Server, func(), error) {
 	sources, err := watchSources(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -33,10 +34,13 @@ func newAPIServer(ctx context.Context, cfg *config.Config, log *slog.Logger) (*a
 	}
 	srv, err := api.New(api.Options{
 		Store: st, Auth: api.DenyAll{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
-		API: cfg.API, Logger: log,
+		API: cfg.API, Secrets: keys, Logger: log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("api role: %w", errorsJoin(err, st.Close()))
+	}
+	if err := srv.CheckStoredSinks(ctx); err != nil {
+		return nil, nil, errorsJoin(err, st.Close())
 	}
 	return srv, func() { _ = st.Close() }, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/metrics"
+	"github.com/angelia-dev/angelia/internal/secrets"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/supervisor"
 	"github.com/angelia-dev/angelia/internal/telemetry"
 )
@@ -70,6 +73,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
+	keys, err := loadKeys(cfg, log)
+	if err != nil {
+		return err
+	}
+	// Every role shares the store, so every role refuses to start while
+	// stored secrets cannot be read: no plaintext fallback (ADR 0024 §4).
+	if err := checkSecretsAtStartup(cmd.Context(), cfg, keys); err != nil {
+		return err
+	}
 	watches, err := watchesPath(cmd)
 	if err != nil {
 		return err
@@ -84,7 +96,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	factory := supervisor.NewStub
 	if hasAPIRole(roleNames) {
-		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, log)
+		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, keys, log)
 		if err != nil {
 			return err
 		}
@@ -139,4 +151,25 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(w, opts)))
 	}
 	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(w, opts)))
+}
+
+// checkSecretsAtStartup counts the stored secrets per key, read-only, and
+// runs secrets.CheckCounts: with stored secrets and no key, or rows under a
+// key that is not configured, the instance does not start. A database that
+// does not exist yet holds no secret.
+func checkSecretsAtStartup(ctx context.Context, cfg *config.Config, keys *secrets.Keyring) error {
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		// TODO(postgres, #85): check the Postgres store too; no role runs on
+		// it in this phase.
+		return nil //nolint:nilerr // only sqlite stores exist in this phase
+	}
+	counts, err := sqlite.SecretKeyCounts(ctx, dbPath)
+	if errors.Is(err, sqlite.ErrNoDatabase) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return secrets.CheckCounts(counts, keys)
 }

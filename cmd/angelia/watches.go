@@ -2,19 +2,25 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
@@ -96,6 +102,9 @@ func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *s
 	if err != nil {
 		return err
 	}
+	for _, w := range missingSecretRefs(ctx, st, f) {
+		log.Warn(w)
+	}
 	for _, c := range plan.Changes {
 		if c.Action != watchfile.Unchanged {
 			log.Info("watch file applied", "action", string(c.Action), "kind", c.Kind, "name", c.Name, "detail", c.Detail)
@@ -108,4 +117,28 @@ func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *s
 // hasAPIRole reports whether the process runs the role that owns the file.
 func hasAPIRole(roles []string) bool {
 	return slices.Contains(roles, "api") || slices.Contains(roles, "all")
+}
+
+// missingSecretRefs warns about each *_ref of the watch file's sinks that
+// names a secret the store does not hold, as the parser warns about an
+// unset *_env variable: deliveries fail, retried, until it is stored.
+func missingSecretRefs(ctx context.Context, st secrets.Lookup, f *watchfile.File) []string {
+	var out []string
+	for _, k := range f.Sinks {
+		var cfg map[string]any
+		if json.Unmarshal(k.Config, &cfg) != nil {
+			continue
+		}
+		for _, key := range slices.Sorted(maps.Keys(cfg)) {
+			name, ok := cfg[key].(string)
+			if !ok || !strings.HasSuffix(key, "_ref") {
+				continue
+			}
+			if _, err := st.SecretByName(ctx, name); errors.Is(err, store.ErrNotFound) {
+				out = append(out, fmt.Sprintf("line %d: sink %s: config.%s: no stored secret named %s; deliveries fail until `angelia secret set %s` stores it",
+					k.Line, k.Name, key, name, name))
+			}
+		}
+	}
+	return out
 }

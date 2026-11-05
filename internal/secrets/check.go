@@ -25,10 +25,11 @@ func CheckStartup(ctx context.Context, st Counter, keys *Keyring) error {
 	if err != nil {
 		return fmt.Errorf("secrets: count stored secrets: %w", err)
 	}
-	return checkCounts(counts, keys)
+	return CheckCounts(counts, keys)
 }
 
-func checkCounts(counts map[string]int64, keys *Keyring) error {
+// CheckCounts is CheckStartup on counts already read.
+func CheckCounts(counts map[string]int64, keys *Keyring) error {
 	var total int64
 	for _, n := range counts {
 		total += n
