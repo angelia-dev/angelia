@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	nameRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+	nameRE     = regexp.MustCompile(NamePattern)
 	labelKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`)
 
 	prereleaseModes = []string{"none", "only", "include"}
@@ -37,6 +37,13 @@ var (
 	eventTypes      = []string{"release.published", "release.yanked", "release.prerelease"}
 	secretQueryKeys = []string{"token", "secret", "key", "password", "passwd", "auth", "sig"}
 )
+
+// NamePattern is the pattern of the name of a sink, watch or subscription
+// (docs/watch-file.md section 2.1), which the API shares.
+const NamePattern = `^[a-z0-9][a-z0-9._-]{0,62}$`
+
+// ValidName reports whether s is a valid sink, watch or subscription name.
+func ValidName(s string) bool { return nameRE.MatchString(s) }
 
 // SinkKinds are the sink kinds a watch file may declare.
 var SinkKinds = []string{"webhook"}
@@ -332,8 +339,8 @@ func (p *parser) name(m map[string]*yaml.Node, jp string, parent *yaml.Node, see
 	if !ok {
 		return ""
 	}
-	if !nameRE.MatchString(s) {
-		p.errf(n, jp+".name", "invalid name (pattern %s)", nameRE)
+	if !ValidName(s) {
+		p.errf(n, jp+".name", "invalid name (pattern %s)", NamePattern)
 		return ""
 	}
 	if first, dup := seen[s]; dup {
