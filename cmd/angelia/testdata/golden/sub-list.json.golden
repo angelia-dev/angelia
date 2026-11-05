@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "filter": {
+        "bump": [
+          "major",
+          "minor"
+        ],
+        "labels": {
+          "team": "platform"
+        },
+        "package": "",
+        "source": [],
+        "type": [
+          "release.published",
+          "release.yanked"
+        ]
+      },
+      "id": "01JBX1YB3C4D5E6F7G8H9J0K1M",
+      "managed_by": "api",
+      "name": "platform-ci",
+      "policy": {
+        "cooldown": "24h"
+      },
+      "sink": "ci-webhook",
+      "template": ""
+    }
+  ],
+  "next_cursor": null
+}

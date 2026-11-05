@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "version": "2.33.0",
+      "normalized_version": "2.33.0",
+      "prerelease": false,
+      "yanked": false,
+      "published_at": "2026-10-27T14:02:11Z",
+      "first_seen_at": "2026-10-27T14:15:00Z",
+      "removed_at": null
+    },
+    {
+      "version": "2.32.5",
+      "normalized_version": "2.32.5",
+      "prerelease": false,
+      "yanked": false,
+      "published_at": "2026-08-18T09:12:40Z",
+      "first_seen_at": "2026-10-20T08:00:00Z",
+      "removed_at": null
+    }
+  ],
+  "next_cursor": "eyJ2IjoiMi4zMi41In0"
+}

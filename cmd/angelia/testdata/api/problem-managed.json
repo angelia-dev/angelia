@@ -1,0 +1,7 @@
+{
+  "type": "https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-managed-by-file",
+  "title": "Managed by the watch file",
+  "status": 409,
+  "detail": "watch requests is managed by the watch file; change the file instead",
+  "instance": "/v1/watches/requests"
+}

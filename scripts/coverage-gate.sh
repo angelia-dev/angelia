@@ -7,6 +7,9 @@
 #                      go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
 #   threshold-percent  default 80
 #
+# Generated code (files named *.gen.go: oapi-codegen, sqlc) is left out: its
+# statements say nothing about the tests of the code written by hand.
+#
 # Packages without statements (for example doc.go-only packages) have no
 # blocks in the profile. They are listed as ignored and never fail the gate.
 set -euo pipefail
@@ -35,6 +38,7 @@ report="$(awk '
 		for (k in nst) {
 			file = k
 			sub(/:.*/, "", file)
+			if (file ~ /\.gen\.go$/) continue
 			dir = file
 			sub(/\/[^\/]*$/, "", dir)
 			if (index(dir, "/internal/") == 0) continue

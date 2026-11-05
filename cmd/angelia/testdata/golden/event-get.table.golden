@@ -1,0 +1,12 @@
+FIELD             VALUE
+seq               4182
+event             01JBX2A7C8D9E0F1G2H3J4K5M6
+type              release.published
+subject           pypi:requests@2.33.0
+watch             requests
+package           requests
+version           2.33.0
+previous version  2.32.5
+bump              minor
+time              2026-10-30T17:00:02.512Z
+yanks event       -

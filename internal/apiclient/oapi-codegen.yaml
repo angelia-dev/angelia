@@ -1,0 +1,8 @@
+# oapi-codegen v2.8.2 configuration for the typed client of the REST API.
+# Like ../api/oapi-codegen.yaml it leaves out embedded-spec (kin-openapi is not
+# in architecture.md section 6).
+package: apiclient
+output: client.gen.go
+generate:
+  models: true
+  client: true

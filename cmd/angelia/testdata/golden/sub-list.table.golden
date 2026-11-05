@@ -1,0 +1,2 @@
+NAME         SINK        TYPES                             SOURCES  MANAGED
+platform-ci  ci-webhook  release.published,release.yanked  -        api

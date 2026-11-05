@@ -1,0 +1,17 @@
+{
+  "type": "https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "the watch has 2 errors",
+  "instance": "/v1/watches/requests",
+  "errors": [
+    {
+      "pointer": "/policy/prerelease",
+      "detail": "must be one of none, only, include"
+    },
+    {
+      "pointer": "/interval",
+      "detail": "must be at least 5m"
+    }
+  ]
+}
