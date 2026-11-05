@@ -146,6 +146,7 @@ func TestLoadPluginsRejected(t *testing.T) {
 		"inline token":         {"crates", m, "credentials:\n  crates.io:\n    token: abc\n", `unknown key "token"`},
 		"token_env missing":    {"crates", m, "credentials:\n  crates.io: {}\n", "token_env: required"},
 		"token_env not a name": {"crates", m, "credentials:\n  crates.io:\n    token_env: a-b\n", "environment variable name"},
+		"token_env reserved":   {"crates", m, "credentials:\n  crates.io:\n    token_env: ANGELIA_SECRETS_KEY\n", "names starting with ANGELIA_ are always refused"},
 		"wildcard host":        {"crates", m, "allowed_hosts: ['*.example.com']\n", "allowed_hosts[0]"},
 		"host with scheme":     {"crates", m, "allowed_hosts: ['https://example.com']\n", "allowed_hosts[0]"},
 		"host with port":       {"crates", m, "allowed_hosts: ['example.com:443']\n", "allowed_hosts[0]"},

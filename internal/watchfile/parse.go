@@ -442,9 +442,12 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 	}
 	if sn := m["secret_env"]; sn != nil {
 		if s, ok := p.secretFree(sn, jp+".secret_env"); ok {
-			if !config.IsEnvName(s) {
+			switch {
+			case !config.IsEnvName(s):
 				p.errf(sn, jp+".secret_env", "must be an environment variable name, not the secret itself")
-			} else {
+			case config.ReservedEnvName(s):
+				p.errf(sn, jp+".secret_env", "names starting with ANGELIA_ are always refused: they hold the instance's own settings")
+			default:
 				cfg.SecretEnv = s
 				lookup := p.opts.LookupEnv
 				if lookup == nil {

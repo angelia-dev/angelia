@@ -166,7 +166,7 @@ type API struct {
 // AllowsEnv reports whether a *_env key written through the API may name the
 // environment variable name.
 func (a API) AllowsEnv(name string) bool {
-	return !strings.HasPrefix(name, envPrefix) && slices.Contains(a.AllowedEnv, name)
+	return !ReservedEnvName(name) && slices.Contains(a.AllowedEnv, name)
 }
 
 // Source configures one source kind. There is deliberately no token field:
@@ -422,7 +422,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 			field = "token_env"
 			rest = strings.TrimSuffix(rest, "_TOKEN_ENV")
 		default:
-			continue // reserved prefix, but not a config key (e.g. a token_env name)
+			continue // reserved prefix, but not a config key
 		}
 		if rest == "" {
 			return fmt.Errorf("environment variable %s: missing source kind", k)
@@ -524,6 +524,8 @@ func (c *Config) Validate() error {
 				bad("sources.%s.token_env: looks like a token, not an environment variable name", k)
 			case !envNameRE.MatchString(s.TokenEnv):
 				bad("sources.%s.token_env: must be an environment variable name, not a token", k)
+			case ReservedEnvName(s.TokenEnv):
+				bad("sources.%s.token_env: names starting with %s are always refused: they hold the instance's own settings, such as %s", k, envPrefix, KeyEnv)
 			}
 		}
 	}
@@ -545,7 +547,7 @@ func (c *Config) Validate() error {
 		switch {
 		case !envNameRE.MatchString(n):
 			bad("api.allowed_env[%d]: must be an environment variable name", i)
-		case strings.HasPrefix(n, envPrefix):
+		case ReservedEnvName(n):
 			bad("api.allowed_env[%d]: names starting with %s are always refused", i, envPrefix)
 		}
 	}
@@ -556,6 +558,12 @@ func (c *Config) Validate() error {
 // files that reference a secret by variable name (the watch file) use it so
 // the rule is the same everywhere.
 func IsEnvName(s string) bool { return envNameRE.MatchString(s) }
+
+// ReservedEnvName reports whether s starts with ANGELIA_. Those variables
+// hold the instance's own settings, the secrets key among them, so no
+// *_env or token_env reference may name one: not in the instance config,
+// a grants.yaml, the watch file or the API.
+func ReservedEnvName(s string) bool { return strings.HasPrefix(s, envPrefix) }
 
 // LooksLikeToken reports whether v starts with a well-known credential prefix.
 // Callers must not echo v when it does.

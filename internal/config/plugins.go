@@ -257,6 +257,8 @@ func validateCredential(k string, cr PluginCredential, allowed map[string]bool, 
 		bad("credentials.%s.token_env: looks like a token, not an environment variable name", k)
 	case !envNameRE.MatchString(cr.TokenEnv):
 		bad("credentials.%s.token_env: must be an environment variable name, not a token", k)
+	case ReservedEnvName(cr.TokenEnv):
+		bad("credentials.%s.token_env: names starting with %s are always refused: they hold the instance's own settings", k, envPrefix)
 	}
 	if cr.Scheme != "" && !authSchemeRE.MatchString(cr.Scheme) {
 		bad("credentials.%s.scheme: must be one word such as Bearer", k)

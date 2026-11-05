@@ -22,7 +22,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `log.format` | `ANGELIA_LOG_FORMAT` | `json` | `json`, `text` |
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
-| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
+| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
@@ -40,8 +40,12 @@ Check a configuration with `angelia config check [--config FILE]`.
 - Environment variables that are set but empty still override (`ANGELIA_LISTEN=` is then an invalid
   value); for `token_env`, an empty variable counts as unset and `config check` warns.
 - The `ANGELIA_SOURCES_` prefix is reserved for source overrides; only names ending in `_BASE_URL`
-  or `_TOKEN_ENV` are read, others are ignored (so a `token_env` may be called e.g.
-  `ANGELIA_SOURCES_GITHUB_TOKEN`). Source kinds are lower-case `[a-z0-9]` words joined by hyphens.
+  or `_TOKEN_ENV` are read, others are ignored. Source kinds are lower-case `[a-z0-9]` words joined by
+  hyphens.
+- **Security restriction:** no `token_env` (sources, plugin `credentials`) and no `*_env` key (watch file,
+  API) may name a variable starting with `ANGELIA_`. Those variables hold the instance's own settings,
+  among them the secrets key `ANGELIA_SECRETS_KEY`, which a reference would otherwise send to a remote host
+  as a token. Such a name fails the check with `names starting with ANGELIA_ are always refused`.
 - `roles`: `all` cannot be combined with other roles; duplicates are removed. `listen` port is 1-65535.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `base_url` must not contain credentials, and `token_env` must be a variable name: values that
@@ -123,7 +127,7 @@ credentials:
 | Key | Default | Allowed |
 |---|---|---|
 | `allowed_hosts` | empty | lower-case hostnames or IP literals, added to the manifest's `allowed_hosts` |
-| `credentials.<host[:port]>.token_env` | required | name of an environment variable; the host must be in the manifest's or this file's `allowed_hosts`; no port means 443 |
+| `credentials.<host[:port]>.token_env` | required | name of an environment variable, never one starting with `ANGELIA_`; the host must be in the manifest's or this file's `allowed_hosts`; no port means 443 |
 | `credentials.<host[:port]>.scheme` | empty | one word such as `Bearer`, written before the token; only with the `Authorization` header |
 | `credentials.<host[:port]>.header` | `Authorization` | a header netguard counts as a credential: `Authorization` or `PRIVATE-TOKEN` (any case) |
 

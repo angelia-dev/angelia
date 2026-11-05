@@ -264,13 +264,30 @@ func TestMultipleDocumentsRejected(t *testing.T) {
 }
 
 func TestReservedPrefixDoesNotBreakLoad(t *testing.T) {
-	p := writeFile(t, "sources:\n  github-release:\n    token_env: ANGELIA_SOURCES_GITHUB_TOKEN\n")
-	cfg, err := load(t, p, "ANGELIA_SOURCES_GITHUB_TOKEN=tok")
+	// An ANGELIA_SOURCES_ variable that is not a config key is ignored.
+	p := writeFile(t, "sources:\n  github-release:\n    token_env: GH_TOKEN_FOR_ANGELIA\n")
+	cfg, err := load(t, p, "ANGELIA_SOURCES_GITHUB_TOKEN=other", "GH_TOKEN_FOR_ANGELIA=tok")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.SourceToken("github-release") != "tok" {
 		t.Fatal("token not resolved")
+	}
+}
+
+// SR3 (#75 review): no token_env may name an ANGELIA_ variable, which
+// would send the instance's own settings, such as the secrets key, as a
+// token.
+func TestTokenEnvRefusesReservedPrefix(t *testing.T) {
+	for _, name := range []string{"ANGELIA_SECRETS_KEY", "ANGELIA_SOURCES_GITHUB_TOKEN"} {
+		p := writeFile(t, "sources:\n  github-release:\n    token_env: "+name+"\n")
+		_, err := load(t, p, name+"=x")
+		if err == nil || !strings.Contains(err.Error(), "sources.github-release.token_env: names starting with ANGELIA_ are always refused") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if !ReservedEnvName("ANGELIA_X") || ReservedEnvName("X_ANGELIA_") || ReservedEnvName("angelia_x") {
+		t.Error("ReservedEnvName")
 	}
 }
 

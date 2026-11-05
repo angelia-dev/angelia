@@ -78,9 +78,9 @@ func TestConfigCheckRejectsArgs(t *testing.T) {
 }
 
 func TestConfigCheckWarnsOnUnsetTokenEnv(t *testing.T) {
-	p := writeCfg(t, "sources:\n  pypi:\n    token_env: ANGELIA_TEST_UNSET_TOK\n")
+	p := writeCfg(t, "sources:\n  pypi:\n    token_env: AGL_TEST_UNSET_TOK\n")
 	out, errb, err := runCheck(t, "--config", p)
-	if err != nil || !strings.Contains(out, "configuration OK") || !strings.Contains(errb, "warning:") || !strings.Contains(errb, "ANGELIA_TEST_UNSET_TOK") {
+	if err != nil || !strings.Contains(out, "configuration OK") || !strings.Contains(errb, "warning:") || !strings.Contains(errb, "AGL_TEST_UNSET_TOK") {
 		t.Fatalf("out=%q err=%q %v", out, errb, err)
 	}
 }
@@ -110,16 +110,16 @@ func TestConfigCheckPrintsPluginHosts(t *testing.T) {
 allowed_hosts: [crates-mirror.example.com]
 credentials:
   crates-mirror.example.com:
-    token_env: ANGELIA_TEST_MIRROR_TOK
+    token_env: AGL_TEST_MIRROR_TOK
     scheme: Bearer
   crates-mirror.example.com:8443:
-    token_env: ANGELIA_TEST_UNSET_TOK
+    token_env: AGL_TEST_UNSET_TOK
     header: PRIVATE-TOKEN
 `)
 	writePlugin(t, dir, "bare", `{"kind":"bare","allowed_hosts":[]}`, "")
 	t.Setenv("ANGELIA_CONFIG", "")
 	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
-	t.Setenv("ANGELIA_TEST_MIRROR_TOK", "tok-value-123456")
+	t.Setenv("AGL_TEST_MIRROR_TOK", "tok-value-123456")
 	out, errb, err := runCheck(t)
 	if err != nil {
 		t.Fatalf("err = %v, stderr %q", err, errb)
@@ -132,8 +132,8 @@ credentials:
 		"  crates\n" +
 		"    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants)\n" +
 		"    credentials:\n" +
-		"      crates-mirror.example.com:443  Authorization: Bearer <token from $ANGELIA_TEST_MIRROR_TOK>\n" +
-		"      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $ANGELIA_TEST_UNSET_TOK, not set>\n" +
+		"      crates-mirror.example.com:443  Authorization: Bearer <token from $AGL_TEST_MIRROR_TOK>\n" +
+		"      crates-mirror.example.com:8443  PRIVATE-TOKEN: <token from $AGL_TEST_UNSET_TOK, not set>\n" +
 		"secrets: no key configured (0 stored)\n"
 	if out != want {
 		t.Errorf("out =\n%s\nwant\n%s", out, want)
@@ -141,7 +141,7 @@ credentials:
 	if strings.Contains(out+errb, "tok-value-123456") {
 		t.Error("a token value was printed")
 	}
-	if !strings.Contains(errb, "warning:") || !strings.Contains(errb, "ANGELIA_TEST_UNSET_TOK is not set") {
+	if !strings.Contains(errb, "warning:") || !strings.Contains(errb, "AGL_TEST_UNSET_TOK is not set") {
 		t.Errorf("stderr = %q, want the unset variable warning", errb)
 	}
 }

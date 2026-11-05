@@ -151,6 +151,7 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		{"webhook userinfo", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://u:p@hook.example.org/x'}\n", "credentials in the URL"},
 		{"webhook secret in query", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://hook.example.org/x?api_token=abc'}\n", "query string must not carry a secret"},
 		{"webhook inline secret key", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://hook.example.org/x', secret: hush}\n", `sinks[0].config.secret: unknown key "secret"`},
+		{"secret_env names the secrets key", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://hook.example.org/x', secret_env: ANGELIA_SECRETS_KEY}\n", "sinks[0].config.secret_env: names starting with ANGELIA_ are always refused"},
 		{"secret_env holds the secret", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://hook.example.org/x', secret_env: 'not a name!'}\n", "sinks[0].config.secret_env: must be an environment variable name"},
 		{"webhook timeout", base + "sinks:\n  - name: s\n    kind: webhook\n    config: {url: 'https://hook.example.org/x', timeout: 1h}\n", "sinks[0].config.timeout: must be between 1s and 2m0s"},
 		{"subscription to a missing sink", base + "subscriptions:\n  - name: x\n    sink: nowhere\n", `line 3: subscriptions[0].sink: no sink named "nowhere" in this file`},

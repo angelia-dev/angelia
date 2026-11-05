@@ -107,7 +107,7 @@ at load time with the file, line and path of the key. The policy is stored as `w
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `url` | string | yes | none | absolute `https://` URL (or `http://`, see D12), no userinfo, no query string holding secrets; the SSRF guard (netguard) applies at delivery time, the allowlist stays in the instance config |
-| `secret_env` | string | no | none | name of an environment variable holding the Standard Webhooks signing secret ([ADR 0005](adr/0005-standard-webhooks-signing.md)); a `secret:` key is an unknown key and an error |
+| `secret_env` | string | no | none | name of an environment variable holding the Standard Webhooks signing secret ([ADR 0005](adr/0005-standard-webhooks-signing.md)); a `secret:` key is an unknown key and an error. **Security restriction:** a name starting with `ANGELIA_` is refused, because those variables hold the instance's own settings, such as the secrets key |
 | `secret_ref` | string | no | none | name of a [stored secret](configuration.md#stored-secrets) holding the signing secret (`^[a-z0-9][a-z0-9._-]{0,62}$`); at most one of `secret_env` and `secret_ref` |
 | `timeout` | duration | no | `10s` | `1s` to `2m` |
 
