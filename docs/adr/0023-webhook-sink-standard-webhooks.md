@@ -1,11 +1,11 @@
 # ADR 0023: The webhook sink posts structured CloudEvents signed with Standard Webhooks v1, takes its secrets from the core, and dials only through netguard
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-05, maintainer decision on #194: "go with what proposed")
 - **Date:** 2026-11-05 (revised the same day after the joint security review of ADRs 0023 and 0024)
 - **Story:** angelia-dev/angelia#108
 
-> Design note for a **Human-led** story: nothing here is implemented yet. The maintainer reviews the
-> crypto, secret and SSRF choices (sections 2 to 5) and the open questions before the code is written.
+> Written as the design note for a **Human-led** story; the maintainer accepted it, with every open
+> question settled as recommended, before the implementation.
 
 ## Context
 
@@ -75,7 +75,7 @@ The `webhook` kind lives in `internal/sink/webhook`. Decisions are numbered to m
   newline from a mounted file or `set --from-file` harmless (ADR 0024 cross-check C7).
 - **Always user-supplied.** `angelia webhook secret new` prints `whsec_` + base64 of 32 bytes from
   `crypto/rand` to stdout, locally, and stores and sends nothing. This is **new public CLI surface**
-  (open question 6). Angelia has no server-side generation.
+  (decided question 6). Angelia has no server-side generation.
 - A missing, empty or invalid secret is a **retried** error (the operator fixes it by setting the value),
   raised by the core before `Deliver` (section 4). `last_error` names the reference and the rule, never
   the value: `webhook: secret_env WH_CI: invalid secret (want 1-3 whsec_ secrets of 24-64 bytes)`.
@@ -147,7 +147,7 @@ The `webhook` kind lives in `internal/sink/webhook`. Decisions are numbered to m
 - **Timeouts**: connect 30 s and TLS 10 s (netguard transport), all bounded by one context deadline of
   `min(config.timeout, what is left of the dispatcher's DeliverTimeout)`. Rendering and any wait in
   netguard's per-host limiter come out of the same 15 s. With the defaults the request gets at most 10 s;
-  a `timeout` above 15 s has no effect, so `config check` warns (open question 3).
+  a `timeout` above 15 s has no effect, so `config check` warns (decided question 3).
 - **Per-host limiter**: a receiver's `429`/`503` with `Retry-After` pauses its host in netguard's shared
   limiter, which also delays sources on that host (for example a webhook on `api.github.com`). A pause
   longer than the remaining deadline makes the attempt fail as retried, and the dispatcher's backoff,
@@ -185,7 +185,7 @@ receiver-controlled and `last_error` is shown to `read` API callers. `last_error
   an `int64`; it is valid when `|now − ts| ≤ tolerance` (**inclusive** at both ends). The signature
   header is split on spaces; entries that are not `v1,` or not valid base64 are ignored; comparison is
   `hmac.Equal`. Errors are sentinels (`ErrMissingHeaders`, `ErrTimestamp`, `ErrNoMatchingSignature`).
-  It is used by the sink's tests; an `angelia webhook verify` CLI is not part of #108 (open question 6).
+  It is used by the sink's tests; an `angelia webhook verify` CLI is not part of #108 (decided question 6).
   External Go consumers use the official library.
 - **Test vectors** (acceptance criterion 1) are vendored from the official repository
   `github.com/standard-webhooks/standard-webhooks` (Apache-2.0, per its `LICENSE`), pinned to a commit
@@ -201,7 +201,7 @@ receiver-controlled and `last_error` is shown to `read` API callers. `last_error
   A test runs every vector through `Sign` and `Verify`; a round-trip test signs Angelia-shaped
   deliveries (ULID id, CloudEvents body, three secrets) and verifies each secret alone.
 - **Proposal only**: publish Angelia-shaped vectors in the spec repository under
-  `webhooks/v1/vectors.json`, CC-BY-4.0 like the schemas (open question 7).
+  `webhooks/v1/vectors.json`, CC-BY-4.0 like the schemas (decided question 7).
 
 ### Future work (not in #108)
 
@@ -230,27 +230,23 @@ shape and the reserved names (at least `Host`, `Content-Length`, `Content-Type`,
 - Through an HTTP proxy there is no rebinding protection on Angelia's side.
 - The netguard change touches every source's HTTP path.
 
-### Open questions
+### Decided questions
 
-Numbered for the maintainer; each has a recommendation. Settled by the coordinator after review and no
-longer open: custom headers (deferred), secret resolution in core (`Request.Secrets`), the dial-time
+The maintainer accepted every recommendation on #194 (2026-11-05). Settled earlier by the coordinator
+after review: custom headers (deferred), secret resolution in core (`Request.Secrets`), the dial-time
 check with proxy exemption in #108, the clock option, the parsing rules, and adding the guard gaps.
 
-1. **`webhook-id` value.** (a) the idempotency key `<event>:<subscription>` (recommended: stable across
-   retries and replay, distinct per subscription); (b) the event id (receivers with two subscriptions to
-   one URL would drop one); (c) a per-attempt id (defeats deduplication).
-2. **Maximum number of secrets in one value.** Three (recommended) or another bound.
-3. **`timeout` above 15 s.** The contract allows `2m` but the dispatcher cuts an attempt at 15 s.
-   (a) keep the contract, apply `min`, warn in `config check` (recommended); (b) lower the maximum to
-   `15s` (contract change); (c) raise `DeliverTimeout` and the lease TTL (touches the 25 s drain bound).
-4. **Allowlist keys.** Name and shape of the instance keys: `http.allow_networks` (CIDRs) and
-   `http.allow_http_hosts` (hostnames, D12), shared by sources and sinks (recommended), or sink-only
-   keys. Instance-config contract change; may land with #76 instead.
-5. **Unsigned deliveries.** Keep `secret_env`/`secret_ref` optional with a warning and tell receivers
-   to require signatures (recommended, already the contract), or require a secret.
-6. **New CLI surface.** Approve `angelia webhook secret new` in #108 (recommended); add
-   `angelia webhook verify` later, if at all (recommended: not now).
-7. **Spec-repo vectors.** Approve the section 7 proposal as a follow-up spec story (recommended).
+1. **`webhook-id` value:** the idempotency key `<event>:<subscription>`, stable across retries and
+   replay and distinct per subscription.
+2. **Maximum number of secrets in one value:** three.
+3. **`timeout` above 15 s:** the contract stays (`1s`–`2m`); the sink applies
+   `min(timeout, dispatcher deliver timeout)` and `config check` warns when `timeout` exceeds it.
+4. **Allowlist keys:** instance keys `http.allow_networks` (CIDRs) and `http.allow_http_hosts`
+   (hostnames, D12), shared by sources and sinks, added in #108.
+5. **Unsigned deliveries:** `secret_env` (later `secret_ref`) stays optional; an unsigned sink logs a
+   warning and `config check` reports it; the docs tell receivers to require signatures.
+6. **CLI:** `angelia webhook secret new` ships in #108; no `angelia webhook verify` for now.
+7. **Spec-repo vectors:** the section 7 proposal becomes a follow-up spec story.
 
 ## Alternatives considered
 
