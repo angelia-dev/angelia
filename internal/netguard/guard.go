@@ -46,12 +46,17 @@ type Resolver interface {
 //   - IPv6 prefixes that embed or reach IPv4: NAT64 64:ff9b::/96, 6to4
 //     2002::/16 and IPv4-compatible ::/96, each blocked whole so that the
 //     guard fails closed without decoding the embedded address;
-//   - deprecated site-local fec0::/10.
+//   - deprecated site-local fec0::/10;
+//   - IETF protocol assignments 192.0.0.0/24, benchmarking 198.18.0.0/15
+//     and reserved 240.0.0.0/4;
+//   - Teredo 2001::/32 and NAT64 local-use 64:ff9b:1::/48, which also embed
+//     IPv4 addresses.
 //
 // IPv4-mapped IPv6 addresses (::ffff:0:0/96) are checked as IPv4. An
 // address inside one of the allowlisted prefixes is accepted.
 //
-// The guard is not proof against DNS rebinding; see the package doc.
+// CheckURL alone is not proof against DNS rebinding; the default
+// transport's dialer checks the connected address too (see the package doc).
 type Guard struct {
 	allow    []netip.Prefix
 	resolver Resolver
@@ -96,6 +101,11 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b::/96"),       // NAT64
 	netip.MustParsePrefix("2002::/16"),          // 6to4
 	netip.MustParsePrefix("fec0::/10"),          // site-local (deprecated)
+	netip.MustParsePrefix("192.0.0.0/24"),       // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),      // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),        // reserved (class E)
+	netip.MustParsePrefix("2001::/32"),          // Teredo
+	netip.MustParsePrefix("64:ff9b:1::/48"),     // NAT64 local-use
 }
 
 // CheckURL checks the scheme and host of u. A hostname is resolved and

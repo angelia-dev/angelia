@@ -68,6 +68,17 @@ func TestGuardDefaultDenyRanges(t *testing.T) {
 		{"site-local fec0::/10", "[fec0::1]"},
 		{"site-local fec0::/10 high", "[feff:ffff::1]"},
 		{"ipv4-mapped CGNAT metadata", "[::ffff:100.100.100.200]"},
+		// Added by #108 (ADR 0023 section 5).
+		{"IETF protocol assignments 192.0.0.0/24", "192.0.0.170"},
+		{"IETF protocol assignments 192.0.0.0/24 high", "192.0.0.255"},
+		{"benchmarking 198.18.0.0/15 low", "198.18.0.1"},
+		{"benchmarking 198.18.0.0/15 high", "198.19.255.254"},
+		{"reserved 240.0.0.0/4", "240.0.0.1"},
+		{"reserved 240.0.0.0/4 high", "255.255.255.254"},
+		{"Teredo 2001::/32", "[2001:0:4136:e378:8000:63bf:3fff:fdd2]"},
+		{"Teredo 2001::/32 high", "[2001:0:ffff:ffff::1]"},
+		{"NAT64 local-use 64:ff9b:1::/48", "[64:ff9b:1::a00:1]"},
+		{"NAT64 local-use 64:ff9b:1::/48 high", "[64:ff9b:1:ffff::1]"},
 	}
 	g := NewGuard(nil, fakeResolver{})
 	for _, tc := range cases {

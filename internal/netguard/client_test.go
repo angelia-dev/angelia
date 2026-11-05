@@ -523,8 +523,8 @@ func TestParseRetryAfter(t *testing.T) {
 		now.Add(48 * time.Hour).Format(http.TimeFormat): defaultMaxPause,
 	}
 	for in, want := range cases {
-		if got := parseRetryAfter(in, now); got != want {
-			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		if got := ParseRetryAfter(in, now); got != want {
+			t.Errorf("ParseRetryAfter(%q) = %v, want %v", in, got, want)
 		}
 	}
 }
