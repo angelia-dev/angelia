@@ -520,7 +520,8 @@ func deliveriesFromRows(rows []Delivery) []store.Delivery {
 	for i, r := range rows {
 		out[i] = store.Delivery{
 			ID: r.ID, EventID: r.EventID, SubscriptionID: r.SubscriptionID, Status: r.Status, Attempts: r.Attempts,
-			NextAttemptAt: fromNullMillis(r.NextAttemptAt), LastError: r.LastError.String,
+			ReplayBaseAttempts: r.ReplayBaseAttempts,
+			NextAttemptAt:      fromNullMillis(r.NextAttemptAt), LastError: r.LastError.String,
 			TraceParent: r.Traceparent.String,
 		}
 		if r.HoldStartedAt.Valid {

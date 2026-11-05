@@ -24,6 +24,7 @@ type Delivery struct {
 	HoldRaw             sql.NullString
 	HoldInput           sql.NullString
 	Traceparent         sql.NullString
+	ReplayBaseAttempts  int64
 }
 
 type Event struct {

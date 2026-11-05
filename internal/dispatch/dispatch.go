@@ -360,12 +360,15 @@ func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 	}
 	log := d.log.With("delivery", del.ID, "event", ld.Event.ID, "subscription", del.SubscriptionID, "attempt", del.Attempts)
 	f := store.DeliveryFinish{ID: del.ID, Attempt: del.Attempts}
-	if del.Attempts > d.opts.MaxAttempts {
+	// A replay starts a new retry budget: only the attempts since the last
+	// replay count (spec docs/api.md decision 28, ADR 0017 amendment).
+	used := max(del.Attempts-del.ReplayBaseAttempts, 0) // a base above attempts is never written; guard anyway
+	if used > d.opts.MaxAttempts {
 		// The last attempt was leased but never recorded: its holder
 		// crashed or stalled. Sending again could crash this process too
 		// (a poison delivery), so stop here.
 		f.Status = store.DeliveryDead
-		f.LastError = fmt.Sprintf("giving up after %d attempts (previous attempt did not finish)", del.Attempts-1)
+		f.LastError = fmt.Sprintf("giving up after %d attempts (previous attempt did not finish)", used-1)
 		span.SetAttributes(attribute.String("angelia.delivery.outcome", f.Status))
 		log.ErrorContext(ctx, "delivery dead: attempts exhausted, the last one did not finish")
 		d.finish(ctx, f, log)
@@ -385,12 +388,12 @@ func (d *Dispatcher) attempt(ctx context.Context, ld store.LeasedDelivery) {
 	case sink.IsPermanent(err):
 		f.Status, f.LastError = store.DeliveryDead, truncate(msg)
 		log.ErrorContext(ctx, "delivery dead: permanent error", "error", msg)
-	case del.Attempts >= d.opts.MaxAttempts:
+	case used >= d.opts.MaxAttempts:
 		f.Status = store.DeliveryDead
-		f.LastError = truncate(fmt.Sprintf("giving up after %d attempts: %s", del.Attempts, msg))
+		f.LastError = truncate(fmt.Sprintf("giving up after %d attempts: %s", used, msg))
 		log.ErrorContext(ctx, "delivery dead: attempts exhausted", "error", msg)
 	default:
-		wait := RetryDelay(del.Attempts, d.opts.RetryBase, d.opts.RetryMax, d.opts.Rand())
+		wait := RetryDelay(used, d.opts.RetryBase, d.opts.RetryMax, d.opts.Rand())
 		wait = max(wait, min(sink.RetryAfter(err), d.opts.RetryMax))
 		f.Status, f.NextAttemptAt, f.LastError = store.DeliveryPending, now.Add(wait), truncate(msg)
 		log.WarnContext(ctx, "delivery failed, will retry", "error", msg, "next_attempt_at", f.NextAttemptAt)

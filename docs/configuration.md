@@ -24,6 +24,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `plugins.<kind>.allowed_hosts` | none | empty | lower-case hostnames or IP literals, added to the plugin manifest's `allowed_hosts` |
 | `plugins.<kind>.credentials.<host[:port]>.token_env` | none | none | name of an environment variable; the host must be in the merged `allowed_hosts`; no port means 443 |
 | `plugins.<kind>.credentials.<host[:port]>.scheme` | none | empty | one word such as `Bearer`, written before the token |
+| `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
 - Tokens are never configured inline: `token_env` names the variable that holds the token. A
@@ -47,6 +48,28 @@ Check a configuration with `angelia config check [--config FILE]`.
   look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
   rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
 - A config file must contain a single YAML document.
+- `api.allowed_env` lists the environment variables that a sink created or changed through the REST
+  API may name in a `*_env` key (such as the webhook's `secret_env`). Names match exactly. The list
+  is empty by default, so an API sink can name no variable until the operator allows one. A name
+  starting with `ANGELIA_` is always refused, in this list and in the API, because those variables
+  hold the instance's own settings. The API answers a refused name with
+  `422 env-not-allowed`. The watch file is not limited by this list.
+
+## REST API
+
+The `api` role serves the REST API of the
+[OpenAPI specification](https://github.com/angelia-dev/spec/blob/main/openapi/angelia.v1.yaml)
+under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
+
+- Every request needs a bearer token. **Token storage is not built yet** (story #72): until it is,
+  `angelia serve` uses an authenticator that refuses every token, so every API request gets
+  `401 unauthorized`. The health, readiness and metrics routes need no token.
+- Bodies are limited to 1 MiB (`413 payload-too-large`). While the process drains, the API answers
+  `503 unavailable` with `Retry-After: 5`, and open event streams are closed.
+- Each request writes one `api request` record to the log with its request id, method, path, route,
+  status, size, duration, principal and scope. Headers, the query string and bodies are never
+  logged, and a path segment that looks like a credential is replaced with `[redacted]`. Replays
+  also write an `api audit` record.
 
 ## Installed plugins (draft)
 

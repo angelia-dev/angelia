@@ -1,0 +1,41 @@
+{{/*
+  Replaces oapi-codegen v2.8.2's strict/strict-interface.tmpl (see
+  oapi-codegen.yaml). It keeps the request objects, the response object
+  interfaces and StrictServerInterface, and leaves out the per-status
+  response types and their Visit methods: the handlers answer with the one
+  response type of models.go, which writes timestamps and nulls the way the
+  spec shows them, so the generated ones would be dead code.
+*/}}
+{{range .}}{{if not .IsAlias}}
+    {{$opid := .OperationId -}}
+    type {{$opid | ucFirst}}RequestObject struct {
+        {{range .PathParams -}}
+            {{.GoName | ucFirst}} {{.TypeDef}} {{.JsonTag}}
+        {{end -}}
+        {{if .RequiresParamObject -}}
+            Params {{$opid}}Params
+        {{end -}}
+        {{if .HasMaskedRequestContentTypes -}}
+            ContentType string
+        {{end -}}
+        {{$multipleBodies := gt (len .Bodies) 1 -}}
+        {{range .Bodies -}}
+            {{if $multipleBodies}}{{.NameTag}}{{end}}Body {{if eq .NameTag "Multipart"}}*multipart.Reader{{else if ne .NameTag ""}}*{{$opid}}{{.NameTag}}RequestBody{{else}}io.Reader{{end}}
+        {{end -}}
+    }
+
+    type {{$opid | ucFirst}}ResponseObject interface {
+        Visit{{$opid}}Response(w http.ResponseWriter) error
+    }
+{{end}}{{end}}
+
+// StrictServerInterface represents all server handlers.
+type StrictServerInterface interface {
+{{range .}}{{if not .IsAlias}}{{.SummaryAsComment .OperationId }}
+// ({{.Method}} {{.Path}})
+{{with .DeprecationComment}}//
+{{.}}
+{{end}}{{$opid := .OperationId -}}
+{{$opid}}(ctx context.Context, request {{$opid | ucFirst}}RequestObject) ({{$opid | ucFirst}}ResponseObject, error)
+{{end}}{{end}}{{/* range . */ -}}
+}
