@@ -176,6 +176,7 @@ func replayable(ctx context.Context, tx store.APITx, d store.Delivery) (string, 
 func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestObject) (ReplayDeliveryResponseObject, error) {
 	now := s.now()
 	var body deliveryJSON
+	var from string
 	err := s.opts.Store.InAPITx(ctx, func(tx store.APITx) error {
 		d, err := tx.GetDelivery(ctx, req.Id)
 		if err != nil {
@@ -188,6 +189,7 @@ func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestOb
 		if why != "" {
 			return problem(SlugNotReplayable, "%s", why)
 		}
+		from = d.Status
 		if err := tx.ReplayDelivery(ctx, d.ID, now); err != nil {
 			return err
 		}
@@ -200,7 +202,8 @@ func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestOb
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, "replay", slog.String("delivery", req.Id), slog.Int("deliveries", 1))
+	s.audit(ctx, "replay", slog.String("delivery", req.Id), slog.Int("deliveries", 1),
+		slog.Any("ids", []string{req.Id}), slog.Any("from_status", map[string]int{from: 1}))
 	return jsonOK(body), nil
 }
 
@@ -255,7 +258,7 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 	}
 	now := s.now()
 	res := replayResultJSON{DryRun: in.DryRun, Deliveries: []deliveryJSON{}}
-	var ids []string
+	ids, from := []string{}, map[string]int{}
 	err := s.inTx(ctx, in.DryRun, func(tx store.APITx) error {
 		rows, err := tx.ListReplayCandidates(ctx, q)
 		if err != nil {
@@ -278,6 +281,7 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 			}
 			res.Replayed++
 			ids = append(ids, r.ID)
+			from[r.Status]++
 			if len(res.Deliveries) < replayListMax {
 				d, err := tx.GetDelivery(ctx, r.ID)
 				if err != nil {
@@ -298,10 +302,11 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 	res.Truncated = res.Replayed > len(res.Deliveries)
 	if !in.DryRun {
 		attrs := replaySelector(in.Event, in.Subscription, in.Since, in.Until, q.Statuses)
-		if ids == nil {
-			ids = []string{}
+		if q.SubscriptionID != "" {
+			attrs = append(attrs, slog.String("subscription_id", q.SubscriptionID))
 		}
-		attrs = append(attrs, slog.Int("deliveries", len(ids)), slog.Any("ids", firstN(ids, replayListMax)))
+		attrs = append(attrs, slog.Int("deliveries", len(ids)), slog.Any("ids", firstN(ids, replayListMax)),
+			slog.Any("from_status", from))
 		s.audit(ctx, "replay", attrs...)
 	}
 	return jsonOK(res), nil

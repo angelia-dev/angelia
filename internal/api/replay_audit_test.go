@@ -46,6 +46,9 @@ func TestReplayDeliveryAuditRecord(t *testing.T) {
 	if rid, _ := r["request_id"].(string); rid == "" {
 		t.Errorf("audit record without request_id: %v", r)
 	}
+	if fmt.Sprint(r["ids"]) != "["+id+"]" || fmt.Sprint(r["from_status"]) != "map[dead:1]" {
+		t.Errorf("audit ids %v from_status %v", r["ids"], r["from_status"])
+	}
 	// A refused replay changes nothing and is not audited.
 	e.do("POST", "/v1/deliveries/"+id+"/replay", tokWrite, nil)
 	if n := len(e.auditRecords()); n != 1 {
@@ -84,6 +87,12 @@ func TestCreateReplayAuditRecord(t *testing.T) {
 	if st, _ := r["status"].([]any); len(st) != 2 || st[0] != "dead" || st[1] != "delivered" {
 		t.Errorf("audit status = %v", r["status"])
 	}
+	if r["subscription_id"] != e.subscriptionID("platform-ci") {
+		t.Errorf("audit subscription_id = %v", r["subscription_id"])
+	}
+	if fmt.Sprint(r["from_status"]) != "map[dead:1 delivered:1]" {
+		t.Errorf("audit from_status = %v", r["from_status"])
+	}
 	if ids, _ := r["ids"].([]any); len(ids) != 2 || ids[0] != want[0] || ids[1] != want[1] {
 		t.Errorf("audit ids = %v, want %v", ids, want)
 	}
@@ -104,8 +113,17 @@ func TestCreateReplayAuditRecord(t *testing.T) {
 	if st, _ := r["status"].([]any); len(st) != 1 || st[0] != "dead" {
 		t.Errorf("audit default status = %v", r["status"])
 	}
-	if _, ok := r["subscription"]; ok {
-		t.Errorf("audit names a subscription it was not given: %v", r)
+	for _, k := range []string{"subscription", "subscription_id"} {
+		if _, ok := r[k]; ok {
+			t.Errorf("audit names a %s it was not given: %v", k, r)
+		}
+	}
+	// Nothing matched: ids and from_status are empty, not null.
+	if ids, ok := r["ids"].([]any); !ok || len(ids) != 0 {
+		t.Errorf("audit ids = %#v, want []", r["ids"])
+	}
+	if fs, ok := r["from_status"].(map[string]any); !ok || len(fs) != 0 {
+		t.Errorf("audit from_status = %#v, want {}", r["from_status"])
 	}
 }
 

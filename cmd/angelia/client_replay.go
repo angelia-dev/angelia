@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -135,11 +136,14 @@ func (f *replayFlags) request(cmd *cobra.Command, now time.Time) (apiclient.Repl
 		req.Since, req.Until = &since, &until
 	}
 	if len(f.status) > 0 {
-		st := make([]apiclient.ReplayRequestStatus, len(f.status))
-		for i, s := range f.status {
-			st[i] = apiclient.ReplayRequestStatus(s)
-			if !st[i].Valid() {
+		var st []apiclient.ReplayRequestStatus // without repeats: the API refuses them
+		for _, s := range f.status {
+			v := apiclient.ReplayRequestStatus(s)
+			if !v.Valid() {
 				return req, fmt.Errorf("--status: %q cannot be replayed; want dead or delivered", s)
+			}
+			if !slices.Contains(st, v) {
+				st = append(st, v)
 			}
 		}
 		req.Status = &st

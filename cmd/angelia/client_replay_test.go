@@ -52,7 +52,7 @@ func TestReplayGolden(t *testing.T) {
 		},
 		{
 			name: "replay-dry-run", route: "POST /v1/replays", file: "replay-dry-run",
-			args: []string{"replay", "--subscription", "platform-ci", "--since", "2026-11-02T01:00:00+01:00", "--until", "2026-11-03T00:00:00.123456Z", "--status", "dead,delivered", "--dry-run"},
+			args: []string{"replay", "--subscription", "platform-ci", "--since", "2026-11-02T01:00:00+01:00", "--until", "2026-11-03T00:00:00.123456Z", "--status", "dead,delivered,dead", "--status", "delivered", "--dry-run"},
 			uri:  "/v1/replays", body: `{"dry_run":true,"since":"2026-11-02T00:00:00Z","status":["dead","delivered"],"subscription":"platform-ci","until":"2026-11-03T00:00:00.123Z"}`,
 		},
 		{
@@ -117,6 +117,7 @@ func TestReplayFlagErrors(t *testing.T) {
 		{[]string{"--subscription", "platform-ci", "--until", "now", "--event", fixEvent}, "--until needs --since"},
 		{[]string{"--subscription", "platform-ci", "--since", "yesterday"}, "--since"},
 		{[]string{"--subscription", "platform-ci", "--since", "1h", "--until", "2h"}, "--until must be after --since"},
+		{[]string{"--subscription", "platform-ci", "--since", "now"}, "--until must be after --since"},
 		{[]string{"--event", fixEvent, "--status", "pending"}, `--status: "pending"`},
 		{[]string{"--delivery", ""}, "give --delivery"},
 		{[]string{"extra-arg", "--event", fixEvent}, "unknown command"},
@@ -381,6 +382,15 @@ func TestReplayAgainstAPI(t *testing.T) {
 	if recs[1]["subscription"] != "platform-ci" || recs[1]["since"] != "2026-11-02T00:00:00Z" || recs[1]["deliveries"] != float64(1) ||
 		fmt.Sprint(recs[1]["ids"]) != "["+d2+"]" {
 		t.Errorf("audit of the window replay: %v", recs[1])
+	}
+	if fmt.Sprint(recs[0]["ids"]) != "["+d1+"]" || fmt.Sprint(recs[0]["from_status"]) != "map[dead:1]" {
+		t.Errorf("audit ids and from_status of replay --delivery: %v", recs[0])
+	}
+	if recs[1]["subscription_id"] == nil || recs[1]["subscription_id"] == "" {
+		t.Errorf("audit of the window replay lacks subscription_id: %v", recs[1])
+	}
+	if ids, ok := recs[3]["ids"].([]any); !ok || len(ids) != 0 {
+		t.Errorf("audit ids of an empty replay = %#v, want []", recs[3]["ids"])
 	}
 	if recs[3]["event"] != ev1 || recs[3]["deliveries"] != float64(0) {
 		t.Errorf("audit of replay --event: %v", recs[3])

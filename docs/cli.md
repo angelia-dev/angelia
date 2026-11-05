@@ -109,7 +109,10 @@ Replay needs a token with the `write` scope. The server writes one audit
 record per replay that ran (not for a dry run or a refused request): `"audit":
 true`, `"action": "replay"`, the `principal` (token id) and `request_id`, the
 selector as given (`delivery`, or `event`, `subscription`, `since`, `until`
-and `status`), the count `deliveries` and the first 100 `ids`.
+and `status`, plus the resolved `subscription_id`), the count `deliveries`,
+the first 100 `ids` (`[]` when nothing matched) and `from_status`, the number
+of replayed deliveries per state they were in before (`{"dead": 2,
+"delivered": 1}`), which tells a resend of a `delivered` delivery apart.
 
 ## Output
 
