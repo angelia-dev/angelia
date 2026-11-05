@@ -281,8 +281,9 @@ but not enforced. See [Stored secrets](configuration.md#stored-secrets).
 `serve` and opens the database directly. `keygen` prints a new key, or writes
 it to a new file (mode `0600`, never overwriting one). `rotate` re-encrypts
 every stored secret under the primary key and `status` counts the stored
-secrets per key; see [Rotating the key](configuration.md#rotating-the-key).
-Neither prints a value.
+secrets per key, read-only; see [Rotating the key](configuration.md#rotating-the-key).
+Neither prints a value, and neither creates a database: a `database.dsn` that
+names no file is an error.
 
 ## Output
 

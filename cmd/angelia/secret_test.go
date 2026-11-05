@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http/httptest"
@@ -312,18 +313,23 @@ func TestSecretsRotateAndStatus(t *testing.T) {
 
 // Acceptance criterion "missing key at startup with existing secrets =
 // clear error, no plaintext fallback".
+//
+// serve gets a free port (the config refuses port 0) and a deadline: if the check regressed, serve
+// would start and run, and the deadline ends it with a clear failure
+// instead of the package timeout.
 func TestServeRefusesStoredSecretsWithoutKey(t *testing.T) {
-	cfg, db := instanceFiles(t, "listen: \"127.0.0.1:18080\"\n")
+	listen := fmt.Sprintf("listen: %q\n", freeAddr(t))
+	cfg, db := instanceFiles(t, listen)
 	if err := checkSecretsAtStartup(t.Context(), mustLoad(t, cfg), nil); err != nil {
 		t.Fatalf("no database yet: %v", err)
 	}
 	seedSecrets(t, db, keyring(t, 1), "a", "b", "c")
-	_, errOut, err := runCLI(t, "serve", "--config", cfg, "--roles", "worker")
+	_, errOut, err := runServeWithin(t, "--config", cfg, "--roles", "worker")
 	if err == nil || err.Error() != "secrets: 3 stored secrets but no key configured; set secrets.key_file" {
 		t.Fatalf("serve without a key: %v\n%s", err, errOut)
 	}
-	cfgOther := writeCfg(t, "listen: \"127.0.0.1:18080\"\ndatabase:\n  dsn: sqlite://"+db+"\nsecrets:\n  key_file: "+writeKeyFile(t, 2)+"\n")
-	_, errOut, err = runCLI(t, "serve", "--config", cfgOther, "--roles", "worker")
+	cfgOther := writeCfg(t, listen+"database:\n  dsn: sqlite://"+db+"\nsecrets:\n  key_file: "+writeKeyFile(t, 2)+"\n")
+	_, errOut, err = runServeWithin(t, "--config", cfgOther, "--roles", "worker")
 	if err == nil || !strings.Contains(err.Error(), keyring(t, 1).PrimaryID()+" (3 rows)") {
 		t.Fatalf("serve with another key: %v\n%s", err, errOut)
 	}
@@ -331,6 +337,24 @@ func TestServeRefusesStoredSecretsWithoutKey(t *testing.T) {
 	if err := checkSecretsAtStartup(context.Background(), mustLoad(t, cfgOther), keyring(t, 2, 1)); err != nil {
 		t.Fatalf("both keys: %v", err)
 	}
+}
+
+// runServeWithin runs serve with a 20-second deadline and fails the test if
+// serve was still running when it expired.
+func runServeWithin(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	root := newRootCmd()
+	var o, e bytes.Buffer
+	root.SetOut(&o)
+	root.SetErr(&e)
+	root.SetArgs(append([]string{"serve"}, args...))
+	err = root.ExecuteContext(ctx)
+	if ctx.Err() != nil {
+		t.Fatalf("serve ran until the deadline (the startup check did not refuse): %v\n%s", err, e.String())
+	}
+	return o.String(), e.String(), err
 }
 
 func mustLoad(t *testing.T, path string) *config.Config {
@@ -427,4 +451,34 @@ func TestConfigCheckSecrets(t *testing.T) {
 		t.Fatalf("bad key file: %v", err)
 	}
 	noCanary(t, "config check", errOut, err.Error())
+	// NIT3 (#75 review): a Postgres store is not counted, and says so.
+	pg := writeCfg(t, "database:\n  dsn: postgres://angelia@db.example.com/angelia\nsecrets:\n  key_file: "+writeKeyFile(t, 2)+"\n")
+	out, _, err = runCLI(t, "config", "check", "--config", pg)
+	if err != nil || !strings.Contains(out, "secrets: key "+keyring(t, 2).PrimaryID()+"; stored secrets not checked (postgres)\n") {
+		t.Fatalf("postgres: %v %s", err, out)
+	}
+	pgNone := writeCfg(t, "database:\n  dsn: postgres://angelia@db.example.com/angelia\n")
+	if out, _, err = runCLI(t, "config", "check", "--config", pgNone); err != nil || !strings.Contains(out, "secrets: no key configured; stored secrets not checked (postgres)\n") {
+		t.Fatalf("postgres, no key: %v %s", err, out)
+	}
+}
+
+// NIT5 (#75 review): the instance-side commands never create a database, so
+// a mistyped DSN is an error, not a new empty database.
+func TestSecretsCommandsNeedADatabase(t *testing.T) {
+	cfg, db := instanceFiles(t, "secrets:\n  key_file: "+writeKeyFile(t, 1)+"\n")
+	for _, cmd := range []string{"status", "rotate"} {
+		_, _, err := runCLI(t, "secrets", cmd, "--config", cfg)
+		if !errors.Is(err, sqlite.ErrNoDatabase) || !strings.Contains(err.Error(), db) {
+			t.Errorf("%s: %v", cmd, err)
+		}
+		if _, err := os.Stat(db); err == nil {
+			t.Fatalf("secrets %s created the database", cmd)
+		}
+	}
+	// On a database the secret migration has not reached, status reads no row.
+	seedSecrets(t, db, keyring(t, 1))
+	if out, _, err := runCLI(t, "secrets", "status", "--config", cfg); err != nil || !strings.Contains(out, "(0 stored)") {
+		t.Fatalf("status: %v %s", err, out)
+	}
 }

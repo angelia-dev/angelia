@@ -113,16 +113,21 @@ func newSecretsStatusCmd() *cobra.Command {
 		Short: "Show how many stored secrets each key sealed",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			in, err := openInstance(cmd)
+			// Read-only: status never creates or migrates the database, so
+			// a mistyped DSN is an error, not a new empty database.
+			cfg, keys, _, err := loadInstanceKeys(cmd)
 			if err != nil {
 				return err
 			}
-			defer in.close()
-			counts, err := in.store.CountSecretsByKeyID(cmd.Context())
+			dbPath, err := instanceDBPath(cfg)
 			if err != nil {
 				return err
 			}
-			return printSecretsStatus(cmd.OutOrStdout(), counts, in.keys)
+			counts, err := sqlite.SecretKeyCounts(cmd.Context(), dbPath)
+			if err != nil {
+				return err
+			}
+			return printSecretsStatus(cmd.OutOrStdout(), counts, keys)
 		},
 	}
 }
@@ -166,21 +171,44 @@ type instance struct {
 
 func (i *instance) close() { _ = i.store.Close() }
 
-// openInstance loads the instance configuration and its keys (then unsets
-// ANGELIA_SECRETS_KEY) and opens the SQLite store.
-func openInstance(cmd *cobra.Command) (*instance, error) {
+// loadInstanceKeys loads the instance configuration and its keys, then
+// unsets ANGELIA_SECRETS_KEY.
+func loadInstanceKeys(cmd *cobra.Command) (*config.Config, *secrets.Keyring, *slog.Logger, error) {
 	cfg, err := loadConfig(cmd)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	log := newLogger(cmd.ErrOrStderr(), cfg.Log)
 	keys, err := loadKeys(cfg, log)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
+	return cfg, keys, log, nil
+}
+
+// instanceDBPath is the path of the instance's SQLite database, which must
+// exist: the instance-side commands never create one.
+func instanceDBPath(cfg *config.Config) (string, error) {
 	dbPath, err := cfg.Database.SQLitePath()
 	if err != nil {
-		return nil, fmt.Errorf("only sqlite databases are supported in this phase: %w", err)
+		return "", fmt.Errorf("only sqlite databases are supported in this phase: %w", err)
+	}
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("%w: %s (check database.dsn)", sqlite.ErrNoDatabase, dbPath)
+	}
+	return dbPath, nil
+}
+
+// openInstance loads the instance configuration and its keys (then unsets
+// ANGELIA_SECRETS_KEY) and opens the SQLite store, which must exist.
+func openInstance(cmd *cobra.Command) (*instance, error) {
+	cfg, keys, log, err := loadInstanceKeys(cmd)
+	if err != nil {
+		return nil, err
+	}
+	dbPath, err := instanceDBPath(cfg)
+	if err != nil {
+		return nil, err
 	}
 	st, err := sqlite.Open(cmd.Context(), dbPath, log)
 	if err != nil {

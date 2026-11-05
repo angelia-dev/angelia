@@ -198,18 +198,34 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 		_, _ = fmt.Fprintln(warn, "warning:", w)
 	}
 	counts := map[string]int64{}
-	if dbPath, err := cfg.Database.SQLitePath(); err == nil {
-		c, err := sqlite.SecretKeyCounts(ctx, dbPath)
-		switch {
-		case errors.Is(err, sqlite.ErrNoDatabase):
-		case err != nil:
-			_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
-		default:
-			counts = c
-		}
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		// TODO(postgres, #85): count the Postgres store too.
+		return keysLine(keys) + "; stored secrets not checked (postgres)", nil //nolint:nilerr // only sqlite stores are counted in this phase
+	}
+	c, err := sqlite.SecretKeyCounts(ctx, dbPath)
+	switch {
+	case errors.Is(err, sqlite.ErrNoDatabase):
+	case err != nil:
+		_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
+	default:
+		counts = c
 	}
 	if err := secrets.CheckCounts(counts, keys); err != nil {
 		return "", err
 	}
 	return secrets.Summary(counts, keys), nil
+}
+
+// keysLine names the configured keys, for a store whose secrets are not
+// counted.
+func keysLine(keys *secrets.Keyring) string {
+	if keys == nil {
+		return "secrets: no key configured"
+	}
+	s := "secrets: key " + keys.PrimaryID()
+	if prev := len(keys.IDs()) - 1; prev > 0 {
+		s += fmt.Sprintf(" and %d previous key%s", prev, plural(prev))
+	}
+	return s
 }
