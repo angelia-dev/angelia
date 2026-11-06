@@ -293,6 +293,16 @@ table for one resource. `-o json` prints the API's JSON: for a list the page
 `event stream` one record per line. Tables go to stdout; hints (the cursor of
 the next page, the change a `put` made) go to stderr.
 
+## Webhook secrets
+
+```
+angelia webhook secret new
+```
+
+prints a new Standard Webhooks signing secret, `whsec_` plus the base64 of 32 bytes from the system's
+secure random source. It runs locally, needs no instance and stores nothing. See
+[webhooks.md](webhooks.md) for where to put it and how to rotate it.
+
 ## Shell completion
 
 ```

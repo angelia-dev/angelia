@@ -68,6 +68,17 @@ func TestGuardDefaultDenyRanges(t *testing.T) {
 		{"site-local fec0::/10", "[fec0::1]"},
 		{"site-local fec0::/10 high", "[feff:ffff::1]"},
 		{"ipv4-mapped CGNAT metadata", "[::ffff:100.100.100.200]"},
+		// Added by #108 (ADR 0023 section 5).
+		{"IETF protocol assignments 192.0.0.0/24", "192.0.0.170"},
+		{"IETF protocol assignments 192.0.0.0/24 high", "192.0.0.255"},
+		{"benchmarking 198.18.0.0/15 low", "198.18.0.1"},
+		{"benchmarking 198.18.0.0/15 high", "198.19.255.254"},
+		{"reserved 240.0.0.0/4", "240.0.0.1"},
+		{"reserved 240.0.0.0/4 high", "255.255.255.254"},
+		{"Teredo 2001::/32", "[2001:0:4136:e378:8000:63bf:3fff:fdd2]"},
+		{"Teredo 2001::/32 high", "[2001:0:ffff:ffff::1]"},
+		{"NAT64 local-use 64:ff9b:1::/48", "[64:ff9b:1::a00:1]"},
+		{"NAT64 local-use 64:ff9b:1::/48 high", "[64:ff9b:1:ffff::1]"},
 	}
 	g := NewGuard(nil, fakeResolver{})
 	for _, tc := range cases {
@@ -173,6 +184,26 @@ func TestGuardAddressSpellings(t *testing.T) {
 	for _, host := range []string{"cafe.example", "v2.dead.beef"} {
 		if err := ok.CheckURL(t.Context(), &url.URL{Scheme: "http", Host: host}); err != nil {
 			t.Errorf("%s: %v", host, err)
+		}
+	}
+}
+
+// URL errors that only a configuration change can fix match ErrInvalidURL
+// (#108 review SR1); a DNS failure does not.
+func TestGuardInvalidURLErrors(t *testing.T) {
+	g := NewGuard(nil, fakeResolver{})
+	for _, raw := range []string{"ftp://h/", "http:///x", "http://2130706433/", "http://0x7f000001/", "http://127.1/"} {
+		u, _ := url.Parse(raw)
+		if err := g.CheckURL(t.Context(), u); !errors.Is(err, ErrInvalidURL) || errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: %v, want ErrInvalidURL", raw, err)
+		}
+	}
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "https", Host: "unknown.example"}); err == nil || errors.Is(err, ErrInvalidURL) {
+		t.Errorf("DNS failure: %v, want an error that is not ErrInvalidURL", err)
+	}
+	for host, want := range map[string]bool{"2130706433": true, "0x7f000001": true, "127.1": true, "127.0.0.1": false, "::1": false, "hooks.example.com": false, "10.0.0.1": false} {
+		if got := NonCanonicalIP(host); got != want {
+			t.Errorf("NonCanonicalIP(%q) = %v", host, got)
 		}
 	}
 }

@@ -117,6 +117,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	// TODO: pass tracerProvider as Options.TracerProvider of the scheduler and
 	// dispatcher roles when serve wires them in place of the stubs.
+	// TODO(#198): when the dispatcher role is wired, build its netguard client
+	// with netguard.Config{Allow: cfg.HTTP.AllowPrefixes(), UserAgent:
+	// cfg.HTTP.UserAgent, Logger: log} and register webhook.New(client.HTTPClient(),
+	// webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}).
+	// The scheduler's source clients take the same Allow.
 	_ = tracerProvider
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
 		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and

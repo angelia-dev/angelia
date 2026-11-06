@@ -90,6 +90,9 @@ func TestRedactURL(t *testing.T) {
 		{errors.New("posting to https://user:pw@discord.com/api/webhooks/1/abc?wait=true failed"), "posting to https://discord.com/[redacted] failed"},
 		{errors.New("GET https://example.com/ ok, and http://example.org:8080 too"), "GET https://example.com ok, and http://example.org:8080 too"},
 		{errors.New("bad url unix:///run/x.sock"), "bad url unix://[redacted]"},
+		// A colon after a URL with a port is punctuation (#108 sink errors).
+		{errors.New("webhook: http://127.0.0.1:8080: HTTP 500 Internal Server Error"), "webhook: http://127.0.0.1:8080: HTTP 500 Internal Server Error"},
+		{errors.New("webhook: https://h.example/p/abc: connection refused"), "webhook: https://h.example/[redacted]: connection refused"},
 		{errors.New("no url here"), "no url here"},
 		{nil, ""},
 	} {

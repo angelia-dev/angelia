@@ -29,9 +29,14 @@
 //     addresses unless they are allowlisted.
 //
 // The SSRF guard checks the URL host of each hop before it is sent,
-// resolving hostnames once. It is not proof against DNS rebinding: the
-// transport resolves the name again when it dials. Hardening that, with a
-// dial-time check in netguard's own dialer, is a separate story
-// (angelia-dev/angelia#76). A custom Config.Transport bypasses any
-// dial-level check.
+// resolving hostnames with Config.Resolver. The default transport then
+// checks again at dial time: its dialer runs [Guard.CheckAddr] on the
+// address the socket actually connects to, after its own DNS lookup, so a
+// name that resolves to a public address for the URL check and to a
+// private one for the dial (DNS rebinding) is refused. A connection to the
+// configured proxy (Config.Proxy, by default HTTPS_PROXY and HTTP_PROXY as
+// read once when the client is built) is exempt: proxies usually have
+// private addresses, and the proxy, not Angelia, resolves the target.
+// Through a proxy only the URL check applies, and rebinding protection is
+// the proxy's job. A custom Config.Transport bypasses the dial-time check.
 package netguard

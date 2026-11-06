@@ -60,12 +60,20 @@ type Request struct {
 	// Rendered is the message built from the subscription's template, or
 	// the CloudEvents JSON when it has none.
 	Rendered Rendered
+	// Secrets holds the values of the secret references in Config, resolved
+	// by the core for this attempt (ADR 0023 section 4, ADR 0024): the key is
+	// the RFC 6901 JSON Pointer of the reference key in Config, such as
+	// "/secret_env", the value is the secret. Every reference resolved, or
+	// Deliver is not called. Sinks read secrets only from here, never from
+	// the environment, and never log, store or return them.
+	Secrets map[string][]byte
 	// IdempotencyKey is the same on every attempt and replay of a delivery:
 	// IdempotencyKey(event id, subscription id). Sinks pass it on, for
 	// example as a header, so that consumers can drop duplicates.
 	IdempotencyKey string
-	// DeliveryID and SubscriptionID identify the delivery, for logs.
-	DeliveryID, SubscriptionID string
+	// DeliveryID, SubscriptionID and SinkID identify the delivery and its
+	// sink, for logs.
+	DeliveryID, SubscriptionID, SinkID string
 	// Attempt counts from 1. An attempt cut short by a crash counts.
 	Attempt int64
 }

@@ -32,7 +32,12 @@ func RedactURL(err error) string {
 	if errors.As(err, &ue) && ue.URL != "" {
 		msg = strings.ReplaceAll(msg, ue.URL, redactOne(ue.URL))
 	}
-	return urlPattern.ReplaceAllStringFunc(msg, redactOne)
+	return urlPattern.ReplaceAllStringFunc(msg, func(raw string) string {
+		// A colon after the URL ("webhook: http://h:8080: HTTP 500") is
+		// punctuation, not an empty port: keep it out of the parse.
+		trimmed := strings.TrimRight(raw, ":")
+		return redactOne(trimmed) + raw[len(trimmed):]
+	})
 }
 
 // redactOne reduces one URL to scheme://host, marking a removed path or

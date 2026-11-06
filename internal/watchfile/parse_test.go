@@ -272,6 +272,37 @@ func TestWebhookHTTPAllowlistAndWarnings(t *testing.T) {
 	}
 }
 
+// ADR 0023 decided questions 3 and 5: a timeout above the dispatcher's
+// deliver timeout and an unsigned sink are reported as warnings.
+// Review of #108, SR1: a non-canonical numeric host never resolves to a
+// deliverable destination, so the file is refused.
+func TestWebhookNonCanonicalHostRejected(t *testing.T) {
+	for _, u := range []string{"https://2130706433/x", "https://0x7f000001/x", "https://127.1/x"} {
+		doc := base + "sinks:\n  - {name: a, kind: webhook, config: {url: '" + u + "'}}\n"
+		_, err := Parse([]byte(doc), "w.yaml", opts(t))
+		if err == nil || !strings.Contains(err.Error(), "non-canonical form") || strings.Contains(err.Error(), u) {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
+
+func TestWebhookTimeoutAboveDeliverTimeoutWarns(t *testing.T) {
+	doc := base + "sinks:\n  - {name: a, kind: webhook, config: {url: 'https://h.example.org/x', secret_env: HOOK, timeout: 15s}}\n" +
+		"  - {name: b, kind: webhook, config: {url: 'https://h.example.org/y', secret_env: HOOK, timeout: 1m}}\n"
+	o := opts(t)
+	o.LookupEnv = func(string) (string, bool) { return "set", true }
+	f, err := Parse([]byte(doc), "w.yaml", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Warnings) != 1 || !strings.Contains(f.Warnings[0], "sinks[1].config.timeout") || !strings.Contains(f.Warnings[0], "1m0s is above the dispatcher's deliver timeout (15s)") {
+		t.Fatalf("warnings: %q", f.Warnings)
+	}
+	if string(f.Sinks[1].Config) != `{"url":"https://h.example.org/y","secret_env":"HOOK","timeout":"1m0s"}` {
+		t.Fatalf("the timeout is kept: %s", f.Sinks[1].Config)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	if _, err := Load("/nonexistent/w.yaml", opts(t)); err == nil {
 		t.Fatal("want error")

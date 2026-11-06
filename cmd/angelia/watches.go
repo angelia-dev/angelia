@@ -70,9 +70,9 @@ func parseWatchFile(cfg *config.Config, path string) (*watchfile.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	// AllowHTTPHosts stays empty: the instance configuration has no webhook
-	// allowlist yet, so webhooks are https only (decision D12).
-	f, err := watchfile.Load(path, watchfile.Options{Sources: reg})
+	// http:// is accepted only for the hosts of http.allow_http_hosts
+	// (decision D12, ADR 0023 decided question 4).
+	f, err := watchfile.Load(path, watchfile.Options{Sources: reg, AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts})
 	if err != nil {
 		return nil, fmt.Errorf("invalid watch file:\n%w", err)
 	}

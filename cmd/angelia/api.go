@@ -34,7 +34,7 @@ func newAPIServer(ctx context.Context, cfg *config.Config, keys *secrets.Keyring
 	}
 	srv, err := api.New(api.Options{
 		Store: st, Auth: api.DenyAll{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
-		API: cfg.API, Secrets: keys, Logger: log,
+		API: cfg.API, AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Secrets: keys, Logger: log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("api role: %w", errorsJoin(err, st.Close()))

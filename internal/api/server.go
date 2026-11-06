@@ -60,6 +60,9 @@ type Options struct {
 	// Secrets seals the values of /v1/secrets; nil means no key is
 	// configured, and a write gets 422 secrets-key-missing.
 	Secrets *secrets.Keyring
+	// AllowHTTPHosts is http.allow_http_hosts: the hosts a webhook may
+	// reach over plain http:// (decision D12). Empty: https only.
+	AllowHTTPHosts []string
 	// Logger receives the access log and the audit records; nil discards.
 	Logger *slog.Logger
 	// Now and NewID default to the real clock and random ULIDs.
