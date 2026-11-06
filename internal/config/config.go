@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/netip"
 	"net/url"
@@ -21,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/angelia-dev/angelia/internal/buildinfo"
+	"github.com/angelia-dev/angelia/internal/secrets"
 )
 
 // Defaults for keys that are not set anywhere.
@@ -51,17 +51,14 @@ var (
 	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
 )
 
-// secret holds a credential. It prints as [REDACTED] with every fmt verb and
-// in slog, so a Config can be logged safely. Use string(s) to read it.
-type secret string
+// secret holds a credential: a [secrets.Value], which prints as [REDACTED]
+// with every fmt verb, in slog and in JSON, so a Config can be logged
+// safely. Use reveal to read it.
+type secret = secrets.Value
 
-const redacted = "[REDACTED]"
+func newSecret(s string) secret { return secrets.NewValueString(s) }
 
-func (secret) String() string               { return redacted }
-func (secret) GoString() string             { return redacted }
-func (secret) LogValue() slog.Value         { return slog.StringValue(redacted) }
-func (secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
-func (secret) Format(f fmt.State, _ rune)   { _, _ = io.WriteString(f, redacted) }
+func reveal(s secret) string { return string(s.Reveal()) }
 
 // Config is the typed instance configuration. Create it with Load or Default.
 type Config struct {
@@ -125,9 +122,28 @@ func (d Database) SQLitePath() (string, error) {
 	return u.Path, nil
 }
 
-// Secrets configures the key file used for secrets (encryption is Phase 1).
+// Secrets configures the master keys of the stored secrets (ADR 0024 §4).
 type Secrets struct {
+	// KeyFile holds the primary key: the standard base64 encoding of 32
+	// random bytes (`angelia secrets keygen`). Env ANGELIA_SECRETS_KEY_FILE.
 	KeyFile string `yaml:"key_file"`
+	// PreviousKeyFiles hold keys used only to decrypt, during a rotation
+	// and to read restored backups. Env ANGELIA_SECRETS_PREVIOUS_KEY_FILES
+	// (comma-separated).
+	PreviousKeyFiles []string `yaml:"previous_key_files"`
+	// Key is the primary key inline, from ANGELIA_SECRETS_KEY, for
+	// platforms that only inject environment variables. It is not part of
+	// the file format; setting it together with KeyFile is an error.
+	Key secret `yaml:"-"`
+}
+
+// KeyEnv is the environment variable that holds the primary key inline.
+// `angelia serve` unsets it once read (ADR 0024 §4).
+const KeyEnv = envPrefix + "SECRETS_KEY"
+
+// KeyConfig returns where the keys come from, for secrets.LoadKeyring.
+func (s Secrets) KeyConfig() secrets.KeyConfig {
+	return secrets.KeyConfig{KeyFile: s.KeyFile, Key: s.Key, PreviousKeyFiles: slices.Clone(s.PreviousKeyFiles)}
 }
 
 // Log configures logging.
@@ -173,7 +189,7 @@ type API struct {
 // AllowsEnv reports whether a *_env key written through the API may name the
 // environment variable name.
 func (a API) AllowsEnv(name string) bool {
-	return !strings.HasPrefix(name, envPrefix) && slices.Contains(a.AllowedEnv, name)
+	return !ReservedEnvName(name) && slices.Contains(a.AllowedEnv, name)
 }
 
 // Source configures one source kind. There is deliberately no token field:
@@ -386,6 +402,17 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	str("LISTEN", &cfg.Listen)
 	str("DATABASE_DSN", &cfg.Database.DSN)
 	str("SECRETS_KEY_FILE", &cfg.Secrets.KeyFile)
+	if v, ok := env[KeyEnv]; ok && v != "" {
+		cfg.Secrets.Key = newSecret(v)
+	}
+	if v, ok := env[envPrefix+"SECRETS_PREVIOUS_KEY_FILES"]; ok {
+		cfg.Secrets.PreviousKeyFiles = nil
+		for _, f := range strings.Split(v, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				cfg.Secrets.PreviousKeyFiles = append(cfg.Secrets.PreviousKeyFiles, f)
+			}
+		}
+	}
 	str("LOG_LEVEL", &cfg.Log.Level)
 	str("LOG_FORMAT", &cfg.Log.Format)
 	str("HTTP_USER_AGENT", &cfg.HTTP.UserAgent)
@@ -423,7 +450,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 			field = "token_env"
 			rest = strings.TrimSuffix(rest, "_TOKEN_ENV")
 		default:
-			continue // reserved prefix, but not a config key (e.g. a token_env name)
+			continue // reserved prefix, but not a config key
 		}
 		if rest == "" {
 			return fmt.Errorf("environment variable %s: missing source kind", k)
@@ -539,7 +566,20 @@ func (c *Config) Validate() error {
 				bad("sources.%s.token_env: looks like a token, not an environment variable name", k)
 			case !envNameRE.MatchString(s.TokenEnv):
 				bad("sources.%s.token_env: must be an environment variable name, not a token", k)
+			case ReservedEnvName(s.TokenEnv):
+				bad("sources.%s.token_env: names starting with %s are always refused: they hold the instance's own settings, such as %s", k, envPrefix, KeyEnv)
 			}
+		}
+	}
+	switch {
+	case c.Secrets.KeyFile != "" && !c.Secrets.Key.IsZero():
+		bad("secrets: both secrets.key_file and %s are set; set one", KeyEnv)
+	case len(c.Secrets.PreviousKeyFiles) > 0 && c.Secrets.KeyFile == "" && c.Secrets.Key.IsZero():
+		bad("secrets.previous_key_files: set secrets.key_file (or %s) too: previous keys only decrypt", KeyEnv)
+	}
+	for i, f := range c.Secrets.PreviousKeyFiles {
+		if f == "" {
+			bad("secrets.previous_key_files[%d]: must not be empty", i)
 		}
 	}
 	if !filepath.IsAbs(c.PluginsDir) {
@@ -549,7 +589,7 @@ func (c *Config) Validate() error {
 		switch {
 		case !envNameRE.MatchString(n):
 			bad("api.allowed_env[%d]: must be an environment variable name", i)
-		case strings.HasPrefix(n, envPrefix):
+		case ReservedEnvName(n):
 			bad("api.allowed_env[%d]: names starting with %s are always refused", i, envPrefix)
 		}
 	}
@@ -560,6 +600,15 @@ func (c *Config) Validate() error {
 // files that reference a secret by variable name (the watch file) use it so
 // the rule is the same everywhere.
 func IsEnvName(s string) bool { return envNameRE.MatchString(s) }
+
+// ReservedEnvName reports whether s starts with ANGELIA_. Those variables
+// hold the instance's own settings, the secrets key among them, so no
+// *_env or token_env reference may name one: not in the instance config,
+// a grants.yaml, the watch file or the API.
+func ReservedEnvName(s string) bool { return strings.HasPrefix(s, envPrefix) }
+
+// ReservedEnvRefusal starts the error of a reference to an ANGELIA_ name.
+const ReservedEnvRefusal = "names starting with " + envPrefix + " are always refused"
 
 // LooksLikeToken reports whether v starts with a well-known credential prefix.
 // Callers must not echo v when it does.
@@ -598,7 +647,7 @@ func (c *Config) resolveTokens(env map[string]string) {
 			c.warnings = append(c.warnings, fmt.Sprintf("sources.%s.token_env: environment variable %s is not set or empty", k, name))
 			continue
 		}
-		c.Tokens[k] = secret(env[name])
+		c.Tokens[k] = newSecret(env[name])
 	}
 }
 
@@ -607,4 +656,4 @@ func (c *Config) Warnings() []string { return slices.Clone(c.warnings) }
 
 // SourceToken returns the token for a source kind, read from the environment
 // variable named by its token_env. It is empty when none is configured or set.
-func (c *Config) SourceToken(kind string) string { return string(c.Tokens[kind]) }
+func (c *Config) SourceToken(kind string) string { return reveal(c.Tokens[kind]) }

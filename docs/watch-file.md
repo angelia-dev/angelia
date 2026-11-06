@@ -107,10 +107,15 @@ at load time with the file, line and path of the key. The policy is stored as `w
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `url` | string | yes | none | absolute `https://` URL (or `http://`, see D12), no userinfo, no query string holding secrets; the SSRF guard (netguard) applies at delivery time, the allowlist stays in the instance config |
-| `secret_env` | string | no | none | name of an environment variable holding the Standard Webhooks signing secret ([ADR 0005](adr/0005-standard-webhooks-signing.md)); a `secret:` key is an unknown key and an error |
+| `secret_env` | string | no | none | name of an environment variable holding the Standard Webhooks signing secret ([ADR 0005](adr/0005-standard-webhooks-signing.md)); a `secret:` key is an unknown key and an error. **Security restriction:** a name starting with `ANGELIA_` is refused, because those variables hold the instance's own settings, such as the secrets key |
+| `secret_ref` | string | no | none | name of a [stored secret](configuration.md#stored-secrets) holding the signing secret (`^[a-z0-9][a-z0-9._-]{0,62}$`); at most one of `secret_env` and `secret_ref` |
 | `timeout` | duration | no | `10s` | `1s` to `2m` |
 
-If `secret_env` is absent the webhook is delivered unsigned and `config check` warns. If the named
+If neither `secret_env` nor `secret_ref` is set the webhook is delivered unsigned and `config check` warns.
+A `secret_ref` naming a secret that is not stored is a warning at apply; deliveries fail, and are retried,
+until it is stored (`angelia secret set`). Once the dispatcher role runs (#198), a stored secret bound to
+hosts is sent only to those hosts: a `url` outside them fails each delivery before it is sent, and it is retried. A `secret_ref` value signs
+exactly as a `secret_env` value. See [Stored secrets](configuration.md#stored-secrets). If the named
 variable is empty or unset at startup, apply succeeds with a warning and delivery fails visibly until it is
 set (same rule as `token_env` in configuration.md). The variable holds one to three `whsec_` secrets
 separated by spaces, for rotation; a `timeout` above the dispatcher's 15 s deliver timeout has no effect
@@ -195,7 +200,7 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 | File | Rows |
 |---|---|
 | `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`; `interval` is stored on the watch, `watch.interval_ms`, and the target holds the effective one, the smallest among its watches; `labels_json`) |
-| `sinks[]` | one `sink` (`config_json_encrypted`; in Phase 0 the secret *reference* `secret_env` is stored, never a value) |
+| `sinks[]` | one `sink` (`config_json_encrypted`; the secret *reference* `secret_env` or `secret_ref` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 
 **Gaps in the schema of migration 00001** (decision D5):
@@ -311,7 +316,7 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D11 | Bounds: `interval` 5m to 720h default 1h; `labels` at most 32; name pattern in 2.1 | other limits | Accept; the 5m floor protects upstream rate limits (netguard has per-host limits anyway) |
 | D12 | Webhook `url` must be `https://` | allow `http://` too (needed for local tests and homelabs) | `https` by default; `http` only if the instance config allowlist permits the host. The loader takes the allowlist as an option, filled from the instance key `http.allow_http_hosts` (#108, ADR 0023) |
 | D13 | `baseline` defaults to `true` | default `false` | `true`: no event flood on first run |
-| D14 | Sink `secret_env` stores the reference, resolved at delivery | read the value at apply and store it encrypted (needs the Phase 1 secrets key) | Reference in Phase 0; revisit with encryption at rest (architecture.md, security section) |
+| D14 | Sink `secret_env` stores the reference, resolved at delivery | read the value at apply and store it encrypted (needs the Phase 1 secrets key) | Reference in Phase 0. With encryption at rest ([ADR 0024](adr/0024-secrets-encrypted-at-rest.md)) a sink may instead name a stored secret with `secret_ref`; the file still holds only the reference |
 | D15 | Whole-file validation, all-or-nothing, process exits non-zero on error | skip invalid entries and continue | All-or-nothing; a half-applied GitOps file is worse than a crash |
 | D16 | Filter keys `source`, `labels`, `bump`, `package`, `type`; `source` instead of the PRD's "ecosystem" | `ecosystem` | `source`: it is the same word as the watch key and the CloudEvents attribute |
 | D17 | `scheme` is a top-level watch key, stored in `policy_json` | inside `policy` | Top-level, as #68 specifies; storage detail is internal |

@@ -12,6 +12,8 @@ import (
 type APIStore interface {
 	Store
 	APIReader
+	// SecretStore holds the stored secrets of /v1/secrets (story #75).
+	SecretStore
 	// InAPITx runs fn in one transaction like InConfigTx, with the API's
 	// lookups and replay writes too.
 	InAPITx(ctx context.Context, fn func(tx APITx) error) error
@@ -53,6 +55,9 @@ type APIReader interface {
 // APITx is the unit of work of one API write.
 type APITx interface {
 	ConfigTx
+	// SecretTx writes stored secrets in the same transaction as the rows
+	// that reference them (a delete checks the referrers first).
+	SecretTx
 	WatchByName(ctx context.Context, name string) (Watch, error)
 	SinkByName(ctx context.Context, name string) (Sink, error)
 	SubscriptionByName(ctx context.Context, name string) (Subscription, error)

@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/ulid"
@@ -56,6 +57,9 @@ type Options struct {
 	Plugins []PluginInfo
 	// API is the instance configuration's api section (api.allowed_env).
 	API config.API
+	// Secrets seals the values of /v1/secrets; nil means no key is
+	// configured, and a write gets 422 secrets-key-missing.
+	Secrets *secrets.Keyring
 	// AllowHTTPHosts is http.allow_http_hosts: the hosts a webhook may
 	// reach over plain http:// (decision D12). Empty: https only.
 	AllowHTTPHosts []string

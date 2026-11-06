@@ -2,7 +2,7 @@
 
 The `webhook` sink POSTs each delivery to a URL, signed per
 [Standard Webhooks](https://www.standardwebhooks.com/) v1. Design: [ADR 0023](adr/0023-webhook-sink-standard-webhooks.md).
-Configuration keys: [watch-file.md §2.4](watch-file.md#24-sinks) (`url`, `secret_env`, `timeout`).
+Configuration keys: [watch-file.md §2.4](watch-file.md#24-sinks) (`url`, `secret_env` or `secret_ref`, `timeout`).
 
 ## For operators
 
@@ -33,16 +33,33 @@ Configuration keys: [watch-file.md §2.4](watch-file.md#24-sinks) (`url`, `secre
    A sink created through the API may name only a variable listed in
    [`api.allowed_env`](configuration.md).
 
+   Or store the secret in the instance, encrypted at rest, and name it with `secret_ref` instead (at most
+   one of the two keys):
+
+   ```
+   angelia secret set ci-webhook --from-file whsec.txt --host ci.example.org
+   ```
+
+   ```yaml
+         url: https://ci.example.org/hooks/angelia
+         secret_ref: ci-webhook
+   ```
+
+   A stored value signs exactly as a variable does, and is read from the store at every attempt, so a
+   new `angelia secret set` takes effect without a restart. With `--host`, the secret is resolved only for
+   a `url` on that host and port; since redirects are not followed, it is never sent anywhere else. See
+   [Stored secrets](configuration.md#stored-secrets).
+
 Rules for the value: `whsec_` followed by **padded standard base64** (`+`, `/`, `=`; not the URL-safe or
 unpadded forms) of **24 to 64 bytes**. A key made of one repeated byte is refused as a placeholder.
 Leading and trailing white space, such as the newline of a mounted file, is ignored.
 
 A missing, empty or invalid value does not stop the instance: each delivery fails and is **retried**, with
-`last_error` naming the variable and the rule, never the value, for example
+`last_error` naming the variable (or the stored secret) and the rule, never the value, for example
 `webhook: secret_env CI_WEBHOOK_SECRET: invalid secret (want 1-3 whsec_ secrets of 24-64 bytes, padded standard base64)`.
-Fix the variable and restart; the next retry succeeds.
+Fix the variable and restart, or store a new value with `angelia secret set`; the next retry succeeds.
 
-Without `secret_env` the sink sends **unsigned** deliveries. `angelia config check --watches` and
+Without `secret_env` or `secret_ref` the sink sends **unsigned** deliveries. `angelia config check --watches` and
 `angelia serve --watches` warn about it, and, once the dispatcher role is wired
 ([#198](https://github.com/angelia-dev/angelia/issues/198)), the sink logs one warning per unsigned sink
 the first time it delivers for it, so sinks created through the API are reported too.

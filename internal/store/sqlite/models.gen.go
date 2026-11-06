@@ -56,6 +56,17 @@ type PendingRelease struct {
 	ReleaseJson string
 }
 
+type Secret struct {
+	ID         string
+	Name       string
+	HostsJson  string
+	KeyID      string
+	Ciphertext []byte
+	Revision   int64
+	CreatedAt  int64
+	UpdatedAt  int64
+}
+
 type Sink struct {
 	ID                  string
 	Kind                string

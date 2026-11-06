@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -64,9 +65,12 @@ func (r *recordingSink) Deliver(ctx context.Context, req sink.Request) (sink.Res
 // logging JSON at debug level and recording spans sends through the real
 // webhook sink and netguard client to receivers that answer 200, 500, 404,
 // 429, a redirect, a timeout and a reset, plus an invalid secret, an unset
-// variable and an SSRF refusal. Neither the secrets, their base64 part, the
-// hex of the keys nor any emitted webhook-signature appears in the logs,
-// the spans, delivery.last_error or the sink's errors.
+// variable and an SSRF refusal. The same runs with the secret stored and
+// named by secret_ref (#75, ADR 0024): delivered, a 500, a redirect, an
+// invalid stored value, a missing secret and a host the secret is not bound
+// to. Neither the secrets, their base64 part, the hex of the keys, the
+// master key nor any emitted webhook-signature appears in the logs, the
+// spans, delivery.last_error or the sink's errors.
 func TestSecretsNeverLogged(t *testing.T) {
 	keys := [][]byte{make([]byte, 32), make([]byte, 32)}
 	for _, k := range keys {
@@ -110,19 +114,30 @@ func TestSecretsNeverLogged(t *testing.T) {
 		name, handler, env string
 		blocked            bool
 		wantStatus         string
+		// ref, when set, stores env as the secret ref (bound to hosts) and
+		// names it with secret_ref instead of secret_env.
+		ref   string
+		hosts []string
 	}
 	scenarios := []scenario{
-		{"200", "200", value, false, store.DeliveryDelivered},
-		{"500", "500", value, false, store.DeliveryPending},
-		{"404", "404", value, false, store.DeliveryDead},
-		{"429", "429", value, false, store.DeliveryPending},
-		{"redirect", "redirect", value, false, store.DeliveryDead},
-		{"timeout", "timeout", value, false, store.DeliveryPending},
-		{"reset", "reset", value, false, store.DeliveryPending},
-		{"invalid secret", "200", invalid, false, store.DeliveryPending},
-		{"unset variable", "200", "", false, store.DeliveryPending},
-		{"ssrf", "200", value, true, store.DeliveryDead},
+		{"200", "200", value, false, store.DeliveryDelivered, "", nil},
+		{"500", "500", value, false, store.DeliveryPending, "", nil},
+		{"404", "404", value, false, store.DeliveryDead, "", nil},
+		{"429", "429", value, false, store.DeliveryPending, "", nil},
+		{"redirect", "redirect", value, false, store.DeliveryDead, "", nil},
+		{"timeout", "timeout", value, false, store.DeliveryPending, "", nil},
+		{"reset", "reset", value, false, store.DeliveryPending, "", nil},
+		{"invalid secret", "200", invalid, false, store.DeliveryPending, "", nil},
+		{"unset variable", "200", "", false, store.DeliveryPending, "", nil},
+		{"ssrf", "200", value, true, store.DeliveryDead, "", nil},
+		{"ref 200", "200", value, false, store.DeliveryDelivered, "capture-hook", []string{"127.0.0.1:0"}},
+		{"ref 500", "500", value, false, store.DeliveryPending, "capture-hook", nil},
+		{"ref redirect", "redirect", value, false, store.DeliveryDead, "capture-hook", []string{"127.0.0.1:0"}},
+		{"ref invalid secret", "200", invalid, false, store.DeliveryPending, "capture-hook", nil},
+		{"ref missing secret", "200", "", false, store.DeliveryPending, "capture-missing", nil},
+		{"ref host mismatch", "200", value, false, store.DeliveryPending, "capture-hook", []string{"hooks.example.com"}},
 	}
+	stored := newSecretStore(t)
 
 	logs := &syncBuffer{}
 	log := slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -149,12 +164,26 @@ func TestSecretsNeverLogged(t *testing.T) {
 			}
 			rs := &recordingSink{Sink: webhook.New(nc.HTTPClient(), webhook.Options{AllowHTTPHosts: []string{"127.0.0.1"}, Logger: log})}
 			sinks = append(sinks, rs)
-			st := storeWithSink(t, webhook.Kind, `{"url":"`+srv.URL+`/hook","secret_env":"WH_CAPTURE","timeout":"10s"}`)
+			ref := `"secret_env":"WH_CAPTURE"`
 			env := map[string]string{}
-			if sc.env != "" {
+			switch {
+			case sc.ref != "":
+				ref = `"secret_ref":"` + sc.ref + `"`
+				hosts := slices.Clone(sc.hosts)
+				for i, h := range hosts { // the receiver's port is known only now
+					hosts[i] = strings.Replace(h, ":0", ":"+strings.TrimPrefix(srv.URL[strings.LastIndex(srv.URL, ":"):], ":"), 1)
+				}
+				if sc.env != "" {
+					stored.put(t, sc.ref, sc.env, hosts...)
+				}
+			case sc.env != "":
 				env["WH_CAPTURE"] = sc.env
 			}
-			opts := Options{Clock: &fakeClock{now: t0}, Logger: log, TracerProvider: tp, LookupEnv: envMap(env)}
+			st := storeWithSink(t, webhook.Kind, `{"url":"`+srv.URL+`/hook",`+ref+`,"timeout":"10s"}`)
+			opts := Options{
+				Clock: &fakeClock{now: t0}, Logger: log, TracerProvider: tp, LookupEnv: envMap(env),
+				Secrets: stored.resolver(), Destinations: map[string]string{webhook.Kind: "/url"},
+			}
 			if sc.handler == "timeout" {
 				opts.DeliverTimeout = 200 * time.Millisecond
 			}
@@ -183,7 +212,8 @@ func TestSecretsNeverLogged(t *testing.T) {
 	for i, s := range secrets {
 		forbidden = append(forbidden, s, strings.TrimPrefix(s, "whsec_"), hex.EncodeToString(keys[i]))
 	}
-	forbidden = append(forbidden, invalid, strings.TrimPrefix(invalid, "whsec_"))
+	forbidden = append(forbidden, invalid, strings.TrimPrefix(invalid, "whsec_"),
+		hex.EncodeToString(stored.master), base64.StdEncoding.EncodeToString(stored.master))
 	haystacks := map[string]string{
 		"logs":       logs.String(),
 		"spans":      telemetrytest.Dump(rec.Ended()),
@@ -201,7 +231,11 @@ func TestSecretsNeverLogged(t *testing.T) {
 		}
 	}
 	// The references are named, so that the operator can act.
-	for _, want := range []string{"secret_env WH_CAPTURE: invalid secret", "environment variable WH_CAPTURE is not set or empty", "destination not allowed (127.0.0.1)"} {
+	for _, want := range []string{
+		"secret_env WH_CAPTURE: invalid secret", "environment variable WH_CAPTURE is not set or empty", "destination not allowed (127.0.0.1)",
+		"secret_ref capture-hook: invalid secret", "secret /secret_ref: secrets: no such secret: secret capture-missing does not exist",
+		"secret capture-hook is bound to hooks.example.com; refused for 127.0.0.1:",
+	} {
 		if !strings.Contains(haystacks["last_error"], want) {
 			t.Errorf("last_error lacks %q:\n%s", want, haystacks["last_error"])
 		}

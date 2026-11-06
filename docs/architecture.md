@@ -99,7 +99,8 @@ type Sink interface {
 ```
 - At-least-once delivery. Each delivery carries `idempotency-key = event.id + subscription.id` (`<event id>:<subscription id>`).
 - Retries with exponential backoff and full jitter (default 8 attempts over ~24h), then **dead-letter** state, visible in the API and replayable. Permanent errors (4xx except 408/429, and 3xx: sinks do not follow redirects) and deliveries whose subscription or sink was deleted go dead at once. Leases, retry schedule and the sink contract: [ADR 0017](adr/0017-dispatcher-delivery-leases-and-retries.md).
-- Webhooks are signed following the **Standard Webhooks** spec (`webhook-id`, `webhook-timestamp`, `webhook-signature` HMAC-SHA256); the core resolves secret references into `Request.Secrets`, so sinks never read the environment ([ADR 0023](adr/0023-webhook-sink-standard-webhooks.md), [webhooks.md](webhooks.md)).
+- Webhooks are signed following the **Standard Webhooks** spec (`webhook-id`, `webhook-timestamp`, `webhook-signature` HMAC-SHA256); the core resolves secret references (`*_env` from the environment, `*_ref` from the [stored secrets](configuration.md#stored-secrets)) into `Request.Secrets`, so sinks never read the environment or the store ([ADR 0023](adr/0023-webhook-sink-standard-webhooks.md), [ADR 0024](adr/0024-secrets-encrypted-at-rest.md), [webhooks.md](webhooks.md)).
+- **Reserved suffixes.** In a sink's (or plugin's) config, a key ending in `_ref` names a stored secret and one ending in `_env` names an environment variable, at any depth: the core resolves every such key before `Deliver` and fails the delivery when one does not resolve, so a plugin must not use either suffix for an ordinary setting (write `branch`, not `branch_ref`).
 - Templating: Go `text/template` over the event JSON for message bodies, with a curated function set, a timeout and an output cap ([templates.md](templates.md), [ADR 0016](adr/0016-message-templates-text-template-bounded.md)). Default payload = CloudEvents JSON.
 - Built-in for v1: `webhook`, `github-dispatch` (`repository_dispatch` / `workflow_dispatch`), `gitlab-pipeline-trigger`, `apprise` (via an `apprise-api` sidecar, which gives 100+ services at once), `shoutrrr` (Go-native: Slack, Discord, Telegram, ntfy, Gotify, SMTP, …), `nats`, `mqtt`, `exec`.
 
@@ -227,7 +228,7 @@ Proposed stack [P0]:
 
 ## 8. Security
 
-- Secrets (tokens, webhook secrets) are encrypted at rest with a key from env or file (age or AES-GCM); they are never returned by the API.
+- Secrets (tokens, webhook secrets) are encrypted at rest with AES-256-GCM and a key from a file or env ([ADR 0024](adr/0024-secrets-encrypted-at-rest.md)); they are never returned by the API.
 - SSRF protection on `http-*` sources and webhook sinks: deny private ranges by default, allowlist to opt in.
 - WASM plugins only reach hosts declared in their manifest.
 - Signed releases (cosign), SBOM published, OpenSSF Scorecard. A supply-chain tool has to practice what it preaches.

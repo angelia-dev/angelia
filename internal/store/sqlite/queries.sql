@@ -377,3 +377,30 @@ ORDER BY e.seq, d.id;
 UPDATE delivery SET status = 'pending', next_attempt_at = sqlc.arg(now), held_until = NULL,
     replay_base_attempts = attempts
 WHERE id = sqlc.arg(id) AND status IN ('dead', 'delivered');
+
+-- Stored secrets (story #75, ADR 0024 section 6).
+
+-- name: CreateSecret :exec
+INSERT INTO secret (id, name, hosts_json, key_id, ciphertext, revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?);
+
+-- An update fenced by the row's revision (ADR 0024 section 5): it writes only
+-- while the row is still at the revision the caller read, and increments it.
+-- name: UpdateSecret :execrows
+UPDATE secret SET hosts_json = ?, key_id = ?, ciphertext = ?, updated_at = ?, revision = revision + 1
+WHERE id = ? AND revision = ?;
+
+-- name: DeleteSecret :execrows
+DELETE FROM secret WHERE id = ?;
+
+-- name: GetSecretByName :one
+SELECT * FROM secret WHERE name = ?;
+
+-- name: GetSecret :one
+SELECT * FROM secret WHERE id = ?;
+
+-- name: ListSecrets :many
+SELECT * FROM secret ORDER BY name;
+
+-- name: CountSecretsByKeyID :many
+SELECT key_id, COUNT(*) AS n FROM secret GROUP BY key_id ORDER BY key_id;

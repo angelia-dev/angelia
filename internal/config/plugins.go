@@ -83,7 +83,7 @@ type InstalledPlugin struct {
 // "host:port", as in grants.yaml), read from its token_env variable when
 // the plugins were loaded. It is empty when none is configured or set.
 // Hand it to the plugin host as a credential, never to the plugin.
-func (p InstalledPlugin) Token(host string) string { return string(p.Tokens[host]) }
+func (p InstalledPlugin) Token(host string) string { return reveal(p.Tokens[host]) }
 
 var (
 	// pluginKindRE is the manifest's kind rule (ADR 0011).
@@ -234,7 +234,7 @@ func loadPlugin(dir, kind string, env map[string]string) (InstalledPlugin, []str
 			warns = append(warns, fmt.Sprintf("%s: credentials.%s: token_env: environment variable %s is not set or empty", gpath, k, name))
 			continue
 		}
-		p.Tokens[k] = secret(env[name])
+		p.Tokens[k] = newSecret(env[name])
 	}
 	return p, warns, nil
 }
@@ -257,6 +257,8 @@ func validateCredential(k string, cr PluginCredential, allowed map[string]bool, 
 		bad("credentials.%s.token_env: looks like a token, not an environment variable name", k)
 	case !envNameRE.MatchString(cr.TokenEnv):
 		bad("credentials.%s.token_env: must be an environment variable name, not a token", k)
+	case ReservedEnvName(cr.TokenEnv):
+		bad("credentials.%s.token_env: names starting with %s are always refused: they hold the instance's own settings", k, envPrefix)
 	}
 	if cr.Scheme != "" && !authSchemeRE.MatchString(cr.Scheme) {
 		bad("credentials.%s.scheme: must be one word such as Bearer", k)

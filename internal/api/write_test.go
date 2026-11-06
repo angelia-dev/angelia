@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/event"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
@@ -515,5 +517,25 @@ func TestUnclassifiableSchemaFailsClosed(t *testing.T) {
 	}
 	if got := redactURLs("//h.example.com/secret"); got != "[redacted]" {
 		t.Errorf("scheme-relative: %v", got)
+	}
+}
+
+// R1 (#75 re-review): the watch file's ANGELIA_ refusal is dropped only
+// where env-not-allowed reports the same pointer; at another pointer, or
+// with another detail, the parse error is kept.
+func TestDropReservedEnvDuplicates(t *testing.T) {
+	refused := config.ReservedEnvRefusal + ": they hold the instance's own settings"
+	parsed := []fieldError{
+		{Pointer: "/config/secret_env", Detail: refused},
+		{Pointer: "/config/auth/token_env", Detail: refused},
+		{Pointer: "/config/secret_env", Detail: "must be an environment variable name"},
+	}
+	env := []fieldError{{Pointer: "/config/secret_env", Detail: "not allowed"}}
+	got := dropReservedEnvDuplicates(slices.Clone(parsed), env)
+	if len(got) != 2 || got[0] != parsed[1] || got[1] != parsed[2] {
+		t.Errorf("dropReservedEnvDuplicates = %+v, want the last two kept", got)
+	}
+	if got := dropReservedEnvDuplicates(slices.Clone(parsed), nil); len(got) != 3 {
+		t.Errorf("with no env errors, %d of 3 kept", len(got))
 	}
 }

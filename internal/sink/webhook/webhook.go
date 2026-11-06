@@ -8,8 +8,11 @@
 // (Unix seconds of this attempt) and, when the sink has a secret,
 // webhook-signature with one "v1,<base64 HMAC-SHA256>" entry per secret.
 //
-// The sink never reads the environment: the core resolves secret_env into
-// sink.Request.Secrets. It logs nothing, and its errors carry no secret,
+// The sink never reads the environment or the store: the core resolves
+// secret_env and secret_ref into sink.Request.Secrets. A secret_ref value
+// signs exactly like a secret_env value. The sink follows no redirect, so a
+// stored secret bound to hosts (ADR 0024 §2) is only sent to url, the host
+// the core resolved it for. It logs nothing, and its errors carry no secret,
 // signature, resolved address or response body.
 package webhook
 
@@ -35,6 +38,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 )
 
@@ -48,19 +52,25 @@ const (
 	MaxTimeout     = 2 * time.Minute
 )
 
-// SecretPointer is the key of the signing secret in sink.Request.Secrets:
-// the JSON Pointer of secret_env in the configuration.
-const SecretPointer = "/secret_env"
+// SecretPointer and SecretRefPointer are the keys of the signing secret in
+// sink.Request.Secrets: the JSON Pointer of secret_env or secret_ref in the
+// configuration.
+const (
+	SecretPointer    = "/secret_env"
+	SecretRefPointer = "/secret_ref"
+)
 
 // maxResponseRead is how much of a response body is read (and discarded)
 // so that the connection can be reused.
 const maxResponseRead = 64 << 10
 
 // Config is the configuration of a webhook sink (watch-file.md 2.4). It
-// holds the name of the variable with the secret, never the secret.
+// holds the name of the variable or of the stored secret with the secret,
+// never the secret.
 type Config struct {
 	URL       string `json:"url"`
 	SecretEnv string `json:"secret_env,omitempty"`
+	SecretRef string `json:"secret_ref,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
 }
 
@@ -75,7 +85,8 @@ type Options struct {
 	// every delivery, so removing a host stops cleartext deliveries to it
 	// even for sinks stored earlier. Empty: https only.
 	AllowHTTPHosts []string
-	// Logger receives one warning per unsigned sink (no secret_env), the
+	// Logger receives one warning per unsigned sink (no secret_env or
+	// secret_ref), the
 	// first time this process delivers for it. Nil discards.
 	Logger *slog.Logger
 }
@@ -131,7 +142,7 @@ func parseConfig(raw sink.Config) (parsed, string, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p.Config); err != nil {
-		return p, "", errors.New("webhook: invalid configuration: want an object with url, secret_env and timeout")
+		return p, "", errors.New("webhook: invalid configuration: want an object with url, secret_env or secret_ref, and timeout")
 	}
 	u, err := url.Parse(p.URL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
@@ -144,6 +155,12 @@ func parseConfig(raw sink.Config) (parsed, string, error) {
 	origin := u.Scheme + "://" + u.Host
 	if p.SecretEnv != "" && (!config.IsEnvName(p.SecretEnv) || config.LooksLikeToken(p.SecretEnv)) {
 		return p, origin, errors.New("webhook: invalid configuration: secret_env must be an environment variable name")
+	}
+	if p.SecretRef != "" && !secrets.ValidName(p.SecretRef) {
+		return p, origin, errors.New("webhook: invalid configuration: secret_ref must be the name of a stored secret")
+	}
+	if p.SecretEnv != "" && p.SecretRef != "" {
+		return p, origin, errors.New("webhook: invalid configuration: set at most one of secret_env and secret_ref")
 	}
 	p.timeout = DefaultTimeout
 	if p.Timeout != "" {
@@ -172,16 +189,16 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 		return sink.Result{}, sink.Permanent(fmt.Errorf("webhook: %s: http:// is not allowed for this host (http.allow_http_hosts); use https://", origin))
 	}
 	var keys [][]byte
-	if cfg.SecretEnv == "" {
+	if ref, ptr := cfg.secretRef(); ref == "" {
 		s.warnUnsigned(ctx, req.SinkID, origin)
 	} else {
-		v, ok := req.Secrets[SecretPointer]
+		v, ok := req.Secrets[ptr]
 		if !ok {
-			return sink.Result{}, fmt.Errorf("webhook: secret_env %s: not resolved", cfg.SecretEnv)
+			return sink.Result{}, fmt.Errorf("webhook: %s: not resolved", ref)
 		}
-		if keys, err = ParseSecrets(string(v)); err != nil {
+		if keys, err = ParseSecrets(string(v.Reveal())); err != nil {
 			// Retried: the operator fixes it by setting the value.
-			return sink.Result{}, fmt.Errorf("webhook: secret_env %s: %w", cfg.SecretEnv, err)
+			return sink.Result{}, fmt.Errorf("webhook: %s: %w", ref, err)
 		}
 	}
 	contentType := req.Rendered.ContentType
@@ -216,6 +233,19 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	return res, nil
 }
 
+// secretRef names the signing secret's reference for errors, "secret_env
+// NAME" or "secret_ref NAME", and gives its key in sink.Request.Secrets;
+// "" when the sink is unsigned.
+func (p parsed) secretRef() (ref, ptr string) {
+	switch {
+	case p.SecretEnv != "":
+		return "secret_env " + p.SecretEnv, SecretPointer
+	case p.SecretRef != "":
+		return "secret_ref " + p.SecretRef, SecretRefPointer
+	}
+	return "", ""
+}
+
 // warnUnsigned logs once per sink id that the sink delivers unsigned. A
 // request without a sink id is keyed by its destination, so that unsigned
 // sinks are never folded into one key.
@@ -227,7 +257,7 @@ func (s *Sink) warnUnsigned(ctx context.Context, sinkID, origin string) {
 	if _, seen := s.unsigned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	s.log.WarnContext(ctx, "webhook sink has no secret_env: deliveries are unsigned and receivers cannot verify them",
+	s.log.WarnContext(ctx, "webhook sink has no secret_env or secret_ref: deliveries are unsigned and receivers cannot verify them",
 		"sink", sinkID, "destination", origin)
 }
 
