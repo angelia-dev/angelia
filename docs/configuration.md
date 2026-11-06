@@ -220,13 +220,16 @@ config with a `*_ref` key (such as the webhook's `secret_ref`). The design is
 log line contains one. Manage them with [`angelia secret`](cli.md#stored-secrets) (through the API, `admin`
 scope) and the keys with `angelia secrets` (instance-side).
 
-At every delivery attempt the dispatcher resolves each `*_ref` key of the sink's config from the store, and
+Once the dispatcher role runs ([#198](https://github.com/angelia-dev/angelia/issues/198)), at every delivery attempt it resolves each `*_ref` key of the sink's config from the store, and
 each `*_env` key from the environment, before the sink is called; values are not cached. A secret bound to
 `hosts` is resolved only when the URL the sink sends to (the key its kind marks `x-angelia-destination`,
 the webhook's `url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
 a value that cannot be decrypted fails the attempt before anything is sent, and it is retried; `last_error`
 names the key and the secret (`dispatch: secret /secret_ref: ... secret ci-webhook does not exist`), never
-the value. Sinks follow no redirect, so a bound secret never leaves its hosts.
+the value. Sinks follow no redirect, so a bound secret never leaves its hosts; a sink kind that sent one
+anywhere other than its destination would first need netguard's per-request check (ADR 0024 §2). The
+binding compares host and port, not the scheme: `http://h:443/` matches a binding of `h`, which needs `h` in
+`http.allow_http_hosts`.
 
 > **Source and registry credentials** cannot reference stored secrets yet (#111). There, `hosts` will be
 > mandatory (`422 secret-host-binding-required`) and every redirect hop will be checked against it.

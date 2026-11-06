@@ -399,7 +399,12 @@ text is left as is; this amendment states what holds.
   - **Redirects.** Sinks follow no redirect (ADR 0017 §7; the webhook sink's client returns the `3xx`), so
     the URL checked at resolution is the only one the value is sent to. `Bound.CheckRedirect` stays for the
     source and registry credentials of #111, which follow redirects; `422 secret-host-binding-required`
-    takes effect there too.
+    takes effect there too. A sink kind that sends a bound secret anywhere other than its destination
+    (a redirect, a second request) needs netguard's per-request re-check (§2) before it may do so.
+  - **Scheme.** The binding compares host and port only: `http://h:443/` matches a binding of `h`. Plain
+    http needs the host in `http.allow_http_hosts`, and the webhook sends only an HMAC of the secret.
+  - **`ANGELIA_` at delivery.** `*_env` resolution refuses `ANGELIA_` names too, as a retried error, so
+    a sink row written before that rule cannot read the instance's own settings.
   - **Type.** `Request.Secrets` is `map[string]secrets.Value`, as §6 says, not the `map[string][]byte`
     #108 shipped (ADR 0023 §4). A `[]byte` prints its content under `%s` and `%q`, so a `Request` passed
     to `fmt` or slog would leak it; a `Value` prints `[REDACTED]` under every verb, and a sink calls

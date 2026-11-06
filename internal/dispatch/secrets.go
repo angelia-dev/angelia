@@ -51,7 +51,7 @@ type SecretSources struct {
 //
 // A reference that is not a valid name, an unset or empty variable, a
 // missing secret, a host the secret is not bound to or a secret that cannot
-// be opened is an error naming the pointer and the variable or secret,
+// be opened, or a variable starting with ANGELIA_, is an error naming the pointer and the variable or secret,
 // never a value. The dispatcher retries it: the operator fixes it by
 // setting the variable, storing the secret or changing its binding.
 func ResolveSecrets(ctx context.Context, cfg []byte, src SecretSources) (map[string]secrets.Value, error) {
@@ -119,6 +119,9 @@ func resolveEnv(v any, p string, lookupEnv func(string) (string, bool)) (secrets
 	name, ok := v.(string)
 	if !ok || !config.IsEnvName(name) || config.LooksLikeToken(name) {
 		return secrets.Value{}, fmt.Errorf("dispatch: secret %s: not an environment variable name", p)
+	}
+	if config.ReservedEnvName(name) { // a row stored before the write-time refusal
+		return secrets.Value{}, fmt.Errorf("dispatch: secret %s: environment variable %s: %s", p, name, config.ReservedEnvRefusal)
 	}
 	val, _ := lookupEnv(name)
 	if val == "" {

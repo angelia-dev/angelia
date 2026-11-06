@@ -70,7 +70,9 @@ type Request struct {
 	// as [REDACTED] under fmt and slog; Reveal it only to sign or build the
 	// request. A stored secret bound to hosts was resolved for the URL the
 	// kind marks x-angelia-destination, so a sink sends it only there and
-	// follows no redirect (ADR 0017 §7, ADR 0024 §2).
+	// follows no redirect (ADR 0017 §7, ADR 0024 §2). A sink that sends a
+	// bound secret anywhere else (a redirect, a second request) needs the
+	// per-request netguard check of ADR 0024 §2 first.
 	Secrets map[string]secrets.Value
 	// IdempotencyKey is the same on every attempt and replay of a delivery:
 	// IdempotencyKey(event id, subscription id). Sinks pass it on, for

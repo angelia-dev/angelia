@@ -121,7 +121,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// with netguard.Config{Allow: cfg.HTTP.AllowPrefixes(), UserAgent:
 	// cfg.HTTP.UserAgent, Logger: log} and register webhook.New(client.HTTPClient(),
 	// webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}).
-	// The scheduler's source clients take the same Allow.
+	// The scheduler's source clients take the same Allow. The dispatcher's
+	// Options also need Secrets: &secrets.Resolver{Store: st, Keys: keys}
+	// (without it every *_ref sink fails closed, retried then dead) and
+	// Destinations: api.SinkDestinations(builtinPlugins(...)) (without it
+	// every bound secret is refused). The role must also run the
+	// stored-sinks check (api.Server.CheckStoredSinks) before it starts
+	// (ADR 0024 amendment), as the api role does.
 	_ = tracerProvider
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
 		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and

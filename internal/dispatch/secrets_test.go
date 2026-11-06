@@ -115,6 +115,11 @@ func TestResolveSecrets(t *testing.T) {
 		{`{"secret_env":"whsec_pastedSecret"}`, src, "dispatch: secret /secret_env: not an environment variable name"},
 		{`{"secret_env":"has space"}`, src, "dispatch: secret /secret_env: not an environment variable name"},
 		{`{"secret_env":7}`, src, "dispatch: secret /secret_env: not an environment variable name"},
+		{
+			`{"auth":{"token_env":"ANGELIA_DATABASE_DSN"}}`,
+			SecretSources{LookupEnv: envMap(map[string]string{"ANGELIA_DATABASE_DSN": "postgres://x"})},
+			"dispatch: secret /auth/token_env: environment variable ANGELIA_DATABASE_DSN: names starting with ANGELIA_ are always refused",
+		},
 		{`{"secret_ref":"missing"}`, src, "dispatch: secret /secret_ref: secrets: no such secret: secret missing does not exist"},
 		{`{"secret_ref":"whsec_Pasted"}`, src, "dispatch: secret /secret_ref: not a stored secret name"},
 		{`{"secret_ref":["hook"]}`, src, "dispatch: secret /secret_ref: not a stored secret name"},
