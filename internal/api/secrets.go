@@ -436,6 +436,26 @@ func asBody(v any) any {
 	return out
 }
 
+// CheckStoredSinks runs Server.CheckStoredSinks for a process that opens
+// the store without serving the API: the scheduler and dispatcher roles run
+// it before they start, as the api role does (ADR 0024 amendment). plugins
+// is the catalogue the api role would serve (Options.Plugins).
+//
+// The Server it builds has only spec, opts.Store and opts.Plugins set: the
+// method, and configSchema below it, must use nothing else (no logger, no
+// auth, no clock), or this function must set it too.
+func CheckStoredSinks(ctx context.Context, st store.APIStore, plugins []PluginInfo) error {
+	if st == nil {
+		return errors.New("api: check stored sinks: nil store")
+	}
+	spec, err := loadSpec()
+	if err != nil {
+		return err
+	}
+	s := &Server{spec: spec, opts: Options{Store: st, Plugins: plugins}}
+	return s.CheckStoredSinks(ctx)
+}
+
 // CheckStoredSinks is the fail-closed upgrade check of ADR 0024 §6: it
 // refuses a stored sink whose configuration holds a literal value at a path
 // its kind's config_schema marks x-angelia-secret, which only *_ref keys

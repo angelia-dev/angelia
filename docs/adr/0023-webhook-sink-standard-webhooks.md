@@ -295,7 +295,8 @@ Recorded by the implementation; no decision above changes.
   (lower-case host names or IPv4 addresses), with comma-separated `ANGELIA_HTTP_ALLOW_NETWORKS` and
   `ANGELIA_HTTP_ALLOW_HTTP_HOSTS`. `allow_http_hosts` reaches the watch-file loader and the API;
   `HTTP.AllowPrefixes()` is ready for `netguard.Config.Allow`, which `angelia serve` passes once it wires
-  the dispatcher role (it still runs a stub, see `cmd/angelia/serve.go`; follow-up #198).
+  the dispatcher role (it still runs a stub, see `cmd/angelia/serve.go`; follow-up #198). *(Done in #198, see the
+  2026-11-06 amendment.)*
 
 ### Runtime choices after the review of #108 (2026-11-05)
 
@@ -317,9 +318,17 @@ Recorded by the implementation; no decision above changes.
 - **D12 at delivery.** `webhook.Options.AllowHTTPHosts` (the instance's `http.allow_http_hosts`) is
   checked on every delivery: `http://` to a host not on it is permanent. Removing a host therefore stops
   cleartext even for sinks stored while it was listed. It reaches the sink the same way as `Allow`
-  reaches netguard: wired with the dispatcher role (#198).
+  reaches netguard: wired with the dispatcher role (#198). *(Done in #198, see the 2026-11-06 amendment.)*
 - **Timestamp.** `webhook-timestamp` is read just before the request is handed to the netguard client,
   before its per-host rate-limit wait. The wait is bounded by the delivery deadline (at most 15 s with
   the defaults), so the timestamp can trail the actual send by that much. This is far inside the 5 min
   tolerance, and moving the read after the wait would need a hook inside netguard.
 - `http.allow_networks` refuses IPv4-mapped prefixes (`::ffff:a.b.c.d/n`), which would never match.
+
+## Amendment (2026-11-06): wired by #198
+
+No decision above changes. `angelia serve` now runs the scheduler and dispatcher roles. It builds one
+netguard client with `Allow: cfg.HTTP.AllowPrefixes()`, shared by the sources and the sinks, and
+registers `webhook.New` with `AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts` (`cmd/angelia/roles.go`). The
+follow-ups to #198 noted above are therefore done: `http.allow_networks` is what the running process may
+dial, and D12 is checked at every delivery.

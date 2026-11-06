@@ -93,3 +93,9 @@ glues scheduler, sources and diff is not merged, and `serve` still starts stub r
   [deploy/grafana/angelia.json](../../deploy/grafana/angelia.json).
 - ADR 0002 (roles share a listener), ADR 0009 (scheduler), ADR 0017 (dispatcher).
 - Prometheus: [metric and label naming](https://prometheus.io/docs/practices/naming/).
+
+## Amendment (2026-11-06, #198)
+
+The wiring question above is closed: `angelia serve` passes its `Metrics` to the scheduler, the
+dispatcher and the netguard client, wraps the scheduler's sources with `Metrics.Source`, and calls
+`RegisterDeliveryCounts` on the store when a role opens it. With `--metrics=false` every hook is nil.

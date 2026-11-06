@@ -1,0 +1,217 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/angelia-dev/angelia/internal/api"
+	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/detect"
+	"github.com/angelia-dev/angelia/internal/dispatch"
+	"github.com/angelia-dev/angelia/internal/event"
+	"github.com/angelia-dev/angelia/internal/metrics"
+	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/scheduler"
+	"github.com/angelia-dev/angelia/internal/secrets"
+	"github.com/angelia-dev/angelia/internal/sink"
+	"github.com/angelia-dev/angelia/internal/sink/webhook"
+	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/githubrelease"
+	"github.com/angelia-dev/angelia/internal/source/npm"
+	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
+)
+
+// The composition root of the detect and deliver roles: one netguard client
+// built from the instance configuration, shared by the sources (scheduler)
+// and the sinks (dispatcher), so http.allow_networks applies to both.
+
+// builtinSources registers the built-in source kinds with hc. A non-nil wrap
+// decorates each source (metrics). log may be nil. The kinds are the ones the watch file
+// and the API accept (watchSources), so every stored target can be checked.
+func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap func(source.Source) source.Source) (*source.Registry, error) {
+	var ghOpts []githubrelease.Option
+	if tok := cfg.SourceToken(githubrelease.Kind); tok != "" {
+		ghOpts = append(ghOpts, githubrelease.WithToken(tok))
+	}
+	var pypiOpts []pypi.Option
+	if log != nil {
+		pypiOpts = append(pypiOpts, pypi.WithLogger(log))
+	}
+	reg := source.NewRegistry()
+	for _, s := range []source.Source{
+		pypi.New(baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL), hc, pypiOpts...),
+		npm.New(baseURL(cfg, npm.Kind, ""), hc),
+		githubrelease.New(baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL), hc, ghOpts...),
+	} {
+		if wrap != nil {
+			s = wrap(s)
+		}
+		if err := reg.Register(s); err != nil {
+			return nil, err
+		}
+	}
+	return reg, nil
+}
+
+// publicRegistries are the base URLs that leave an event's purl without a
+// repository_url qualifier.
+var publicRegistries = map[string]string{
+	pypi.Kind:          pypi.DefaultBaseURL,
+	npm.Kind:           npm.DefaultBaseURL,
+	githubrelease.Kind: githubrelease.DefaultBaseURL,
+}
+
+// registryURL returns event.CheckInput.RegistryURL for a kind: its
+// configured base_url when that is not the public registry, else "".
+func registryURL(cfg *config.Config) func(kind string) string {
+	return func(kind string) string {
+		b := strings.TrimRight(cfg.Sources[kind].BaseURL, "/")
+		if b == "" || strings.EqualFold(b, strings.TrimRight(publicRegistries[kind], "/")) {
+			return ""
+		}
+		return b
+	}
+}
+
+// builtinSinks returns the built-in sinks, sending through hc. A new
+// built-in kind is added here and to watchfile.SinkKinds (a test checks
+// that both list the same kinds).
+func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.Sink {
+	return []sink.Sink{
+		// http.allow_http_hosts is checked at every delivery (ADR 0023,
+		// decided question 4 and D12).
+		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
+	}
+}
+
+// warnDrainBudget warns when the drain timeout (after the trace flush is
+// taken out of it) does not exceed one delivery attempt plus its final
+// store write: an attempt in progress at shutdown may then go unrecorded,
+// and it is sent again once its lease expires (a likely duplicate).
+func warnDrainBudget(log *slog.Logger, drain time.Duration) {
+	need := dispatch.DefaultDeliverTimeout + dispatch.WriteTimeout
+	if drain <= need {
+		log.Warn("drain timeout too short for the dispatcher: an attempt in progress at shutdown may not be recorded and may be sent again",
+			"drain_timeout", drain.String(), "needed_above", need.String())
+	}
+}
+
+// newNetClient builds the one outgoing HTTP client of the process, with the
+// SSRF guard's allowlist from http.allow_networks. obs may be nil.
+func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
+	c, err := netguard.New(netguard.Config{
+		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("http client: %w", err)
+	}
+	return c, nil
+}
+
+// pipelineDeps is what the scheduler and dispatcher roles are built from.
+type pipelineDeps struct {
+	cfg     *config.Config
+	store   *sqlite.Store
+	keys    *secrets.Keyring
+	plugins []api.PluginInfo
+	tracer  trace.TracerProvider
+	metrics *metrics.Metrics // nil: --metrics=false
+	log     *slog.Logger
+}
+
+// pipelineRoles holds the scheduler and dispatcher roles of a process; a
+// role not selected is nil.
+type pipelineRoles struct {
+	scheduler  *scheduler.Scheduler
+	dispatcher *dispatch.Dispatcher
+}
+
+// newPipelineRoles builds the selected scheduler and dispatcher roles on
+// one netguard client.
+func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipelineRoles, error) {
+	var out pipelineRoles
+	if !withScheduler && !withDispatcher {
+		return out, nil
+	}
+	// Each hook is an interface: a nil *metrics.Metrics must stay a nil
+	// interface, never a typed nil (netguard.Observer says why).
+	var (
+		obs     netguard.Observer
+		schedM  scheduler.Metrics
+		dispM   dispatch.Metrics
+		wrapSrc func(source.Source) source.Source
+	)
+	if d.metrics != nil {
+		obs, schedM, dispM = d.metrics, d.metrics, d.metrics
+		wrapSrc = d.metrics.Source
+	}
+	client, err := newNetClient(d.cfg, d.log, obs)
+	if err != nil {
+		return out, err
+	}
+	hc := client.HTTPClient()
+	if withScheduler {
+		sources, err := builtinSources(d.cfg, hc, d.log, wrapSrc)
+		if err != nil {
+			return out, err
+		}
+		checker := &detect.Checker{
+			Store: d.store, Sources: sources, Instance: d.cfg.Instance.Name,
+			RegistryURL: registryURL(d.cfg), Matcher: event.NewMatcherCache(), Logger: d.log,
+		}
+		out.scheduler, err = scheduler.New(d.store, checker, scheduler.Options{
+			Logger: d.log, Metrics: schedM, TracerProvider: d.tracer,
+		})
+		if err != nil {
+			return out, err
+		}
+	}
+	if withDispatcher {
+		reg := sink.NewRegistry()
+		for _, s := range builtinSinks(d.cfg, hc, d.log) {
+			if err := reg.Register(s); err != nil {
+				return out, err
+			}
+		}
+		// Without the destinations every bound secret is refused, and
+		// without the resolver every *_ref key fails (ADR 0024 §6).
+		dest, err := api.SinkDestinations(d.plugins)
+		if err != nil {
+			return out, err
+		}
+		out.dispatcher, err = dispatch.New(d.store, reg, dispatch.Options{
+			Logger: d.log, Metrics: dispM, TracerProvider: d.tracer,
+			Secrets: &secrets.Resolver{Store: d.store, Keys: d.keys}, Destinations: dest,
+		})
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+// openStore opens the SQLite store named by the instance configuration and
+// runs the stored-sinks check of ADR 0024 §6 before any role starts: every
+// role that opens the store refuses one whose sinks hold literal secrets
+// (ADR 0024 amendment).
+func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo, log *slog.Logger) (*sqlite.Store, error) {
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		return nil, fmt.Errorf("only sqlite databases are supported in this phase: %w", err)
+	}
+	st, err := sqlite.Open(ctx, dbPath, log)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	if err := api.CheckStoredSinks(ctx, st, plugins); err != nil {
+		return nil, errorsJoin(err, st.Close())
+	}
+	return st, nil
+}
