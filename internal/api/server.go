@@ -56,6 +56,9 @@ type Options struct {
 	Plugins []PluginInfo
 	// API is the instance configuration's api section (api.allowed_env).
 	API config.API
+	// AllowHTTPHosts is http.allow_http_hosts: the hosts a webhook may
+	// reach over plain http:// (decision D12). Empty: https only.
+	AllowHTTPHosts []string
 	// Logger receives the access log and the audit records; nil discards.
 	Logger *slog.Logger
 	// Now and NewID default to the real clock and random ULIDs.

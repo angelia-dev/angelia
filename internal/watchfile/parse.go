@@ -20,6 +20,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/dispatch"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -459,6 +461,12 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 	if tn := m["timeout"]; tn != nil {
 		if d, ok := p.duration(tn, jp+".timeout", MinWebhookTimeout, MaxWebhookTimeout, false); ok {
 			cfg.Timeout = d.String()
+			if d > dispatch.DefaultDeliverTimeout {
+				// ADR 0023 decided question 3: the contract stays, the
+				// dispatcher's bound wins.
+				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
+					d, dispatch.DefaultDeliverTimeout)
+			}
 		}
 	}
 	return marshal(cfg)
@@ -473,6 +481,9 @@ func (p *parser) webhookURL(s string, n *yaml.Node, jp string) bool {
 		return false
 	case u.User != nil:
 		p.errf(n, jp, "credentials in the URL are not allowed")
+		return false
+	case netguard.NonCanonicalIP(u.Hostname()):
+		p.errf(n, jp, "the host is an IP address in a non-canonical form; write it as a.b.c.d")
 		return false
 	case u.Scheme == "https":
 	case u.Scheme == "http":

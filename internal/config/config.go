@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,6 +42,8 @@ var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "w
 var (
 	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	// hostRE is a lower-case DNS name or IPv4 address (http.allow_http_hosts).
+	hostRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 	unknownRE = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
 	// instanceRE is the <instance> part of the CloudEvents source
 	// angelia://<instance>/watches/<watch_id> (spec envelope profile v1).
@@ -133,9 +136,29 @@ type Log struct {
 	Format string `yaml:"format"`
 }
 
-// HTTP configures outgoing HTTP requests.
+// HTTP configures outgoing HTTP requests, of sources and sinks alike.
 type HTTP struct {
 	UserAgent string `yaml:"user_agent"`
+	// AllowNetworks lists CIDR prefixes the SSRF guard accepts although
+	// they are private, loopback, link-local or otherwise reserved (ADR 0023
+	// section 5). Empty by default. Only the instance configuration sets
+	// it: the watch file and the API cannot widen it.
+	AllowNetworks []string `yaml:"allow_networks"`
+	// AllowHTTPHosts lists host names a webhook may reach over plain
+	// http:// (decision D12). Empty by default: https only.
+	AllowHTTPHosts []string `yaml:"allow_http_hosts"`
+}
+
+// AllowPrefixes returns AllowNetworks parsed, for netguard.Config.Allow.
+// Validate has checked every entry; an invalid one is skipped.
+func (h HTTP) AllowPrefixes() []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(h.AllowNetworks))
+	for _, n := range h.AllowNetworks {
+		if p, err := netip.ParsePrefix(n); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
 }
 
 // API configures the REST API.
@@ -367,14 +390,19 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	str("LOG_FORMAT", &cfg.Log.Format)
 	str("HTTP_USER_AGENT", &cfg.HTTP.UserAgent)
 	str("PLUGINS_DIR", &cfg.PluginsDir)
-	if v, ok := env[envPrefix+"ROLES"]; ok {
-		cfg.Roles = nil
-		for _, r := range strings.Split(v, ",") {
-			if r = strings.TrimSpace(r); r != "" {
-				cfg.Roles = append(cfg.Roles, r)
+	list := func(name string, dst *[]string) {
+		if v, ok := env[envPrefix+name]; ok {
+			*dst = nil
+			for _, r := range strings.Split(v, ",") {
+				if r = strings.TrimSpace(r); r != "" {
+					*dst = append(*dst, r)
+				}
 			}
 		}
 	}
+	list("ROLES", &cfg.Roles)
+	list("HTTP_ALLOW_NETWORKS", &cfg.HTTP.AllowNetworks)
+	list("HTTP_ALLOW_HTTP_HOSTS", &cfg.HTTP.AllowHTTPHosts)
 
 	// ANGELIA_SOURCES_<KIND>_BASE_URL and _TOKEN_ENV; "-" in a kind is "_".
 	keys := make([]string, 0)
@@ -470,6 +498,20 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.HTTP.UserAgent) == "" || strings.ContainsAny(c.HTTP.UserAgent, "\r\n") {
 		bad("http.user_agent: must be non-empty and on one line")
 	}
+	for i, n := range c.HTTP.AllowNetworks {
+		if p, err := netip.ParsePrefix(n); err != nil {
+			bad("http.allow_networks[%d] %q: must be a CIDR prefix such as 10.0.0.0/8 or fd00::/8", i, n)
+		} else if p.Addr().Is4In6() {
+			// The guard checks IPv4-mapped addresses as IPv4, so such a
+			// prefix would never match.
+			bad("http.allow_networks[%d] %q: write an IPv4-mapped prefix in IPv4 form, such as 10.0.0.0/8", i, n)
+		}
+	}
+	for i, h := range c.HTTP.AllowHTTPHosts {
+		if !hostRE.MatchString(h) {
+			bad("http.allow_http_hosts[%d] %q: must be a lower-case host name or IPv4 address, without scheme or port", i, h)
+		}
+	}
 
 	kinds := make([]string, 0, len(c.Sources))
 	for k := range c.Sources {
@@ -537,6 +579,11 @@ func hasTokenPrefix(v string) bool {
 func (c *Config) resolveTokens(env map[string]string) {
 	c.Tokens = map[string]secret{}
 	c.warnings = nil
+	for i, n := range c.HTTP.AllowNetworks {
+		if p, err := netip.ParsePrefix(n); err == nil && p.Bits() == 0 {
+			c.warnings = append(c.warnings, fmt.Sprintf("http.allow_networks[%d] %s allows every address: the SSRF guard is off for this address family", i, n))
+		}
+	}
 	kinds := make([]string, 0, len(c.Sources))
 	for k := range c.Sources {
 		kinds = append(kinds, k)

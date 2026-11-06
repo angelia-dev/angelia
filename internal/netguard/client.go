@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,13 +77,21 @@ type Config struct {
 	// Allow lists prefixes the SSRF guard accepts even though they are
 	// loopback, private or link-local. Empty by default.
 	Allow []netip.Prefix
-	// Resolver is used by the SSRF guard. Default net.DefaultResolver.
+	// Resolver is used by the SSRF guard's URL check. Default
+	// net.DefaultResolver. The dial-time check sees the addresses the
+	// transport's own dialer resolves (see the package doc).
 	Resolver Resolver
+	// Proxy chooses the proxy of each request of the default transport, as
+	// http.Transport.Proxy does. Default http.ProxyFromEnvironment
+	// (HTTPS_PROXY, HTTP_PROXY, NO_PROXY). The proxy addresses exempt from
+	// the dial-time check are read from it once, in New, by asking it for
+	// an http and an https probe URL. Go-level option: it has no YAML key.
+	Proxy func(*http.Request) (*url.URL, error)
 	// Transport sends each attempt. By default it is an *http.Transport
-	// dialling through netguard's own net.Dialer, the place where
-	// dial-time address checks belong (angelia-dev/angelia#76). A custom
-	// Transport, as used in tests, bypasses any such dial-level check; the
-	// URL checks still apply.
+	// dialling through netguard's own dialer, which checks the address
+	// actually connected (dial-time check, see the package doc). A custom
+	// Transport, as used in tests, bypasses the dial-time check; the URL
+	// checks still apply.
 	Transport http.RoundTripper
 	// Clock defaults to the system clock.
 	Clock Clock
@@ -144,8 +153,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Resolver == nil {
 		cfg.Resolver = net.DefaultResolver
 	}
+	guard := NewGuard(cfg.Allow, cfg.Resolver)
 	if cfg.Transport == nil {
-		cfg.Transport = newTransport()
+		cfg.Transport = newTransport(guard, cfg.Proxy)
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = realClock{}
@@ -172,7 +182,7 @@ func New(cfg Config) (*Client, error) {
 	return &Client{
 		cfg:       cfg,
 		transport: cfg.Transport,
-		guard:     NewGuard(cfg.Allow, cfg.Resolver),
+		guard:     guard,
 		limiter:   newLimiter(cfg.Clock, cfg.FallbackLimit, limits),
 		clock:     cfg.Clock,
 		log:       cfg.Logger,
@@ -180,13 +190,20 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// newTransport returns the default transport, dialling through a
-// net.Dialer owned by netguard rather than sharing http.DefaultTransport.
-func newTransport() *http.Transport {
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+// newTransport returns the default transport, dialling through netguard's
+// guarded dialer rather than sharing http.DefaultTransport.
+func newTransport(g *Guard, proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	if proxy == nil {
+		proxy = http.ProxyFromEnvironment
+	}
+	d := &dialer{
+		base:    net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second},
+		guard:   g,
+		proxies: proxyAddrs(proxy),
+	}
 	return &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
+		Proxy:                 proxy,
+		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -381,7 +398,7 @@ func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bo
 // The X- pair takes precedence if both are present. It returns the zero time
 // if the server set no limit.
 func retryAt(h http.Header, now time.Time) time.Time {
-	if d := parseRetryAfter(h.Get("Retry-After"), now); d > 0 {
+	if d := ParseRetryAfter(h.Get("Retry-After"), now); d > 0 {
 		return now.Add(d)
 	}
 	for _, p := range [][2]string{{"X-RateLimit-Remaining", "X-RateLimit-Reset"}, {"RateLimit-Remaining", "RateLimit-Reset"}} {
@@ -406,10 +423,10 @@ func leadingInt(v string) (int64, bool) {
 	return n, err == nil
 }
 
-// parseRetryAfter reads a Retry-After value in seconds or as an HTTP date,
-// capped at defaultMaxPause. It returns 0 for a missing, invalid or past
-// value.
-func parseRetryAfter(v string, now time.Time) time.Duration {
+// ParseRetryAfter reads a Retry-After value in seconds or as an HTTP date,
+// relative to now, capped at one hour. It returns 0 for a missing, invalid
+// or past value. Sinks use it to classify a response (sink.StatusError).
+func ParseRetryAfter(v string, now time.Time) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0

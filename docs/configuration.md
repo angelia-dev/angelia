@@ -19,6 +19,8 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `log.level` | `ANGELIA_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `log.format` | `ANGELIA_LOG_FORMAT` | `json` | `json`, `text` |
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
+| `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
+| `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
@@ -52,6 +54,35 @@ Check a configuration with `angelia config check [--config FILE]`.
   starting with `ANGELIA_` is always refused, in this list and in the API, because those variables
   hold the instance's own settings. The API answers a refused name with
   `422 env-not-allowed`. The watch file is not limited by this list.
+
+## Outgoing HTTP and private networks
+
+Every request of a source or a sink goes through one HTTP client with an SSRF guard. It refuses
+loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0.0.0.0/8`,
+`192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4` and IPv6 ranges that embed or reach IPv4 addresses
+(NAT64, 6to4, Teredo, IPv4-compatible).
+
+- `http.allow_networks` lists the prefixes the guard accepts anyway, for example a homelab
+  `192.168.1.0/24` or an internal `fd00:10::/32`. It applies to sources and sinks alike. Keep it narrow:
+  a prefix of length 0 (`0.0.0.0/0`, `::/0`) turns the guard off for that address family, and
+  `config check` warns about it.
+- `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
+  D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
+- Both lists live only here: the watch file and the REST API cannot widen them.
+- **Not in effect yet for delivery or polling.** `config check`, the watch file and the API already
+  apply `allow_http_hosts`. The client that sources and the webhook sink send through gets both lists
+  once `angelia serve` runs the dispatcher and scheduler roles instead of stubs
+  ([#198](https://github.com/angelia-dev/angelia/issues/198)). Until then, nothing is sent, so nothing
+  is allowed beyond the defaults.
+- Write IPv4 prefixes in IPv4 form: an IPv4-mapped prefix (`::ffff:10.0.0.0/104`) is refused, because
+  the guard checks mapped addresses as IPv4.
+- The guard checks the addresses a URL's host resolves to, then, for a direct connection, the address
+  actually dialled, which defeats DNS rebinding. When `HTTPS_PROXY` or `HTTP_PROXY` is set (read once at
+  start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private
+  addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
+  its job.
+
+See [webhooks.md](webhooks.md) for the webhook sink.
 
 ## REST API
 
