@@ -103,6 +103,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for _, r := range selected {
 		want[r.Name()] = true
 	}
+	if want["dispatcher"] {
+		warnDrainBudget(log, drain)
+	}
 	var m *metrics.Metrics
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
 		m = metrics.New(log)

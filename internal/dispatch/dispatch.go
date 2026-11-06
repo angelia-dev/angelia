@@ -50,6 +50,11 @@ const (
 	errorLogEvery = time.Minute
 )
 
+// WriteTimeout bounds the store write that ends an attempt, after the
+// attempt's DeliverTimeout. An attempt in progress at shutdown is recorded
+// only when the drain timeout exceeds DeliverTimeout + WriteTimeout.
+const WriteTimeout = writeTimeout
+
 // Reasons a delivery is set dead without calling a sink (maintainer
 // decision on #107: a deleted subscription or sink fails its deliveries).
 const (

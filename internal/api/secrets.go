@@ -440,6 +440,10 @@ func asBody(v any) any {
 // the store without serving the API: the scheduler and dispatcher roles run
 // it before they start, as the api role does (ADR 0024 amendment). plugins
 // is the catalogue the api role would serve (Options.Plugins).
+//
+// The Server it builds has only spec, opts.Store and opts.Plugins set: the
+// method, and configSchema below it, must use nothing else (no logger, no
+// auth, no clock), or this function must set it too.
 func CheckStoredSinks(ctx context.Context, st store.APIStore, plugins []PluginInfo) error {
 	if st == nil {
 		return errors.New("api: check stored sinks: nil store")

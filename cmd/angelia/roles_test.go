@@ -82,7 +82,6 @@ func (f *fakePyPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type receiver struct {
 	mu  sync.Mutex
 	got []received
-	ch  chan struct{}
 }
 
 type received struct {
@@ -91,7 +90,7 @@ type received struct {
 	body   []byte
 }
 
-func newReceiver() *receiver { return &receiver{ch: make(chan struct{}, 16)} }
+func newReceiver() *receiver { return &receiver{} }
 
 func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
@@ -99,7 +98,6 @@ func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rc.got = append(rc.got, received{path: r.URL.Path, header: r.Header.Clone(), body: b})
 	rc.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
-	rc.ch <- struct{}{}
 }
 
 func (rc *receiver) all() []received {
@@ -340,8 +338,12 @@ func TestServeAllowNetworksGuardsDelivery(t *testing.T) {
 	cfgPath, dbPath, _ := e2eInstance(t, registry.URL, "127.0.0.1/32", strings.TrimPrefix(hook.URL, "http://"))
 	logs := startServe(t, "--config", cfgPath, "--watches", watchFile(t, hook.URL), "--roles=all")
 	db := openDB(t, dbPath)
+	// last_checked_at is written with next_check_at, after the commit that
+	// sets baseline_done: waiting for both keeps recheckSoon from being
+	// overwritten by the scheduler's own write.
 	waitFor(t, "the baseline check", logs, func() bool {
-		return queryInt(t, db, `SELECT COUNT(*) FROM watch WHERE baseline_done = 1`) == 1
+		return queryInt(t, db, `SELECT last_checked_at FROM target`) > 0 &&
+			queryInt(t, db, `SELECT COUNT(*) FROM watch WHERE baseline_done = 1`) == 1
 	})
 	reg.set("1.1.0", "1.0.0", "0.9.0")
 	recheckSoon(t, db)
@@ -460,8 +462,10 @@ func TestOpenStoreRunsStoredSinksCheck(t *testing.T) {
 	}
 }
 
-// The dispatcher gets a secrets resolver and the destinations of the
-// built-in kinds: without them every secret_ref sink fails closed.
+// newPipelineRoles builds only the selected roles, and the built-in kinds
+// yield the webhook's destination pointer. That the dispatcher really
+// resolves secret_ref through the store is shown end to end by
+// TestServeDeliversSignedWebhook.
 func TestPipelineRolesWiring(t *testing.T) {
 	cfgPath, db := instanceFiles(t, "")
 	cfg := mustLoad(t, cfgPath)
@@ -482,5 +486,18 @@ func TestPipelineRolesWiring(t *testing.T) {
 	dest, err := api.SinkDestinations(d.plugins)
 	if err != nil || dest[webhook.Kind] != "/url" {
 		t.Fatalf("webhook destination = %v, %v", dest, err)
+	}
+}
+
+func TestWarnDrainBudget(t *testing.T) {
+	for _, tc := range []struct {
+		drain time.Duration
+		warn  bool
+	}{{25 * time.Second, false}, {23 * time.Second, true}, {10 * time.Second, true}} {
+		var b syncBuf
+		warnDrainBudget(slog.New(slog.NewTextHandler(&b, nil)), tc.drain)
+		if got := strings.Contains(b.String(), "drain timeout too short"); got != tc.warn {
+			t.Errorf("drain %v: warned = %v, want %v (%s)", tc.drain, got, tc.warn, b.String())
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -87,6 +88,18 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// http.allow_http_hosts is checked at every delivery (ADR 0023,
 		// decided question 4 and D12).
 		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
+	}
+}
+
+// warnDrainBudget warns when the drain timeout (after the trace flush is
+// taken out of it) does not exceed one delivery attempt plus its final
+// store write: an attempt in progress at shutdown may then go unrecorded,
+// and it is sent again once its lease expires (a likely duplicate).
+func warnDrainBudget(log *slog.Logger, drain time.Duration) {
+	need := dispatch.DefaultDeliverTimeout + dispatch.WriteTimeout
+	if drain <= need {
+		log.Warn("drain timeout too short for the dispatcher: an attempt in progress at shutdown may not be recorded and may be sent again",
+			"drain_timeout", drain.String(), "needed_above", need.String())
 	}
 }
 
