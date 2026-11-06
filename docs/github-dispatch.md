@@ -124,7 +124,7 @@ jobs:
           echo "event ${{ github.event.client_payload.event_id }} of watch ${{ github.event.client_payload.watch }}"
 ```
 
-Do not paste `client_payload` values straight into a shell script in a real workflow: they come from a registry
+Do not paste `client_payload` values, or workflow `inputs` rendered from event data (`${{ inputs.version }}`), straight into a shell script in a real workflow: they come from a registry
 and an attacker who controls a package name or version controls them. Pass them through `env:` and quote the
 variable, as in
 [GitHub's guidance on script injection](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#understanding-the-risk-of-script-injections):
@@ -150,6 +150,7 @@ GitHub only runs a `repository_dispatch` workflow from the default branch of the
 | `404` (repository, workflow, or a token without access) and `422` (invalid payload or inputs) | **permanent**: the delivery is dead at once |
 | `5xx` | retried with backoff |
 | `403` or `429` caused by a rate limit (`Retry-After`, or `x-ratelimit-remaining: 0`) | retried, not before `Retry-After` or `x-ratelimit-reset` (at most one hour ahead) |
+| `403` with neither header whose body (first 4 KiB, searched and never stored) says "rate limit": a secondary rate limit | retried, not before one minute |
 | any other `4xx`, such as `401` (bad token) or a plain `403` (missing permission) | **permanent** |
 | a redirect | **permanent**: the sink follows none; set `api_base_url` to the final host |
 | a timeout, a reset, a DNS or TLS failure | retried |

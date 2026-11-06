@@ -432,6 +432,9 @@ func TestResponses(t *testing.T) {
 		{"403 retry-after", 403, map[string]string{"Retry-After": "60"}, false, time.Minute, false},
 		{"403 exhausted, reset past", 403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1"}, false, 0, false},
 		{"403 retry-after wins when longer", 403, map[string]string{"Retry-After": "120", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, false, 2 * time.Minute, false},
+		{"403 secondary, body only", 403, map[string]string{"X-Body": "You have exceeded a Secondary Rate Limit. Please wait"}, false, time.Minute, false},
+		{"403 other body", 403, map[string]string{"X-Body": "Resource not accessible by integration"}, true, 0, false},
+		{"403 secondary with longer Retry-After", 403, map[string]string{"X-Body": "secondary rate limit", "Retry-After": "120"}, false, 2 * time.Minute, false},
 		{"429", 429, map[string]string{"Retry-After": "30"}, false, 30 * time.Second, false},
 		{"429 reset", 429, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, false, 90 * time.Second, false},
 		{"429 bare", 429, nil, false, 0, false},
@@ -445,10 +448,16 @@ func TestResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, got := github(t, func(w http.ResponseWriter, _ *http.Request) {
 				for k, v := range tc.header {
-					w.Header().Set(k, v)
+					if k != "X-Body" {
+						w.Header().Set(k, v)
+					}
 				}
 				w.WriteHeader(tc.code)
-				_, _ = w.Write([]byte(`{"message":"` + token + `"}`)) // a body is never echoed
+				msg := token // a body is never echoed
+				if b := tc.header["X-Body"]; b != "" {
+					msg = b
+				}
+				_, _ = w.Write([]byte(`{"message":"` + msg + `"}`))
 			})
 			res, err := newSink(t, srv).Deliver(t.Context(), request(t, repoCfg(srv.URL, ""), testEnvelope()))
 			if res.StatusCode != tc.code {
@@ -740,5 +749,26 @@ func TestEmptyInputValue(t *testing.T) {
 	}
 	if _, body := got.last(); string(body) != `{"ref":"main","inputs":{"a":""}}` {
 		t.Errorf("%s", body)
+	}
+}
+
+// The body is only searched: a "rate limit" past the first 4 KiB does not
+// count, and the text never reaches the error.
+func TestSecondaryRateLimitBodyWindow(t *testing.T) {
+	srv, _ := github(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(strings.Repeat(" ", 5000) + "rate limit"))
+	})
+	_, err := newSink(t, srv).Deliver(t.Context(), request(t, repoCfg(srv.URL, ""), testEnvelope()))
+	if err == nil || !sink.IsPermanent(err) {
+		t.Fatalf("err = %v", err)
+	}
+	srv2, _ := github(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("abuse RATE LIMIT hit"))
+	})
+	_, err = newSink(t, srv2).Deliver(t.Context(), request(t, repoCfg(srv2.URL, ""), testEnvelope()))
+	if err == nil || sink.IsPermanent(err) || strings.Contains(err.Error(), "abuse") {
+		t.Fatalf("err = %v", err)
 	}
 }

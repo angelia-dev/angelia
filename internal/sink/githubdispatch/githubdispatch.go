@@ -58,6 +58,11 @@ const (
 	// maxRateLimitWait caps the wait read from x-ratelimit-reset, as
 	// netguard.ParseRetryAfter caps Retry-After.
 	maxRateLimitWait = time.Hour
+	// maxBodyPeek is how much of a 403 body is searched for "rate limit".
+	maxBodyPeek = 4 << 10
+	// secondaryRateLimitWait is the shortest wait after a secondary rate
+	// limit without headers.
+	secondaryRateLimitWait = time.Minute
 )
 
 // Options configures a Sink.
@@ -158,10 +163,11 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	if err != nil {
 		return sink.Result{}, requestError(origin, cfg.base.Hostname(), err)
 	}
+	peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyPeek))
 	_, _ = io.CopyN(io.Discard, resp.Body, maxResponseRead)
 	_ = resp.Body.Close()
 	res := sink.Result{StatusCode: resp.StatusCode}
-	if err := s.classify(resp); err != nil {
+	if err := s.classify(resp, peek); err != nil {
 		return res, &statusError{origin: origin, code: resp.StatusCode, err: err}
 	}
 	return res, nil
@@ -194,7 +200,7 @@ func validToken(t string) bool {
 // retried one. Spec decision 38.4: 404 and 422 are permanent, 5xx retried,
 // a 403 or 429 caused by a rate limit is retried after Retry-After or
 // x-ratelimit-reset, any other 4xx is permanent; a redirect is permanent.
-func (s *Sink) classify(resp *http.Response) error {
+func (s *Sink) classify(resp *http.Response, body []byte) error {
 	now := s.now()
 	wait := netguard.ParseRetryAfter(resp.Header.Get("Retry-After"), now)
 	exhausted := false
@@ -203,6 +209,12 @@ func (s *Sink) classify(resp *http.Response) error {
 		if reset, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil {
 			wait = max(wait, min(time.Unix(reset, 0).Sub(now), maxRateLimitWait))
 		}
+	}
+	if resp.StatusCode == http.StatusForbidden && wait <= 0 && !exhausted &&
+		bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
+		// A secondary rate limit may carry no header: GitHub says to wait at
+		// least a minute. The body is only searched, never kept.
+		wait, exhausted = secondaryRateLimitWait, true
 	}
 	if resp.StatusCode == http.StatusForbidden && (wait > 0 || exhausted) {
 		// A rate limit, not a refusal: retried.

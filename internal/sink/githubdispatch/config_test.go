@@ -63,6 +63,8 @@ func TestValidate(t *testing.T) {
 		{"input template error", `{"mode":"workflow_dispatch","repo":"o/r","token_env":"T","workflow":"a.yml","ref":"m","inputs":{"a":"{{.data.pakage}}"}}`, "an input value"},
 		{"input too long", `{"mode":"workflow_dispatch","repo":"o/r","token_env":"T","workflow":"a.yml","ref":"m","inputs":{"a":"` + strings.Repeat("x", 4097) + `"}}`, "at most 4096 bytes"},
 		{"event_type misspelt key", `{"repo":"o/r","token_env":"T","event_type":"{{.data.pakage}}"}`, "event_type"},
+		{"event_type template too long on a sample", `{"repo":"o/r","token_env":"T","event_type":"{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}{{.data.package}}"}`, "the result must be 1 to 100"},
+		{"event_type empty on a sample", `{"repo":"o/r","token_env":"T","event_type":"{{with .data.notes}}x{{end}}"}`, "the result must be 1 to 100"},
 		{"event_type syntax", `{"repo":"o/r","token_env":"T","event_type":"{{"}`, "does not parse"},
 		{"event_type too long a template", `{"repo":"o/r","token_env":"T","event_type":"` + strings.Repeat("x", 1025) + `"}`, "at most 1024 bytes"},
 	} {

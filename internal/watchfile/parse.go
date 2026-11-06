@@ -403,6 +403,8 @@ func (p *parser) top(root *yaml.Node) *File {
 			}
 			if _, known := sinkNames[s.Sink]; !known {
 				p.errf(it, jp+".sink", "no sink named %q in this file", s.Sink)
+			} else if s.Template != "" && slices.ContainsFunc(f.Sinks, func(k Sink) bool { return k.Name == s.Sink && k.Kind == githubdispatch.Kind }) {
+				p.warnf(it, jp+".template", "template has no effect on a github-dispatch sink; use event_type or inputs")
 			}
 			f.Subscriptions = append(f.Subscriptions, s)
 		}
@@ -483,6 +485,7 @@ func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
 		cfg.Mode = p.enum(mn, jp+".mode", []string{githubdispatch.ModeRepositoryDispatch, githubdispatch.ModeWorkflowDispatch})
 	}
 	workflow := cfg.Mode == githubdispatch.ModeWorkflowDispatch
+	modeOK := cfg.Mode == githubdispatch.ModeRepositoryDispatch || workflow
 	if rn := p.need(m, "repo", jp+".repo", n); rn != nil {
 		if s, ok := p.secretFree(rn, jp+".repo"); ok {
 			if githubdispatch.ValidRepo(s) {
@@ -512,7 +515,10 @@ func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
 		}
 		return false
 	}
-	if workflow {
+	switch {
+	case !modeOK:
+		// The mode is already reported; its keys cannot be judged.
+	case workflow:
 		only("event_type", githubdispatch.ModeRepositoryDispatch)
 		for _, k := range []struct {
 			key   string
@@ -542,7 +548,7 @@ func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
 				p.errf(in, jp+".inputs", "at most %d inputs", githubdispatch.MaxInputs)
 			}
 		}
-	} else {
+	default:
 		for _, k := range []string{"workflow", "ref", "inputs"} {
 			only(k, githubdispatch.ModeWorkflowDispatch)
 		}
@@ -550,11 +556,8 @@ func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
 		if en := m["event_type"]; en != nil {
 			if s, ok := p.secretFree(en, jp+".event_type"); ok {
 				cfg.EventType = s
-				p.template(en, jp+".event_type", s, githubdispatch.MaxEventTypeTemplate)
-				if githubdispatch.IsLiteral(s) {
-					if err := githubdispatch.CheckEventType(s); err != nil {
-						p.errf(en, jp+".event_type", "%v", err)
-					}
+				if err := githubdispatch.CheckEventTypeTemplate(s); err != nil {
+					p.errf(en, jp+".event_type", "%v", err)
 				}
 			}
 		}

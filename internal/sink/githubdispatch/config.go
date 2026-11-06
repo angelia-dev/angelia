@@ -2,6 +2,7 @@ package githubdispatch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,6 +170,36 @@ func CheckTemplate(src string, limit int) error {
 	return t.Check()
 }
 
+// CheckEventTypeTemplate checks an event_type template as CheckTemplate does,
+// then renders it on the sample events and checks each result with
+// CheckEventType.
+func CheckEventTypeTemplate(src string) error {
+	if src == "" {
+		return CheckEventType(src)
+	}
+	if err := CheckTemplate(src, MaxEventTypeTemplate); err != nil {
+		return err
+	}
+	t, err := render.Compile(src, render.Limits{})
+	if err != nil {
+		return err
+	}
+	for _, smp := range render.Samples() {
+		b, err := json.Marshal(smp.Envelope)
+		if err != nil {
+			return err
+		}
+		r, err := t.Render(context.Background(), b)
+		if err != nil {
+			return fmt.Errorf("on the %s sample event: %w", smp.Name, err)
+		}
+		if err := CheckEventType(string(r.Body)); err != nil {
+			return fmt.Errorf("on the %s sample event, the result %w", smp.Name, err)
+		}
+	}
+	return nil
+}
+
 // IsLiteral reports whether a template has no action, so that its output is
 // itself.
 func IsLiteral(src string) bool { return !strings.Contains(src, "{{") }
@@ -244,7 +275,11 @@ func parseConfig(raw sink.Config, deep bool) (parsed, error) {
 		if p.EventType == "" {
 			p.EventType = DefaultEventType
 		}
-		if err := p.checkTemplate(p.EventType, MaxEventTypeTemplate, deep); err != nil {
+		err := p.checkTemplate(p.EventType, MaxEventTypeTemplate, deep)
+		if err == nil && deep {
+			err = CheckEventTypeTemplate(p.EventType)
+		}
+		if err != nil {
 			return p, invalid("event_type %v", err)
 		}
 		return p, nil

@@ -1,6 +1,7 @@
 package watchfile
 
 import (
+	"errors"
 	"os"
 	"regexp"
 	"strings"
@@ -59,6 +60,7 @@ func TestGithubDispatchRejected(t *testing.T) {
 		{"base with userinfo", `{repo: o/r, token_env: T, api_base_url: 'https://u:p@ghe.example.com'}`, "credentials in the URL"},
 		{"base with query", `{repo: o/r, token_env: T, api_base_url: 'https://ghe.example.com/x?y=1'}`, "must not have a query"},
 		{"bad mode", `{repo: o/r, token_env: T, mode: push}`, "config.mode: must be one of repository_dispatch, workflow_dispatch"},
+		{"event_type result too long", `{repo: o/r, token_env: T, event_type: '` + strings.Repeat("{{.data.package}}", 20) + `'}`, "the result must be 1 to 100"},
 		{"workflow key in repository mode", `{repo: o/r, token_env: T, workflow: a.yml}`, "config.workflow: only for mode workflow_dispatch"},
 		{"inputs in repository mode", `{repo: o/r, token_env: T, inputs: {a: b}}`, "config.inputs: only for mode workflow_dispatch"},
 		{"event_type in workflow mode", `{` + wf + `, workflow: a.yml, ref: main, event_type: x}`, "config.event_type: only for mode repository_dispatch"},
@@ -70,7 +72,7 @@ func TestGithubDispatchRejected(t *testing.T) {
 		{"input not a string", `{` + wf + `, workflow: a.yml, ref: main, inputs: {a: 1}}`, "config.inputs.a: must be a string"},
 		{"event_type template", `{repo: o/r, token_env: T, event_type: '{{.data.pakage}}'}`, "config.event_type: on the full sample event"},
 		{"event_type syntax", `{repo: o/r, token_env: T, event_type: '{{'}`, "config.event_type: does not parse as a Go template"},
-		{"event_type literal too long", `{repo: o/r, token_env: T, event_type: ` + strings.Repeat("x", 101) + `}`, "config.event_type: must be 1 to 100 characters"},
+		{"event_type literal too long", `{repo: o/r, token_env: T, event_type: ` + strings.Repeat("x", 101) + `}`, "config.event_type: on the full sample event, the result must be 1 to 100 characters"},
 		{"event_type empty", `{repo: o/r, token_env: T, event_type: ''}`, "config.event_type: must be 1 to 100 characters"},
 		{"timeout", `{repo: o/r, token_env: T, timeout: 1h}`, "config.timeout: must be between 1s and 2m0s"},
 		{"unknown key", `{repo: o/r, token_env: T, branch: main}`, `config.branch: unknown key "branch"`},
@@ -117,5 +119,30 @@ func TestGithubDispatchDocsExampleLoads(t *testing.T) {
 	f := mustParse(t, base+strings.Join(lines, "\n")+"watches: []\n")
 	if len(f.Sinks) != 1 || f.Sinks[0].Kind != "github-dispatch" || len(f.Subscriptions) != 1 {
 		t.Fatalf("parsed %+v", f)
+	}
+}
+
+// An invalid mode gives one error, not a second one per mode-specific key.
+func TestGithubDispatchBadModeOneError(t *testing.T) {
+	_, err := Parse([]byte(ghSink(`{repo: o/r, token_env: T, mode: push, workflow: a.yml, ref: main, event_type: x}`)), "w.yaml", opts(t))
+	var es Errors
+	if !errors.As(err, &es) || len(es) != 1 || !strings.Contains(es[0].Msg, "must be one of") {
+		t.Fatalf("errors: %v", err)
+	}
+}
+
+// A subscription template means nothing to a github-dispatch sink: warn.
+func TestGithubDispatchSubscriptionTemplateWarns(t *testing.T) {
+	doc := ghSink(`{repo: o/r, token_env: T}`) + "  - {name: w, kind: webhook, config: {url: 'https://h.example.org/x', secret_env: S}}\nsubscriptions:\n" +
+		"  - {name: a, sink: ci, template: 'x'}\n  - {name: b, sink: ci}\n  - {name: c, sink: w, template: 'x'}\n"
+	f := mustParse(t, doc)
+	var got []string
+	for _, w := range f.Warnings {
+		if strings.Contains(w, "github-dispatch sink") {
+			got = append(got, w)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "subscriptions[0].template: template has no effect on a github-dispatch sink; use event_type or inputs") {
+		t.Fatalf("warnings: %q", f.Warnings)
 	}
 }
