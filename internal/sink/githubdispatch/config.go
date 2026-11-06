@@ -2,7 +2,6 @@ package githubdispatch
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,20 +183,7 @@ func CheckEventTypeTemplate(src string) error {
 	if err != nil {
 		return err
 	}
-	for _, smp := range render.Samples() {
-		b, err := json.Marshal(smp.Envelope)
-		if err != nil {
-			return err
-		}
-		r, err := t.Render(context.Background(), b)
-		if err != nil {
-			return fmt.Errorf("on the %s sample event: %w", smp.Name, err)
-		}
-		if err := CheckEventType(string(r.Body)); err != nil {
-			return fmt.Errorf("on the %s sample event, the result %w", smp.Name, err)
-		}
-	}
-	return nil
+	return t.CheckOutput(func(out []byte) error { return CheckEventType(string(out)) })
 }
 
 // IsLiteral reports whether a template has no action, so that its output is
