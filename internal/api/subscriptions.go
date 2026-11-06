@@ -136,6 +136,14 @@ func (s *Server) PutSubscription(ctx context.Context, req PutSubscriptionRequest
 		if err != nil {
 			return err
 		}
+		before, err := subscriptionBody(ctx, tx, cur)
+		if err != nil {
+			return err
+		}
+		after, _ := decodeJSON(stateFrom(ctx).body)
+		if err := checkRefScope(ctx, before, after); err != nil {
+			return err
+		}
 		sinkID, p, err := s.subscriptionSink(ctx, tx, sub.Sink)
 		if p != nil || err != nil {
 			return firstErr(p, err)
@@ -177,6 +185,19 @@ func (s *Server) PutSubscription(ctx context.Context, req PutSubscriptionRequest
 	return putResponse(change, location("subscriptions", sub.Name), body), nil
 }
 
+// subscriptionBody is cur in the shape of its PUT body, nil when cur is
+// nil, for checkRefScope.
+func subscriptionBody(ctx context.Context, tx store.APITx, cur *store.Subscription) (any, error) {
+	if cur == nil {
+		return nil, nil
+	}
+	sj, err := subscriptionJSONOf(ctx, tx, *cur)
+	if err != nil {
+		return nil, err
+	}
+	return asBody(sj), nil
+}
+
 func firstErr(p *ProblemDetail, err error) error {
 	if p != nil {
 		return p
@@ -216,6 +237,13 @@ func (s *Server) DeleteSubscription(ctx context.Context, req DeleteSubscriptionR
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no subscription named %s", req.Name)
+		}
+		before, err := subscriptionBody(ctx, tx, cur)
+		if err != nil {
+			return err
+		}
+		if err := checkRefScope(ctx, before, nil); err != nil {
+			return err
 		}
 		// Its pending deliveries, held or not, become dead; in-flight ones
 		// finish (spec, deleteSubscription; docs/watch-file.md D8).

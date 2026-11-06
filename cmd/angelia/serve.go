@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/metrics"
+	"github.com/angelia-dev/angelia/internal/secrets"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/supervisor"
 	"github.com/angelia-dev/angelia/internal/telemetry"
 )
@@ -70,6 +73,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
+	keys, err := loadKeys(cfg, log)
+	if err != nil {
+		return err
+	}
+	// Every role shares the store, so every role refuses to start while
+	// stored secrets cannot be read: no plaintext fallback (ADR 0024 §4).
+	if err := checkSecretsAtStartup(cmd.Context(), cfg, keys); err != nil {
+		return err
+	}
 	watches, err := watchesPath(cmd)
 	if err != nil {
 		return err
@@ -82,9 +94,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	// The stored-sinks check of ADR 0024 §6 runs where the store is opened:
+	// today only in the api role (newAPIServer). A scheduler or dispatcher
+	// role that replaces its stub must run it too (ADR 0024 amendment).
 	factory := supervisor.NewStub
 	if hasAPIRole(roleNames) {
-		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, log)
+		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, keys, log)
 		if err != nil {
 			return err
 		}
@@ -106,7 +121,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// with netguard.Config{Allow: cfg.HTTP.AllowPrefixes(), UserAgent:
 	// cfg.HTTP.UserAgent, Logger: log} and register webhook.New(client.HTTPClient(),
 	// webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}).
-	// The scheduler's source clients take the same Allow.
+	// The scheduler's source clients take the same Allow. The dispatcher's
+	// Options also need Secrets: &secrets.Resolver{Store: st, Keys: keys}
+	// (without it every *_ref sink fails closed, retried then dead) and
+	// Destinations: api.SinkDestinations(builtinPlugins(...)) (without it
+	// every bound secret is refused). The role must also run the
+	// stored-sinks check (api.Server.CheckStoredSinks) before it starts
+	// (ADR 0024 amendment), as the api role does.
 	_ = tracerProvider
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
 		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and
@@ -144,4 +165,25 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(w, opts)))
 	}
 	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(w, opts)))
+}
+
+// checkSecretsAtStartup counts the stored secrets per key, read-only, and
+// runs secrets.CheckCounts: with stored secrets and no key, or rows under a
+// key that is not configured, the instance does not start. A database that
+// does not exist yet holds no secret.
+func checkSecretsAtStartup(ctx context.Context, cfg *config.Config, keys *secrets.Keyring) error {
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		// TODO(postgres, #85): check the Postgres store too; no role runs on
+		// it in this phase.
+		return nil //nolint:nilerr // only sqlite stores exist in this phase
+	}
+	counts, err := sqlite.SecretKeyCounts(ctx, dbPath)
+	if errors.Is(err, sqlite.ErrNoDatabase) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return secrets.CheckCounts(counts, keys)
 }

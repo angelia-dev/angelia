@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/event"
+	"github.com/angelia-dev/angelia/internal/secrets"
 )
 
 // Sink delivers events to one kind of destination.
@@ -65,8 +66,14 @@ type Request struct {
 	// the RFC 6901 JSON Pointer of the reference key in Config, such as
 	// "/secret_env", the value is the secret. Every reference resolved, or
 	// Deliver is not called. Sinks read secrets only from here, never from
-	// the environment, and never log, store or return them.
-	Secrets map[string][]byte
+	// the environment, and never log, store or return them. A Value prints
+	// as [REDACTED] under fmt and slog; Reveal it only to sign or build the
+	// request. A stored secret bound to hosts was resolved for the URL the
+	// kind marks x-angelia-destination, so a sink sends it only there and
+	// follows no redirect (ADR 0017 §7, ADR 0024 §2). A sink that sends a
+	// bound secret anywhere else (a redirect, a second request) needs the
+	// per-request netguard check of ADR 0024 §2 first.
+	Secrets map[string]secrets.Value
 	// IdempotencyKey is the same on every attempt and replay of a delivery:
 	// IdempotencyKey(event id, subscription id). Sinks pass it on, for
 	// example as a header, so that consumers can drop duplicates.

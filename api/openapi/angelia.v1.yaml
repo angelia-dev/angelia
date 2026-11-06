@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.1.0
+  version: 0.2.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -19,6 +19,8 @@ info:
       returned unchanged.
     - Errors are RFC 9457 problem details (`application/problem+json`).
     - Every operation needs a bearer token with the scope it names (`read` < `write` < `admin`).
+    - Secret values are stored write-only through `/v1/secrets` and referenced from configuration
+      by name with a `*_ref` key; no response ever carries a value.
   contact:
     name: Angelia maintainers
     url: https://github.com/angelia-dev/spec/issues
@@ -39,6 +41,8 @@ tags:
     description: The immutable release event log, by cursor or as a stream.
   - name: sinks
     description: Where deliveries go. Mirrors `sinks[]` of the watch file.
+  - name: secrets
+    description: Secret values stored encrypted at rest, write-only, referenced from configuration by name (`*_ref` keys).
   - name: subscriptions
     description: Which events go to which sink. Mirrors `subscriptions[]` of the watch file.
   - name: deliveries
@@ -124,6 +128,9 @@ paths:
         stored in the source's canonical form, so the response may spell them differently
         (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
         used by a watch from the watch file is refused with `409 managed-by-file`.
+
+        A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+        needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
       tags: [watches]
       security:
         - bearerAuth: [write]
@@ -487,11 +494,13 @@ paths:
       summary: Create or replace a sink
       description: |
         Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-        the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-        key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-        names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-        secrets and decides where the instance sends requests. The next delivery attempt uses the
-        new configuration.
+        the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+        key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+        instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+        refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+        resolves it, fails before sending and is retried until it is stored. Needs
+        the `admin` scope: a sink names secrets and decides where the instance sends requests.
+        The next delivery attempt uses the new configuration.
       tags: [sinks]
       security:
         - bearerAuth: [admin]
@@ -565,6 +574,170 @@ paths:
       responses:
         '204':
           description: The sink was deleted (or, with `dry_run=true`, would be).
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/secrets:
+    get:
+      operationId: listSecrets
+      summary: List secrets
+      description: |
+        Stored secrets in ascending `name` order: their names, host bindings, key ids, times and
+        referrers, **never a value**. Needs the `admin` scope: the names, hosts and referrers map
+        the instance's credentials.
+      tags: [secrets]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of secrets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/SecretPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/secrets/{name}:
+    parameters:
+      - $ref: '#/components/parameters/SecretName'
+    get:
+      operationId: getSecret
+      summary: Get a secret's metadata
+      description: The secret's name, host binding, key id, times and referrers. No scope, flag or parameter returns its value.
+      tags: [secrets]
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '200':
+          description: The secret, without its value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+              examples:
+                secret:
+                  $ref: '#/components/examples/Secret'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: putSecret
+      summary: Create or replace a secret
+      description: |
+        Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+        `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+        logged or echoed in a problem detail (a value that is too large reports its size only).
+        Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+        next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+        the instance has no key configured; nothing is stored then.
+      tags: [secrets]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretWrite'
+            examples:
+              signingSecret:
+                $ref: '#/components/examples/SecretPut'
+              registryToken:
+                $ref: '#/components/examples/SecretPutBound'
+      responses:
+        '200':
+          description: The secret existed; it was updated, or was already identical.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+              examples:
+                secret:
+                  $ref: '#/components/examples/Secret'
+        '201':
+          description: The secret was created.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+              examples:
+                created:
+                  $ref: '#/components/examples/SecretCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret
+      description: |
+        Refused with `409 secret-in-use` while any configuration references the secret by a `*_ref`
+        key; the problem names the referrers. Remove or change the references first.
+      tags: [secrets]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      responses:
+        '204':
+          description: The secret was deleted (or, with `dry_run=true`, would be).
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
@@ -660,6 +833,9 @@ paths:
         `policy` decides the subscription's held deliveries again (queued ones are not touched): a
         held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
         one whose new hold has passed is released, and one whose hold is still ahead is moved.
+
+        A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+        needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
       tags: [subscriptions]
       security:
         - bearerAuth: [write]
@@ -1035,8 +1211,8 @@ components:
       description: |
         An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
         ordered, and a token satisfies an operation whose scope is at or below its own:
-        `read` (every `GET`), `write` (watches, subscriptions, replays), `admin` (sinks, and
-        everything else). The scope an operation needs is listed in its `security` requirement.
+        `read` (every `GET`), `write` (watches, subscriptions, replays), `admin` (sinks, secrets,
+        any change to a `*_ref` key, and everything else). The scope an operation needs is listed in its `security` requirement.
         The token and its scope are checked before anything else, so a `401` or `403` never
         reveals whether a resource exists.
 
@@ -1076,6 +1252,14 @@ components:
       schema:
         $ref: '#/components/schemas/Name'
       example: ci-webhook
+    SecretName:
+      name: name
+      in: path
+      required: true
+      description: The secret's name, the value of the `*_ref` keys that reference it.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: ci-webhook-signing
     SubscriptionName:
       name: name
       in: path
@@ -1224,7 +1408,7 @@ components:
             notFound:
               $ref: '#/components/examples/ProblemNotFound'
     Conflict:
-      description: The request conflicts with the current state (`managed-by-file`, `cross-owner-reference`, `sink-in-use`, `not-replayable`).
+      description: The request conflicts with the current state (`managed-by-file`, `cross-owner-reference`, `sink-in-use`, `secret-in-use`, `not-replayable`).
       content:
         application/problem+json:
           schema:
@@ -1236,6 +1420,8 @@ components:
               $ref: '#/components/examples/ProblemCrossOwnerReference'
             sinkInUse:
               $ref: '#/components/examples/ProblemSinkInUse'
+            secretInUse:
+              $ref: '#/components/examples/ProblemSecretInUse'
             notReplayable:
               $ref: '#/components/examples/ProblemNotReplayable'
     UnsupportedMediaType:
@@ -1248,7 +1434,7 @@ components:
             unsupported:
               $ref: '#/components/examples/ProblemUnsupportedMediaType'
     ValidationFailed:
-      description: The body is well-formed JSON but breaks the resource's rules (`validation-failed`, every error listed in `errors`), or names an environment variable the instance does not allow (`env-not-allowed`).
+      description: The body is well-formed JSON but breaks the resource's rules (`validation-failed`, every error listed in `errors`), names an environment variable the instance does not allow (`env-not-allowed`), stores a secret on an instance with no key (`secrets-key-missing`), or references an unbound secret where a host binding is mandatory (`secret-host-binding-required`).
       content:
         application/problem+json:
           schema:
@@ -1258,6 +1444,10 @@ components:
               $ref: '#/components/examples/ProblemValidation'
             envNotAllowed:
               $ref: '#/components/examples/ProblemEnvNotAllowed'
+            secretsKeyMissing:
+              $ref: '#/components/examples/ProblemSecretsKeyMissing'
+            secretHostBindingRequired:
+              $ref: '#/components/examples/ProblemSecretHostBindingRequired'
     InternalError:
       description: An unexpected server error. The detail never carries configuration or secrets.
       content:
@@ -1599,7 +1789,7 @@ components:
     SinkWrite:
       description: |
         The body of `PUT /v1/sinks/{name}`: the keys of `sinks[]` in the watch file. It carries no
-        secret values: a secret is named by a `*_env` key of `config`.
+        secret values: a secret is named by a `*_ref` or `*_env` key of `config`.
       type: object
       required: [kind, config]
       additionalProperties: false
@@ -1645,9 +1835,12 @@ components:
       description: |
         Kind-owned configuration, free-form here and validated against the kind's `config_schema`
         (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-        named by a `*_env` key (an environment variable of the instance, as in the watch file),
-        and a name set through the API must be allowed by the instance configuration
-        (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+        named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+        (an environment variable of the instance, as in the watch file); a `*_env` name set
+        through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+        `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+        the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+        sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
         be set through the API. The configuration of each built-in kind is listed in
         `x-angelia-kind-config`.
       type: object
@@ -1663,6 +1856,106 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Sink'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    SecretWrite:
+      description: |
+        The body of `PUT /v1/secrets/{name}`: exactly one of `value` (text) and `value_base64` (any
+        bytes), at most 64 KiB once decoded, and optional `hosts`. Both value members are
+        write-only: no response, log, audit record or problem detail ever carries them.
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: Optional; when given it must equal the name in the path.
+        value:
+          description: The secret as text, stored as its UTF-8 bytes exactly (nothing is trimmed). 1 byte to 64 KiB.
+          type: string
+          minLength: 1
+          writeOnly: true
+        value_base64:
+          description: The secret as the standard base64 encoding of its bytes (RFC 4648 section 4, padded). 1 byte to 64 KiB once decoded.
+          type: string
+          minLength: 4
+          writeOnly: true
+        hosts:
+          description: |
+            The hosts the secret may be sent to (the host binding). Each entry is `host` (port
+            443) or `host:port`: a lower-case hostname (IDNA as punycode, no trailing dot) or an IP
+            literal (`[addr]:port` for IPv6 with a port); no wildcards. A bound secret is resolved
+            only for a destination whose host and port equal an entry, and every request that
+            carries it is checked again, including each redirect hop. Empty or absent: unbound,
+            and only the `admin` scope needed to reference it guards where it goes. A secret
+            referenced from a source or registry credential must be bound
+            (`422 secret-host-binding-required`). Sinks follow no redirect, so for a sink the
+            check is made against the URL its kind marks `x-angelia-destination`, at every
+            delivery. Source and registry credentials cannot reference stored secrets yet (core
+            #111); the mandatory binding and the redirect re-check apply to them from then.
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 261
+          default: []
+      anyOf:
+        - required: [value]
+        - required: [value_base64]
+      not:
+        required: [value, value_base64]
+    Secret:
+      description: |
+        A stored secret as the server returns it: metadata only. No scope, flag or parameter
+        returns its value.
+      type: object
+      required: [name, hosts, key_id, created_at, updated_at, referenced_by]
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+        hosts:
+          description: The host binding, as written; empty when the secret is unbound.
+          type: array
+          items:
+            type: string
+        key_id:
+          description: The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
+          type: string
+          pattern: '^[0-9a-f]{16}$'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the value or the hosts were last written.
+        referenced_by:
+          description: The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretReferrer'
+    SecretReferrer:
+      type: object
+      required: [resource, name, pointer]
+      properties:
+        resource:
+          description: The kind of resource that holds the reference.
+          type: string
+          enum: [sink, watch, subscription]
+        name:
+          $ref: '#/components/schemas/Name'
+        pointer:
+          description: JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
+          type: string
+          examples: [/config/secret_ref]
+    SecretPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Secret'
         next_cursor:
           $ref: '#/components/schemas/NextCursor'
 
@@ -2022,10 +2315,15 @@ components:
           description: Absolute `https://` URL with no userinfo and no query parameter that looks like a secret.
           type: string
           format: uri
+          x-angelia-destination: true
         secret_env:
-          description: Name of an environment variable of the instance that holds the Standard Webhooks signing secret. Without it, deliveries are unsigned.
+          description: Name of an environment variable of the instance that holds the Standard Webhooks signing secret. At most one of `secret_env` and `secret_ref`; without either, deliveries are unsigned.
           type: string
           pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+        secret_ref:
+          description: Name of a stored secret (`/v1/secrets`) that holds the Standard Webhooks signing secret. At most one of `secret_env` and `secret_ref`.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
         timeout:
           $ref: '#/components/schemas/Duration'
           description: Per-attempt timeout, `1s` to `2m`.
@@ -2314,6 +2612,56 @@ components:
               timeout: 10s
             url_redacted: true
             masked_fields: []
+        next_cursor: null
+    SecretPut:
+      summary: A webhook signing secret, as text
+      value:
+        value: whsec_c3ludGhldGljLWV4YW1wbGUtc2lnbmluZy1zZWNyZXQ=
+    SecretPutBound:
+      summary: Any bytes, base64-encoded, bound to one host
+      value:
+        value_base64: c3ludGhldGljLWV4YW1wbGUtcmVnaXN0cnktdG9rZW4=
+        hosts: [registry.example.com]
+    SecretCreated:
+      summary: A new secret, not referenced yet; never its value
+      value:
+        name: ci-webhook-signing
+        hosts: []
+        key_id: 3f1c2a9b7d4e5f60
+        created_at: '2026-11-05T09:00:00.000Z'
+        updated_at: '2026-11-05T09:00:00.000Z'
+        referenced_by: []
+    Secret:
+      summary: A secret a sink references; never its value
+      value:
+        name: ci-webhook-signing
+        hosts: []
+        key_id: 3f1c2a9b7d4e5f60
+        created_at: '2026-11-05T09:00:00.000Z'
+        updated_at: '2026-11-05T09:00:00.000Z'
+        referenced_by:
+          - resource: sink
+            name: ci-webhook
+            pointer: /config/secret_ref
+    SecretPage:
+      summary: A page with two secrets
+      value:
+        items:
+          - name: ci-webhook-signing
+            hosts: []
+            key_id: 3f1c2a9b7d4e5f60
+            created_at: '2026-11-05T09:00:00.000Z'
+            updated_at: '2026-11-05T09:00:00.000Z'
+            referenced_by:
+              - resource: sink
+                name: ci-webhook
+                pointer: /config/secret_ref
+          - name: registry-token
+            hosts: [registry.example.com]
+            key_id: 3f1c2a9b7d4e5f60
+            created_at: '2026-11-05T09:05:00.000Z'
+            updated_at: '2026-11-05T09:05:00.000Z'
+            referenced_by: []
         next_cursor: null
     SubscriptionPut:
       summary: Minor and major releases of the platform team's watches, to CI
@@ -2628,4 +2976,31 @@ components:
         errors:
           - pointer: /config/secret_env
             detail: not allowed by api.allowed_env
+    ProblemSecretInUse:
+      summary: A secret that configuration still references
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-secret-in-use
+        title: Secret in use
+        status: 409
+        detail: 'secret ci-webhook-signing is referenced by sink ci-webhook (/config/secret_ref)'
+        instance: /v1/secrets/ci-webhook-signing
+    ProblemSecretsKeyMissing:
+      summary: A secret written to an instance with no key
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-secrets-key-missing
+        title: Secrets key missing
+        status: 422
+        detail: the instance has no secrets key configured (secrets.key_file); nothing was stored
+        instance: /v1/secrets/ci-webhook-signing
+    ProblemSecretHostBindingRequired:
+      summary: A source credential that references an unbound secret
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-secret-host-binding-required
+        title: Secret host binding required
+        status: 422
+        detail: secret registry-token has no hosts; a secret referenced from a source credential must be bound to hosts
+        instance: /v1/watches/internal-lib
+        errors:
+          - pointer: /auth/token_ref
+            detail: secret registry-token has no hosts
 

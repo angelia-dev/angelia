@@ -21,6 +21,9 @@ const (
 	SlugManagedByFile        = "managed-by-file"
 	SlugCrossOwnerReference  = "cross-owner-reference"
 	SlugSinkInUse            = "sink-in-use"
+	SlugSecretInUse          = "secret-in-use"
+	SlugSecretsKeyMissing    = "secrets-key-missing"
+	SlugSecretHostBinding    = "secret-host-binding-required"
 	SlugNotReplayable        = "not-replayable"
 	SlugCursorExpired        = "cursor-expired"
 	SlugPayloadTooLarge      = "payload-too-large"
@@ -43,6 +46,9 @@ var problemKinds = map[string]struct {
 	SlugManagedByFile:        {http.StatusConflict, "Managed by the watch file"},
 	SlugCrossOwnerReference:  {http.StatusConflict, "Cross-owner reference"},
 	SlugSinkInUse:            {http.StatusConflict, "Sink in use"},
+	SlugSecretInUse:          {http.StatusConflict, "Secret in use"},
+	SlugSecretsKeyMissing:    {http.StatusUnprocessableEntity, "Secrets key missing"},
+	SlugSecretHostBinding:    {http.StatusUnprocessableEntity, "Secret host binding required"},
 	SlugNotReplayable:        {http.StatusConflict, "Not replayable"},
 	SlugCursorExpired:        {http.StatusGone, "Cursor expired"},
 	SlugPayloadTooLarge:      {http.StatusRequestEntityTooLarge, "Payload too large"},

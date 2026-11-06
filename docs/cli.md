@@ -1,6 +1,6 @@
 # The `angelia` command-line client
 
-`angelia watch|sink|sub|event|delivery|apply` talk to a running instance through the
+`angelia watch|sink|sub|secret|event|delivery|apply` talk to a running instance through the
 [REST API](../api/README.md). The client is generated from the vendored OpenAPI
 document (`internal/apiclient`, `go generate ./...`).
 
@@ -237,6 +237,52 @@ and `status`, plus the resolved `subscription_id`), the count `deliveries`,
 the first 100 `ids` (`[]` when nothing matched) and `from_status`, the number
 of replayed deliveries per state they were in before (`{"dead": 2,
 "delivered": 1}`), which tells a resend of a `delivered` delivery apart.
+
+## Stored secrets
+
+```
+angelia secret set NAME --from-file PATH|- [--host HOST[:PORT]]... [--dry-run]
+angelia secret list [--all]
+angelia secret get NAME
+angelia secret delete NAME [--dry-run]
+
+angelia secrets keygen [--out FILE]
+angelia secrets rotate [--dry-run] [--batch N] [--config FILE]
+angelia secrets status [--config FILE]
+```
+
+`angelia secret` manages the instance's [stored secrets](configuration.md#stored-secrets)
+through the API (`/v1/secrets`, `admin` scope). A sink names one with a `*_ref`
+key, such as the webhook's `secret_ref: ci-webhook`; once the dispatcher role
+runs (#198), each delivery reads it from the store. See [Stored secrets](configuration.md#stored-secrets).
+
+- The value is read from `--from-file` (a path, or `-` for stdin), never from
+  an argument, so it stays out of the shell history and the process list.
+- Exactly one trailing newline (`\n` or `\r\n`) is stripped, because editors
+  end files with one. Anything else, including other whitespace, is stored as
+  is. The value is at most 64 KiB, and any bytes are allowed (it is sent as
+  `value_base64`).
+- `--host` binds the secret to the hosts it may be sent to (`host` or
+  `host:port`, exact match, repeatable): a sink whose URL is on another host
+  fails each delivery before sending, and it is retried. Without it the
+  secret may be sent to any host its sink names.
+- Values are **write-only**: `list`, `get` and `set` print the name, hosts,
+  key id, the sinks that reference the secret and the times, never the value.
+- `delete` of a secret that a sink references fails with `409 secret-in-use`,
+  naming the sink.
+- With no key configured on the instance, `set` fails with
+  `422 secrets-key-missing`.
+- Writing a sink, watch or subscription that adds, changes or removes a
+  `*_ref` key needs the `admin` scope, even where the object needs only
+  `write`.
+
+`angelia secrets` runs on the instance: it reads the same configuration as
+`serve` and opens the database directly. `keygen` prints a new key, or writes
+it to a new file (mode `0600`, never overwriting one). `rotate` re-encrypts
+every stored secret under the primary key and `status` counts the stored
+secrets per key, read-only; see [Rotating the key](configuration.md#rotating-the-key).
+Neither prints a value, and neither creates a database: a `database.dsn` that
+names no file is an error.
 
 ## Output
 

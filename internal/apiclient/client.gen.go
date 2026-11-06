@@ -176,6 +176,27 @@ func (e ReplayRequestStatus) Valid() bool {
 	}
 }
 
+// Defines values for SecretReferrerResource.
+const (
+	SecretReferrerResourceSink         SecretReferrerResource = "sink"
+	SecretReferrerResourceSubscription SecretReferrerResource = "subscription"
+	SecretReferrerResourceWatch        SecretReferrerResource = "watch"
+)
+
+// Valid indicates whether the value is a known member of the SecretReferrerResource enum.
+func (e SecretReferrerResource) Valid() bool {
+	switch e {
+	case SecretReferrerResourceSink:
+		return true
+	case SecretReferrerResourceSubscription:
+		return true
+	case SecretReferrerResourceWatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ShortEventType.
 const (
 	ReleasePrerelease ShortEventType = "release.prerelease"
@@ -457,6 +478,91 @@ type ReplayResult struct {
 	Truncated bool `json:"truncated"`
 }
 
+// Secret A stored secret as the server returns it: metadata only. No scope, flag or parameter
+// returns its value.
+type Secret struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Hosts The host binding, as written; empty when the secret is unbound.
+	Hosts []string `json:"hosts"`
+
+	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
+	KeyId string `json:"key_id"`
+
+	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
+	ReferencedBy []SecretReferrer `json:"referenced_by"`
+
+	// UpdatedAt When the value or the hosts were last written.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// SecretPage defines model for SecretPage.
+type SecretPage struct {
+	Items []Secret `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// SecretReferrer defines model for SecretReferrer.
+type SecretReferrer struct {
+	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
+	//
+	// Examples: /config/secret_ref
+	Pointer string `json:"pointer"`
+
+	// Resource The kind of resource that holds the reference.
+	Resource SecretReferrerResource `json:"resource"`
+}
+
+// SecretReferrerResource The kind of resource that holds the reference.
+type SecretReferrerResource string
+
+// SecretWrite The body of `PUT /v1/secrets/{name}`: exactly one of `value` (text) and `value_base64` (any
+// bytes), at most 64 KiB once decoded, and optional `hosts`. Both value members are
+// write-only: no response, log, audit record or problem detail ever carries them.
+type SecretWrite struct {
+	// Hosts The hosts the secret may be sent to (the host binding). Each entry is `host` (port
+	// 443) or `host:port`: a lower-case hostname (IDNA as punycode, no trailing dot) or an IP
+	// literal (`[addr]:port` for IPv6 with a port); no wildcards. A bound secret is resolved
+	// only for a destination whose host and port equal an entry, and every request that
+	// carries it is checked again, including each redirect hop. Empty or absent: unbound,
+	// and only the `admin` scope needed to reference it guards where it goes. A secret
+	// referenced from a source or registry credential must be bound
+	// (`422 secret-host-binding-required`). Sinks follow no redirect, so for a sink the
+	// check is made against the URL its kind marks `x-angelia-destination`, at every
+	// delivery. Source and registry credentials cannot reference stored secrets yet (core
+	// #111); the mandatory binding and the redirect re-check apply to them from then.
+	Hosts *[]string `json:"hosts,omitempty"`
+
+	// Name Optional; when given it must equal the name in the path.
+	Name *Name `json:"name,omitempty"`
+
+	// Value The secret as text, stored as its UTF-8 bytes exactly (nothing is trimmed). 1 byte to 64 KiB.
+	Value *string `json:"value,omitempty"`
+
+	// ValueBase64 The secret as the standard base64 encoding of its bytes (RFC 4648 section 4, padded). 1 byte to 64 KiB once decoded.
+	ValueBase64 *string `json:"value_base64,omitempty"`
+	union       json.RawMessage
+}
+
+// SecretWrite0 defines model for SecretWrite.0.
+type SecretWrite0 = interface{}
+
+// SecretWrite1 defines model for SecretWrite.1.
+type SecretWrite1 = interface{}
+
 // Seq An event's position in the log, assigned in commit order (`event.seq`). Strictly increasing; there may be gaps.
 //
 // Examples: 4182
@@ -472,9 +578,12 @@ type ShortEventType string
 type Sink struct {
 	// Config Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 	// (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-	// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-	// and a name set through the API must be allowed by the instance configuration
-	// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+	// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+	// (an environment variable of the instance, as in the watch file); a `*_env` name set
+	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 	// be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
@@ -502,9 +611,12 @@ type Sink struct {
 
 // SinkConfig Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 // (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-// and a name set through the API must be allowed by the instance configuration
-// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+// (an environment variable of the instance, as in the watch file); a `*_env` name set
+// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 // be set through the API. The configuration of each built-in kind is listed in
 // `x-angelia-kind-config`.
 type SinkConfig map[string]interface{}
@@ -518,13 +630,16 @@ type SinkPage struct {
 }
 
 // SinkWrite The body of `PUT /v1/sinks/{name}`: the keys of `sinks[]` in the watch file. It carries no
-// secret values: a secret is named by a `*_env` key of `config`.
+// secret values: a secret is named by a `*_ref` or `*_env` key of `config`.
 type SinkWrite struct {
 	// Config Kind-owned configuration, free-form here and validated against the kind's `config_schema`
 	// (`GET /v1/plugins/sink/{kind}`); unknown keys are errors. No secret values: a secret is
-	// named by a `*_env` key (an environment variable of the instance, as in the watch file),
-	// and a name set through the API must be allowed by the instance configuration
-	// (`422 env-not-allowed`). A key the `config_schema` marks `x-angelia-secret: true` cannot
+	// named by a `*_ref` key (the name of a stored secret, `/v1/secrets`) or by a `*_env` key
+	// (an environment variable of the instance, as in the watch file); a `*_env` name set
+	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
+	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
+	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
+	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
 	// be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
@@ -798,6 +913,9 @@ type LabelFilter = []string
 // Limit defines model for Limit.
 type Limit = int
 
+// SecretName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+type SecretName = Name
+
 // SinkName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
 type SinkName = Name
 
@@ -944,6 +1062,27 @@ type ListPluginsParams struct {
 	Interface *PluginInterface `form:"interface,omitempty" json:"interface,omitempty"`
 }
 
+// ListSecretsParams defines parameters for ListSecrets.
+type ListSecretsParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteSecretParams defines parameters for DeleteSecret.
+type DeleteSecretParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// PutSecretParams defines parameters for PutSecret.
+type PutSecretParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
 // ListSinksParams defines parameters for ListSinks.
 type ListSinksParams struct {
 	// Limit Page size.
@@ -1039,6 +1178,9 @@ type ReplayDeliveryJSONRequestBody = ReplayDeliveryJSONBody
 
 // CreateReplayJSONRequestBody defines body for CreateReplay for application/json ContentType.
 type CreateReplayJSONRequestBody = ReplayRequest
+
+// PutSecretJSONRequestBody defines body for PutSecret for application/json ContentType.
+type PutSecretJSONRequestBody = SecretWrite
 
 // PutSinkJSONRequestBody defines body for PutSink for application/json ContentType.
 type PutSinkJSONRequestBody = SinkWrite
@@ -1209,6 +1351,144 @@ func (t *ReplayRequest) UnmarshalJSON(b []byte) error {
 		err = json.Unmarshal(raw, &t.Until)
 		if err != nil {
 			return fmt.Errorf("error reading 'until': %w", err)
+		}
+	}
+
+	return err
+}
+
+// AsSecretWrite0 returns the union data inside the SecretWrite as a SecretWrite0
+func (t SecretWrite) AsSecretWrite0() (SecretWrite0, error) {
+	var body SecretWrite0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSecretWrite0 overwrites any union data inside the SecretWrite as the provided SecretWrite0
+func (t *SecretWrite) FromSecretWrite0(v SecretWrite0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSecretWrite0 performs a merge with any union data inside the SecretWrite, using the provided SecretWrite0
+func (t *SecretWrite) MergeSecretWrite0(v SecretWrite0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSecretWrite1 returns the union data inside the SecretWrite as a SecretWrite1
+func (t SecretWrite) AsSecretWrite1() (SecretWrite1, error) {
+	var body SecretWrite1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSecretWrite1 overwrites any union data inside the SecretWrite as the provided SecretWrite1
+func (t *SecretWrite) FromSecretWrite1(v SecretWrite1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSecretWrite1 performs a merge with any union data inside the SecretWrite, using the provided SecretWrite1
+func (t *SecretWrite) MergeSecretWrite1(v SecretWrite1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SecretWrite) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	object := make(map[string]json.RawMessage)
+	if t.union != nil {
+		err = json.Unmarshal(b, &object)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if t.Hosts != nil {
+		object["hosts"], err = json.Marshal(t.Hosts)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'hosts': %w", err)
+		}
+	}
+
+	if t.Name != nil {
+		object["name"], err = json.Marshal(t.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if t.Value != nil {
+		object["value"], err = json.Marshal(t.Value)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'value': %w", err)
+		}
+	}
+
+	if t.ValueBase64 != nil {
+		object["value_base64"], err = json.Marshal(t.ValueBase64)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'value_base64': %w", err)
+		}
+	}
+	b, err = json.Marshal(object)
+	return b, err
+}
+
+func (t *SecretWrite) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	if err != nil {
+		return err
+	}
+	object := make(map[string]json.RawMessage)
+	err = json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["hosts"]; found {
+		err = json.Unmarshal(raw, &t.Hosts)
+		if err != nil {
+			return fmt.Errorf("error reading 'hosts': %w", err)
+		}
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &t.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+	}
+
+	if raw, found := object["value"]; found {
+		err = json.Unmarshal(raw, &t.Value)
+		if err != nil {
+			return fmt.Errorf("error reading 'value': %w", err)
+		}
+	}
+
+	if raw, found := object["value_base64"]; found {
+		err = json.Unmarshal(raw, &t.ValueBase64)
+		if err != nil {
+			return fmt.Errorf("error reading 'value_base64': %w", err)
 		}
 	}
 
@@ -1422,6 +1702,58 @@ type ClientInterface interface {
 	// Corresponds with POST /v1/replays (the `CreateReplay` operationId).
 	CreateReplay(ctx context.Context, body CreateReplayJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListSecrets List secrets
+	//
+	// Stored secrets in ascending `name` order: their names, host bindings, key ids, times and
+	// referrers, **never a value**. Needs the `admin` scope: the names, hosts and referrers map
+	// the instance's credentials.
+	//
+	// Corresponds with GET /v1/secrets (the `ListSecrets` operationId).
+	ListSecrets(ctx context.Context, params *ListSecretsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteSecret Delete a secret
+	//
+	// Refused with `409 secret-in-use` while any configuration references the secret by a `*_ref`
+	// key; the problem names the referrers. Remove or change the references first.
+	//
+	// Corresponds with DELETE /v1/secrets/{name} (the `DeleteSecret` operationId).
+	DeleteSecret(ctx context.Context, name SecretName, params *DeleteSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSecret Get a secret's metadata
+	//
+	// The secret's name, host binding, key id, times and referrers. No scope, flag or parameter returns its value.
+	//
+	// Corresponds with GET /v1/secrets/{name} (the `GetSecret` operationId).
+	GetSecret(ctx context.Context, name SecretName, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutSecretWithBody Create or replace a secret
+	//
+	// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+	// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+	// logged or echoed in a problem detail (a value that is too large reports its size only).
+	// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+	// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+	// the instance has no key configured; nothing is stored then.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+	PutSecretWithBody(ctx context.Context, name SecretName, params *PutSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutSecret Create or replace a secret
+	//
+	// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+	// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+	// logged or echoed in a problem detail (a value that is too large reports its size only).
+	// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+	// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+	// the instance has no key configured; nothing is stored then.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+	PutSecret(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListSinks List sinks
 	//
 	// Sinks in ascending `name` order, redacted as described in the `Sink` schema (URLs cut to `scheme://host` below `admin`).
@@ -1447,11 +1779,13 @@ type ClientInterface interface {
 	// PutSinkWithBody Create or replace a sink
 	//
 	// Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-	// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-	// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-	// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+	// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+	// resolves it, fails before sending and is retried until it is stored. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -1461,11 +1795,13 @@ type ClientInterface interface {
 	// PutSink Create or replace a sink
 	//
 	// Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-	// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-	// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-	// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+	// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+	// resolves it, fails before sending and is retried until it is stored. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1504,6 +1840,9 @@ type ClientInterface interface {
 	// held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 	// one whose new hold has passed is released, and one whose hold is still ahead is moved.
 	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -1518,6 +1857,9 @@ type ClientInterface interface {
 	// `policy` decides the subscription's held deliveries again (queued ones are not touched): a
 	// held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 	// one whose new hold has passed is released, and one whose hold is still ahead is moved.
+	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1559,6 +1901,9 @@ type ClientInterface interface {
 	// (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 	// used by a watch from the watch file is refused with `409 managed-by-file`.
 	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -1575,6 +1920,9 @@ type ClientInterface interface {
 	// stored in the source's canonical form, so the response may spell them differently
 	// (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 	// used by a watch from the watch file is refused with `409 managed-by-file`.
+	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1835,6 +2183,108 @@ func (c *Client) CreateReplay(ctx context.Context, body CreateReplayJSONRequestB
 	return c.Client.Do(req)
 }
 
+// ListSecrets List secrets
+//
+// Stored secrets in ascending `name` order: their names, host bindings, key ids, times and
+// referrers, **never a value**. Needs the `admin` scope: the names, hosts and referrers map
+// the instance's credentials.
+//
+// Corresponds with GET /v1/secrets (the `ListSecrets` operationId).
+func (c *Client) ListSecrets(ctx context.Context, params *ListSecretsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSecretsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteSecret Delete a secret
+//
+// Refused with `409 secret-in-use` while any configuration references the secret by a `*_ref`
+// key; the problem names the referrers. Remove or change the references first.
+//
+// Corresponds with DELETE /v1/secrets/{name} (the `DeleteSecret` operationId).
+func (c *Client) DeleteSecret(ctx context.Context, name SecretName, params *DeleteSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteSecretRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSecret Get a secret's metadata
+//
+// The secret's name, host binding, key id, times and referrers. No scope, flag or parameter returns its value.
+//
+// Corresponds with GET /v1/secrets/{name} (the `GetSecret` operationId).
+func (c *Client) GetSecret(ctx context.Context, name SecretName, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSecretRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutSecretWithBody Create or replace a secret
+//
+// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+// logged or echoed in a problem detail (a value that is too large reports its size only).
+// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+// the instance has no key configured; nothing is stored then.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+func (c *Client) PutSecretWithBody(ctx context.Context, name SecretName, params *PutSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSecretRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutSecret Create or replace a secret
+//
+// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+// logged or echoed in a problem detail (a value that is too large reports its size only).
+// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+// the instance has no key configured; nothing is stored then.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+func (c *Client) PutSecret(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSecretRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListSinks List sinks
 //
 // Sinks in ascending `name` order, redacted as described in the `Sink` schema (URLs cut to `scheme://host` below `admin`).
@@ -1890,11 +2340,13 @@ func (c *Client) GetSink(ctx context.Context, name SinkName, reqEditors ...Reque
 // PutSinkWithBody Create or replace a sink
 //
 // Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+// resolves it, fails before sending and is retried until it is stored. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes any type of body and a specified content type.
 //
@@ -1914,11 +2366,13 @@ func (c *Client) PutSinkWithBody(ctx context.Context, name SinkName, params *Put
 // PutSink Create or replace a sink
 //
 // Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+// resolves it, fails before sending and is retried until it is stored. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -1997,6 +2451,9 @@ func (c *Client) GetSubscription(ctx context.Context, name SubscriptionName, req
 // held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 // one whose new hold has passed is released, and one whose hold is still ahead is moved.
 //
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -2021,6 +2478,9 @@ func (c *Client) PutSubscriptionWithBody(ctx context.Context, name SubscriptionN
 // `policy` decides the subscription's held deliveries again (queued ones are not touched): a
 // held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 // one whose new hold has passed is released, and one whose hold is still ahead is moved.
+//
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2102,6 +2562,9 @@ func (c *Client) GetWatch(ctx context.Context, name WatchName, reqEditors ...Req
 // (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 // used by a watch from the watch file is refused with `409 managed-by-file`.
 //
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -2128,6 +2591,9 @@ func (c *Client) PutWatchWithBody(ctx context.Context, name WatchName, params *P
 // stored in the source's canonical form, so the response may spell them differently
 // (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 // used by a watch from the watch file is refused with `409 managed-by-file`.
+//
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2738,6 +3204,241 @@ func NewCreateReplayRequestWithBody(server string, contentType string, body io.R
 	}
 
 	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListSecretsRequest constructs an http.Request for the ListSecrets method
+func NewListSecretsRequest(server string, params *ListSecretsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/secrets")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteSecretRequest constructs an http.Request for the DeleteSecret method
+func NewDeleteSecretRequest(server string, name SecretName, params *DeleteSecretParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/secrets/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.DryRun != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "dry_run", *params.DryRun, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSecretRequest constructs an http.Request for the GetSecret method
+func NewGetSecretRequest(server string, name SecretName) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/secrets/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutSecretRequest calls the generic PutSecret builder with application/json body
+func NewPutSecretRequest(server string, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutSecretRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutSecretRequestWithBody constructs an http.Request for the PutSecret method, with any body, and a specified content type
+func NewPutSecretRequestWithBody(server string, name SecretName, params *PutSecretParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/secrets/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.DryRun != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "dry_run", *params.DryRun, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -3788,6 +4489,64 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /v1/replays (the `CreateReplay` operationId).
 	CreateReplayWithResponse(ctx context.Context, body CreateReplayJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateReplayResponse, error)
 
+	// ListSecretsWithResponse List secrets
+	//
+	// Stored secrets in ascending `name` order: their names, host bindings, key ids, times and
+	// referrers, **never a value**. Needs the `admin` scope: the names, hosts and referrers map
+	// the instance's credentials.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/secrets (the `ListSecrets` operationId).
+	ListSecretsWithResponse(ctx context.Context, params *ListSecretsParams, reqEditors ...RequestEditorFn) (*ListSecretsResponse, error)
+
+	// DeleteSecretWithResponse Delete a secret
+	//
+	// Refused with `409 secret-in-use` while any configuration references the secret by a `*_ref`
+	// key; the problem names the referrers. Remove or change the references first.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /v1/secrets/{name} (the `DeleteSecret` operationId).
+	DeleteSecretWithResponse(ctx context.Context, name SecretName, params *DeleteSecretParams, reqEditors ...RequestEditorFn) (*DeleteSecretResponse, error)
+
+	// GetSecretWithResponse Get a secret's metadata
+	//
+	// The secret's name, host binding, key id, times and referrers. No scope, flag or parameter returns its value.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/secrets/{name} (the `GetSecret` operationId).
+	GetSecretWithResponse(ctx context.Context, name SecretName, reqEditors ...RequestEditorFn) (*GetSecretResponse, error)
+
+	// PutSecretWithBodyWithResponse Create or replace a secret
+	//
+	// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+	// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+	// logged or echoed in a problem detail (a value that is too large reports its size only).
+	// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+	// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+	// the instance has no key configured; nothing is stored then.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+	PutSecretWithBodyWithResponse(ctx context.Context, name SecretName, params *PutSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutSecretResponse, error)
+
+	// PutSecretWithResponse Create or replace a secret
+	//
+	// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+	// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+	// logged or echoed in a problem detail (a value that is too large reports its size only).
+	// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+	// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+	// the instance has no key configured; nothing is stored then.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+	PutSecretWithResponse(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSecretResponse, error)
+
 	// ListSinksWithResponse List sinks
 	//
 	// Sinks in ascending `name` order, redacted as described in the `Sink` schema (URLs cut to `scheme://host` below `admin`).
@@ -3819,11 +4578,13 @@ type ClientWithResponsesInterface interface {
 	// PutSinkWithBodyWithResponse Create or replace a sink
 	//
 	// Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-	// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-	// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-	// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+	// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+	// resolves it, fails before sending and is retried until it is stored. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -3833,11 +4594,13 @@ type ClientWithResponsesInterface interface {
 	// PutSinkWithResponse Create or replace a sink
 	//
 	// Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-	// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-	// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-	// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-	// secrets and decides where the instance sends requests. The next delivery attempt uses the
-	// new configuration.
+	// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+	// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+	// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+	// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+	// resolves it, fails before sending and is retried until it is stored. Needs
+	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+	// The next delivery attempt uses the new configuration.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -3882,6 +4645,9 @@ type ClientWithResponsesInterface interface {
 	// held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 	// one whose new hold has passed is released, and one whose hold is still ahead is moved.
 	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -3896,6 +4662,9 @@ type ClientWithResponsesInterface interface {
 	// `policy` decides the subscription's held deliveries again (queued ones are not touched): a
 	// held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 	// one whose new hold has passed is released, and one whose hold is still ahead is moved.
+	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -3943,6 +4712,9 @@ type ClientWithResponsesInterface interface {
 	// (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 	// used by a watch from the watch file is refused with `409 managed-by-file`.
 	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -3959,6 +4731,9 @@ type ClientWithResponsesInterface interface {
 	// stored in the source's canonical form, so the response may spell them differently
 	// (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 	// used by a watch from the watch file is refused with `409 managed-by-file`.
+	//
+	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -4831,6 +5606,416 @@ func (r CreateReplayResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r CreateReplayResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// ListSecretsResponse401Headers the declared response headers of an HTTP 401 response for ListSecrets
+type ListSecretsResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// ListSecretsResponse503Headers the declared response headers of an HTTP 503 response for ListSecrets
+type ListSecretsResponse503Headers struct {
+	RetryAfter *int
+}
+
+type ListSecretsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SecretPage
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *ListSecretsResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *ListSecretsResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListSecretsResponse) GetJSON200() *SecretPage {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r ListSecretsResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r ListSecretsResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r ListSecretsResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r ListSecretsResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r ListSecretsResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r ListSecretsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSecretsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSecretsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListSecretsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// DeleteSecretResponse204Headers the declared response headers of an HTTP 204 response for DeleteSecret
+type DeleteSecretResponse204Headers struct {
+	AngeliaChange *string
+}
+
+// DeleteSecretResponse401Headers the declared response headers of an HTTP 401 response for DeleteSecret
+type DeleteSecretResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// DeleteSecretResponse503Headers the declared response headers of an HTTP 503 response for DeleteSecret
+type DeleteSecretResponse503Headers struct {
+	RetryAfter *int
+}
+
+type DeleteSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
+	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers204 the parsed response headers for an HTTP 204 response
+	Headers204 *DeleteSecretResponse204Headers
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *DeleteSecretResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *DeleteSecretResponse503Headers
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON409() *Conflict {
+	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r DeleteSecretResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteSecretResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// GetSecretResponse401Headers the declared response headers of an HTTP 401 response for GetSecret
+type GetSecretResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// GetSecretResponse503Headers the declared response headers of an HTTP 503 response for GetSecret
+type GetSecretResponse503Headers struct {
+	RetryAfter *int
+}
+
+type GetSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Secret
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *GetSecretResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *GetSecretResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetSecretResponse) GetJSON200() *Secret {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r GetSecretResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r GetSecretResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r GetSecretResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r GetSecretResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r GetSecretResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r GetSecretResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// PutSecretResponse200Headers the declared response headers of an HTTP 200 response for PutSecret
+type PutSecretResponse200Headers struct {
+	AngeliaChange *string
+}
+
+// PutSecretResponse201Headers the declared response headers of an HTTP 201 response for PutSecret
+type PutSecretResponse201Headers struct {
+	AngeliaChange *string
+	Location      *string
+}
+
+// PutSecretResponse401Headers the declared response headers of an HTTP 401 response for PutSecret
+type PutSecretResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// PutSecretResponse503Headers the declared response headers of an HTTP 503 response for PutSecret
+type PutSecretResponse503Headers struct {
+	RetryAfter *int
+}
+
+type PutSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Secret
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *Secret
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers200 the parsed response headers for an HTTP 200 response
+	Headers200 *PutSecretResponse200Headers
+	// Headers201 the parsed response headers for an HTTP 201 response
+	Headers201 *PutSecretResponse201Headers
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *PutSecretResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *PutSecretResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutSecretResponse) GetJSON200() *Secret {
+	return r.JSON200
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PutSecretResponse) GetJSON201() *Secret {
+	return r.JSON201
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r PutSecretResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r PutSecretResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PutSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PutSecretResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -6398,6 +7583,94 @@ func (c *ClientWithResponses) CreateReplayWithResponse(ctx context.Context, body
 	return ParseCreateReplayResponse(rsp)
 }
 
+// ListSecretsWithResponse List secrets
+//
+// Stored secrets in ascending `name` order: their names, host bindings, key ids, times and
+// referrers, **never a value**. Needs the `admin` scope: the names, hosts and referrers map
+// the instance's credentials.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/secrets (the `ListSecrets` operationId).
+func (c *ClientWithResponses) ListSecretsWithResponse(ctx context.Context, params *ListSecretsParams, reqEditors ...RequestEditorFn) (*ListSecretsResponse, error) {
+	rsp, err := c.ListSecrets(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSecretsResponse(rsp)
+}
+
+// DeleteSecretWithResponse Delete a secret
+//
+// Refused with `409 secret-in-use` while any configuration references the secret by a `*_ref`
+// key; the problem names the referrers. Remove or change the references first.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /v1/secrets/{name} (the `DeleteSecret` operationId).
+func (c *ClientWithResponses) DeleteSecretWithResponse(ctx context.Context, name SecretName, params *DeleteSecretParams, reqEditors ...RequestEditorFn) (*DeleteSecretResponse, error) {
+	rsp, err := c.DeleteSecret(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteSecretResponse(rsp)
+}
+
+// GetSecretWithResponse Get a secret's metadata
+//
+// The secret's name, host binding, key id, times and referrers. No scope, flag or parameter returns its value.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/secrets/{name} (the `GetSecret` operationId).
+func (c *ClientWithResponses) GetSecretWithResponse(ctx context.Context, name SecretName, reqEditors ...RequestEditorFn) (*GetSecretResponse, error) {
+	rsp, err := c.GetSecret(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSecretResponse(rsp)
+}
+
+// PutSecretWithBodyWithResponse Create or replace a secret
+//
+// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+// logged or echoed in a problem detail (a value that is too large reports its size only).
+// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+// the instance has no key configured; nothing is stored then.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+func (c *ClientWithResponses) PutSecretWithBodyWithResponse(ctx context.Context, name SecretName, params *PutSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutSecretResponse, error) {
+	rsp, err := c.PutSecretWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutSecretResponse(rsp)
+}
+
+// PutSecretWithResponse Create or replace a secret
+//
+// Stores the value, encrypted at rest, under `name` (the body is `SecretWrite`: `value` or
+// `value_base64`, and optional `hosts`). The value is write-only: it is never returned,
+// logged or echoed in a problem detail (a value that is too large reports its size only).
+// Sending the same value and hosts again changes nothing (`Angelia-Change: unchanged`). The
+// next use of a reference reads the new value. Refused with `422 secrets-key-missing` when
+// the instance has no key configured; nothing is stored then.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
+func (c *ClientWithResponses) PutSecretWithResponse(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSecretResponse, error) {
+	rsp, err := c.PutSecret(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutSecretResponse(rsp)
+}
+
 // ListSinksWithResponse List sinks
 //
 // Sinks in ascending `name` order, redacted as described in the `Sink` schema (URLs cut to `scheme://host` below `admin`).
@@ -6447,11 +7720,13 @@ func (c *ClientWithResponses) GetSinkWithResponse(ctx context.Context, name Sink
 // PutSinkWithBodyWithResponse Create or replace a sink
 //
 // Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+// resolves it, fails before sending and is retried until it is stored. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6467,11 +7742,13 @@ func (c *ClientWithResponses) PutSinkWithBodyWithResponse(ctx context.Context, n
 // PutSinkWithResponse Create or replace a sink
 //
 // Idempotent upsert keyed by `name`. `config` is replaced as a whole and validated against
-// the kind's `config_schema`. The API takes no secret values: a secret is named by a `*_env`
-// key, and the name must be allowed by the instance configuration (`422 env-not-allowed`;
-// names starting with `ANGELIA_` are always refused). Needs the `admin` scope: a sink names
-// secrets and decides where the instance sends requests. The next delivery attempt uses the
-// new configuration.
+// the kind's `config_schema`. The sink takes no secret values: a secret is named by a `*_ref`
+// key (a stored secret, `/v1/secrets`) or by a `*_env` key, whose name must be allowed by the
+// instance configuration (`422 env-not-allowed`; names starting with `ANGELIA_` are always
+// refused). A `*_ref` naming a secret that does not exist is accepted: each delivery
+// resolves it, fails before sending and is retried until it is stored. Needs
+// the `admin` scope: a sink names secrets and decides where the instance sends requests.
+// The next delivery attempt uses the new configuration.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6540,6 +7817,9 @@ func (c *ClientWithResponses) GetSubscriptionWithResponse(ctx context.Context, n
 // held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 // one whose new hold has passed is released, and one whose hold is still ahead is moved.
 //
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -6560,6 +7840,9 @@ func (c *ClientWithResponses) PutSubscriptionWithBodyWithResponse(ctx context.Co
 // `policy` decides the subscription's held deliveries again (queued ones are not touched): a
 // held delivery the new filter or `prerelease` mode excludes becomes `dead` with a reason,
 // one whose new hold has passed is released, and one whose hold is still ahead is moved.
+//
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6631,6 +7914,9 @@ func (c *ClientWithResponses) GetWatchWithResponse(ctx context.Context, name Wat
 // (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 // used by a watch from the watch file is refused with `409 managed-by-file`.
 //
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -6653,6 +7939,9 @@ func (c *ClientWithResponses) PutWatchWithBodyWithResponse(ctx context.Context, 
 // stored in the source's canonical form, so the response may spell them differently
 // (`Requests` becomes `requests` on PyPI). Names are unique per resource type: a name already
 // used by a watch from the watch file is refused with `409 managed-by-file`.
+//
+// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
+// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -7475,6 +8764,410 @@ func ParseCreateReplayResponse(rsp *http.Response) (*CreateReplayResponse, error
 		response.Headers401 = &headers
 	case rsp.StatusCode == 503:
 		var headers CreateReplayResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseListSecretsResponse parses an HTTP response from a ListSecretsWithResponse call
+func ParseListSecretsResponse(rsp *http.Response) (*ListSecretsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSecretsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SecretPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers ListSecretsResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers ListSecretsResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseDeleteSecretResponse parses an HTTP response from a DeleteSecretWithResponse call
+func ParseDeleteSecretResponse(rsp *http.Response) (*DeleteSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		var headers DeleteSecretResponse204Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		response.Headers204 = &headers
+	case rsp.StatusCode == 401:
+		var headers DeleteSecretResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers DeleteSecretResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseGetSecretResponse parses an HTTP response from a GetSecretWithResponse call
+func ParseGetSecretResponse(rsp *http.Response) (*GetSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Secret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers GetSecretResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers GetSecretResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParsePutSecretResponse parses an HTTP response from a PutSecretWithResponse call
+func ParsePutSecretResponse(rsp *http.Response) (*PutSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Secret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Secret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 200:
+		var headers PutSecretResponse200Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		response.Headers200 = &headers
+	case rsp.StatusCode == 201:
+		var headers PutSecretResponse201Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		if values := rsp.Header.Values("Location"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Location", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: "uri-reference"}); err != nil {
+				return nil, err
+			}
+			headers.Location = &value
+		}
+		response.Headers201 = &headers
+	case rsp.StatusCode == 401:
+		var headers PutSecretResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers PutSecretResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {

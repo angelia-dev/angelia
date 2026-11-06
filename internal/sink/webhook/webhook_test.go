@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 )
 
@@ -64,15 +65,31 @@ const (
 	key       = "01JD0000000000000000000000:01JD0000000000000000000001"
 )
 
-func request(url, secretEnv string, secrets map[string][]byte) sink.Request {
+func request(url, secretEnv string, values map[string][]byte) sink.Request {
+	return requestWith(url, "secret_env", secretEnv, values)
+}
+
+// requestRef is request for a sink whose secret_ref names a stored secret.
+func requestRef(url, secretRef string, values map[string][]byte) sink.Request {
+	return requestWith(url, "secret_ref", secretRef, values)
+}
+
+func requestWith(url, refKey, ref string, values map[string][]byte) sink.Request {
 	cfg := fmt.Sprintf(`{"url":%q,"timeout":"10s"`, url)
-	if secretEnv != "" {
-		cfg += fmt.Sprintf(`,"secret_env":%q`, secretEnv)
+	if ref != "" {
+		cfg += fmt.Sprintf(`,%q:%q`, refKey, ref)
+	}
+	var vs map[string]secrets.Value
+	for k, v := range values {
+		if vs == nil {
+			vs = map[string]secrets.Value{}
+		}
+		vs[k] = secrets.NewValue(v)
 	}
 	return sink.Request{
 		Config:         sink.Config(cfg + "}"),
 		Rendered:       sink.Rendered{Body: []byte(eventJSON), ContentType: sink.CloudEventsContentType},
-		IdempotencyKey: key, Secrets: secrets, DeliveryID: "d1", SubscriptionID: "s1", Attempt: 1,
+		IdempotencyKey: key, Secrets: vs, DeliveryID: "d1", SubscriptionID: "s1", Attempt: 1,
 	}
 }
 
@@ -152,13 +169,48 @@ func TestDeliverWireFormat(t *testing.T) {
 	}
 }
 
+// ADR 0024 §6: a secret_ref value signs exactly as a secret_env value, read
+// from its own pointer; a value under the other pointer is not used.
+func TestDeliverSecretRef(t *testing.T) {
+	srv, got := receiver(t, nil)
+	secret := genSecret(t, 32)
+	s := newSink(t, loopback)
+	if _, err := s.Deliver(t.Context(), requestRef(srv.URL, "ci-webhook", map[string][]byte{SecretRefPointer: []byte(secret)})); err != nil {
+		t.Fatal(err)
+	}
+	r, body := got.last()
+	if err := Verify([]string{secret}, r.Header, body, fixedNow, DefaultTolerance); err != nil {
+		t.Errorf("receiver cannot verify a secret_ref signature: %v", err)
+	}
+	want, _ := Sign([]string{secret}, key, "1793880000", body)
+	if r.Header.Get(HeaderSignature) != want {
+		t.Errorf("webhook-signature %q, want the secret_env signature %q", r.Header.Get(HeaderSignature), want)
+	}
+
+	bad := "whsec_" + strings.Repeat("A", 8) + "-not-a-secret-value"
+	for name, values := range map[string]map[string][]byte{
+		"unresolved":    nil,
+		"other pointer": {SecretPointer: []byte(secret)},
+		"invalid":       {SecretRefPointer: []byte(bad)},
+	} {
+		_, err := s.Deliver(t.Context(), requestRef(srv.URL, "ci-webhook", values))
+		if err == nil || sink.IsPermanent(err) || !strings.HasPrefix(err.Error(), "webhook: secret_ref ci-webhook: ") ||
+			strings.Contains(err.Error(), "not-a-secret-value") {
+			t.Errorf("%s: %v, want a retried error naming secret_ref ci-webhook only", name, err)
+		}
+	}
+	if got.count() != 1 {
+		t.Fatalf("receiver reached %d times, want 1", got.count())
+	}
+}
+
 // AC 2 (#108): rotation. A value with three secrets gives three entries,
 // in order; a receiver holding any one of them verifies.
 func TestDeliverRotation(t *testing.T) {
 	srv, got := receiver(t, nil)
-	secrets := []string{genSecret(t, 32), genSecret(t, 24), genSecret(t, 64)}
+	keys := []string{genSecret(t, 32), genSecret(t, 24), genSecret(t, 64)}
 	s := newSink(t, loopback)
-	if _, err := s.Deliver(t.Context(), request(srv.URL, "WH", map[string][]byte{SecretPointer: []byte(strings.Join(secrets, " "))})); err != nil {
+	if _, err := s.Deliver(t.Context(), request(srv.URL, "WH", map[string][]byte{SecretPointer: []byte(strings.Join(keys, " "))})); err != nil {
 		t.Fatal(err)
 	}
 	r, body := got.last()
@@ -166,7 +218,7 @@ func TestDeliverRotation(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("webhook-signature %q: want 3 space-separated entries", r.Header.Get(HeaderSignature))
 	}
-	for i, sec := range secrets {
+	for i, sec := range keys {
 		if err := Verify([]string{sec}, r.Header, body, fixedNow, DefaultTolerance); err != nil {
 			t.Errorf("secret %d: %v", i, err)
 		}
@@ -377,12 +429,12 @@ func TestDeliverSecretErrors(t *testing.T) {
 	srv, got := receiver(t, nil)
 	s := newSink(t, loopback)
 	bad := "whsec_" + strings.Repeat("A", 8) + "-not-a-secret-value"
-	for name, secrets := range map[string]map[string][]byte{
+	for name, values := range map[string]map[string][]byte{
 		"unresolved": nil,
 		"invalid":    {SecretPointer: []byte(bad)},
 		"empty":      {SecretPointer: {}},
 	} {
-		_, err := s.Deliver(t.Context(), request(srv.URL, "WH_CI", secrets))
+		_, err := s.Deliver(t.Context(), request(srv.URL, "WH_CI", values))
 		if err == nil || sink.IsPermanent(err) || !strings.HasPrefix(err.Error(), "webhook: secret_env WH_CI: ") {
 			t.Errorf("%s: %v, want a retried error naming WH_CI", name, err)
 			continue
@@ -548,6 +600,7 @@ func TestValidate(t *testing.T) {
 		`{"url":"https://hooks.example.com/x"}`,
 		`{"url":"http://hooks.lan:8080/x","secret_env":"WH_CI","timeout":"2m"}`,
 		`{"url":"https://h.example/","timeout":"1s"}`,
+		`{"url":"https://h.example/","secret_ref":"ci-webhook.v2"}`,
 	} {
 		if err := s.Validate(sink.Config(cfg)); err != nil {
 			t.Errorf("%s: %v", cfg, err)
@@ -558,6 +611,8 @@ func TestValidate(t *testing.T) {
 		`{"url":"https://h/","secret_env":"whsec_abc"}`, `{"url":"https://h/","secret_env":"1BAD"}`,
 		`{"url":"https://h/","timeout":"500ms"}`, `{"url":"https://h/","timeout":"3m"}`, `{"url":"https://h/","timeout":"soon"}`,
 		`{"url":"https://h/","secret":"whsec_inline"}`, `{"url":"https://h/","headers":{}}`,
+		`{"url":"https://h/","secret_ref":"whsec_Inline"}`,
+		`{"url":"https://h/","secret_env":"WH","secret_ref":"wh"}`,
 	} {
 		err := s.Validate(sink.Config(cfg))
 		if err == nil {

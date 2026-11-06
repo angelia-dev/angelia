@@ -15,14 +15,16 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `listen` | `ANGELIA_LISTEN` | `:8080` | `host:port` |
 | `database.dsn` | `ANGELIA_DATABASE_DSN` | `sqlite:///var/lib/angelia/angelia.db` | `sqlite://`, `postgres://`, `postgresql://` URL |
 | `roles` | `ANGELIA_ROLES` (comma-separated) | `[all]` | `api`, `scheduler`, `worker`, `dispatcher`, `all` |
-| `secrets.key_file` | `ANGELIA_SECRETS_KEY_FILE` | empty | path (encryption itself is Phase 1) |
+| `secrets.key_file` | `ANGELIA_SECRETS_KEY_FILE` | empty | path to the key file; see [Stored secrets](#stored-secrets) |
+| `secrets.previous_key_files` | `ANGELIA_SECRETS_PREVIOUS_KEY_FILES` (comma-separated) | empty | paths of older key files, kept during a rotation |
+| none | `ANGELIA_SECRETS_KEY` | unset | the key itself (base64), instead of `secrets.key_file` |
 | `log.level` | `ANGELIA_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `log.format` | `ANGELIA_LOG_FORMAT` | `json` | `json`, `text` |
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
-| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable |
+| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
@@ -40,8 +42,12 @@ Check a configuration with `angelia config check [--config FILE]`.
 - Environment variables that are set but empty still override (`ANGELIA_LISTEN=` is then an invalid
   value); for `token_env`, an empty variable counts as unset and `config check` warns.
 - The `ANGELIA_SOURCES_` prefix is reserved for source overrides; only names ending in `_BASE_URL`
-  or `_TOKEN_ENV` are read, others are ignored (so a `token_env` may be called e.g.
-  `ANGELIA_SOURCES_GITHUB_TOKEN`). Source kinds are lower-case `[a-z0-9]` words joined by hyphens.
+  or `_TOKEN_ENV` are read, others are ignored. Source kinds are lower-case `[a-z0-9]` words joined by
+  hyphens.
+- **Security restriction:** no `token_env` (sources, plugin `credentials`) and no `*_env` key (watch file,
+  API) may name a variable starting with `ANGELIA_`. Those variables hold the instance's own settings,
+  among them the secrets key `ANGELIA_SECRETS_KEY`, which a reference would otherwise send to a remote host
+  as a token. Such a name fails the check with `names starting with ANGELIA_ are always refused`.
 - `roles`: `all` cannot be combined with other roles; duplicates are removed. `listen` port is 1-65535.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `base_url` must not contain credentials, and `token_env` must be a variable name: values that
@@ -152,7 +158,7 @@ credentials:
 | Key | Default | Allowed |
 |---|---|---|
 | `allowed_hosts` | empty | lower-case hostnames or IP literals, added to the manifest's `allowed_hosts` |
-| `credentials.<host[:port]>.token_env` | required | name of an environment variable; the host must be in the manifest's or this file's `allowed_hosts`; no port means 443 |
+| `credentials.<host[:port]>.token_env` | required | name of an environment variable, never one starting with `ANGELIA_`; the host must be in the manifest's or this file's `allowed_hosts`; no port means 443 |
 | `credentials.<host[:port]>.scheme` | empty | one word such as `Bearer`, written before the token; only with the `Authorization` header |
 | `credentials.<host[:port]>.header` | `Authorization` | a header netguard counts as a credential: `Authorization` or `PRIVATE-TOKEN` (any case) |
 
@@ -182,7 +188,7 @@ credentials:
 - Credentials live only here, as an environment variable name; never in the watch file or the plugin config
   map. A `token:` key is an unknown key and an error. An unset or empty variable is a `config check` warning,
   and requests to that host then fail, as do tokens shorter than 8 bytes. The variable is read once, at
-  start: a rotated token needs a restart. A secret-store reference will be an additional key (#75).
+  start: a rotated token needs a restart. Plugin credentials cannot name a stored secret yet.
 
 ### `angelia config check` output
 
@@ -199,9 +205,94 @@ plugins in /var/lib/angelia/plugins: 1
       crates-mirror.example.com:443  Authorization: Bearer <token from $CRATES_MIRROR_TOKEN>
       crates-mirror.example.com:8443  Authorization: <token from $CRATES_MIRROR_TOKEN>
       gitlab.example.com:443  PRIVATE-TOKEN: <token from $GITLAB_TOKEN, not set>
+secrets: no key configured (0 stored)
 ```
 
-An invalid `grants.yaml` or manifest fails the check with `invalid plugins: ...`.
+An invalid `grants.yaml` or manifest fails the check with `invalid plugins: ...`. The last line reports
+the [secrets key](#stored-secrets) and how many stored secrets the database holds (read-only: the check
+never creates or migrates the database).
+
+## Stored secrets
+
+Sink credentials can be stored in the instance, encrypted at rest with AES-256-GCM, and named from a sink
+config with a `*_ref` key (such as the webhook's `secret_ref`). The design is
+[ADR 0024](adr/0024-secrets-encrypted-at-rest.md). Values are write-only: no API response, CLI output or
+log line contains one. Manage them with [`angelia secret`](cli.md#stored-secrets) (through the API, `admin`
+scope) and the keys with `angelia secrets` (instance-side).
+
+Once the dispatcher role runs ([#198](https://github.com/angelia-dev/angelia/issues/198)), at every delivery attempt it resolves each `*_ref` key of the sink's config from the store, and
+each `*_env` key from the environment, before the sink is called; values are not cached. A secret bound to
+`hosts` is resolved only when the URL the sink sends to (the key its kind marks `x-angelia-destination`,
+the webhook's `url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
+a value that cannot be decrypted fails the attempt before anything is sent, and it is retried; `last_error`
+names the key and the secret (`dispatch: secret /secret_ref: ... secret ci-webhook does not exist`), never
+the value. Sinks follow no redirect, so a bound secret never leaves its hosts; a sink kind that sent one
+anywhere other than its destination would first need netguard's per-request check (ADR 0024 §2). The
+binding compares host and port, not the scheme: `http://h:443/` matches a binding of `h`, which needs `h` in
+`http.allow_http_hosts`.
+
+> **Source and registry credentials** cannot reference stored secrets yet (#111). There, `hosts` will be
+> mandatory (`422 secret-host-binding-required`) and every redirect hop will be checked against it.
+
+### The key
+
+- `secrets.key_file` (the documented default) holds **one standard-base64 encoding of 32 random bytes**
+  (44 characters), optionally followed by one newline. Anything else is a startup error that never echoes
+  the content. Create one with `angelia secrets keygen --out /etc/angelia/secrets.key` (created `0600`,
+  never overwrites a file); without `--out` the key is printed to stdout, the only command that ever prints
+  key material.
+- `ANGELIA_SECRETS_KEY` holds the same value inline, for platforms that only inject environment variables.
+  Setting it together with `secrets.key_file` is an error. After reading it the server calls
+  `os.Unsetenv`. **That only keeps the key out of processes the server starts later**: it does not scrub
+  `/proc/self/environ` (readable by the same user, and by root) or the container runtime's record of the
+  environment (`docker inspect`, the pod spec). Prefer the file.
+- `secrets.previous_key_files` lists older keys, used **only to decrypt**: during a rotation and to read a
+  restored backup.
+- **Back up the key file separately from the database.** Without it the stored secrets cannot be read; a
+  backup of the database alone does not expose them.
+
+### File permissions
+
+On Unix the server opens the key file (following symlinks, as Kubernetes secret volumes are symlinks) and
+checks the mode of the opened file. It must be a regular file. It is **refused** when other users can
+read it or when group or others can write it (the error says `chmod 600`), and **accepted with a warning**
+when the group can read it. Ownership is not checked. Working settings:
+
+- **Kubernetes:** `defaultMode: 0400` on the secret volume, or `0440` with `fsGroup`. The default `0644` is
+  refused.
+- **Docker Swarm:** `secrets: [{source: angelia-key, target: secrets.key, mode: 0400, uid: "65532"}]`. The
+  default `0444` is refused.
+- **Docker Compose:** file secrets are bind mounts that keep the host file's mode and owner: `chown 65532`
+  (the distroless nonroot user) and `chmod 0400` the host file.
+
+### Without a key
+
+Every role checks the key at startup, since all roles share the store.
+
+| State | Outcome |
+|---|---|
+| No key, no stored secret | Starts. `config check` prints `secrets: no key configured (0 stored)`. |
+| No key, stored secrets exist | Refuses to start: `secrets: 3 stored secrets but no key configured; set secrets.key_file`. There is no plaintext fallback. |
+| A stored secret is sealed with a key that is not configured | Refuses to start, listing the unknown key ids and their row counts. |
+| No key, a secret is written through the API | `422 secrets-key-missing`; nothing is stored. |
+| A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the API accepts it without a warning. Each delivery fails before it is sent, and is retried, until the secret is stored. |
+
+The startup check reads SQLite databases; a Postgres store is not checked yet.
+
+### Rotating the key
+
+1. `angelia secrets keygen --out new.key`.
+2. Set `secrets.key_file: new.key` and `secrets.previous_key_files: [old.key]`, and restart. With several
+   nodes, first roll out `old.key` as the primary and `new.key` as a previous key everywhere, then swap
+   them, so that every node can read what any other node writes.
+3. `angelia secrets rotate` re-encrypts every stored secret that the primary key did not seal, in one
+   transaction (`--batch N` for one transaction per N rows; `--dry-run` to only report). It reads the same
+   config, needs the database, and writes an audit log line. A crash rolls back; rerunning is safe. A row
+   changed concurrently through the API is retried up to 3 times; one that still loses is reported, and
+   the command exits non-zero, to be rerun.
+4. `angelia secrets status` prints the number of stored secrets per key id and which ids are configured.
+   When the old key has 0 rows, remove it from `previous_key_files`. **Keep the old key file archived** as
+   long as backups taken before the rotation are kept: restoring one needs it.
 
 ## `angelia serve`
 

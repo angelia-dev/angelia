@@ -234,28 +234,11 @@ func TestUnsendableDeliveriesAreDead(t *testing.T) {
 	}
 }
 
-func TestDecryptErrorIsRetried(t *testing.T) {
-	st, _ := newStore(t)
-	addEvents(t, st, 1)
-	ts := &testSink{}
-	d := newDispatcher(t, st, registry(t, ts), Options{
-		Clock:         &fakeClock{now: t0},
-		DecryptConfig: func([]byte) ([]byte, error) { return nil, errors.New("no key") },
-	})
-	pollWait(t, d)
-	if del := delivery(t, st, "E0000"); del.Status != store.DeliveryPending || !strings.Contains(del.LastError, "no key") {
-		t.Errorf("after a decrypt error: %+v", del)
-	}
-}
-
 func TestRequestContent(t *testing.T) {
 	st, _ := newStore(t)
 	addEvents(t, st, 1)
 	ts := &testSink{}
-	d := newDispatcher(t, st, registry(t, ts), Options{
-		Clock:         &fakeClock{now: t0},
-		DecryptConfig: func(b []byte) ([]byte, error) { return append([]byte(nil), b...), nil },
-	})
+	d := newDispatcher(t, st, registry(t, ts), Options{Clock: &fakeClock{now: t0}})
 	pollWait(t, d)
 	reqs := ts.requests()
 	if len(reqs) != 1 {
