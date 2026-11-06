@@ -156,10 +156,13 @@ func (l lostUpdateTx) UpdateSecret(ctx context.Context, s store.Secret) (bool, e
 // NIT4 (#75 review): a PUT whose fenced update loses runs again on the new
 // row, up to putSecretAttempts times, instead of failing at once.
 func TestPutSecretLostUpdate(t *testing.T) {
+	if putSecretAttempts != 3 {
+		t.Fatalf("putSecretAttempts = %d, want 3 (ADR 0024 amendment)", putSecretAttempts)
+	}
 	lose := 0
 	e := newEnv(t, withKeys, func(o *Options) { o.Store = lostUpdates{o.Store, &lose} })
 	e.must(http.StatusCreated, e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v1"}))
-	lose = putSecretAttempts - 1
+	lose = 2 // two losses, then the third attempt wins
 	r := e.must(http.StatusOK, e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v2"}))
 	if r.Header.Get("Angelia-Change") != "updated" || lose != 0 {
 		t.Fatalf("retried update: %v, %d losses left", r.Header, lose)
@@ -168,7 +171,7 @@ func TestPutSecretLostUpdate(t *testing.T) {
 	if v, _ := testKeyring().Open(row.ID, row.Name, row.Ciphertext); string(v.Reveal()) != "v2" || row.Revision != 2 {
 		t.Fatalf("stored revision %d", row.Revision)
 	}
-	lose = putSecretAttempts
+	lose = 3 // every attempt loses
 	r = e.do("PUT", "/v1/secrets/s", tokAdmin, map[string]any{"value": "v3"})
 	if r.Status != http.StatusInternalServerError || lose != 0 {
 		t.Fatalf("always losing: %d %s, %d losses left", r.Status, r.Body, lose)
