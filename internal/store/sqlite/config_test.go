@@ -16,14 +16,9 @@ func TestOwnershipMigrationOnPopulatedDB(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "a.db"))
 	must(t, err)
 	defer func() { _ = db.Close() }()
-	p, err := newProvider(db)
-	must(t, err)
-	srcs := p.ListSources()
-	prev := srcs[len(srcs)-2].Version
-	if srcs[len(srcs)-1].Version < 4 {
-		t.Skip("ownership migration is not the latest")
-	}
-	_, err = migrate(ctx, db, discard(), prev)
+	// Seed at schema 15, the last one with sink.config_json_encrypted
+	// (renamed by 00016), so later migrations do not break the seed.
+	_, err = migrate(ctx, db, discard(), 15)
 	must(t, err)
 	for _, q := range []string{
 		`INSERT INTO target (id, kind, coordinates_json, next_check_at) VALUES ('t1','npm','{"name":"x"}',1)`,

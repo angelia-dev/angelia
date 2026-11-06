@@ -285,7 +285,7 @@ type ConfigTx interface {
 	// changes. ErrNotFound for an unknown target.
 	RecomputeTargetInterval(ctx context.Context, targetID string, now time.Time) (time.Duration, bool, error)
 	CreateSink(ctx context.Context, s Sink) error
-	// UpdateSink stores Kind and ConfigEncrypted.
+	// UpdateSink stores Kind and ConfigEncrypted (the sink config JSON).
 	UpdateSink(ctx context.Context, s Sink) error
 	DeleteSink(ctx context.Context, id string) error
 	CreateSubscription(ctx context.Context, s Subscription) error
@@ -416,8 +416,10 @@ type Event struct {
 	RefEventID string
 }
 
-// Sink is a delivery destination. ConfigEncrypted is stored as given;
-// encryption at rest is the caller's job (internal/secrets).
+// Sink is a delivery destination. ConfigEncrypted holds the sink config JSON,
+// stored as given in sink.config_json; it carries secret references only,
+// never secret values (ADR 0024).
+// TODO(#197 follow-up): rename to Config.
 type Sink struct {
 	ID              string
 	Kind            string

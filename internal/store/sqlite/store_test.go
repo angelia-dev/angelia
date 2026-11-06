@@ -162,13 +162,9 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 	must(t, err)
 	defer func() { _ = db.Close() }()
 
-	p, err := newProvider(db)
-	must(t, err)
-	sources := p.ListSources()
-	if len(sources) < 2 {
-		t.Fatalf("need at least two migrations, have %d", len(sources))
-	}
-	if _, err := migrate(ctx, db, discard(), sources[len(sources)-2].Version); err != nil {
+	// Seed at schema 15, the last one with sink.config_json_encrypted
+	// (renamed by 00016), so later migrations do not break the seed.
+	if _, err := migrate(ctx, db, discard(), 15); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{
