@@ -182,10 +182,13 @@ func (h HTTP) LoadCAPool() (*x509.CertPool, error) {
 		return nil, fmt.Errorf("http.ca_file: %w", err)
 	}
 	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
+	if err == nil && pool == nil {
+		err = errors.New("no system pool")
+	}
+	if err != nil {
 		// Falling back to the file alone would break every public registry
 		// and webhook with a confusing certificate error.
-		return nil, fmt.Errorf("http.ca_file: cannot load the system root certificates to extend: %v", err)
+		return nil, fmt.Errorf("http.ca_file: cannot load the system root certificates to extend: %w", err)
 	}
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("http.ca_file %s: no PEM certificate found", h.CAFile)
