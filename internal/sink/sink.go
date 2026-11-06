@@ -47,7 +47,7 @@ type Sink interface {
 	Deliver(ctx context.Context, req Request) (Result, error)
 }
 
-// Config is a sink's configuration (sink.config_json_encrypted, decrypted),
+// Config is a sink's configuration (sink.config_json),
 // opaque to the core: only the sink of its kind interprets it.
 type Config json.RawMessage
 

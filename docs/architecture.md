@@ -174,7 +174,7 @@ watch(id, target_id, policy_json, labels_json, baseline_done)
 version(target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at)   -- known set, never shrinks (ADR 0010)
 event(seq, id ULID, watch_id, type, payload_json, created_at, ref_event_id)            -- immutable log; ref_event_id: the original of a release.yanked (ADR 0018)
 subscription(id, filter_json, sink_id, template)
-sink(id, kind, config_json_encrypted)
+sink(id, kind, config_json)
 delivery(id, event_id, subscription_id, status, attempts, next_attempt_at, last_error)
 pending_release(watch_id, target_id, raw, held_at, release_json)                       -- versions held for cooldown, PK (watch_id, target_id, raw) (ADR 0012)
 ```

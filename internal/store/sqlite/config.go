@@ -247,12 +247,12 @@ func sinkBytes(b []byte) []byte {
 
 func (o txOps) CreateSink(ctx context.Context, k store.Sink) error {
 	return wrap(o.q.CreateSink(ctx, CreateSinkParams{
-		ID: k.ID, Kind: k.Kind, ConfigJsonEncrypted: sinkBytes(k.ConfigEncrypted), Name: nullName(k.Name), ManagedBy: owner(k.ManagedBy),
+		ID: k.ID, Kind: k.Kind, ConfigJson: sinkBytes(k.ConfigEncrypted), Name: nullName(k.Name), ManagedBy: owner(k.ManagedBy),
 	}), "create sink", k.ID)
 }
 
 func (o txOps) UpdateSink(ctx context.Context, k store.Sink) error {
-	n, err := o.q.UpdateSink(ctx, UpdateSinkParams{Kind: k.Kind, ConfigJsonEncrypted: sinkBytes(k.ConfigEncrypted), ID: k.ID})
+	n, err := o.q.UpdateSink(ctx, UpdateSinkParams{Kind: k.Kind, ConfigJson: sinkBytes(k.ConfigEncrypted), ID: k.ID})
 	return deleted(n, err, "update sink", k.ID)
 }
 
@@ -268,7 +268,7 @@ func (o txOps) ListManagedSinks(ctx context.Context, managedBy string) ([]store.
 	}
 	out := make([]store.Sink, len(rows))
 	for i, r := range rows {
-		out[i] = store.Sink{ID: r.ID, Kind: r.Kind, ConfigEncrypted: r.ConfigJsonEncrypted, Name: r.Name.String, ManagedBy: r.ManagedBy}
+		out[i] = store.Sink{ID: r.ID, Kind: r.Kind, ConfigEncrypted: r.ConfigJson, Name: r.Name.String, ManagedBy: r.ManagedBy}
 	}
 	return out, nil
 }

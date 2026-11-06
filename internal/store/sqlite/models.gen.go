@@ -68,11 +68,11 @@ type Secret struct {
 }
 
 type Sink struct {
-	ID                  string
-	Kind                string
-	ConfigJsonEncrypted []byte
-	Name                sql.NullString
-	ManagedBy           string
+	ID         string
+	Kind       string
+	ConfigJson []byte
+	Name       sql.NullString
+	ManagedBy  string
 }
 
 type Subscription struct {

@@ -275,22 +275,22 @@ func (q *Queries) CreateSecret(ctx context.Context, arg CreateSecretParams) erro
 }
 
 const createSink = `-- name: CreateSink :exec
-INSERT INTO sink (id, kind, config_json_encrypted, name, managed_by) VALUES (?, ?, ?, ?, ?)
+INSERT INTO sink (id, kind, config_json, name, managed_by) VALUES (?, ?, ?, ?, ?)
 `
 
 type CreateSinkParams struct {
-	ID                  string
-	Kind                string
-	ConfigJsonEncrypted []byte
-	Name                sql.NullString
-	ManagedBy           string
+	ID         string
+	Kind       string
+	ConfigJson []byte
+	Name       sql.NullString
+	ManagedBy  string
 }
 
 func (q *Queries) CreateSink(ctx context.Context, arg CreateSinkParams) error {
 	_, err := q.db.ExecContext(ctx, createSink,
 		arg.ID,
 		arg.Kind,
-		arg.ConfigJsonEncrypted,
+		arg.ConfigJson,
 		arg.Name,
 		arg.ManagedBy,
 	)
@@ -735,7 +735,7 @@ func (q *Queries) GetSecretByName(ctx context.Context, name string) (Secret, err
 }
 
 const getSink = `-- name: GetSink :one
-SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE id = ?
+SELECT id, kind, config_json, name, managed_by FROM sink WHERE id = ?
 `
 
 func (q *Queries) GetSink(ctx context.Context, id string) (Sink, error) {
@@ -744,7 +744,7 @@ func (q *Queries) GetSink(ctx context.Context, id string) (Sink, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
-		&i.ConfigJsonEncrypted,
+		&i.ConfigJson,
 		&i.Name,
 		&i.ManagedBy,
 	)
@@ -752,7 +752,7 @@ func (q *Queries) GetSink(ctx context.Context, id string) (Sink, error) {
 }
 
 const getSinkByName = `-- name: GetSinkByName :one
-SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE name = ?
+SELECT id, kind, config_json, name, managed_by FROM sink WHERE name = ?
 `
 
 func (q *Queries) GetSinkByName(ctx context.Context, name sql.NullString) (Sink, error) {
@@ -761,7 +761,7 @@ func (q *Queries) GetSinkByName(ctx context.Context, name sql.NullString) (Sink,
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
-		&i.ConfigJsonEncrypted,
+		&i.ConfigJson,
 		&i.Name,
 		&i.ManagedBy,
 	)
@@ -1263,7 +1263,7 @@ func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDu
 }
 
 const listNamedSinksPage = `-- name: ListNamedSinksPage :many
-SELECT id, kind, config_json_encrypted, name, managed_by FROM sink
+SELECT id, kind, config_json, name, managed_by FROM sink
 WHERE name IS NOT NULL
   AND (name > ?1 OR (name = ?1 AND id > ?2))
 ORDER BY name, id
@@ -1288,7 +1288,7 @@ func (q *Queries) ListNamedSinksPage(ctx context.Context, arg ListNamedSinksPage
 		if err := rows.Scan(
 			&i.ID,
 			&i.Kind,
-			&i.ConfigJsonEncrypted,
+			&i.ConfigJson,
 			&i.Name,
 			&i.ManagedBy,
 		); err != nil {
@@ -1551,7 +1551,7 @@ func (q *Queries) ListSecrets(ctx context.Context) ([]Secret, error) {
 }
 
 const listSinksManagedBy = `-- name: ListSinksManagedBy :many
-SELECT id, kind, config_json_encrypted, name, managed_by FROM sink WHERE managed_by = ? ORDER BY name
+SELECT id, kind, config_json, name, managed_by FROM sink WHERE managed_by = ? ORDER BY name
 `
 
 func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]Sink, error) {
@@ -1566,7 +1566,7 @@ func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]S
 		if err := rows.Scan(
 			&i.ID,
 			&i.Kind,
-			&i.ConfigJsonEncrypted,
+			&i.ConfigJson,
 			&i.Name,
 			&i.ManagedBy,
 		); err != nil {
@@ -2078,17 +2078,17 @@ func (q *Queries) UpdateSecret(ctx context.Context, arg UpdateSecretParams) (int
 }
 
 const updateSink = `-- name: UpdateSink :execrows
-UPDATE sink SET kind = ?, config_json_encrypted = ? WHERE id = ?
+UPDATE sink SET kind = ?, config_json = ? WHERE id = ?
 `
 
 type UpdateSinkParams struct {
-	Kind                string
-	ConfigJsonEncrypted []byte
-	ID                  string
+	Kind       string
+	ConfigJson []byte
+	ID         string
 }
 
 func (q *Queries) UpdateSink(ctx context.Context, arg UpdateSinkParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateSink, arg.Kind, arg.ConfigJsonEncrypted, arg.ID)
+	result, err := q.db.ExecContext(ctx, updateSink, arg.Kind, arg.ConfigJson, arg.ID)
 	if err != nil {
 		return 0, err
 	}
