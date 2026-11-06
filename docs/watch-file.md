@@ -113,10 +113,9 @@ at load time with the file, line and path of the key. The policy is stored as `w
 
 If neither `secret_env` nor `secret_ref` is set the webhook is delivered unsigned and `config check` warns.
 A `secret_ref` naming a secret that is not stored is a warning at apply; deliveries fail, and are retried,
-until it is stored (`angelia secret set`). A stored secret bound to hosts is sent only to those hosts.
-**Not wired yet:** delivery does not resolve stored secrets until #108 lands, so the two sentences above
-describe that wiring; until then every delivery of a sink with `secret_ref` fails before it is sent, and is
-retried, and `hosts` is stored but not enforced. See [Stored secrets](configuration.md#stored-secrets). If the named
+until it is stored (`angelia secret set`). A stored secret bound to hosts is sent only to those hosts: a
+`url` outside them fails each delivery before it is sent, and it is retried. A `secret_ref` value signs
+exactly as a `secret_env` value. See [Stored secrets](configuration.md#stored-secrets). If the named
 variable is empty or unset at startup, apply succeeds with a warning and delivery fails visibly until it is
 set (same rule as `token_env` in configuration.md). The variable holds one to three `whsec_` secrets
 separated by spaces, for rotation; a `timeout` above the dispatcher's 15 s deliver timeout has no effect

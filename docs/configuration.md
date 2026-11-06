@@ -220,11 +220,16 @@ config with a `*_ref` key (such as the webhook's `secret_ref`). The design is
 log line contains one. Manage them with [`angelia secret`](cli.md#stored-secrets) (through the API, `admin`
 scope) and the keys with `angelia secrets` (instance-side).
 
-> **Not wired yet.** Delivery does not resolve stored secrets yet: that lands with the webhook sink and the
-> dispatcher wiring (#108), and for source and registry credentials with #111. Until then `secret_ref` and
-> a secret's `hosts` are stored and validated, but a delivery whose sink names a stored secret fails before
-> it is sent, and is retried, with a `last_error` saying so; it is never sent unsigned. The host binding,
-> the redirect re-check and `422 secret-host-binding-required` take effect with that wiring.
+At every delivery attempt the dispatcher resolves each `*_ref` key of the sink's config from the store, and
+each `*_env` key from the environment, before the sink is called; values are not cached. A secret bound to
+`hosts` is resolved only when the URL the sink sends to (the key its kind marks `x-angelia-destination`,
+the webhook's `url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
+a value that cannot be decrypted fails the attempt before anything is sent, and it is retried; `last_error`
+names the key and the secret (`dispatch: secret /secret_ref: ... secret ci-webhook does not exist`), never
+the value. Sinks follow no redirect, so a bound secret never leaves its hosts.
+
+> **Source and registry credentials** cannot reference stored secrets yet (#111). There, `hosts` will be
+> mandatory (`422 secret-host-binding-required`) and every redirect hop will be checked against it.
 
 ### The key
 
@@ -267,7 +272,7 @@ Every role checks the key at startup, since all roles share the store.
 | No key, stored secrets exist | Refuses to start: `secrets: 3 stored secrets but no key configured; set secrets.key_file`. There is no plaintext fallback. |
 | A stored secret is sealed with a key that is not configured | Refuses to start, listing the unknown key ids and their row counts. |
 | No key, a secret is written through the API | `422 secrets-key-missing`; nothing is stored. |
-| A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the API accepts it without a warning. Once delivery resolves stored secrets ([not wired yet](#stored-secrets)), the delivery fails, and is retried. |
+| A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the API accepts it without a warning. Each delivery fails before it is sent, and is retried, until the secret is stored. |
 
 The startup check reads SQLite databases; a Postgres store is not checked yet.
 

@@ -253,10 +253,8 @@ angelia secrets status [--config FILE]
 
 `angelia secret` manages the instance's [stored secrets](configuration.md#stored-secrets)
 through the API (`/v1/secrets`, `admin` scope). A sink names one with a `*_ref`
-key, such as the webhook's `secret_ref: ci-webhook`.
-**Not wired yet:** delivery does not resolve stored secrets until #108 lands;
-until then a sink that names one fails before sending, and `--host` is stored
-but not enforced. See [Stored secrets](configuration.md#stored-secrets).
+key, such as the webhook's `secret_ref: ci-webhook`; each delivery reads it
+from the store. See [Stored secrets](configuration.md#stored-secrets).
 
 - The value is read from `--from-file` (a path, or `-` for stdin), never from
   an argument, so it stays out of the shell history and the process list.
@@ -265,8 +263,9 @@ but not enforced. See [Stored secrets](configuration.md#stored-secrets).
   is. The value is at most 64 KiB, and any bytes are allowed (it is sent as
   `value_base64`).
 - `--host` binds the secret to the hosts it may be sent to (`host` or
-  `host:port`, exact match, repeatable). Without it the secret may be sent to
-  any host its sink names.
+  `host:port`, exact match, repeatable): a sink whose URL is on another host
+  fails each delivery before sending, and it is retried. Without it the
+  secret may be sent to any host its sink names.
 - Values are **write-only**: `list`, `get` and `set` print the name, hosts,
   key id, the sinks that reference the secret and the times, never the value.
 - `delete` of a secret that a sink references fails with `409 secret-in-use`,

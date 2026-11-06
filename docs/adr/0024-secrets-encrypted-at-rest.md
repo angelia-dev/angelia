@@ -386,12 +386,29 @@ text is left as is; this amendment states what holds.
   one is added, re-seals and is audited.
 - **A missing reference** (§4 table). The watch-file apply warns. The API accepts the reference without
   a warning, because it has no channel for warnings yet.
-- **Resolution comes with #108** (§6). The dispatcher does not resolve `*_ref` keys into
-  `sink.Request.Secrets` until the #108 wiring lands. Until then a delivery whose sink config holds a
-  `*_ref` key fails before `Deliver` and is retried, with a `last_error` that names the key's pointer.
-  It is never sent unsigned. The host binding, the redirect re-check and
-  `422 secret-host-binding-required` (source and registry credentials, #111) take effect with that
-  wiring. Until then `hosts` is stored and validated only.
+- **Resolution** (§6), wired after #108 merged. On every attempt the dispatcher resolves each `*_env` key
+  from the environment and each `*_ref` key through `secrets.Resolver` (`dispatch.Options.Secrets`), into
+  `sink.Request.Secrets`, before `Deliver`. A missing secret, an invalid name, no key, a host mismatch or a
+  decryption error is a retried error naming the pointer and the secret (and the host), never the value.
+  A dispatcher with no resolver fails every `*_ref` the same way, so a stored-secret sink is never sent
+  unsigned.
+  - **Destination.** `api.SinkDestinations` reads the key each sink kind's `config_schema` marks
+    `x-angelia-destination: true` (the spec's `WebhookSinkConfig.url` for the built-in kind) into
+    `dispatch.Options.Destinations`, kind → JSON Pointer. A bound secret is resolved only for the URL at
+    that pointer; a kind that marks none gets unbound secrets only. A kind that marks several is an error.
+  - **Redirects.** Sinks follow no redirect (ADR 0017 §7; the webhook sink's client returns the `3xx`), so
+    the URL checked at resolution is the only one the value is sent to. `Bound.CheckRedirect` stays for the
+    source and registry credentials of #111, which follow redirects; `422 secret-host-binding-required`
+    takes effect there too.
+  - **Type.** `Request.Secrets` is `map[string]secrets.Value`, as §6 says, not the `map[string][]byte`
+    #108 shipped (ADR 0023 §4). A `[]byte` prints its content under `%s` and `%q`, so a `Request` passed
+    to `fmt` or slog would leak it; a `Value` prints `[REDACTED]` under every verb, and a sink calls
+    `Reveal` only where it signs. The change touches only the webhook sink and its tests.
+  - **`DecryptConfig` removed.** `dispatch.Options.DecryptConfig` was a pass-through; the sink
+    configuration is plaintext and the resolution above replaces it (§6). The column rename stays decided
+    question 4.
+  - **`_ref` and `_env` are reserved suffixes** at any depth of a sink config, for plugin kinds too: a key
+    with either suffix is always resolved, and a delivery fails when it does not resolve.
 - **Scope of the stored-sinks startup check** (§6). The check runs in the role that opens the store,
   and today only the `api` role does: the scheduler and dispatcher roles of `serve` are stubs that
   don't open it. When they replace their stubs, they must run the same check before they start. The

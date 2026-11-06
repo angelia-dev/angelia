@@ -142,10 +142,6 @@ type Options struct {
 	TracerProvider trace.TracerProvider
 	// Renderer builds messages; nil means DefaultRenderer.
 	Renderer Renderer
-	// DecryptConfig turns sink.config_json_encrypted into the sink's
-	// configuration; nil passes it through (encryption at rest is not
-	// implemented yet, maintainer decision on #107).
-	DecryptConfig func([]byte) ([]byte, error)
 	// Metrics receives attempt outcomes; nil discards them.
 	Metrics Metrics
 	// LookupEnv reads the environment variable named by each *_env key of a
@@ -153,6 +149,15 @@ type Options struct {
 	// Nil means os.LookupEnv. It is called on every attempt: values are not
 	// cached.
 	LookupEnv func(string) (string, bool)
+	// Secrets resolves the stored secret named by each *_ref key of a sink's
+	// configuration, for sink.Request.Secrets (ADR 0024 §6), on every
+	// attempt. Nil: a sink with a *_ref key fails before Deliver, retried.
+	Secrets SecretResolver
+	// Destinations maps a sink kind to the JSON Pointer of the key its
+	// config_schema marks x-angelia-destination (api.SinkDestinations): a
+	// secret bound to hosts is resolved only for that URL. A kind with
+	// none gets only unbound secrets.
+	Destinations map[string]string
 }
 
 // Dispatcher is the "dispatcher" role: it leases due deliveries from the
@@ -224,9 +229,6 @@ func New(st Store, sinks Sinks, opts Options) (*Dispatcher, error) {
 	}
 	if opts.Renderer == nil {
 		opts.Renderer = DefaultRenderer{}
-	}
-	if opts.DecryptConfig == nil {
-		opts.DecryptConfig = func(b []byte) ([]byte, error) { return b, nil }
 	}
 	if opts.LookupEnv == nil {
 		opts.LookupEnv = os.LookupEnv
@@ -469,15 +471,14 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 		// delivery for a kind only the newer one has.
 		return sink.Result{}, fmt.Errorf("dispatch: %w", err)
 	}
-	cfg, err := d.opts.DecryptConfig(ld.Sink.ConfigEncrypted)
-	if err != nil { // a key the operator can still fix: retried
-		return sink.Result{}, fmt.Errorf("dispatch: decrypt config of sink %s: %w", ld.Sink.ID, err)
-	}
-	if p := secretRef(cfg); p != "" { // fail closed until *_ref is resolved (#108)
-		return sink.Result{}, fmt.Errorf("dispatch: config of sink %s at %s %s", ld.Sink.ID, p, errSecretRefNotWired)
-	}
-	secrets, err := ResolveSecrets(cfg, d.opts.LookupEnv)
-	if err != nil { // the operator fixes it by setting the variable: retried
+	// The configuration is plaintext: secret values live in the secret
+	// table, named by *_ref keys (ADR 0024 §6).
+	cfg := ld.Sink.ConfigEncrypted
+	secrets, err := ResolveSecrets(ctx, cfg, SecretSources{
+		LookupEnv: d.opts.LookupEnv, Stored: d.opts.Secrets,
+		Destination: destination(cfg, d.opts.Destinations[ld.Sink.Kind]),
+	})
+	if err != nil { // the operator fixes it by setting the variable or storing the secret: retried
 		return sink.Result{}, err
 	}
 	ev := sink.ReleaseEvent{JSON: ld.Event.Payload}
