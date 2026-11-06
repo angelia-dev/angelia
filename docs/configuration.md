@@ -101,8 +101,10 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   and sinks), for a registry behind a private CA. Certificate verification is never switched off. A file
   that cannot be read or holds no certificate fails `config check` and `serve`.
 - A source credential goes only to its registry: a stored secret is re-checked against its `hosts` at every
-  redirect hop, and nothing that carries a credential is sent as plain `http://` through a proxy (a `https://`
-  registry goes through `CONNECT`). See [Private registries and mirrors](private-registries.md#proxy).
+  redirect hop, nothing that carries a credential is sent as plain `http://` through a proxy (a `https://`
+  registry goes through `CONNECT`), and a credential goes over plain `http://` only to a host in
+  `http.allow_http_hosts` (`config check` rejects a credentialed source whose `base_url` is such an `http://`
+  URL outside the list). See [Private registries and mirrors](private-registries.md#proxy).
 
 See [webhooks.md](webhooks.md) for the webhook sink.
 

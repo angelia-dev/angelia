@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,7 +88,51 @@ func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res re
 		base = npm.DefaultBaseURL
 	}
 	c.BaseURL, _ = url.Parse(base) // validated by config.Validate
+	c.AllowHTTPHosts = cfg.HTTP.AllowHTTPHosts
+	c.Proxy = outgoingProxy // the transport's own function: see newNetClient
 	return registryauth.Wrap(hc, c)
+}
+
+// outgoingProxy chooses the proxy of every outgoing request, from HTTPS_PROXY,
+// HTTP_PROXY and NO_PROXY (read once). It is passed both to the netguard
+// transport (newNetClient) and to registryauth, whose rule "no credential
+// over plain http through a proxy" is only sound when both see the same
+// route; do not give either another function.
+func outgoingProxy(r *http.Request) (*url.URL, error) { return http.ProxyFromEnvironment(r) }
+
+// sourceRefs lists the stored secrets the sources of cfg name, with the
+// registry URL each is sent to.
+func sourceRefs(cfg *config.Config) []registryauth.Ref {
+	kinds := make([]string, 0, len(cfg.Sources))
+	for k := range cfg.Sources {
+		kinds = append(kinds, k)
+	}
+	slices.Sort(kinds)
+	var refs []registryauth.Ref
+	for _, k := range kinds {
+		a := cfg.Sources[k].Auth
+		if a.IsZero() {
+			continue
+		}
+		u, err := url.Parse(baseURL(cfg, k, publicRegistries[k]))
+		if err != nil {
+			continue // config.Validate has reported it
+		}
+		for _, r := range []struct{ key, name string }{{"token_ref", a.TokenRef}, {"password_ref", a.PasswordRef}} {
+			if r.name != "" {
+				refs = append(refs, registryauth.Ref{Key: "sources." + k + ".auth." + r.key, Name: r.name, URL: u})
+			}
+		}
+	}
+	return refs
+}
+
+// checkSourceSecrets fails when a secret named by sources.<kind>.auth does
+// not exist or is not bound to its registry's host, from metadata only
+// (like api.CheckStoredSinks, so a typo stops the start instead of failing
+// every fetch).
+func checkSourceSecrets(cfg *config.Config, hosts map[string][]string) error {
+	return errors.Join(registryauth.CheckRefs(sourceRefs(cfg), hosts)...)
 }
 
 // publicRegistries are the base URLs that leave an event's purl without a
@@ -141,6 +187,7 @@ func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (
 	}
 	c, err := netguard.New(netguard.Config{
 		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs, RootCAs: roots,
+		Proxy: outgoingProxy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("http client: %w", err)
@@ -245,6 +292,19 @@ func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo
 	}
 	if err := api.CheckStoredSinks(ctx, st, plugins); err != nil {
 		return nil, errorsJoin(err, st.Close())
+	}
+	if len(sourceRefs(cfg)) > 0 {
+		rows, err := st.ListSecrets(ctx)
+		if err != nil {
+			return nil, errorsJoin(fmt.Errorf("list secrets: %w", err), st.Close())
+		}
+		hosts := make(map[string][]string, len(rows))
+		for _, r := range rows {
+			hosts[r.Name] = r.Hosts
+		}
+		if err := checkSourceSecrets(cfg, hosts); err != nil {
+			return nil, errorsJoin(fmt.Errorf("source credentials: %w", err), st.Close())
+		}
 	}
 	return st, nil
 }

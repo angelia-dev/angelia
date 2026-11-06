@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 
 	"github.com/angelia-dev/angelia/internal/secrets"
 )
@@ -28,8 +30,13 @@ import (
 var ErrUnbound = errors.New("registryauth: secret has no host binding")
 
 // ErrClearProxy is wrapped when a credential would reach a proxy as plain
-// http.
+// http, or when the proxy cannot be chosen.
 var ErrClearProxy = errors.New("registryauth: credential refused over plain http through a proxy")
+
+// ErrClearText is wrapped when a credential would be sent over plain http
+// to a host that is not in http.allow_http_hosts (decision D12, as for
+// webhooks).
+var ErrClearText = errors.New("registryauth: credential refused over plain http to a host outside http.allow_http_hosts")
 
 // Resolver turns a secret name into its value for a destination;
 // *secrets.Resolver implements it.
@@ -56,9 +63,16 @@ type Config struct {
 	// BaseURL is the source's base URL, whose host an environment Token is
 	// bound to.
 	BaseURL *url.URL
-	// Proxy chooses the proxy of a request, as http.Transport.Proxy does.
-	// Default http.ProxyFromEnvironment, like the netguard client.
+	// Proxy chooses the proxy of a request, as http.Transport.Proxy does. It
+	// must be the function the transport under the client uses (the
+	// process passes one function to netguard and to this package), or the
+	// rule below checks a route the request does not take. An error from it
+	// refuses the request. Default http.ProxyFromEnvironment.
 	Proxy func(*http.Request) (*url.URL, error)
+	// AllowHTTPHosts are the lower-case host names (http.allow_http_hosts)
+	// to which a credential may be sent over plain http://. Any other
+	// http:// request that needs a credential is refused.
+	AllowHTTPHosts []string
 }
 
 // Enabled reports whether c carries a credential.
@@ -100,52 +114,60 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(r)
 }
 
-// authorize sets the Authorization header of r, or fails.
+// authorize sets the Authorization header of r, or fails. The refusals that
+// need no secret come first, so nothing is decrypted for a request that will
+// be refused.
 func (t *transport) authorize(r *http.Request) error {
 	c := t.c
-	var user string
-	var secret secrets.Value
-	switch {
-	case c.TokenRef != "" || c.PasswordRef != "":
-		name := c.TokenRef
-		if c.PasswordRef != "" {
-			name, user = c.PasswordRef, c.Username
-		}
-		if c.Resolver == nil {
-			return fmt.Errorf("registryauth: secret %s cannot be read: no secrets resolver", name)
-		}
-		b, err := c.Resolver.Resolve(r.Context(), name, r.URL)
-		if err != nil {
-			return fmt.Errorf("registryauth: %w", err)
-		}
-		if len(b.Hosts) == 0 {
-			return fmt.Errorf("%w: %s must carry hosts naming the registry", ErrUnbound, name)
-		}
-		if err := b.Allows(r.URL); err != nil {
-			return fmt.Errorf("registryauth: %w", err)
-		}
-		secret = b.Value
-	default:
-		// An environment token is not bound to hosts: it goes to the
-		// host of the base URL and to no other hop.
-		if !sameHost(c.BaseURL, r.URL) {
-			return nil
-		}
-		secret = c.Token
+	stored := c.TokenRef != "" || c.PasswordRef != ""
+	// An environment token is not bound to hosts: it goes to the origin of
+	// the base URL (scheme, host and port) and to no other hop, so a
+	// redirect to http:// or to another host never carries it.
+	if !stored && !sameOrigin(c.BaseURL, r.URL) {
+		return nil
 	}
-	if p, err := c.Proxy(r); err == nil && p != nil && r.URL.Scheme != "https" {
+	if r.URL.Scheme == "http" && !slices.Contains(c.AllowHTTPHosts, strings.ToLower(r.URL.Hostname())) {
+		return fmt.Errorf("%w: %s", ErrClearText, r.URL.Scheme+"://"+r.URL.Host)
+	}
+	p, err := c.Proxy(r)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: choose the proxy for %s: %w", ErrClearProxy, r.URL.Host, err)
+	case p != nil && r.URL.Scheme != "https":
 		return fmt.Errorf("%w: %s", ErrClearProxy, r.URL.Scheme+"://"+r.URL.Host)
 	}
+	if !stored {
+		r.Header.Set("Authorization", "Bearer "+string(c.Token.Reveal()))
+		return nil
+	}
+	name := c.TokenRef
 	if c.PasswordRef != "" {
-		r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+string(secret.Reveal()))))
+		name = c.PasswordRef
+	}
+	if c.Resolver == nil {
+		return fmt.Errorf("registryauth: secret %s cannot be read: no secrets resolver", name)
+	}
+	b, err := c.Resolver.Resolve(r.Context(), name, r.URL)
+	if err != nil {
+		return fmt.Errorf("registryauth: %w", err)
+	}
+	if len(b.Hosts) == 0 {
+		return fmt.Errorf("%w: %s must carry hosts naming the registry", ErrUnbound, name)
+	}
+	if err := b.Allows(r.URL); err != nil {
+		return fmt.Errorf("registryauth: %w", err)
+	}
+	if c.PasswordRef != "" {
+		r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.Username+":"+string(b.Value.Reveal()))))
 	} else {
-		r.Header.Set("Authorization", "Bearer "+string(secret.Reveal()))
+		r.Header.Set("Authorization", "Bearer "+string(b.Value.Reveal()))
 	}
 	return nil
 }
 
-func sameHost(a, b *url.URL) bool {
-	if a == nil || b == nil {
+// sameOrigin reports whether a and b have the same scheme, host and port.
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) {
 		return false
 	}
 	da, err1 := secrets.Destination(a)

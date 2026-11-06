@@ -34,9 +34,13 @@ func docker(t *testing.T, args ...string) string {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is not installed")
 	}
+	if err := exec.CommandContext(t.Context(), "docker", "info").Run(); err != nil {
+		t.Skipf("no Docker daemon: %v", err)
+	}
+	// With a daemon a failure (a failed pull, a bad flag) is a failure, not a skip.
 	out, err := exec.CommandContext(t.Context(), "docker", args...).CombinedOutput()
 	if err != nil {
-		t.Skipf("docker %s: %v: %s", args[0], err, out)
+		t.Fatalf("docker %s: %v: %s", args[0], err, out)
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -105,7 +109,6 @@ func TestIntegrationVerdaccio(t *testing.T) {
 	if err := json.Unmarshal(body, &added); err != nil || code >= 300 || added.Token == "" {
 		t.Fatalf("adduser: %d %s", code, body)
 	}
-	t.Setenv("VERDACCIO_TEST_TOKEN", added.Token)
 
 	// Publish @acme/widget 1.0.0.
 	tgz := base64.StdEncoding.EncodeToString([]byte("not really a tarball"))
@@ -116,7 +119,7 @@ func TestIntegrationVerdaccio(t *testing.T) {
 		t.Fatalf("publish: %d %s", code, body)
 	}
 
-	// Without a credential the registry refuses; with token_env it is read.
+	// Without a credential the registry refuses; with the stored token it is read.
 	cfg := config.Default()
 	cfg.Sources["npm"] = config.Source{BaseURL: base}
 	e := newRegEnv(t)
@@ -139,8 +142,8 @@ func noRegLeak2(t *testing.T, secret, out string) {
 	}
 }
 
-// pypiserver serves the Simple API only, not the JSON API the pypi source
-// reads, so this checks the credential (basic auth, htpasswd) through the
+// pypiserver does not serve the JSON API at the path the pypi source reads
+// (/pypi/<name>/json), so this checks the credential (basic auth, htpasswd) through the
 // source's client and expects the source to get past authentication to a 404.
 func TestIntegrationPypiserver(t *testing.T) {
 	dir := t.TempDir()
@@ -154,7 +157,7 @@ func TestIntegrationPypiserver(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "packages"), 0o755); err != nil { //nolint:gosec // G301: read by the container user.
 		t.Fatal(err)
 	}
-	base := startContainer(t, "pypiserver/pypiserver:latest", 8080, []string{"-v", dir + ":/data:ro"},
+	base := startContainer(t, "pypiserver/pypiserver:v2.3.2", 8080, []string{"-v", dir + ":/data:ro"},
 		"run", "-P", "/data/htpasswd", "-a", "list,download,update", "/data/packages")
 	if code, _ := send(t, http.MethodGet, base+"/simple/", "", nil); code != http.StatusUnauthorized {
 		t.Fatalf("without credentials: %d, want 401", code)

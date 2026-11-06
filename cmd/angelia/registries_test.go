@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,6 +115,7 @@ func (e *regEnv) put(t *testing.T, name, value string, hosts ...string) {
 func (e *regEnv) list(t *testing.T, cfg *config.Config, tgt source.Target) (source.Result, error) {
 	t.Helper()
 	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
+	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
 	client, err := newNetClient(cfg, e.log, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -224,8 +227,8 @@ func TestTokenEnvAuthenticatesNPM(t *testing.T) {
 
 // A stored secret bound to another host is not sent, and no request is made.
 func TestSourceSecretBoundToAnotherHostIsRefused(t *testing.T) {
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
 	defer srv.Close()
 	e := newRegEnv(t)
 	e.put(t, "elsewhere", regCanary, "registry.example.com")
@@ -235,8 +238,8 @@ func TestSourceSecretBoundToAnotherHostIsRefused(t *testing.T) {
 	if !errors.Is(err, secrets.ErrHostMismatch) {
 		t.Fatalf("err = %v, want ErrHostMismatch", err)
 	}
-	if hits != 0 {
-		t.Errorf("%d requests reached the registry", hits)
+	if n := hits.Load(); n != 0 {
+		t.Errorf("%d requests reached the registry", n)
 	}
 	noRegLeak(t, err.Error()+e.logs.String())
 }
@@ -303,5 +306,116 @@ func TestConfigCheckRejectsABadCAFile(t *testing.T) {
 	p := writeCfg(t, "http:\n  ca_file: "+bad+"\n")
 	if _, _, err := runCheck(t, "--config", p); err == nil || !strings.Contains(err.Error(), "no PEM certificate") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A credentialed source on http:// needs its host in http.allow_http_hosts,
+// as a webhook does (D12): the config is invalid without it, and a hop to
+// another http host is refused at fetch.
+func TestCredentialedHTTPSourceNeedsAllowHTTPHosts(t *testing.T) {
+	yamlText := "sources:\n  npm:\n    base_url: http://verdaccio.internal:4873\n    auth: {token_ref: vt}\n"
+	if _, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, yamlText)}); err == nil || !strings.Contains(err.Error(), "allow_http_hosts") {
+		t.Fatalf("without the allow list: %v", err)
+	}
+	if _, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, yamlText+"http:\n  allow_http_hosts: [verdaccio.internal]\n")}); err != nil {
+		t.Fatalf("with the allow list: %v", err)
+	}
+}
+
+func TestSourceCredentialOverHTTPOutsideAllowListIsRefusedAtFetch(t *testing.T) {
+	srv := httptest.NewServer(fakeVerdaccio(regCanary))
+	defer srv.Close()
+	e := newRegEnv(t)
+	e.put(t, "vt", regCanary, hostOf(t, srv.URL))
+	cfg := config.Default()
+	cfg.Sources["npm"] = config.Source{BaseURL: srv.URL, Auth: config.SourceAuth{TokenRef: "vt"}}
+	cfg.HTTP.AllowNetworks = []string{"127.0.0.0/8"}
+	client, err := newNetClient(cfg, e.log, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := builtinSources(cfg, client.HTTPClient(), e.log, nil, e.res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := reg.Get("npm")
+	if _, err := src.List(t.Context(), npmTarget(), source.FetchState{}); err == nil || !strings.Contains(err.Error(), "allow_http_hosts") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The start-up check: a missing, unbound or wrongly bound secret is named,
+// from metadata only.
+func TestCheckSourceSecrets(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sources["npm"] = config.Source{BaseURL: "https://nexus.example.com/repository/npm", Auth: config.SourceAuth{TokenRef: "good"}}
+	cfg.Sources["pypi"] = config.Source{Auth: config.SourceAuth{Type: config.AuthBasic, Username: "u", PasswordRef: "wrong"}}
+	cfg.Sources["github-release"] = config.Source{Auth: config.SourceAuth{TokenRef: "gone"}}
+	err := checkSourceSecrets(cfg, map[string][]string{"good": {"nexus.example.com"}, "wrong": {"nexus.example.com"}})
+	if err == nil {
+		t.Fatal("want errors")
+	}
+	for _, want := range []string{"sources.pypi.auth.password_ref", "pypi.org", "sources.github-release.auth.token_ref", "gone"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "sources.npm") {
+		t.Errorf("the good secret is reported: %v", err)
+	}
+	if err := checkSourceSecrets(config.Default(), nil); err != nil {
+		t.Errorf("no references: %v", err)
+	}
+}
+
+// openStore refuses to start when a source's secret is missing, and
+// config check reads the database read-only for the same check.
+func TestStartAndConfigCheckVerifySourceSecrets(t *testing.T) {
+	dir := t.TempDir()
+	dsn := "sqlite://" + filepath.ToSlash(filepath.Join(dir, "a.db"))
+	cfgText := "database: {dsn: " + dsn + "}\nsources:\n  npm:\n    base_url: https://nexus.example.com/r\n    auth: {token_ref: nexus-npm}\n"
+	p := writeCfg(t, cfgText)
+
+	_, errb, err := runCheck(t, "--config", p)
+	if err != nil || !strings.Contains(errb, "database does not exist yet") {
+		t.Fatalf("no database: %v %q", err, errb)
+	}
+	cfg, err := config.Load(t.Context(), config.Options{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openStore(t.Context(), cfg, nil, slog.New(slog.DiscardHandler)); err == nil || !strings.Contains(err.Error(), "nexus-npm") {
+		t.Fatalf("openStore without the secret: %v", err)
+	}
+	if _, _, err := runCheck(t, "--config", p); err == nil || !strings.Contains(err.Error(), "nexus-npm") {
+		t.Fatalf("config check without the secret: %v", err)
+	}
+	st, err := sqlite.Open(t.Context(), filepath.Join(dir, "a.db"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := secrets.NewKeyring(bytes.Repeat([]byte{7}, secrets.KeySize))
+	e := &regEnv{st: st, keys: keys}
+	e.put(t, "nexus-npm", regCanary, "nexus.example.com")
+	_ = st.Close()
+	st, err = openStore(t.Context(), cfg, nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("openStore with the secret: %v", err)
+	}
+	_ = st.Close()
+	// (config check as a whole would now ask for a secrets key.)
+	if err := checkSourceSecretsOnDisk(t.Context(), cfg, io.Discard); err != nil {
+		t.Fatalf("source check with the secret: %v", err)
+	}
+}
+
+// auth on a kind no built-in source reads is warned about, not silently kept.
+func TestConfigWarnsAboutCredentialOnUnknownKind(t *testing.T) {
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, "sources:\n  nmp:\n    auth: {token_ref: t}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := strings.Join(cfg.Warnings(), "\n"); !strings.Contains(w, "sources.nmp") {
+		t.Errorf("warnings = %q", w)
 	}
 }

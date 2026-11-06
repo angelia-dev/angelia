@@ -82,17 +82,26 @@ sources:
     auth: {type: basic, username: angelia, password_ref: nexus-pypi-password}
 ```
 
-Angelia reads the PyPI JSON API (`/pypi/<name>/json`). Check that your repository serves it;
-a server that offers only the Simple API cannot be watched yet (pypiserver is one).
+Angelia reads the PyPI JSON API (`/pypi/<name>/json`). Check that your repository serves it at that path;
+a server that offers only the Simple API, or the JSON API elsewhere, cannot be watched yet (pypiserver is one).
 
 ### Verdaccio and devpi
 
+```
+angelia secret set verdaccio-token --from-file ./token.txt --host verdaccio.internal:4873
+```
+
 ```yaml
+http:
+  allow_networks: [10.0.0.0/8]
+  allow_http_hosts: [verdaccio.internal]            # required for a credential over plain http
 sources:
   npm:
-    base_url: http://verdaccio.internal:4873        # plain http: see "Private networks"
+    base_url: http://verdaccio.internal:4873
     auth: {type: npm_auth_token, token_ref: verdaccio-token}
 ```
+
+The secret's host must carry the port (`:4873`): a bare host means port 443.
 
 For devpi, set `base_url` to the index, for example `https://devpi.example.com/root/pypi`, and use
 `basic` if the index needs a login.
@@ -109,8 +118,12 @@ sources:
 ## Private networks
 
 A registry on a private address needs its network in `http.allow_networks`
-([Outgoing HTTP](configuration.md#outgoing-http-and-private-networks)). Angelia sends a credential over plain
-`http://` when you configure such a URL, so prefer `https://` outside a trusted network.
+([Outgoing HTTP](configuration.md#outgoing-http-and-private-networks)).
+
+A credential is sent over plain `http://` only to a host listed in `http.allow_http_hosts`, as for a webhook.
+A source with `token_env` or `auth` and an `http://` `base_url` outside that list fails `config check`, and a
+request to such a host (a redirect, say) is refused before any secret is read. A token from `token_env` is
+also never sent to a redirect that changes the scheme or host. Prefer `https://` outside a trusted network.
 
 ## Custom CA bundle
 
@@ -134,6 +147,13 @@ URL's host and the proxy resolves the target, so rebinding protection is the pro
 is refused when it would go through a proxy over plain `http://`: use an `https://` registry, which goes
 through a `CONNECT` tunnel. `http.ca_file` also verifies an `https://` proxy.
 
+## Checks at start
+
+`angelia serve` and `angelia config check` look up each secret named by `sources.<kind>.auth` (name and
+hosts only; nothing is decrypted) and fail when it does not exist or its hosts do not include the registry's
+host and port. `config check` reads the database read-only and only warns when it does not exist yet or is
+not sqlite. `auth` or `token_env` on a kind no built-in source reads (a typo such as `nmp`) is a warning.
+
 ## Testing against real servers
 
 `go test` uses `httptest` fakes that mimic Verdaccio's bearer auth and a JSON-API mirror's basic auth.
@@ -144,5 +164,5 @@ go test -tags integration -run Integration ./cmd/angelia
 ```
 
 They start `verdaccio/verdaccio:5` (publish a package, read it with a token) and
-`pypiserver/pypiserver:latest` (the credential reaches the server; pypiserver has no JSON API, so the source
-ends in a 404, not a 401). Without a Docker daemon they skip.
+`pypiserver/pypiserver:latest` (the credential reaches the server; pypiserver does not serve the JSON API at the path the pypi
+source reads, so the source ends in a 404, not a 401). Without a Docker daemon they skip.

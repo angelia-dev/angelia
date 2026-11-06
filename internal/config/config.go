@@ -183,7 +183,9 @@ func (h HTTP) LoadCAPool() (*x509.CertPool, error) {
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
+		// Falling back to the file alone would break every public registry
+		// and webhook with a confusing certificate error.
+		return nil, fmt.Errorf("http.ca_file: cannot load the system root certificates to extend: %v", err)
 	}
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("http.ca_file %s: no PEM certificate found", h.CAFile)
@@ -227,6 +229,9 @@ type Source struct {
 	// (private registries and mirrors, ADR 0024 amendment of #111).
 	Auth SourceAuth `yaml:"auth"`
 }
+
+// credentialKinds are the source kinds that send token_env or auth.
+var credentialKinds = []string{"github-release", "npm", "pypi"}
 
 // Source authentication types.
 const (
@@ -627,7 +632,7 @@ func (c *Config) Validate() error {
 			case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
 				bad("sources.%s.base_url: must be an absolute http(s) URL", k)
 			case u.User != nil:
-				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env", k)
+				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env or auth", k)
 			}
 		}
 		if s.TokenEnv != "" {
@@ -641,6 +646,13 @@ func (c *Config) Validate() error {
 			}
 		}
 		validateAuth(k, s, bad)
+		if (s.TokenEnv != "" || !s.Auth.IsZero()) && s.BaseURL != "" {
+			// A credential over plain http needs the host in
+			// http.allow_http_hosts, like a webhook (decision D12).
+			if u, err := url.Parse(s.BaseURL); err == nil && u.Scheme == "http" && !slices.Contains(c.HTTP.AllowHTTPHosts, strings.ToLower(u.Hostname())) {
+				bad("sources.%s.base_url: a source with a credential (token_env or auth) may use http:// only for a host listed in http.allow_http_hosts; use https:// or list %s", k, strings.ToLower(u.Hostname()))
+			}
+		}
 	}
 	switch {
 	case c.Secrets.KeyFile != "" && !c.Secrets.Key.IsZero():
@@ -697,7 +709,7 @@ func validateAuth(k string, s Source, bad func(string, ...any)) {
 			bad("sources.%s.auth.password_ref: required for type basic", k)
 		}
 	default:
-		bad("sources.%s.auth.type %q: want bearer, basic or npm_auth_token", k, a.Type)
+		bad("sources.%s.auth.type: want bearer, basic or npm_auth_token", k)
 	}
 	for _, r := range []struct{ key, v string }{{"token_ref", a.TokenRef}, {"password_ref", a.PasswordRef}} {
 		if r.v != "" && !secrets.ValidName(r.v) {
@@ -752,6 +764,9 @@ func (c *Config) resolveTokens(env map[string]string) {
 	}
 	sort.Strings(kinds)
 	for _, k := range kinds {
+		if s := c.Sources[k]; (s.TokenEnv != "" || !s.Auth.IsZero()) && !slices.Contains(credentialKinds, k) {
+			c.warnings = append(c.warnings, fmt.Sprintf("sources.%s: no built-in source of this kind sends a credential (kinds: %s); the key is ignored", k, strings.Join(credentialKinds, ", ")))
+		}
 		name := c.Sources[k].TokenEnv
 		if name == "" {
 			continue

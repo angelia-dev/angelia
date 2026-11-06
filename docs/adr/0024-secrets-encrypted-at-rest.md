@@ -436,36 +436,50 @@ is selected, before any role starts (`api.CheckStoredSinks`, the package-level f
 
 ## Amendment (2026-11-06, #111)
 
-The maintainer approved this on #111 (2026-11-06). It settles how sources reference and bind secrets and how
-a private CA and a proxy meet netguard's guard. The `*_ref` and `hosts` rules of §2 and the resolver of §6
-are unchanged.
+This settles how sources reference and bind secrets and how a private CA and a proxy meet netguard's
+guard. The `*_ref` and `hosts` rules of §2 and the resolver of §6 are unchanged.
+
+### Approved
+
+The maintainer approved this design on 2026-11-06 (see #111), as written:
 
 - **Source credentials.** The instance configuration gains `sources.<kind>.auth` with `type` (`bearer`,
   the default, `basic` or `npm_auth_token`), `token_ref` (bearer, `npm_auth_token`), `username` and
   `password_ref` (basic). `npm_auth_token` sends the same `Authorization: Bearer` header as `bearer`; the
-  name is npm's. At most one of `token_env` and `auth` is set; `token_env` now also authenticates `pypi` and
-  `npm` as a bearer token (`github-release` still reads it itself). Only references are accepted: a value
-  in a `*_ref` key is not a valid secret name and is refused without being echoed.
-- **Binding and resolution.** `internal/source/registryauth` wraps a source's HTTP client. For every
-  request it resolves the secret through `secrets.Resolver` (nothing is cached), requires that the secret
-  carries `hosts` (an unbound secret is refused at fetch: a source error, as §2 says for a source) and
-  checks the request's host and port against them. Each redirect hop is a request of its own, so a hop
-  outside the binding is not sent. A token from `token_env` is sent only to the host of the source's
-  `base_url`. Errors name the secret and the host, never the value.
-- **Proxy.** `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` keep their meaning (read once at start): the URL
-  host is checked by netguard, and the proxy resolves the target (no dial-time check of the target). A
-  request that carries a credential and would go through a proxy is refused unless its URL is `https://`,
-  so the credential travels only inside a `CONNECT` tunnel and never as plain `http://` to the proxy. A
-  direct plain-`http://` registry is allowed; the operator chose that URL.
+  name is npm's. At most one of `token_env` and `auth` is set. Only references are accepted: a value in a
+  `*_ref` key is not a valid secret name and is refused without being echoed.
+- **Binding.** Every `*_ref` must be bound (`hosts`) to the host of the source's `base_url`, and each
+  redirect hop is checked again.
 - **Custom CA.** `http.ca_file` (env `ANGELIA_HTTP_CA_FILE`) is a PEM file whose certificates are added to
-  the system roots. It applies to the process's one HTTP client, so to the origin and to an `https://`
-  proxy, for sources and sinks alike. A file that cannot be read or holds no certificate fails
-  `config check` and the start. Verification is never disabled, and there is no `insecure` option.
+  the system roots, for the origin and for an `https://` proxy. A file that cannot be read or holds no
+  certificate fails `config check` and the start. Verification is never disabled; there is no `insecure`
+  option.
+- **Proxy.** `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` keep their meaning: netguard checks the URL host
+  and the proxy resolves the target. A bound secret goes through a proxy only over `https://` (a
+  `CONNECT` tunnel), never as plain `http://`.
 - **No new API field.** The source configuration is not exposed through the REST API.
-- **Named source instances are not built.** The approved design also had `sources.<name>` with `kind:`
-  so a watch could select `source: npm-internal`. It reaches into event `data.source`, purl and scheme
-  selection, the policy engine and the API, which all take the target kind to be the source kind, so it is a
-  follow-up. Until then there is one registry per kind per instance, and a watch cannot choose its own
-  base URL (watch-file decision D9 stays).
-- **Not built here.** `config check` does not look the referenced secrets up in the store; a missing or
-  unbound secret shows as a fetch error.
+- **Named source instances** (`sources.<name>` with `kind:`, a watch selecting `source: npm-internal`)
+  were approved instead of a per-watch `base_url`. They are **deferred to a follow-up issue**: they reach
+  event `data.source`, purl and scheme selection, the policy engine and the API, which all take the target
+  kind to be the source kind. Until then there is one registry per kind per instance, and watch-file
+  decision D9 stays.
+
+### Added during implementation, pending maintainer confirmation
+
+These were not in the approved proposal:
+
+- **`token_env` also authenticates `pypi` and `npm`** as `Authorization: Bearer` (`github-release` still
+  reads it itself). This changes existing configurations that set `token_env` on those kinds.
+- **Credentials over plain `http://`** (a review finding): a source with `token_env` or `auth` and an
+  `http://` `base_url`, and any credentialed `http://` hop, needs the host in `http.allow_http_hosts`, as a
+  webhook does (watch-file D12). A `token_env` token is sent only to the origin (scheme, host and port) of
+  `base_url`. A proxy that cannot be chosen refuses the request.
+- **`http.ca_file` applies to every outgoing request**, sinks included, since there is one HTTP client.
+- **Start-up check.** `angelia serve` (any role that opens the store) and `angelia config check` check each
+  secret named by `sources.<kind>.auth` from metadata (name and hosts, nothing decrypted): it must exist
+  and its hosts must include the registry's host and port. `serve` fails, as `CheckStoredSinks` does;
+  `config check` reads a sqlite database read-only and only warns when there is none yet.
+- **Mechanism.** `internal/source/registryauth` wraps a source's HTTP client and resolves the secret on
+  every request (nothing cached, §6), refusing an unbound secret at fetch. netguard and registryauth are
+  given the same proxy function (`outgoingProxy`). Errors name the secret and the host, never the value.
+- **Warning.** `auth` or `token_env` on a source kind no built-in source reads is a `config check` warning.

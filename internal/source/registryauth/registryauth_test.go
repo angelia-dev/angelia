@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/secrets"
@@ -54,6 +55,9 @@ func host(t *testing.T, u string) string {
 	return h
 }
 
+// allow is http.allow_http_hosts for the loopback test servers.
+var allow = []string{"127.0.0.1"}
+
 func noProxy(*http.Request) (*url.URL, error) { return nil, nil }
 
 // get returns the response body, the body closed.
@@ -84,7 +88,7 @@ func TestBearerAndNPMAuthTokenSendTheSameHeader(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	res := &fakeResolver{byName: map[string]secrets.Bound{"npm-token": bound("npm-token", canary, host(t, srv.URL))}}
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "npm-token", Resolver: res, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "npm-token", Resolver: res, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	got, err := get(t, hc, srv.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +106,7 @@ func TestBasic(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	res := &fakeResolver{byName: map[string]secrets.Bound{"pw": bound("pw", canary, host(t, srv.URL))}}
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{Username: "ci-bot", PasswordRef: "pw", Resolver: res, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{Username: "ci-bot", PasswordRef: "pw", Resolver: res, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	got, err := get(t, hc, srv.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +128,7 @@ func TestEnvTokenIsSentToTheBaseHostOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{Token: secrets.NewValueString(canary), BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{Token: secrets.NewValueString(canary), BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	if got, err := get(t, hc, srv.URL); err != nil || got != "Bearer "+canary {
 		t.Fatalf("base host: %q, %v", got, err)
 	}
@@ -140,8 +144,8 @@ func TestEnvTokenIsSentToTheBaseHostOnly(t *testing.T) {
 // A stored secret is re-checked at every redirect hop, and the request to a
 // host outside its binding is not sent.
 func TestBoundSecretRefusedOnRedirectToAnotherHost(t *testing.T) {
-	var hit bool
-	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }))
+	var hit atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit.Store(true) }))
 	defer other.Close()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL, http.StatusFound)
@@ -149,12 +153,12 @@ func TestBoundSecretRefusedOnRedirectToAnotherHost(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	res := &fakeResolver{byName: map[string]secrets.Bound{"tok": bound("tok", canary, host(t, srv.URL))}}
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	_, err := get(t, hc, srv.URL)
 	if !errors.Is(err, secrets.ErrHostMismatch) {
 		t.Fatalf("err = %v, want ErrHostMismatch", err)
 	}
-	if hit {
+	if hit.Load() {
 		t.Error("the redirect target received a request")
 	}
 	if strings.Contains(err.Error(), canary) {
@@ -167,7 +171,7 @@ func TestUnboundSecretIsRefused(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	res := &fakeResolver{byName: map[string]secrets.Bound{"tok": bound("tok", canary)}}
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	_, err := get(t, hc, srv.URL)
 	if !errors.Is(err, registryauth.ErrUnbound) {
 		t.Fatalf("err = %v, want ErrUnbound", err)
@@ -178,11 +182,11 @@ func TestMissingSecretAndMissingResolver(t *testing.T) {
 	srv := httptest.NewServer(echoAuth())
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "gone", Resolver: &fakeResolver{}, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "gone", Resolver: &fakeResolver{}, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	if _, err := get(t, hc, srv.URL); !errors.Is(err, secrets.ErrNotFound) {
 		t.Errorf("missing secret: err = %v", err)
 	}
-	hc = registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "gone", BaseURL: u, Proxy: noProxy})
+	hc = registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "gone", BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	if _, err := get(t, hc, srv.URL); err == nil || !strings.Contains(err.Error(), "no secrets resolver") {
 		t.Errorf("no resolver: err = %v", err)
 	}
@@ -194,7 +198,7 @@ func TestSecretIsResolvedPerRequest(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	res := &fakeResolver{byName: map[string]secrets.Bound{"tok": bound("tok", canary, host(t, srv.URL))}}
-	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy})
+	hc := registryauth.Wrap(srv.Client(), registryauth.Config{TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: noProxy, AllowHTTPHosts: allow})
 	for range 3 {
 		if _, err := get(t, hc, srv.URL); err != nil {
 			t.Fatal(err)
@@ -207,15 +211,15 @@ func TestSecretIsResolvedPerRequest(t *testing.T) {
 
 // Through a proxy the credential goes only inside an https CONNECT tunnel.
 func TestCredentialNeverGoesThroughAProxyAsPlainHTTP(t *testing.T) {
-	var reached bool
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	var reached atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Store(true) }))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	proxy := func(*http.Request) (*url.URL, error) { return url.Parse("http://proxy.invalid:3128") }
 	res := &fakeResolver{byName: map[string]secrets.Bound{"tok": bound("tok", canary, host(t, srv.URL))}}
 	for name, cfg := range map[string]registryauth.Config{
-		"stored": {TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: proxy},
-		"env":    {Token: secrets.NewValueString(canary), BaseURL: u, Proxy: proxy},
+		"stored": {TokenRef: "tok", Resolver: res, BaseURL: u, Proxy: proxy, AllowHTTPHosts: allow},
+		"env":    {Token: secrets.NewValueString(canary), BaseURL: u, Proxy: proxy, AllowHTTPHosts: allow},
 	} {
 		hc := registryauth.Wrap(srv.Client(), cfg)
 		_, err := get(t, hc, srv.URL)
@@ -225,7 +229,7 @@ func TestCredentialNeverGoesThroughAProxyAsPlainHTTP(t *testing.T) {
 			t.Errorf("%s: the error leaks the credential", name)
 		}
 	}
-	if reached {
+	if reached.Load() {
 		t.Error("a request was sent")
 	}
 }
@@ -244,5 +248,102 @@ func TestCredentialNeverLogged(t *testing.T) {
 	log.Info("resolved", "secret", b, "value", b.Value, "cfg", registryauth.Config{Token: b.Value})
 	if out := logs.String() + fmt.Sprintf("%v %+v %#v", b, registryauth.Config{Token: b.Value}, b); strings.Contains(out, canary) {
 		t.Errorf("credential in output: %s", out)
+	}
+}
+
+// recorder is a base RoundTripper that records the requests it receives, so
+// the proxy and scheme rules are tested without a network.
+type recorder struct{ got []http.Header }
+
+func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.got = append(r.got, req.Header.Clone())
+	return &http.Response{StatusCode: 200, Body: http.NoBody, Header: http.Header{}, Request: req}, nil
+}
+
+func recorded(t *testing.T, cfg registryauth.Config, rawURL string) (*recorder, error) {
+	t.Helper()
+	rec := &recorder{}
+	if cfg.BaseURL == nil {
+		cfg.BaseURL, _ = url.Parse(rawURL)
+	}
+	_, err := get(t, registryauth.Wrap(&http.Client{Transport: rec}, cfg), rawURL)
+	return rec, err
+}
+
+func envCfg(proxy func(*http.Request) (*url.URL, error)) registryauth.Config {
+	return registryauth.Config{Token: secrets.NewValueString(canary), Proxy: proxy}
+}
+
+func TestHTTPSThroughAProxyIsAllowed(t *testing.T) {
+	proxy := func(*http.Request) (*url.URL, error) { return url.Parse("http://proxy.internal:3128") }
+	rec, err := recorded(t, envCfg(proxy), "https://registry.example.com/pkg")
+	if err != nil || len(rec.got) != 1 || rec.got[0].Get("Authorization") != "Bearer "+canary {
+		t.Fatalf("https through a proxy: %v %v", err, rec.got)
+	}
+}
+
+// NO_PROXY: the proxy function answers nil for the host, so a registry on
+// the allowed plain-http list is reached directly with its credential.
+func TestDirectPlainHTTPToAnAllowedHost(t *testing.T) {
+	cfg := envCfg(noProxy)
+	cfg.AllowHTTPHosts = []string{"verdaccio.internal"}
+	rec, err := recorded(t, cfg, "http://verdaccio.internal:4873/pkg")
+	if err != nil || len(rec.got) != 1 || rec.got[0].Get("Authorization") == "" {
+		t.Fatalf("direct http to an allowed host: %v %v", err, rec.got)
+	}
+}
+
+func TestPlainHTTPOutsideTheAllowListIsRefused(t *testing.T) {
+	cfg := envCfg(noProxy)
+	cfg.AllowHTTPHosts = []string{"other.internal"}
+	rec, err := recorded(t, cfg, "http://verdaccio.internal:4873/pkg")
+	if !errors.Is(err, registryauth.ErrClearText) || len(rec.got) != 0 {
+		t.Fatalf("err = %v, sent %d", err, len(rec.got))
+	}
+	// A stored secret is refused before it is read.
+	res := &fakeResolver{byName: map[string]secrets.Bound{"tok": bound("tok", canary, "verdaccio.internal:4873")}}
+	scfg := registryauth.Config{TokenRef: "tok", Resolver: res, Proxy: noProxy}
+	if _, err := recorded(t, scfg, "http://verdaccio.internal:4873/pkg"); !errors.Is(err, registryauth.ErrClearText) || res.calls != 0 {
+		t.Fatalf("stored secret: err = %v, resolved %d times", err, res.calls)
+	}
+}
+
+func TestProxyErrorRefusesTheRequest(t *testing.T) {
+	proxy := func(*http.Request) (*url.URL, error) { return nil, errors.New("bad proxy settings") }
+	rec, err := recorded(t, envCfg(proxy), "https://registry.example.com/pkg")
+	if !errors.Is(err, registryauth.ErrClearProxy) || len(rec.got) != 0 {
+		t.Fatalf("err = %v, sent %d", err, len(rec.got))
+	}
+}
+
+// An https registry that redirects to http:// must not receive the token.
+func TestEnvTokenNotSentOnDowngrade(t *testing.T) {
+	cfg := envCfg(noProxy)
+	cfg.AllowHTTPHosts = []string{"registry.example.com"}
+	cfg.BaseURL, _ = url.Parse("https://registry.example.com")
+	rec, err := recorded(t, cfg, "http://registry.example.com:443/pkg")
+	if err != nil || len(rec.got) != 1 || rec.got[0].Get("Authorization") != "" {
+		t.Fatalf("downgrade hop: %v %v", err, rec.got)
+	}
+}
+
+func TestCheckRefs(t *testing.T) {
+	u, _ := url.Parse("https://nexus.example.com/repository/npm")
+	refs := []registryauth.Ref{
+		{Key: "sources.npm.auth.token_ref", Name: "ok", URL: u},
+		{Key: "sources.npm.auth.password_ref", Name: "gone", URL: u},
+		{Key: "sources.pypi.auth.token_ref", Name: "loose", URL: u},
+		{Key: "sources.pypi.auth.password_ref", Name: "wrong", URL: u},
+	}
+	errs := registryauth.CheckRefs(refs, map[string][]string{
+		"ok": {"nexus.example.com"}, "loose": {}, "wrong": {"other.example.com"},
+	})
+	if len(errs) != 3 {
+		t.Fatalf("errors = %v, want 3", errs)
+	}
+	for i, want := range []string{"does not exist", "no hosts", "other.example.com"} {
+		if !strings.Contains(errs[i].Error(), want) {
+			t.Errorf("error %d = %v, want %q", i, errs[i], want)
+		}
 	}
 }
