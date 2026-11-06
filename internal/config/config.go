@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -163,6 +164,31 @@ type HTTP struct {
 	// AllowHTTPHosts lists host names a webhook may reach over plain
 	// http:// (decision D12). Empty by default: https only.
 	AllowHTTPHosts []string `yaml:"allow_http_hosts"`
+	// CAFile is a PEM file of certificate authorities added to the system
+	// roots for every outgoing HTTPS request, for registries behind a
+	// private CA. Env ANGELIA_HTTP_CA_FILE. Read by LoadCAPool.
+	CAFile string `yaml:"ca_file"`
+}
+
+// LoadCAPool returns the system roots plus the certificates of CAFile, or
+// nil when CAFile is empty (the transport then uses the system roots). It
+// fails when the file cannot be read or holds no certificate.
+func (h HTTP) LoadCAPool() (*x509.CertPool, error) {
+	if h.CAFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(h.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("http.ca_file: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("http.ca_file %s: no PEM certificate found", h.CAFile)
+	}
+	return pool, nil
 }
 
 // AllowPrefixes returns AllowNetworks parsed, for netguard.Config.Allow.
@@ -197,6 +223,43 @@ func (a API) AllowsEnv(name string) bool {
 type Source struct {
 	BaseURL  string `yaml:"base_url"`
 	TokenEnv string `yaml:"token_env"`
+	// Auth names the stored secrets that authenticate requests to BaseURL
+	// (private registries and mirrors, ADR 0024 amendment of #111).
+	Auth SourceAuth `yaml:"auth"`
+}
+
+// Source authentication types.
+const (
+	AuthBearer       = "bearer"
+	AuthBasic        = "basic"
+	AuthNPMAuthToken = "npm_auth_token" //nolint:gosec // G101: the name of an authentication type
+)
+
+// SourceAuth is the credential of a source, by reference: the values are
+// stored secrets (secrets.Resolver), never written here.
+type SourceAuth struct {
+	// Type is bearer (default), basic or npm_auth_token (the same
+	// Authorization: Bearer header as bearer, named as npm's _authToken).
+	Type string `yaml:"type"`
+	// TokenRef names the stored secret that holds the token (bearer,
+	// npm_auth_token).
+	TokenRef string `yaml:"token_ref"`
+	// Username is the basic-auth user name; it is not secret.
+	Username string `yaml:"username"`
+	// PasswordRef names the stored secret that holds the basic-auth
+	// password.
+	PasswordRef string `yaml:"password_ref"`
+}
+
+// IsZero reports whether no credential is configured.
+func (a SourceAuth) IsZero() bool { return a == SourceAuth{} }
+
+// EffectiveType returns Type, bearer when empty.
+func (a SourceAuth) EffectiveType() string {
+	if a.Type == "" {
+		return AuthBearer
+	}
+	return a.Type
 }
 
 // Default returns the configuration used when nothing is configured.
@@ -430,6 +493,9 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	list("ROLES", &cfg.Roles)
 	list("HTTP_ALLOW_NETWORKS", &cfg.HTTP.AllowNetworks)
 	list("HTTP_ALLOW_HTTP_HOSTS", &cfg.HTTP.AllowHTTPHosts)
+	if v, ok := env[envPrefix+"HTTP_CA_FILE"]; ok {
+		cfg.HTTP.CAFile = v
+	}
 
 	// ANGELIA_SOURCES_<KIND>_BASE_URL and _TOKEN_ENV; "-" in a kind is "_".
 	keys := make([]string, 0)
@@ -540,6 +606,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if strings.ContainsAny(c.HTTP.CAFile, "\r\n") {
+		bad("http.ca_file: must be a single-line path")
+	}
+
 	kinds := make([]string, 0, len(c.Sources))
 	for k := range c.Sources {
 		kinds = append(kinds, k)
@@ -570,6 +640,7 @@ func (c *Config) Validate() error {
 				bad("sources.%s.token_env: names starting with %s are always refused: they hold the instance's own settings, such as %s", k, envPrefix, KeyEnv)
 			}
 		}
+		validateAuth(k, s, bad)
 	}
 	switch {
 	case c.Secrets.KeyFile != "" && !c.Secrets.Key.IsZero():
@@ -594,6 +665,48 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validateAuth checks sources.<k>.auth. Only references are accepted, so a
+// value is never echoed: a token pasted into a *_ref key is not a valid
+// secret name (names are lower-case), and a username that looks like a
+// token is refused without being printed.
+func validateAuth(k string, s Source, bad func(string, ...any)) {
+	a := s.Auth
+	if a.IsZero() {
+		return
+	}
+	switch a.EffectiveType() {
+	case AuthBearer, AuthNPMAuthToken:
+		if a.Username != "" || a.PasswordRef != "" {
+			bad("sources.%s.auth: type %s takes token_ref only, not username or password_ref", k, a.EffectiveType())
+		}
+		if a.TokenRef == "" {
+			bad("sources.%s.auth.token_ref: required for type %s", k, a.EffectiveType())
+		}
+	case AuthBasic:
+		if a.TokenRef != "" {
+			bad("sources.%s.auth: type basic takes username and password_ref, not token_ref", k)
+		}
+		if a.Username == "" || strings.ContainsAny(a.Username, ":\r\n") {
+			bad("sources.%s.auth.username: required for type basic, without ':' or line breaks", k)
+		} else if hasTokenPrefix(a.Username) {
+			bad("sources.%s.auth.username: looks like a token, not a user name", k)
+		}
+		if a.PasswordRef == "" {
+			bad("sources.%s.auth.password_ref: required for type basic", k)
+		}
+	default:
+		bad("sources.%s.auth.type %q: want bearer, basic or npm_auth_token", k, a.Type)
+	}
+	for _, r := range []struct{ key, v string }{{"token_ref", a.TokenRef}, {"password_ref", a.PasswordRef}} {
+		if r.v != "" && !secrets.ValidName(r.v) {
+			bad("sources.%s.auth.%s: must be the name of a stored secret (^[a-z0-9][a-z0-9._-]{0,62}$), not a value", k, r.key)
+		}
+	}
+	if s.TokenEnv != "" {
+		bad("sources.%s: set token_env or auth, not both", k)
+	}
 }
 
 // IsEnvName reports whether s is a valid environment variable name. Other

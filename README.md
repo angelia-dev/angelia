@@ -13,6 +13,7 @@ Detect → normalize → deliver.
 - [docs/prd.md](docs/prd.md): problem, market, goals, requirements, roadmap
 - [docs/architecture.md](docs/architecture.md): components, event contract, language choice, Phase 0 benchmarks
 - [docs/ESTIMATION.md](docs/ESTIMATION.md): how stories are sized and which model an agent uses
+- [docs/private-registries.md](docs/private-registries.md): private registries and mirrors (Artifactory, Nexus, Verdaccio)
 - [docs/adr/](docs/adr/README.md): architecture decision records
 
 Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/projects) board. Contributors, human or AI, start with [AGENTS.md](AGENTS.md).

@@ -41,7 +41,7 @@ func watchesPath(cmd *cobra.Command) (string, error) {
 // for a request; the scheduler role registers them again on the netguard client
 // (newPipelineRoles).
 func watchSources(cfg *config.Config) (*source.Registry, error) {
-	return builtinSources(cfg, &http.Client{}, nil, nil)
+	return builtinSources(cfg, &http.Client{}, nil, nil, nil)
 }
 
 func baseURL(cfg *config.Config, kind, def string) string {

@@ -25,6 +25,11 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
+| `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
+| `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
+| `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
+| `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
+| `sources.<kind>.auth.password_ref` | none | empty | name of a stored secret (basic) |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
@@ -50,6 +55,10 @@ Check a configuration with `angelia config check [--config FILE]`.
   as a token. Such a name fails the check with `names starting with ANGELIA_ are always refused`.
 - `roles`: `all` cannot be combined with other roles; duplicates are removed. `listen` port is 1-65535.
   A sqlite DSN needs a path, a postgres DSN a host.
+- `sources.<kind>.auth` authenticates requests to a private registry or mirror with a **stored secret**, bound
+  to the host of the source's `base_url`; see [Private registries and mirrors](private-registries.md). At most
+  one of `token_env` and `auth` is set. `token_env` now also authenticates `pypi` and `npm` (as
+  `Authorization: Bearer`), not only `github-release`.
 - `base_url` must not contain credentials, and `token_env` must be a variable name: values that
   look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
   rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
@@ -87,6 +96,13 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
+
+- `http.ca_file` adds certificate authorities to the system roots for every outgoing HTTPS request (sources
+  and sinks), for a registry behind a private CA. Certificate verification is never switched off. A file
+  that cannot be read or holds no certificate fails `config check` and `serve`.
+- A source credential goes only to its registry: a stored secret is re-checked against its `hosts` at every
+  redirect hop, and nothing that carries a credential is sent as plain `http://` through a proxy (a `https://`
+  registry goes through `CONNECT`). See [Private registries and mirrors](private-registries.md#proxy).
 
 See [webhooks.md](webhooks.md) for the webhook sink.
 
@@ -231,8 +247,9 @@ anywhere other than its destination would first need netguard's per-request chec
 binding compares host and port, not the scheme: `http://h:443/` matches a binding of `h`, which needs `h` in
 `http.allow_http_hosts`.
 
-> **Source and registry credentials** cannot reference stored secrets yet (#111). There, `hosts` will be
-> mandatory (`422 secret-host-binding-required`) and every redirect hop will be checked against it.
+> **Source and registry credentials** (`sources.<kind>.auth`, #111) reference stored secrets too. There,
+> `hosts` is mandatory: a secret without it is refused when the source fetches, and every request, redirect
+> hops included, is checked against it. See [Private registries and mirrors](private-registries.md).
 
 ### The key
 

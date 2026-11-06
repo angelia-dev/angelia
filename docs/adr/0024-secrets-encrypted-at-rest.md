@@ -433,3 +433,39 @@ The dispatcher role of `angelia serve` now runs with `dispatch.Options.Secrets` 
 check (§6) runs once per process, when any role that opens the store (`api`, `scheduler`, `dispatcher`)
 is selected, before any role starts (`api.CheckStoredSinks`, the package-level form of
 `Server.CheckStoredSinks`).
+
+## Amendment (2026-11-06, #111)
+
+The maintainer approved this on #111 (2026-11-06). It settles how sources reference and bind secrets and how
+a private CA and a proxy meet netguard's guard. The `*_ref` and `hosts` rules of §2 and the resolver of §6
+are unchanged.
+
+- **Source credentials.** The instance configuration gains `sources.<kind>.auth` with `type` (`bearer`,
+  the default, `basic` or `npm_auth_token`), `token_ref` (bearer, `npm_auth_token`), `username` and
+  `password_ref` (basic). `npm_auth_token` sends the same `Authorization: Bearer` header as `bearer`; the
+  name is npm's. At most one of `token_env` and `auth` is set; `token_env` now also authenticates `pypi` and
+  `npm` as a bearer token (`github-release` still reads it itself). Only references are accepted: a value
+  in a `*_ref` key is not a valid secret name and is refused without being echoed.
+- **Binding and resolution.** `internal/source/registryauth` wraps a source's HTTP client. For every
+  request it resolves the secret through `secrets.Resolver` (nothing is cached), requires that the secret
+  carries `hosts` (an unbound secret is refused at fetch: a source error, as §2 says for a source) and
+  checks the request's host and port against them. Each redirect hop is a request of its own, so a hop
+  outside the binding is not sent. A token from `token_env` is sent only to the host of the source's
+  `base_url`. Errors name the secret and the host, never the value.
+- **Proxy.** `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` keep their meaning (read once at start): the URL
+  host is checked by netguard, and the proxy resolves the target (no dial-time check of the target). A
+  request that carries a credential and would go through a proxy is refused unless its URL is `https://`,
+  so the credential travels only inside a `CONNECT` tunnel and never as plain `http://` to the proxy. A
+  direct plain-`http://` registry is allowed; the operator chose that URL.
+- **Custom CA.** `http.ca_file` (env `ANGELIA_HTTP_CA_FILE`) is a PEM file whose certificates are added to
+  the system roots. It applies to the process's one HTTP client, so to the origin and to an `https://`
+  proxy, for sources and sinks alike. A file that cannot be read or holds no certificate fails
+  `config check` and the start. Verification is never disabled, and there is no `insecure` option.
+- **No new API field.** The source configuration is not exposed through the REST API.
+- **Named source instances are not built.** The approved design also had `sources.<name>` with `kind:`
+  so a watch could select `source: npm-internal`. It reaches into event `data.source`, purl and scheme
+  selection, the policy engine and the API, which all take the target kind to be the source kind, so it is a
+  follow-up. Until then there is one registry per kind per instance, and a watch cannot choose its own
+  base URL (watch-file decision D9 stays).
+- **Not built here.** `config check` does not look the referenced secrets up in the store; a missing or
+  unbound secret shows as a fetch error.

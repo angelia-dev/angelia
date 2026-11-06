@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/source/registryauth"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
 
@@ -35,7 +37,9 @@ import (
 // builtinSources registers the built-in source kinds with hc. A non-nil wrap
 // decorates each source (metrics). log may be nil. The kinds are the ones the watch file
 // and the API accept (watchSources), so every stored target can be checked.
-func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap func(source.Source) source.Source) (*source.Registry, error) {
+// res resolves the stored secrets of sources.<kind>.auth at fetch time (nil:
+// such a source fails each fetch); the watch file check passes nil.
+func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap func(source.Source) source.Source, res registryauth.Resolver) (*source.Registry, error) {
 	var ghOpts []githubrelease.Option
 	if tok := cfg.SourceToken(githubrelease.Kind); tok != "" {
 		ghOpts = append(ghOpts, githubrelease.WithToken(tok))
@@ -44,11 +48,14 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 	if log != nil {
 		pypiOpts = append(pypiOpts, pypi.WithLogger(log))
 	}
+	pypiURL := baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL)
+	npmURL := baseURL(cfg, npm.Kind, "")
+	ghURL := baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL)
 	reg := source.NewRegistry()
 	for _, s := range []source.Source{
-		pypi.New(baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL), hc, pypiOpts...),
-		npm.New(baseURL(cfg, npm.Kind, ""), hc),
-		githubrelease.New(baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL), hc, ghOpts...),
+		pypi.New(pypiURL, sourceClient(cfg, pypi.Kind, pypiURL, hc, res), pypiOpts...),
+		npm.New(npmURL, sourceClient(cfg, npm.Kind, npmURL, hc, res)),
+		githubrelease.New(ghURL, sourceClient(cfg, githubrelease.Kind, ghURL, hc, res), ghOpts...),
 	} {
 		if wrap != nil {
 			s = wrap(s)
@@ -58,6 +65,28 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 		}
 	}
 	return reg, nil
+}
+
+// sourceClient returns the HTTP client of source kind: hc, or hc adding the
+// credential of sources.<kind>.auth (stored secrets, bound to the base URL's
+// host) or, for pypi and npm, of token_env (github-release reads its token
+// itself). base is the URL the source reads from.
+func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
+	a := cfg.Sources[kind].Auth
+	c := registryauth.Config{Resolver: res}
+	switch {
+	case a.TokenRef != "":
+		c.TokenRef = a.TokenRef
+	case a.PasswordRef != "":
+		c.PasswordRef, c.Username = a.PasswordRef, a.Username
+	case kind != githubrelease.Kind:
+		c.Token = secrets.NewValueString(cfg.SourceToken(kind))
+	}
+	if base == "" {
+		base = npm.DefaultBaseURL
+	}
+	c.BaseURL, _ = url.Parse(base) // validated by config.Validate
+	return registryauth.Wrap(hc, c)
 }
 
 // publicRegistries are the base URLs that leave an event's purl without a
@@ -106,8 +135,12 @@ func warnDrainBudget(log *slog.Logger, drain time.Duration) {
 // newNetClient builds the one outgoing HTTP client of the process, with the
 // SSRF guard's allowlist from http.allow_networks. obs may be nil.
 func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
+	roots, err := cfg.HTTP.LoadCAPool()
+	if err != nil {
+		return nil, fmt.Errorf("http client: %w", err)
+	}
 	c, err := netguard.New(netguard.Config{
-		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs,
+		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs, RootCAs: roots,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("http client: %w", err)
@@ -158,7 +191,7 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	}
 	hc := client.HTTPClient()
 	if withScheduler {
-		sources, err := builtinSources(d.cfg, hc, d.log, wrapSrc)
+		sources, err := builtinSources(d.cfg, hc, d.log, wrapSrc, &secrets.Resolver{Store: d.store, Keys: d.keys})
 		if err != nil {
 			return out, err
 		}
