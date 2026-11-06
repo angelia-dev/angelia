@@ -1,0 +1,295 @@
+{
+  "cases": [
+    {
+      "name": "single-secret",
+      "description": "One secret; the body is the stored CloudEvents JSON of a release.published event; the receiver's clock equals the timestamp.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "single-secret-prerelease",
+      "description": "One secret, a scoped npm prerelease event; checks a second body and id.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBXB2C3D4E5F6G7H8J9K0M1N:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,Q19dzxHvfjuKy//zjWNON64Z102/3Q3w7CsKbK9lp+w=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.prerelease.v1\",\"source\":\"angelia://angelia/watches/01JBX6E7F8G9H0J1K2M3N4P5Q6\",\"id\":\"01JBXB2C3D4E5F6G7H8J9K0M1N\",\"subject\":\"npm:@angular/core@18.0.0-rc.1\",\"time\":\"2026-10-30T10:15:03Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"npm\",\"package\":\"@angular/core\",\"version\":\"18.0.0-rc.1\",\"normalized_version\":\"18.0.0-rc.1\",\"previous_version\":\"18.0.0-rc.0\",\"scheme\":\"semver\",\"bump\":\"prerelease\",\"backport\":false,\"prerelease\":true,\"yanked\":false,\"published_at\":\"2026-10-30T10:00:00Z\",\"detected_at\":\"2026-10-30T10:15:00Z\",\"cooldown_satisfied_at\":null,\"urls\":{\"release\":\"https://www.npmjs.com/package/@angular/core/v/18.0.0-rc.1\",\"changelog\":null,\"artifact\":\"https://registry.npmjs.org/@angular/core/-/core-18.0.0-rc.1.tgz\"},\"notes\":null,\"watch\":{\"id\":\"01JBX6E7F8G9H0J1K2M3N4P5Q6\",\"name\":\"angular-core\",\"labels\":{\"team\":\"web\"}},\"purl\":\"pkg:npm/%40angular/core@18.0.0-rc.1\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "single-secret-wrong-receiver-secret",
+      "description": "The receiver holds a secret that did not sign the message.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_XnlIB26BXCD1HcL7lhgpiE2+WkA2XxsMDPJESgQFX2U="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": false,
+        "error": "no_matching_signature"
+      }
+    },
+    {
+      "name": "rotation-three-secrets-all-held",
+      "description": "Three secrets during a rotation (current, previous, emergency): the header carries three space-separated v1 entries in order; the receiver holds all three.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No=",
+        "whsec_gzp9x4KcGj/LzBGTiXCUjBB+Zr08hjZDEKPu5Va8zcE=",
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No=",
+        "whsec_gzp9x4KcGj/LzBGTiXCUjBB+Zr08hjZDEKPu5Va8zcE=",
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk= v1,kVE1Zmuy8f+Xyure5FpGA2Xnx3mSvIi1A3lNAvzoOxI= v1,9v8rBxGodLs4m6NGlPNU7Hy/ZlfNqoXOMrWz0RYN5ik=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "rotation-three-secrets-first-only",
+      "description": "Three entries; the receiver has only the first (current) secret.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No=",
+        "whsec_gzp9x4KcGj/LzBGTiXCUjBB+Zr08hjZDEKPu5Va8zcE=",
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk= v1,kVE1Zmuy8f+Xyure5FpGA2Xnx3mSvIi1A3lNAvzoOxI= v1,9v8rBxGodLs4m6NGlPNU7Hy/ZlfNqoXOMrWz0RYN5ik=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "rotation-three-secrets-last-only",
+      "description": "Three entries; the receiver has only the third (emergency) secret.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No=",
+        "whsec_gzp9x4KcGj/LzBGTiXCUjBB+Zr08hjZDEKPu5Va8zcE=",
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "receiver_secrets": [
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk= v1,kVE1Zmuy8f+Xyure5FpGA2Xnx3mSvIi1A3lNAvzoOxI= v1,9v8rBxGodLs4m6NGlPNU7Hy/ZlfNqoXOMrWz0RYN5ik=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "rotation-three-secrets-unrelated-receiver",
+      "description": "Three entries; the receiver holds none of the signing secrets.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No=",
+        "whsec_gzp9x4KcGj/LzBGTiXCUjBB+Zr08hjZDEKPu5Va8zcE=",
+        "whsec_aPNMrbsHu3AA5gqynpNZh6pbACnxMq8T/UfPijffdfI="
+      ],
+      "receiver_secrets": [
+        "whsec_XnlIB26BXCD1HcL7lhgpiE2+WkA2XxsMDPJESgQFX2U="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk= v1,kVE1Zmuy8f+Xyure5FpGA2Xnx3mSvIi1A3lNAvzoOxI= v1,9v8rBxGodLs4m6NGlPNU7Hy/ZlfNqoXOMrWz0RYN5ik=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": false,
+        "error": "no_matching_signature"
+      }
+    },
+    {
+      "name": "template-body",
+      "description": "A sink with a body template sends the rendered bytes, not CloudEvents JSON; the signature covers those exact bytes, including the non-ASCII characters and the trailing newline.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "text/plain; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,Q3ggSp8Metiae+6G2Ee/B+Gxq5ybvJnk8upWmqO3DV0=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "requests 2.33.0 released (minor, pypi)\nhttps://pypi.org/project/requests/2.33.0/ — café\n",
+      "now": 1793379603,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "tolerance-exactly-5min-after",
+      "description": "The receiver's clock is exactly 300 s after the timestamp: the tolerance is inclusive.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379903,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "tolerance-5min-1s-after",
+      "description": "The receiver's clock is 301 s after the timestamp: too old.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379904,
+      "expected": {
+        "valid": false,
+        "error": "timestamp"
+      }
+    },
+    {
+      "name": "tolerance-exactly-5min-before",
+      "description": "The receiver's clock is exactly 300 s before the timestamp: the tolerance is inclusive in both directions.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379303,
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "tolerance-5min-1s-before",
+      "description": "The receiver's clock is 301 s before the timestamp: too far in the future.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.0\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379302,
+      "expected": {
+        "valid": false,
+        "error": "timestamp"
+      }
+    },
+    {
+      "name": "tampered-body",
+      "description": "The body differs from the signed bytes by one character.",
+      "sign_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "receiver_secrets": [
+        "whsec_5KrI55roarqXh8uj0mxpfyKojijN7jyqVLwrSLjb6No="
+      ],
+      "content_type": "application/cloudevents+json; charset=utf-8",
+      "headers": {
+        "webhook-id": "01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX3K8P9Q0R1S2T3V4W5X6Y7",
+        "webhook-signature": "v1,XaYrQKYpm6Wn1YSKIaWHJZOKwm5DAQWGiX5HKB0IxDk=",
+        "webhook-timestamp": "1793379603"
+      },
+      "body": "{\"specversion\":\"1.0\",\"type\":\"dev.angelia.release.published.v1\",\"source\":\"angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"id\":\"01JBX2A7C8D9E0F1G2H3J4K5M6\",\"subject\":\"pypi:requests@2.33.1\",\"time\":\"2026-10-30T17:00:02.512Z\",\"datacontenttype\":\"application/json\",\"dataschema\":\"https://github.com/angelia-dev/spec/schemas/release/v1.json\",\"data\":{\"source\":\"pypi\",\"package\":\"requests\",\"version\":\"2.33.0\",\"normalized_version\":\"2.33.0\",\"previous_version\":\"2.32.5\",\"scheme\":\"pep440\",\"bump\":\"minor\",\"backport\":false,\"prerelease\":false,\"yanked\":false,\"published_at\":\"2026-10-27T14:02:11Z\",\"detected_at\":\"2026-10-27T14:15:00Z\",\"cooldown_satisfied_at\":\"2026-10-30T14:02:11Z\",\"urls\":{\"release\":\"https://pypi.org/project/requests/2.33.0/\",\"changelog\":\"https://github.com/psf/requests/blob/main/HISTORY.md\",\"artifact\":null},\"notes\":null,\"watch\":{\"id\":\"01JBX1Z3M4N5P6Q7R8S9T0V1W2\",\"name\":\"requests\",\"labels\":{\"team\":\"platform\",\"repo\":\"api\"}},\"purl\":\"pkg:pypi/requests@2.33.0\"}}",
+      "now": 1793379603,
+      "expected": {
+        "valid": false,
+        "error": "no_matching_signature"
+      }
+    }
+  ],
+  "description": "Standard Webhooks v1 test vectors for deliveries sent by Angelia's webhook sink. Licensed CC-BY-4.0. Generated with a one-off Go program that copies Angelia's Sign (angelia 2f277d6) and checks the Standard Webhooks reference vector; recomputed independently by scripts/check-webhook-vectors.py. Secrets are synthetic: secret N is whsec_ plus the standard base64 of SHA-256 of the ASCII label 'angelia-spec/webhooks/v1/secret/N'.",
+  "tolerance_seconds": 300,
+  "version": "1"
+}
