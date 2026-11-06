@@ -99,7 +99,7 @@ at load time with the file, line and path of the key. The policy is stored as `w
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind (Phase 0: `webhook`) |
+| `kind` | string | yes | none | a registered sink kind: `webhook` or `github-dispatch` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -120,6 +120,25 @@ variable is empty or unset at startup, apply succeeds with a warning and deliver
 set (same rule as `token_env` in configuration.md). The variable holds one to three `whsec_` secrets
 separated by spaces, for rotation; a `timeout` above the dispatcher's 15 s deliver timeout has no effect
 and `config check` warns. Signing, rotation, responses and the receiver's side: [webhooks.md](webhooks.md).
+
+`github-dispatch` config ([github-dispatch.md](github-dispatch.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `mode` | string | no | `repository_dispatch` | `repository_dispatch` or `workflow_dispatch` |
+| `repo` | string | yes | none | `owner/name` |
+| `api_base_url` | string | no | `https://api.github.com` | absolute `https://` URL with no userinfo, query or fragment; GitHub Enterprise Server: `https://host/api/v3`. The token is sent only here (`x-angelia-destination`) |
+| `token_env` | string | exactly one of the two | none | name of an environment variable holding the GitHub token; a name starting with `ANGELIA_` is refused |
+| `token_ref` | string | exactly one of the two | none | name of a [stored secret](configuration.md#stored-secrets) holding the token (`^[a-z0-9][a-z0-9._-]{0,62}$`) |
+| `event_type` | string (template) | no | `angelia.release.published` | `repository_dispatch` only; the result is 1 to 100 characters |
+| `workflow` | string | yes for `workflow_dispatch` | none | `workflow_dispatch` only; a file name (`release.yml`) or a numeric id |
+| `ref` | string | yes for `workflow_dispatch` | none | `workflow_dispatch` only; a branch or tag |
+| `inputs` | map of string (template) | no | none | `workflow_dispatch` only; at most 25; a name must not end in `_env` or `_ref` |
+| `timeout` | duration | no | `10s` | `1s` to `2m`; above the dispatcher's 15 s deliver timeout has no effect and `config check` warns |
+
+`event_type` and the values of `inputs` are [templates](templates.md), checked when the file loads like a
+subscription template. A missing token reference is an error, and an unset `token_env` variable is a warning, as
+for the webhook. The defaults are written into the stored configuration.
 
 ### 2.5 `subscriptions[]`
 

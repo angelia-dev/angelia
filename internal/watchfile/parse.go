@@ -25,6 +25,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/secrets"
+	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version"
@@ -49,7 +50,7 @@ const NamePattern = `^[a-z0-9][a-z0-9._-]{0,62}$`
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
 // SinkKinds are the sink kinds a watch file may declare.
-var SinkKinds = []string{"webhook"}
+var SinkKinds = []string{"webhook", githubdispatch.Kind}
 
 // Options controls Parse.
 type Options struct {
@@ -420,8 +421,13 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 	if kn := p.need(m, "kind", jp+".kind", n); kn != nil {
 		s.Kind = p.enum(kn, jp+".kind", SinkKinds)
 	}
-	if cn := p.need(m, "config", jp+".config", n); cn != nil && s.Kind == "webhook" {
-		s.Config = p.webhook(cn, jp+".config")
+	if cn := p.need(m, "config", jp+".config", n); cn != nil {
+		switch s.Kind {
+		case "webhook":
+			s.Config = p.webhook(cn, jp+".config")
+		case githubdispatch.Kind:
+			s.Config = p.githubDispatch(cn, jp+".config")
+		}
 	}
 	return s, len(p.errs) == before
 }
@@ -442,39 +448,7 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 			cfg.URL = s
 		}
 	}
-	if sn := m["secret_env"]; sn != nil {
-		if s, ok := p.secretFree(sn, jp+".secret_env"); ok {
-			switch {
-			case !config.IsEnvName(s):
-				p.errf(sn, jp+".secret_env", "must be an environment variable name, not the secret itself")
-			case config.ReservedEnvName(s):
-				p.errf(sn, jp+".secret_env", "%s: they hold the instance's own settings", config.ReservedEnvRefusal)
-			default:
-				cfg.SecretEnv = s
-				lookup := p.opts.LookupEnv
-				if lookup == nil {
-					lookup = os.LookupEnv
-				}
-				if v, _ := lookup(s); v == "" {
-					p.warnf(sn, jp+".secret_env", "environment variable %s is not set or empty; deliveries fail until it is set", s)
-				}
-			}
-		}
-	}
-	if rn := m["secret_ref"]; rn != nil {
-		// A stored secret's name (ADR 0024): `angelia secret set` stores
-		// the value; the file never holds it.
-		if s, ok := p.secretFree(rn, jp+".secret_ref"); ok {
-			switch {
-			case !secrets.ValidName(s):
-				p.errf(rn, jp+".secret_ref", "must be the name of a stored secret (pattern ^[a-z0-9][a-z0-9._-]{0,62}$), not the secret itself")
-			case m["secret_env"] != nil:
-				p.errf(rn, jp+".secret_ref", "set at most one of secret_env and secret_ref")
-			default:
-				cfg.SecretRef = s
-			}
-		}
-	}
+	cfg.SecretEnv, cfg.SecretRef = p.credentialRefs(m, jp, "secret_env", "secret_ref")
 	if m["secret_env"] == nil && m["secret_ref"] == nil {
 		p.warnf(n, jp, "no secret_env or secret_ref: the webhook is delivered unsigned")
 	}
@@ -490,6 +464,161 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 		}
 	}
 	return marshal(cfg)
+}
+
+// githubDispatch reads the config of a github-dispatch sink (spec
+// GithubDispatchSinkConfig). It writes the defaults into the stored
+// configuration, so that api_base_url, the key a stored token is bound to
+// (x-angelia-destination), is always present.
+func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
+	m := p.mapping(n, jp, "mode", "repo", "api_base_url", "token_env", "token_ref", "event_type", "workflow", "ref", "inputs", "timeout")
+	if m == nil {
+		return nil
+	}
+	cfg := githubdispatch.Config{
+		Mode: githubdispatch.ModeRepositoryDispatch, APIBaseURL: githubdispatch.DefaultAPIBaseURL,
+		Timeout: githubdispatch.DefaultTimeout.String(),
+	}
+	if mn := m["mode"]; mn != nil {
+		cfg.Mode = p.enum(mn, jp+".mode", []string{githubdispatch.ModeRepositoryDispatch, githubdispatch.ModeWorkflowDispatch})
+	}
+	workflow := cfg.Mode == githubdispatch.ModeWorkflowDispatch
+	if rn := p.need(m, "repo", jp+".repo", n); rn != nil {
+		if s, ok := p.secretFree(rn, jp+".repo"); ok {
+			if githubdispatch.ValidRepo(s) {
+				cfg.Repo = s
+			} else {
+				p.errf(rn, jp+".repo", "must be owner/name")
+			}
+		}
+	}
+	if un := m["api_base_url"]; un != nil {
+		if s, ok := p.secretFree(un, jp+".api_base_url"); ok {
+			if err := githubdispatch.CheckAPIBaseURL(s); err != nil {
+				p.errf(un, jp+".api_base_url", "%v", err)
+			} else {
+				cfg.APIBaseURL = s
+			}
+		}
+	}
+	cfg.TokenEnv, cfg.TokenRef = p.credentialRefs(m, jp, "token_env", "token_ref")
+	if m["token_env"] == nil && m["token_ref"] == nil {
+		p.errf(n, jp, "set one of token_env and token_ref: GitHub accepts no unauthenticated dispatch")
+	}
+	only := func(key string, want string) bool {
+		if m[key] != nil {
+			p.errf(m[key], jp+"."+key, "only for mode %s", want)
+			return true
+		}
+		return false
+	}
+	if workflow {
+		only("event_type", githubdispatch.ModeRepositoryDispatch)
+		for _, k := range []struct {
+			key   string
+			check func(string) error
+			dst   *string
+		}{{"workflow", githubdispatch.CheckWorkflow, &cfg.Workflow}, {"ref", githubdispatch.CheckRef, &cfg.Ref}} {
+			kn := p.need(m, k.key, jp+"."+k.key, n)
+			if kn == nil {
+				continue
+			}
+			if s, ok := p.secretFree(kn, jp+"."+k.key); ok {
+				if err := k.check(s); err != nil {
+					p.errf(kn, jp+"."+k.key, "%v", err)
+				} else {
+					*k.dst = s
+				}
+			}
+		}
+		if in := m["inputs"]; in != nil {
+			cfg.Inputs = p.stringMap(in, jp+".inputs", true, func(k string, kn *yaml.Node, v string, vn *yaml.Node) {
+				if err := githubdispatch.CheckInputName(k); err != nil {
+					p.errf(kn, join(jp+".inputs", k), "%v", err)
+				}
+				p.template(vn, join(jp+".inputs", k), v, githubdispatch.MaxInputTemplate)
+			})
+			if len(cfg.Inputs) > githubdispatch.MaxInputs {
+				p.errf(in, jp+".inputs", "at most %d inputs", githubdispatch.MaxInputs)
+			}
+		}
+	} else {
+		for _, k := range []string{"workflow", "ref", "inputs"} {
+			only(k, githubdispatch.ModeWorkflowDispatch)
+		}
+		cfg.EventType = githubdispatch.DefaultEventType
+		if en := m["event_type"]; en != nil {
+			if s, ok := p.secretFree(en, jp+".event_type"); ok {
+				cfg.EventType = s
+				p.template(en, jp+".event_type", s, githubdispatch.MaxEventTypeTemplate)
+				if githubdispatch.IsLiteral(s) {
+					if err := githubdispatch.CheckEventType(s); err != nil {
+						p.errf(en, jp+".event_type", "%v", err)
+					}
+				}
+			}
+		}
+	}
+	if tn := m["timeout"]; tn != nil {
+		if d, ok := p.duration(tn, jp+".timeout", githubdispatch.MinTimeout, githubdispatch.MaxTimeout, false); ok {
+			cfg.Timeout = d.String()
+			if d > dispatch.DefaultDeliverTimeout {
+				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
+					d, dispatch.DefaultDeliverTimeout)
+			}
+		}
+	}
+	return marshal(cfg)
+}
+
+// template checks an event_type or workflow input template the way a
+// subscription template is checked: it compiles and renders on the sample
+// events. The error gives a position and a reason, never the template text.
+func (p *parser) template(n *yaml.Node, jp, src string, limit int) {
+	if err := githubdispatch.CheckTemplate(src, limit); err != nil {
+		p.errf(n, jp, "%v", err)
+	}
+}
+
+// credentialRefs reads the two keys that name a sink's credential, an
+// environment variable (envKey) and a stored secret (refKey), and returns
+// the names that are valid. At most one may be set; the caller decides
+// whether neither is acceptable. The file never holds the credential.
+func (p *parser) credentialRefs(m map[string]*yaml.Node, jp, envKey, refKey string) (env, ref string) {
+	if sn := m[envKey]; sn != nil {
+		if s, ok := p.secretFree(sn, join(jp, envKey)); ok {
+			switch {
+			case !config.IsEnvName(s):
+				p.errf(sn, join(jp, envKey), "must be an environment variable name, not the secret itself")
+			case config.ReservedEnvName(s):
+				p.errf(sn, join(jp, envKey), "%s: they hold the instance's own settings", config.ReservedEnvRefusal)
+			default:
+				env = s
+				lookup := p.opts.LookupEnv
+				if lookup == nil {
+					lookup = os.LookupEnv
+				}
+				if v, _ := lookup(s); v == "" {
+					p.warnf(sn, join(jp, envKey), "environment variable %s is not set or empty; deliveries fail until it is set", s)
+				}
+			}
+		}
+	}
+	if rn := m[refKey]; rn != nil {
+		// A stored secret's name (ADR 0024): `angelia secret set` stores
+		// the value; the file never holds it.
+		if s, ok := p.secretFree(rn, join(jp, refKey)); ok {
+			switch {
+			case !secrets.ValidName(s):
+				p.errf(rn, join(jp, refKey), "must be the name of a stored secret (pattern ^[a-z0-9][a-z0-9._-]{0,62}$), not the secret itself")
+			case m[envKey] != nil:
+				p.errf(rn, join(jp, refKey), "set at most one of %s and %s", envKey, refKey)
+			default:
+				ref = s
+			}
+		}
+	}
+	return env, ref
 }
 
 // webhookURL checks the URL without echoing it: it may carry a secret.
