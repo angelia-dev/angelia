@@ -94,45 +94,69 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	// The stored-sinks check of ADR 0024 §6 runs where the store is opened:
-	// today only in the api role (newAPIServer). A scheduler or dispatcher
-	// role that replaces its stub must run it too (ADR 0024 amendment).
-	factory := supervisor.NewStub
-	if hasAPIRole(roleNames) {
-		srv, closeStore, err := newAPIServer(cmd.Context(), cfg, keys, log)
-		if err != nil {
-			return err
-		}
-		defer closeStore()
-		factory = func(name string) supervisor.Role {
-			if name == "api" {
-				return srv.Role()
-			}
-			return supervisor.NewStub(name)
-		}
-	}
-	roles, err := supervisor.Select(roleNames, factory)
+	// Expand and check the role names before anything is opened.
+	selected, err := supervisor.Select(roleNames, supervisor.NewStub)
 	if err != nil {
 		return fmt.Errorf("--roles: %w", err)
 	}
-	// TODO: pass tracerProvider as Options.TracerProvider of the scheduler and
-	// dispatcher roles when serve wires them in place of the stubs.
-	// TODO(#198): when the dispatcher role is wired, build its netguard client
-	// with netguard.Config{Allow: cfg.HTTP.AllowPrefixes(), UserAgent:
-	// cfg.HTTP.UserAgent, Logger: log} and register webhook.New(client.HTTPClient(),
-	// webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}).
-	// The scheduler's source clients take the same Allow. The dispatcher's
-	// Options also need Secrets: &secrets.Resolver{Store: st, Keys: keys}
-	// (without it every *_ref sink fails closed, retried then dead) and
-	// Destinations: api.SinkDestinations(builtinPlugins(...)) (without it
-	// every bound secret is refused). The role must also run the
-	// stored-sinks check (api.Server.CheckStoredSinks) before it starts
-	// (ADR 0024 amendment), as the api role does.
-	_ = tracerProvider
+	want := map[string]bool{}
+	for _, r := range selected {
+		want[r.Name()] = true
+	}
+	var m *metrics.Metrics
 	if on, _ := cmd.Flags().GetBool("metrics"); on {
-		// TODO: hand the *metrics.Metrics to the scheduler, dispatcher and
-		// netguard client when those roles replace their stubs (ADR 0019).
-		roles = append(roles, metrics.New(log).Role())
+		m = metrics.New(log)
+	}
+	built := map[string]supervisor.Role{}
+	if want["api"] || want["scheduler"] || want["dispatcher"] {
+		sources, err := watchSources(cfg)
+		if err != nil {
+			return err
+		}
+		plugins := builtinPlugins(sources.Kinds())
+		// Every role that opens the store runs the stored-sinks check of
+		// ADR 0024 §6 here, before any role starts.
+		st, err := openStore(cmd.Context(), cfg, plugins, log)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+		if m != nil {
+			m.RegisterDeliveryCounts(st)
+		}
+		if want["api"] {
+			srv, err := newAPIServer(cfg, st, sources, keys, log)
+			if err != nil {
+				return err
+			}
+			built["api"] = srv.Role()
+		}
+		p, err := newPipelineRoles(pipelineDeps{
+			cfg: cfg, store: st, keys: keys, plugins: plugins, tracer: tracerProvider, metrics: m, log: log,
+		}, want["scheduler"], want["dispatcher"])
+		if err != nil {
+			return err
+		}
+		if p.scheduler != nil {
+			built["scheduler"] = p.scheduler
+		}
+		if p.dispatcher != nil {
+			built["dispatcher"] = p.dispatcher
+		}
+	}
+	// The worker role has no work of its own yet: the scheduler checks
+	// targets on its own worker pool (architecture.md §3.2).
+	roles, err := supervisor.Select(roleNames, func(name string) supervisor.Role {
+		if r, ok := built[name]; ok {
+			return r
+		}
+		return supervisor.NewStub(name)
+	})
+	if err != nil {
+		return fmt.Errorf("--roles: %w", err)
+	}
+	if m != nil {
+		roles = append(roles, m.Role())
 	}
 	s := &supervisor.Supervisor{
 		Roles:        roles,

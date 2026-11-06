@@ -425,3 +425,11 @@ text is left as is; this amendment states what holds.
 - **A lost fenced update on `PUT /v1/secrets/{name}`** (§5). The request runs again on the new row, up
   to three times (last writer wins, as for any `PUT`). This cannot happen on SQLite, whose API
   transactions lock.
+
+## Amendment (2026-11-06, #198)
+
+The dispatcher role of `angelia serve` now runs with `dispatch.Options.Secrets` set to
+`&secrets.Resolver{Store, Keys}` and `Options.Destinations` from `api.SinkDestinations`. The stored-sinks
+check (§6) runs once per process, when any role that opens the store (`api`, `scheduler`, `dispatcher`)
+is selected, before any role starts (`api.CheckStoredSinks`, the package-level form of
+`Server.CheckStoredSinks`).

@@ -323,3 +323,11 @@ Recorded by the implementation; no decision above changes.
   the defaults), so the timestamp can trail the actual send by that much. This is far inside the 5 min
   tolerance, and moving the read after the wait would need a hook inside netguard.
 - `http.allow_networks` refuses IPv4-mapped prefixes (`::ffff:a.b.c.d/n`), which would never match.
+
+## Amendment (2026-11-06): wired by #198
+
+No decision above changes. `angelia serve` now runs the scheduler and dispatcher roles. It builds one
+netguard client with `Allow: cfg.HTTP.AllowPrefixes()`, shared by the sources and the sinks, and
+registers `webhook.New` with `AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts` (`cmd/angelia/roles.go`). The
+follow-ups to #198 noted above are therefore done: `http.allow_networks` is what the running process may
+dial, and D12 is checked at every delivery.

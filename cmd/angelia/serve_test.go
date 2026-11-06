@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -42,7 +43,7 @@ func freeAddr(t *testing.T) string {
 func TestServeRolesFlagAndGracefulExit(t *testing.T) {
 	t.Setenv("ANGELIA_CONFIG", "")
 	addr := freeAddr(t)
-	cfg := writeCfg(t, fmt.Sprintf("listen: %q\n", addr))
+	cfg := writeCfg(t, fmt.Sprintf("listen: %q\ndatabase:\n  dsn: sqlite://%s\n", addr, filepath.Join(t.TempDir(), "a.db")))
 	var errb syncBuf
 	root := newRootCmd()
 	root.SetOut(&errb)

@@ -17,9 +17,6 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
-	"github.com/angelia-dev/angelia/internal/source/githubrelease"
-	"github.com/angelia-dev/angelia/internal/source/npm"
-	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/watchfile"
@@ -40,21 +37,11 @@ func watchesPath(cmd *cobra.Command) (string, error) {
 }
 
 // watchSources registers the source kinds a watch file may name. Only
-// Source.Validate runs on them (no I/O), so the plain client is never used for
-// a request; the scheduler story wires the real, netguarded clients.
+// Source.Validate runs on them (no I/O), so the plain client is never used
+// for a request; the scheduler role registers them again on the netguard client
+// (newPipelineRoles).
 func watchSources(cfg *config.Config) (*source.Registry, error) {
-	hc := &http.Client{}
-	reg := source.NewRegistry()
-	for _, s := range []source.Source{
-		pypi.New(baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL), hc),
-		npm.New(baseURL(cfg, npm.Kind, ""), hc),
-		githubrelease.New(baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL), hc),
-	} {
-		if err := reg.Register(s); err != nil {
-			return nil, err
-		}
-	}
-	return reg, nil
+	return builtinSources(cfg, &http.Client{}, nil, nil)
 }
 
 func baseURL(cfg *config.Config, kind, def string) string {
