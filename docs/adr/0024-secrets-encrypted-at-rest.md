@@ -425,3 +425,21 @@ text is left as is; this amendment states what holds.
 - **A lost fenced update on `PUT /v1/secrets/{name}`** (§5). The request runs again on the new row, up
   to three times (last writer wins, as for any `PUT`). This cannot happen on SQLite, whose API
   transactions lock.
+
+## Amendment (2026-11-06, #120): whole-URL secret for shoutrrr proposed in ADR 0026
+
+[ADR 0026](0026-shoutrrr-sink-whole-url-secret.md) (Proposed) makes the `shoutrrr` sink the
+whole-URL secret kind that §1 anticipates. Until 0026 is accepted, nothing here changes. Once it is
+accepted, the following holds:
+
+- **§1, chat sinks row.** It no longer covers shoutrrr. A `shoutrrr` sink names its whole service
+  URL with `url_ref` or `url_env`. Slack or Discord sinks of their own, if any are added, keep the
+  base-URL-plus-token shape.
+- **§1, the future-kind clause.** "No userinfo" and the host checks apply to the HTTP origins that
+  the kind derives from the resolved URL, not to the shoutrrr URL itself, whose userinfo holds the
+  token.
+- **§2, order of the check.** For a reference marked `x-angelia-secret-destination`, the
+  secret is decrypted first, and its `hosts` are then checked against each derived origin before
+  `Deliver`. Every request the sink sends is pinned to those origins.
+- **Alternatives, `url_ref` for chat sinks.** It stays rejected as the general shape for chat
+  sinks, and is accepted for shoutrrr only, under 0026's checks.
