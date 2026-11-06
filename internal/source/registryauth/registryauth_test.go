@@ -3,17 +3,21 @@ package registryauth_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
 )
@@ -345,5 +349,61 @@ func TestCheckRefs(t *testing.T) {
 		if !strings.Contains(errs[i].Error(), want) {
 			t.Errorf("error %d = %v, want %q", i, errs[i], want)
 		}
+	}
+}
+
+// A credentialed request that netguard retries (a timeout, a 503)
+// logs the attempt and its error at debug level. Neither the log nor the
+// returned error may hold the credential or its basic-auth encoding: a
+// url.Error carries the method and URL, never a header.
+func TestRetryLogsAndErrorsNeverHoldTheCredential(t *testing.T) {
+	var n atomic.Int32
+	// Only timeouts and 5xx are retried, and only a retried error is logged:
+	// attempts 1 and 4 hang past netguard's per-attempt timeout, 2 and 3 are 503.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch n.Add(1) % 4 {
+		case 2, 3:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	prefix := netip.MustParsePrefix("127.0.0.0/8")
+
+	for name, cfg := range map[string]registryauth.Config{
+		"basic":  {Username: "ci-bot", PasswordRef: "pw"},
+		"bearer": {TokenRef: "pw"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n.Store(0)
+			var logs bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			nc, err := netguard.New(netguard.Config{
+				Allow: []netip.Prefix{prefix}, Logger: log, Timeout: 50 * time.Millisecond, BaseBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Resolver = &fakeResolver{byName: map[string]secrets.Bound{"pw": bound("pw", canary, host(t, srv.URL))}}
+			cfg.BaseURL, cfg.Proxy, cfg.AllowHTTPHosts = u, noProxy, allow
+			_, err = get(t, registryauth.Wrap(nc.HTTPClient(), cfg), srv.URL)
+			if err == nil {
+				t.Fatal("want the final attempt to fail")
+			}
+			if !strings.Contains(logs.String(), "retrying request") {
+				t.Fatalf("no retry was logged:\n%s", logs.String())
+			}
+			basic := base64.StdEncoding.EncodeToString([]byte("ci-bot:" + canary))
+			for _, bad := range []string{canary, "CANARY", basic} {
+				if strings.Contains(logs.String(), bad) || strings.Contains(err.Error(), bad) {
+					t.Errorf("%q leaks:\nlog: %s\nerr: %v", bad, logs.String(), err)
+				}
+			}
+		})
 	}
 }
