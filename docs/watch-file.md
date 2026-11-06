@@ -200,7 +200,7 @@ Tables from `internal/store/migrations/sqlite/00001_initial_schema.sql`.
 | File | Rows |
 |---|---|
 | `watches[]` | one `target` (upserted by `kind` + canonical `coordinates_json`, shared; coordinates are first put in the source's canonical form, [ADR 0021](adr/0021-source-canonical-target.md)) and one `watch` (`policy_json` holds the policy plus `scheme`; `interval` is stored on the watch, `watch.interval_ms`, and the target holds the effective one, the smallest among its watches; `labels_json`) |
-| `sinks[]` | one `sink` (`config_json_encrypted`; the secret *reference* `secret_env` or `secret_ref` is stored, never a value) |
+| `sinks[]` | one `sink` (`config_json`; the secret *reference* `secret_env` or `secret_ref` is stored, never a value) |
 | `subscriptions[]` | one `subscription` (`filter_json`, `sink_id`, `template`) |
 
 **Gaps in the schema of migration 00001** (decision D5):

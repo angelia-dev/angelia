@@ -41,7 +41,7 @@ lease due watches and due deliveries ([architecture.md §3.2](../architecture.md
 - Job leasing on Postgres: `River`, or "a small in-house lease table usable on both" engines. architecture.md §6 offers both and does not choose.
 - How far does single-node SQLite go? The target is 10,000 watches (architecture.md §10, question 2); a Phase 0 measurement.
 - Whether one schema and lease implementation serve both engines is implied by "usable on both" but not stated as a rule.
-- Secret encryption at rest (`sink.config_json_encrypted`) is a security decision outside this ADR.
+- Secret encryption at rest (`sink.config_json` holding references only, see ADR 0024) is a security decision outside this ADR.
 - Migration policy for data-dropping or data-rewriting migrations is not covered; AGENTS.md sends those to the maintainer.
 
 ## Alternatives considered

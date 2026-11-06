@@ -85,7 +85,7 @@ func startAttempt(ctx context.Context, q *Queries, id string) (store.LeasedDeliv
 	case err != nil:
 		return ld, wrap(err, "get sink", sub.SinkID)
 	}
-	ld.Sink = &store.Sink{ID: k.ID, Kind: k.Kind, ConfigEncrypted: k.ConfigJsonEncrypted, Name: k.Name.String, ManagedBy: k.ManagedBy}
+	ld.Sink = &store.Sink{ID: k.ID, Kind: k.Kind, ConfigEncrypted: k.ConfigJson, Name: k.Name.String, ManagedBy: k.ManagedBy}
 	return ld, nil
 }
 

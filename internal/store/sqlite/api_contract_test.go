@@ -308,3 +308,53 @@ func TestRecomputeTargetInterval(t *testing.T) {
 		return err
 	}), store.ErrNotFound, "missing target")
 }
+
+// sinkColumns lists the columns of the sink table.
+func sinkColumns(t *testing.T, db *sql.DB) map[string]bool {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `SELECT name FROM pragma_table_info('sink')`)
+	must(t, err)
+	defer func() { must(t, rows.Close()) }()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var n string
+		must(t, rows.Scan(&n))
+		cols[n] = true
+	}
+	must(t, rows.Err())
+	return cols
+}
+
+// Story #197: migration 00016 renames sink.config_json_encrypted to
+// config_json and keeps every row; Down renames it back, also keeping rows.
+func TestSinkConfigRenameMigration(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 15)
+	if c := sinkColumns(t, db); !c["config_json_encrypted"] || c["config_json"] {
+		t.Fatalf("before: columns %v", c)
+	}
+	execAll(t, db, `INSERT INTO sink (id, kind, config_json_encrypted) VALUES ('k1','webhook',x'7b7d')`)
+
+	p, err := newProvider(db)
+	must(t, err)
+	_, err = p.UpTo(ctx, 16)
+	must(t, err)
+	if c := sinkColumns(t, db); c["config_json_encrypted"] || !c["config_json"] {
+		t.Fatalf("after up: columns %v", c)
+	}
+	var cfg []byte
+	must(t, db.QueryRowContext(ctx, `SELECT config_json FROM sink WHERE id = 'k1'`).Scan(&cfg))
+	if string(cfg) != "{}" {
+		t.Fatalf("config after up = %q", cfg)
+	}
+
+	_, err = p.DownTo(ctx, 15)
+	must(t, err)
+	if c := sinkColumns(t, db); !c["config_json_encrypted"] || c["config_json"] {
+		t.Fatalf("after down: columns %v", c)
+	}
+	must(t, db.QueryRowContext(ctx, `SELECT config_json_encrypted FROM sink WHERE id = 'k1'`).Scan(&cfg))
+	if string(cfg) != "{}" {
+		t.Fatalf("config after down = %q", cfg)
+	}
+}

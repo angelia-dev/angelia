@@ -144,7 +144,7 @@ func watchesFromRows(rows []Watch) ([]store.Watch, error) {
 func sinksFromRows(rows []Sink) []store.Sink {
 	out := make([]store.Sink, len(rows))
 	for i, r := range rows {
-		out[i] = store.Sink{ID: r.ID, Kind: r.Kind, ConfigEncrypted: r.ConfigJsonEncrypted, Name: r.Name.String, ManagedBy: r.ManagedBy}
+		out[i] = store.Sink{ID: r.ID, Kind: r.Kind, ConfigEncrypted: r.ConfigJson, Name: r.Name.String, ManagedBy: r.ManagedBy}
 	}
 	return out
 }

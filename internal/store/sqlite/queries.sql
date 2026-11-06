@@ -59,10 +59,10 @@ UPDATE version SET yanked = ?, removed_at = ? WHERE target_id = ? AND raw = ?;
 SELECT * FROM version WHERE target_id = ? ORDER BY first_seen_at, raw;
 
 -- name: CreateSink :exec
-INSERT INTO sink (id, kind, config_json_encrypted, name, managed_by) VALUES (?, ?, ?, ?, ?);
+INSERT INTO sink (id, kind, config_json, name, managed_by) VALUES (?, ?, ?, ?, ?);
 
 -- name: UpdateSink :execrows
-UPDATE sink SET kind = ?, config_json_encrypted = ? WHERE id = ?;
+UPDATE sink SET kind = ?, config_json = ? WHERE id = ?;
 
 -- name: ListSinksManagedBy :many
 SELECT * FROM sink WHERE managed_by = ? ORDER BY name;
