@@ -61,7 +61,8 @@ Check a configuration with `angelia config check [--config FILE]`.
   `Authorization: Bearer`), `github-release` and `github-tag` (bearer), and `gitlab-release` (as GitLab's
   `PRIVATE-TOKEN` header; `auth` sends `Authorization: Bearer`, which GitLab also accepts). `crates` sends no
   credential: its `base_url` is the sparse index URL of a mirror, and `token_env` or `auth` on it is ignored
-  with a warning.
+  with a warning. A crates mirror that needs a token is not supported yet. `auth.type: basic` is refused for
+  `github-tag` and `gitlab-release`.
 - `base_url` must not contain credentials, and `token_env` must be a variable name: values that
   look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
   rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
@@ -145,9 +146,9 @@ The folder name is the plugin's kind:
   `ANGELIA_PLUGINS_DIR` means the default. A missing `plugins_dir` means no plugins are installed. A
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
-- A plugin's kind must not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
-  `gitlab-release`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` fails with
-  `plugin "crates" is a built-in kind`. Name a plugin for a registry the built-ins do not cover, such as
+- A plugin's kind should not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
+  `gitlab-release`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
+  `plugin kind crates is a built-in kind; the built-in is used`. Name a plugin for a registry the built-ins do not cover, such as
   `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`
   are skipped. Plain files and symbolic links are ignored with a warning: a plugin folder must be a real

@@ -268,17 +268,64 @@ func TestConfigCheckKnowsCredentialKinds(t *testing.T) {
 	}
 }
 
-// AC3: a plugin whose kind is a built-in kind (the crates example plugin once
-// was) fails config check instead of failing the registration at serve.
-func TestConfigCheckRejectsPluginKindOfABuiltin(t *testing.T) {
+// A plugin whose kind is a built-in kind (the crates example plugin once was)
+// is a config check warning: the built-in is used.
+func TestConfigCheckWarnsAboutPluginKindOfABuiltin(t *testing.T) {
 	for _, kind := range []string{"crates", "webhook"} {
 		dir := t.TempDir()
 		writePlugin(t, dir, kind, `{"kind":"`+kind+`","allowed_hosts":["crates.io"]}`, "")
 		t.Setenv("ANGELIA_CONFIG", "")
 		t.Setenv("ANGELIA_PLUGINS_DIR", dir)
 		out, errb, err := runCheck(t)
-		if err == nil || strings.Contains(out, "configuration OK") || !strings.Contains(errb, "invalid plugins") || !strings.Contains(errb, `"`+kind+`" is a built-in kind`) {
+		want := "warning: plugin kind " + kind + " is a built-in kind; the built-in is used"
+		if err != nil || !strings.Contains(out, "configuration OK") || !strings.Contains(errb, want) {
 			t.Errorf("%s: out=%q stderr=%q err=%v", kind, out, errb, err)
+		}
+	}
+}
+
+// The start-up secret check covers the new kinds: a secret bound to another
+// host fails, one bound to the base_url host passes, and crates (no
+// credential) produces no reference.
+func TestCheckSourceSecretsNewKinds(t *testing.T) {
+	for _, kind := range []string{"github-tag", "gitlab-release"} {
+		cfg := config.Default()
+		cfg.Sources[kind] = config.Source{BaseURL: "https://git.example.com", Auth: config.SourceAuth{TokenRef: "tok"}}
+		err := checkSourceSecrets(cfg, map[string][]string{"tok": {"other.example.com"}})
+		if err == nil || !strings.Contains(err.Error(), "sources."+kind+".auth.token_ref") {
+			t.Errorf("%s wrong host: %v", kind, err)
+		}
+		if err := checkSourceSecrets(cfg, map[string][]string{"tok": {"git.example.com"}}); err != nil {
+			t.Errorf("%s bound host: %v", kind, err)
+		}
+	}
+	cfg := config.Default()
+	cfg.Sources["crates"] = config.Source{Auth: config.SourceAuth{TokenRef: "tok"}}
+	if refs := sourceRefs(cfg); len(refs) != 0 {
+		t.Errorf("crates refs = %v", refs)
+	}
+}
+
+// The purl repository_url qualifier: the default registry gives none, a
+// mirror gives its base_url as written (API path included).
+func TestRegistryURLNewKinds(t *testing.T) {
+	cases := []struct{ kind, def, mirror string }{
+		{"crates", "https://index.crates.io", "https://mirror.example.com/index"},
+		{"github-tag", "https://api.github.com", "https://ghes.example.com/api/v3"},
+		{"gitlab-release", "https://gitlab.com", "https://gitlab.example.com/api/v4"},
+	}
+	for _, c := range cases {
+		cfg := &config.Config{Sources: map[string]config.Source{}}
+		if got := registryURL(cfg)(c.kind); got != "" {
+			t.Errorf("%s unset: %q", c.kind, got)
+		}
+		cfg.Sources[c.kind] = config.Source{BaseURL: c.def + "/"}
+		if got := registryURL(cfg)(c.kind); got != "" {
+			t.Errorf("%s default: %q", c.kind, got)
+		}
+		cfg.Sources[c.kind] = config.Source{BaseURL: c.mirror + "/"}
+		if got := registryURL(cfg)(c.kind); got != c.mirror {
+			t.Errorf("%s mirror: %q, want %q", c.kind, got, c.mirror)
 		}
 	}
 }

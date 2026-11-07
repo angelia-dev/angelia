@@ -1,15 +1,16 @@
 # Private registries and mirrors
 
 Angelia can watch packages on a private registry or a mirror: Artifactory, Nexus, Verdaccio, devpi, a
-GitHub Enterprise Server, a self-managed GitLab. You set the registry's `base_url` and its credential once per source kind in the
-[instance configuration](configuration.md). Design and security rules:
+GitHub Enterprise Server, a self-managed GitLab. You set the registry's `base_url` and its credential once per
+source kind in the [instance configuration](configuration.md). Design and security rules:
 [ADR 0024, amendment of #111](adr/0024-secrets-encrypted-at-rest.md).
 
 - One registry per source kind per instance. A watch is an ordinary watch of that kind
   (`source: npm`); it cannot choose its own base URL or credential
   ([watch-file.md](watch-file.md) decision D9).
 - Events from a registry other than the public one carry its URL as the `repository_url` qualifier of
-  the purl.
+  the purl. It is the configured `base_url` as written, with any API path (`/api/v3`, `/api/v4`) and
+  without a trailing slash.
 
 ## Credentials
 

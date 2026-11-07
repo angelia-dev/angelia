@@ -3,6 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-11-01
 - **Story:** angelia-dev/angelia#59
+- **Note (2026-11-07, #207):** `crates` is now a built-in source kind, so the example plugin in the user docs is called `cargo-registry`; the `crates` plugin below is the Phase 0 prototype.
 
 ## Context
 

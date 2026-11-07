@@ -69,11 +69,15 @@ func newConfigCheckCmd() *cobra.Command {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v; plugins not checked\n", err)
 				err, unreadable = nil, true
 			}
-			if err == nil {
-				err = checkPluginKinds(cfg, plugins)
-			}
 			if err != nil {
 				return fmt.Errorf("invalid plugins: %w", err)
+			}
+			kindWarns, err := pluginKindWarnings(cfg, plugins)
+			if err != nil {
+				return err
+			}
+			for _, w := range kindWarns {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
 			show := func(w io.Writer) error {
 				if unreadable {
@@ -113,22 +117,21 @@ func newConfigCheckCmd() *cobra.Command {
 	return cmd
 }
 
-// checkPluginKinds fails when a plugin's kind is a built-in source or sink
-// kind: the registry refuses a second source of a kind (and a plugin could not
-// replace a built-in), so the check says so before serve does.
-func checkPluginKinds(cfg *config.Config, plugins []config.InstalledPlugin) error {
+// pluginKindWarnings warns about a plugin whose kind is a built-in source or
+// sink kind: the built-in is the one used.
+func pluginKindWarnings(cfg *config.Config, plugins []config.InstalledPlugin) ([]string, error) {
 	reg, err := watchSources(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	builtin := append(reg.Kinds(), watchfile.SinkKinds...)
-	var errs []error
+	builtin := slices.Concat(reg.Kinds(), watchfile.SinkKinds)
+	var warns []string
 	for _, p := range plugins {
 		if slices.Contains(builtin, p.Kind) {
-			errs = append(errs, fmt.Errorf("plugin %q is a built-in kind; rename the plugin's kind and folder", printable(p.Kind)))
+			warns = append(warns, fmt.Sprintf("plugin kind %s is a built-in kind; the built-in is used", printable(p.Kind)))
 		}
 	}
-	return errors.Join(errs...)
+	return warns, nil
 }
 
 // printPlugins shows, for each installed plugin, the hosts it may reach and

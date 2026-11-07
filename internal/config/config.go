@@ -704,6 +704,9 @@ func validateAuth(k string, s Source, bad func(string, ...any)) {
 			bad("sources.%s.auth.token_ref: required for type %s", k, a.EffectiveType())
 		}
 	case AuthBasic:
+		if k == "github-tag" || k == "gitlab-release" {
+			bad("sources.%s.auth.type: basic is not accepted by this registry; use bearer", k)
+		}
 		if a.TokenRef != "" {
 			bad("sources.%s.auth: type basic takes username and password_ref, not token_ref", k)
 		}
