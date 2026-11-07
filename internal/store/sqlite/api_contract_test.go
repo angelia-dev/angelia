@@ -358,3 +358,54 @@ func TestSinkConfigRenameMigration(t *testing.T) {
 		t.Fatalf("config after down = %q", cfg)
 	}
 }
+
+func targetColumns(t *testing.T, db *sql.DB) map[string]bool {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `SELECT name FROM pragma_table_info('target')`)
+	must(t, err)
+	defer func() { _ = rows.Close() }()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var n string
+		must(t, rows.Scan(&n))
+		cols[n] = true
+	}
+	must(t, rows.Err())
+	return cols
+}
+
+// Story #205: migration 00017 adds the nullable target.source_kind. It
+// rewrites no row (existing targets read NULL, "the same as kind"), and Down
+// drops the column and keeps the targets.
+func TestTargetSourceKindMigration(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 16)
+	if targetColumns(t, db)["source_kind"] {
+		t.Fatal("before: source_kind exists")
+	}
+	execAll(t, db, `INSERT INTO target (id, kind, coordinates_json, next_check_at) VALUES ('t1','npm','{"name":"x"}',1)`)
+
+	p, err := newProvider(db)
+	must(t, err)
+	_, err = p.UpTo(ctx, 17)
+	must(t, err)
+	if !targetColumns(t, db)["source_kind"] {
+		t.Fatal("after up: no source_kind")
+	}
+	var kind, coords string
+	var sk sql.NullString
+	must(t, db.QueryRowContext(ctx, `SELECT kind, coordinates_json, source_kind FROM target WHERE id = 't1'`).Scan(&kind, &coords, &sk))
+	if kind != "npm" || coords != `{"name":"x"}` || sk.Valid {
+		t.Fatalf("after up: kind %q coordinates %q source_kind %v, want the row untouched and NULL", kind, coords, sk)
+	}
+
+	_, err = p.DownTo(ctx, 16)
+	must(t, err)
+	if targetColumns(t, db)["source_kind"] {
+		t.Fatal("after down: source_kind remains")
+	}
+	must(t, db.QueryRowContext(ctx, `SELECT kind, coordinates_json FROM target WHERE id = 't1'`).Scan(&kind, &coords))
+	if kind != "npm" || coords != `{"name":"x"}` {
+		t.Fatalf("after down: kind %q coordinates %q", kind, coords)
+	}
+}

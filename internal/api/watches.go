@@ -286,8 +286,11 @@ func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Wat
 	newTarget := false
 	switch {
 	case err == nil:
+		if err := watchfile.CheckSourceKind(t, w.Source, w.SourceKind()); err != nil {
+			return "", validationProblem("watch", []fieldError{{Pointer: "/source", Detail: err.Error()}})
+		}
 	case isNotFound(err):
-		t = store.Target{ID: s.opts.NewID(), Kind: w.Source, Coordinates: w.Coordinates, NextCheckAt: now, Interval: w.Interval}
+		t = store.Target{ID: s.opts.NewID(), Kind: w.Source, SourceKind: w.SourceKind(), Coordinates: w.Coordinates, NextCheckAt: now, Interval: w.Interval}
 		if err := tx.CreateTarget(ctx, t); err != nil {
 			return "", err
 		}

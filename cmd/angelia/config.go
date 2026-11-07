@@ -72,10 +72,15 @@ func newConfigCheckCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("invalid plugins: %w", err)
 			}
+			if err := checkInstancePluginClash(cfg, plugins); err != nil {
+				return err
+			}
 			kindWarns, err := pluginKindWarnings(cfg, plugins)
 			if err != nil {
 				return err
 			}
+			kindWarns = append(kindWarns, sourceKeyWarnings(cfg, plugins)...)
+			kindWarns = append(kindWarns, storedTargetWarnings(cmd.Context(), cfg, plugins)...)
 			for _, w := range kindWarns {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
@@ -290,4 +295,31 @@ func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.W
 		return fmt.Errorf("source credentials: %w", err)
 	}
 	return nil
+}
+
+// storedTargetWarnings reads the sources of the stored targets read-only,
+// like the secrets check, and warns about those that are no longer
+// configured or changed kind. A database that is missing, unreadable or not
+// sqlite is not an error here.
+func storedTargetWarnings(ctx context.Context, cfg *config.Config, plugins []config.InstalledPlugin) []string {
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		return nil
+	}
+	stored, err := sqlite.StoredTargetSources(ctx, dbPath)
+	if err != nil {
+		if !errors.Is(err, sqlite.ErrNoDatabase) {
+			return []string{fmt.Sprintf("stored targets not checked against the sources: %v", err)}
+		}
+		return nil
+	}
+	reg, err := watchSources(cfg)
+	if err != nil {
+		return nil
+	}
+	kinds := make([]string, len(plugins))
+	for i, p := range plugins {
+		kinds[i] = p.Kind
+	}
+	return storedSourceWarnings(reg, stored, kinds)
 }

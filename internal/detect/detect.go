@@ -62,14 +62,21 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	log = log.With("target", t.ID, "kind", t.Kind)
+	log = log.With("target", t.ID, "source", t.Kind, "kind", t.EffectiveSourceKind())
 	// t.Kind is the name the watch gave: a kind, or an instance of one. The
 	// source, the events, the version scheme and the policy see the base kind.
 	src, err := c.Sources.Get(t.Kind)
 	if err != nil {
 		return scheduler.Outcome{}, fmt.Errorf("detect: target %s: %w", t.ID, err)
 	}
+	// A target keeps the kind it was created for: a source that was
+	// reconfigured to another kind, or a built-in that took an instance's
+	// name, is not allowed to reinterpret it (no fetch, no events).
 	name := t.Kind
+	if want := t.EffectiveSourceKind(); src.Kind() != want {
+		return scheduler.Outcome{}, fmt.Errorf("detect: target %s: %w: source %q is now of kind %q, but the target was created for kind %q; give the source a new name",
+			t.ID, scheduler.ErrPermanent, name, src.Kind(), want)
+	}
 	t.Kind = src.Kind()
 	var state source.FetchState
 	if len(t.FetchState) > 0 {

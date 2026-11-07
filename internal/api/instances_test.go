@@ -2,9 +2,11 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/store"
 )
 
 // Named source instances (#205): a watch selects an instance by its name; the
@@ -36,5 +38,28 @@ func TestWatchOnNamedSourceInstance(t *testing.T) {
 	w["source"] = "pypi-elsewhere"
 	if r := e.do("PUT", "/v1/watches/other", tokWrite, w); r.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown instance: status %d: %s", r.Status, r.Body)
+	}
+}
+
+// A target keeps the kind it was created for: a watch cannot be pointed at a
+// stored target of the same name whose kind differs from the source's now.
+func TestWatchRefusesAnInstanceThatChangedKind(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		if err := o.Sources.RegisterAs("pypi-internal", pypi.New("https://pypi.internal.example.org", &http.Client{})); err != nil {
+			t.Fatal(err)
+		}
+	})
+	err := e.st.CreateTarget(t.Context(), store.Target{
+		ID: "01JBX1Z3M4N5P6Q7R8S9T0V1W2", Kind: "pypi-internal", SourceKind: "github-release",
+		Coordinates: map[string]string{"name": "requests"}, NextCheckAt: e.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := clone(watchPut)
+	w["source"] = "pypi-internal"
+	r := e.do("PUT", "/v1/watches/requests", tokWrite, w)
+	if r.Status != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "created for kind") {
+		t.Fatalf("status %d: %s", r.Status, r.Body)
 	}
 }

@@ -40,6 +40,10 @@ const (
 // Valid roles, matching `angelia serve --roles`.
 var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "worker": true, "dispatcher": true}
 
+// maxKindLen is the longest source name or kind: the API's Kind pattern
+// (^[a-z0-9][a-z0-9-]{0,62}$) allows 63 characters.
+const maxKindLen = 63
+
 var (
 	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -634,12 +638,12 @@ func (c *Config) Validate() error {
 	sort.Strings(kinds)
 	for _, k := range kinds {
 		s := c.Sources[k]
-		if !kindRE.MatchString(k) {
-			bad("sources: invalid source name (want lower-case letters, digits and single hyphens)")
+		if len(k) > maxKindLen || !kindRE.MatchString(k) {
+			bad("sources: invalid source name (want 1 to %d lower-case letters, digits and single hyphens)", maxKindLen)
 			continue
 		}
-		if s.Kind != "" && !kindRE.MatchString(s.Kind) {
-			bad("sources.%s.kind: invalid kind (want lower-case letters, digits and single hyphens)", k)
+		if s.Kind != "" && (len(s.Kind) > maxKindLen || !kindRE.MatchString(s.Kind)) {
+			bad("sources.%s.kind: invalid kind (want 1 to %d lower-case letters, digits and single hyphens)", k, maxKindLen)
 		}
 		if s.BaseURL != "" {
 			u, err := url.Parse(s.BaseURL)
@@ -698,6 +702,15 @@ func (c *Config) Validate() error {
 // value is never echoed: a token pasted into a *_ref key is not a valid
 // secret name (names are lower-case), and a username that looks like a
 // token is refused without being printed.
+// kindOf is the kind of the source configured as sources.<name>: s.Kind, else
+// the name.
+func kindOf(name string, s Source) string {
+	if s.Kind != "" {
+		return s.Kind
+	}
+	return name
+}
+
 func validateAuth(k string, s Source, bad func(string, ...any)) {
 	a := s.Auth
 	if a.IsZero() {
@@ -712,7 +725,7 @@ func validateAuth(k string, s Source, bad func(string, ...any)) {
 			bad("sources.%s.auth.token_ref: required for type %s", k, a.EffectiveType())
 		}
 	case AuthBasic:
-		if k == "github-tag" || k == "gitlab-release" {
+		if kind := kindOf(k, s); kind == "github-tag" || kind == "gitlab-release" {
 			bad("sources.%s.auth.type: basic is not accepted by this registry; use bearer", k)
 		}
 		if a.TokenRef != "" {
@@ -803,10 +816,7 @@ func (c *Config) Warnings() []string { return slices.Clone(c.warnings) }
 // SourceKind returns the kind of the source configured under name: its kind
 // key when it is a named instance, otherwise name itself.
 func (c *Config) SourceKind(name string) string {
-	if k := c.Sources[name].Kind; k != "" {
-		return k
-	}
-	return name
+	return kindOf(name, c.Sources[name])
 }
 
 // SourceToken returns the token for a source (its name; a built-in's is its kind), read from the environment

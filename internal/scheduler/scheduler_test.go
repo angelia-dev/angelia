@@ -917,3 +917,37 @@ func TestWriteTimeoutAboveBusyTimeout(t *testing.T) {
 		t.Errorf("2 x write %v not below the drain timeout %v", writeTimeout, supervisor.DefaultDrainTimeout)
 	}
 }
+
+// A permanent check error (retrying cannot fix it) is recorded as a failure
+// and repeated only at the longest backoff, not after the base delay.
+func TestPermanentErrorWaitsForTheLongestBackoff(t *testing.T) {
+	st := openStore(t)
+	clk := newFakeClock(t0)
+	ctx := t.Context()
+	addTarget(t, st, "t1", "x", t0)
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) {
+		return Outcome{}, fmt.Errorf("source was reconfigured: %w", ErrPermanent)
+	})
+	s := newTestScheduler(t, st, c, clk, nil)
+	pollAndWait(ctx, s)
+	tg := getTarget(t, st, "t1")
+	if tg.ErrorCount != 1 || tg.NextCheckAt.Sub(t0) != DefaultBackoffMax {
+		t.Fatalf("after a permanent error: errors %d, next check in %v, want 1 and %v", tg.ErrorCount, tg.NextCheckAt.Sub(t0), DefaultBackoffMax)
+	}
+}
+
+// Logs carry the source name the watch gave and the kind it is of.
+func TestCheckLogsCarrySourceAndKind(t *testing.T) {
+	st := openStore(t)
+	ctx := t.Context()
+	must(t, st.CreateTarget(ctx, store.Target{
+		ID: "t1", Kind: "npm-internal", SourceKind: "npm", Coordinates: map[string]string{"name": "x"}, NextCheckAt: t0,
+	}))
+	var buf bytes.Buffer
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) { return Outcome{}, errors.New("boom") })
+	s := newTestScheduler(t, st, c, newFakeClock(t0), func(o *Options) { o.Logger = slog.New(slog.NewJSONHandler(&buf, nil)) })
+	pollAndWait(ctx, s)
+	if out := buf.String(); !strings.Contains(out, `"source":"npm-internal"`) || !strings.Contains(out, `"kind":"npm"`) {
+		t.Fatalf("log = %s", out)
+	}
+}

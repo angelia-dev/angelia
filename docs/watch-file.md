@@ -77,7 +77,9 @@ also across owners: apply refuses a name that a row created through the API alre
   form `Source.Validate` accepts.
 - A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`
   validation, the default `scheme`, the events (`data.source`, purl type) and `filter.source` use the kind.
-  The `source` of a stored watch, and of the API, is the name the watch gave.
+  The `source` of a stored watch, and of the API, is the name the watch gave; the target remembers the kind
+  it was created for and is refused if the name later becomes a source of another kind
+  ([private-registries.md](private-registries.md#what-a-name-is-bound-to)).
 - `scheme` overrides the default chosen by source kind (`internal/version/schemes.ForSourceKind`).
   The loader checks the value against `schemes.Names()`, so it accepts `calver` as soon as #68 merges.
   `maven` is not accepted (Phase 1).

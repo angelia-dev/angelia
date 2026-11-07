@@ -100,7 +100,7 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 		}
 		return pypi.New(base, c, opts...)
 	case npm.Kind:
-		return npm.New(cfg.Sources[name].BaseURL, c)
+		return npm.New(base, c)
 	case githubrelease.Kind:
 		var opts []githubrelease.Option
 		if tok != "" {
@@ -377,6 +377,21 @@ func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo
 		}
 		if err := checkSourceSecrets(cfg, hosts); err != nil {
 			return nil, errorsJoin(fmt.Errorf("source credentials: %w", err), st.Close())
+		}
+	}
+	if log != nil {
+		if stored, err := st.TargetSources(ctx); err == nil {
+			if reg, err := watchSources(cfg); err == nil {
+				var pluginKinds []string
+				for _, p := range plugins {
+					if p.Interface == "source" && p.Runtime != "builtin" {
+						pluginKinds = append(pluginKinds, p.Kind)
+					}
+				}
+				for _, w := range storedSourceWarnings(reg, stored, pluginKinds) {
+					log.Warn(w)
+				}
+			}
 		}
 	}
 	return st, nil

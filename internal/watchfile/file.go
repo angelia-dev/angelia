@@ -3,11 +3,13 @@ package watchfile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/policy"
+	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 )
@@ -122,6 +124,24 @@ func (w Watch) SourceKind() string {
 		return w.Kind
 	}
 	return w.Source
+}
+
+// ErrSourceKindChanged is wrapped by CheckSourceKind.
+var ErrSourceKindChanged = errors.New("source kind changed")
+
+// CheckSourceKind refuses to point a watch at an existing target whose
+// stored source kind is not kind, the kind of the source that now has the
+// name: a target keeps the kind it was created for, so a source that was
+// reconfigured to another kind (or a built-in that took the name of an
+// instance) is not silently reinterpreted. The fix is a new name for the
+// instance; the old targets keep failing their checks until their watches
+// are deleted.
+func CheckSourceKind(t store.Target, name, kind string) error {
+	if have := t.EffectiveSourceKind(); have != kind {
+		return fmt.Errorf("%w: source %q is now of kind %q, but its stored targets were created for kind %q; give the source a new name (or delete these watches)",
+			ErrSourceKindChanged, name, kind, have)
+	}
+	return nil
 }
 
 // PolicyJSON returns the canonical JSON stored as watch.policy_json.

@@ -434,6 +434,9 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 		ex, err := r.tx.FindTarget(r.ctx, d.Source, d.Coordinates)
 		switch {
 		case err == nil:
+			if err := CheckSourceKind(ex, d.Source, d.SourceKind()); err != nil {
+				return nil, nil, nil, fmt.Errorf("watch %s: %w", d.Name, err)
+			}
 			t.id, t.existing = ex.ID, &ex
 		case errors.Is(err, store.ErrNotFound):
 			t.id = r.newID()
@@ -448,7 +451,7 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 	for _, d := range f.Watches {
 		t := targets[targetKey(d.Source, d.Coordinates)]
 		if t.existing == nil && len(t.watches) == 0 { // the first watch on a new target creates it
-			tgt := store.Target{ID: t.id, Kind: d.Source, Coordinates: d.Coordinates, NextCheckAt: r.now, Interval: t.interval}
+			tgt := store.Target{ID: t.id, Kind: d.Source, SourceKind: d.SourceKind(), Coordinates: d.Coordinates, NextCheckAt: r.now, Interval: t.interval}
 			if err := r.write(func() error { return r.tx.CreateTarget(r.ctx, tgt) }); err != nil {
 				return nil, nil, nil, err
 			}

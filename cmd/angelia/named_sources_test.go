@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,8 +19,10 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/detect"
 	"github.com/angelia-dev/angelia/internal/event"
+	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -258,5 +265,305 @@ func TestNamedInstanceSecretsAndRegistryURL(t *testing.T) {
 	cfg.Sources["npm-public-copy"] = config.Source{Kind: "npm"}
 	if got := r("npm-public-copy"); got != "" {
 		t.Errorf("an instance at the public registry: %q", got)
+	}
+}
+
+const widgetWatch = `version: 1
+watches:
+  - {name: widget, source: npm-internal, coordinates: {name: widget}}
+`
+
+// applyWidget applies the watch file widgetWatch under cfg and returns the
+// stored target of the instance.
+func applyWidget(t *testing.T, e *regEnv, cfg *config.Config) (store.Target, error) {
+	t.Helper()
+	f, err := parseWatchFile(cfg, writeFile(t, "w.yaml", widgetWatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := watchfile.Apply(t.Context(), e.st, f, watchfile.ApplyOptions{}); err != nil {
+		return store.Target{}, err
+	}
+	var tgt store.Target
+	err = e.st.InConfigTx(t.Context(), func(tx store.ConfigTx) (err error) {
+		tgt, err = tx.FindTarget(t.Context(), "npm-internal", map[string]string{"name": "widget"})
+		return err
+	})
+	return tgt, err
+}
+
+// B1: a target keeps the kind it was created for. An instance that is later
+// configured as another kind is not checked (no fetch, no events), and apply
+// refuses to point a watch at it.
+func TestInstanceThatChangedKindIsNotCheckedOrApplied(t *testing.T) {
+	e, cfg, _, internal, _, internalHits := twoNPMInstances(t)
+	tgt, err := applyWidget(t, e, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.SourceKind != "npm" || tgt.Kind != "npm-internal" {
+		t.Fatalf("target kind %q source kind %q", tgt.Kind, tgt.SourceKind)
+	}
+
+	cfg.Sources["npm-internal"] = config.Source{Kind: "pypi", BaseURL: internal.URL}
+	reg := e.registry(t, cfg)
+	chk := &detect.Checker{Store: e.st, Sources: reg, Instance: "test", RegistryURL: registryURL(cfg), Matcher: event.NewMatcherCache()}
+	_, err = chk.Check(t.Context(), tgt)
+	if !errors.Is(err, scheduler.ErrPermanent) || !strings.Contains(err.Error(), "created for kind") {
+		t.Fatalf("Check: %v, want a permanent error naming the stored kind", err)
+	}
+	if internalHits.Load() != 0 {
+		t.Errorf("the registry was fetched %d times", internalHits.Load())
+	}
+	if evs, _ := e.st.ListEventsAfter(t.Context(), 0, 10); len(evs) != 0 {
+		t.Errorf("%d events", len(evs))
+	}
+	if _, err := applyWidget(t, e, cfg); !errors.Is(err, watchfile.ErrSourceKindChanged) {
+		t.Fatalf("apply: %v, want ErrSourceKindChanged", err)
+	}
+	// Configuring the old kind again fixes both.
+	cfg.Sources["npm-internal"] = config.Source{Kind: "npm", BaseURL: internal.URL}
+	if _, err := applyWidget(t, e, cfg); err != nil {
+		t.Fatalf("apply with the old kind: %v", err)
+	}
+}
+
+// B1: a target stored before instances (no source kind) means "the source of
+// kind <name>". A name that later becomes an instance of another kind, as
+// when a future built-in kind takes the name of an instance, does not
+// reinterpret it.
+func TestStoredTargetIsRefusedWhenItsNameChangesKind(t *testing.T) {
+	e, cfg, _, _, _, hits := twoNPMInstances(t)
+	// Written as an older version would have: kind "acme", no source kind.
+	old := store.Target{ID: "t-acme", Kind: "acme", Coordinates: map[string]string{"name": "widget"}, NextCheckAt: time.Now()}
+	if err := e.st.CreateTarget(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sources["acme"] = config.Source{Kind: "npm", BaseURL: cfg.Sources["npm-internal"].BaseURL}
+	chk := &detect.Checker{Store: e.st, Sources: e.registry(t, cfg), Instance: "test"}
+	if _, err := chk.Check(t.Context(), old); !errors.Is(err, scheduler.ErrPermanent) {
+		t.Fatalf("Check: %v, want a permanent error", err)
+	}
+	if hits.Load() != 0 {
+		t.Error("fetched")
+	}
+	// The config check says so too.
+	reg := e.registry(t, cfg)
+	warns := storedSourceWarnings(reg, []store.TargetSource{{Name: "acme", Targets: 2}, {Name: "npm-internal", Kind: "npm", Targets: 1}, {Name: "gone", Kind: "npm", Targets: 1}, {Name: "wasm-kind", Targets: 1}}, []string{"wasm-kind"})
+	if len(warns) != 2 || !strings.Contains(warns[0], `2 stored targets of the source "acme" were created for kind acme, but it is now of kind npm`) ||
+		!strings.Contains(warns[1], `1 stored target use the source "gone", which is not configured`) {
+		t.Fatalf("warnings = %q", warns)
+	}
+}
+
+// Q2: an instance cannot take the kind of an installed plugin. S2: a sources
+// key that nothing reads is warned about.
+func TestInstanceNameChecksAgainstPlugins(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sources = map[string]config.Source{
+		"clash":     {Kind: "npm"},
+		"fine":      {Kind: "npm"},
+		"npm":       {BaseURL: "https://npm.example.org"},
+		"typo-npm":  {BaseURL: "https://x.example.org"},
+		"my-plugin": {BaseURL: "https://y.example.org"},
+	}
+	plugins := []config.InstalledPlugin{{Kind: "clash"}, {Kind: "my-plugin"}}
+	err := checkInstancePluginClash(cfg, plugins)
+	if err == nil || !strings.Contains(err.Error(), "sources.clash: a plugin of kind clash is installed") || strings.Contains(err.Error(), "fine") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := checkInstancePluginClash(cfg, nil); err != nil {
+		t.Fatalf("no plugins: %v", err)
+	}
+	warns := sourceKeyWarnings(cfg, plugins)
+	if len(warns) != 1 || !strings.Contains(warns[0], "sources.typo-npm: not a built-in source kind or an installed plugin") {
+		t.Fatalf("warnings = %q", warns)
+	}
+}
+
+// Q4 end to end on a database file: the read-only check lists the sources of
+// the stored targets, and `config check` warns about a missing one.
+func TestStoredTargetWarningsReadTheDatabase(t *testing.T) {
+	e, cfg, _, _, _, _ := twoNPMInstances(t)
+	if _, err := applyWidget(t, e, cfg); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "s.db")
+	st, err := sqlite.Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parseWatchFile(cfg, writeFile(t, "w.yaml", widgetWatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := watchfile.Apply(t.Context(), st, f, watchfile.ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	cfg.Database.DSN = "sqlite://" + path
+	if w := storedTargetWarnings(t.Context(), cfg, nil); len(w) != 0 {
+		t.Fatalf("configured instance: %q", w)
+	}
+	delete(cfg.Sources, "npm-internal")
+	w := storedTargetWarnings(t.Context(), cfg, nil)
+	if len(w) != 1 || !strings.Contains(w[0], `"npm-internal", which is not configured`) {
+		t.Fatalf("instance removed: %q", w)
+	}
+	cfg.Database.DSN = "sqlite://" + filepath.Join(t.TempDir(), "none.db")
+	if w := storedTargetWarnings(t.Context(), cfg, nil); len(w) != 0 {
+		t.Fatalf("no database: %q", w)
+	}
+}
+
+// capture serves 404 and records every request header it gets.
+type capture struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen []http.Header
+}
+
+func newCapture(t *testing.T) *capture {
+	t.Helper()
+	c := &capture{}
+	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.mu.Lock()
+		c.seen = append(c.seen, r.Header.Clone())
+		c.mu.Unlock()
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(c.srv.Close)
+	return c
+}
+
+// carries reports whether a request had at least one header holding v.
+func (c *capture) carries(v string) (requests int, found bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, h := range c.seen {
+		for _, vs := range h {
+			for _, x := range vs {
+				if strings.Contains(x, v) {
+					found = true
+				}
+			}
+		}
+	}
+	return len(c.seen), found
+}
+
+func envURLs(m map[string]*capture) []string {
+	var out []string
+	for name, c := range m {
+		out = append(out, "ANGELIA_SOURCES_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_"))+"_BASE_URL="+c.srv.URL)
+	}
+	return out
+}
+
+func loadYAML(t *testing.T, yaml string, extraEnv ...string) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeFile(t, "c.yaml", yaml), Environ: extraEnv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// S4: token_env belongs to the source it is set on, never to the other
+// sources of the same kind, in both directions, for the kinds that read it
+// themselves (github-release, github-tag, gitlab-release).
+func TestTokenEnvIsIsolatedBetweenInstancesAndKinds(t *testing.T) {
+	const httpOpts = "http: {allow_http_hosts: [127.0.0.1], allow_networks: [127.0.0.0/8]}\n"
+	coords := map[string]map[string]string{
+		"github-release": {"repo": "o/r"}, "github-tag": {"repo": "o/r"}, "gitlab-release": {"project": "g/p"},
+	}
+	// "tok" variants: the instance has the token; "base" variants: the base
+	// kind has it.
+	for variant, yaml := range map[string]string{
+		"instance-has-token": httpOpts + `sources:
+  github-release: {}
+  gh-tok: {kind: github-release, token_env: TOK_ENV}
+  github-tag: {}
+  tag-tok: {kind: github-tag, token_env: TOK_ENV}
+  gitlab-release: {}
+  gl-tok: {kind: gitlab-release, token_env: TOK_ENV}
+`,
+		"base-has-token": httpOpts + `sources:
+  github-release: {token_env: TOK_ENV}
+  gh-tok: {kind: github-release}
+  github-tag: {token_env: TOK_ENV}
+  tag-tok: {kind: github-tag}
+  gitlab-release: {token_env: TOK_ENV}
+  gl-tok: {kind: gitlab-release}
+`,
+	} {
+		t.Run(variant, func(t *testing.T) {
+			caps := map[string]*capture{}
+			for _, n := range []string{"github-release", "gh-tok", "github-tag", "tag-tok", "gitlab-release", "gl-tok"} {
+				caps[n] = newCapture(t)
+			}
+			cfg := loadYAML(t, yaml, append(envURLs(caps), "TOK_ENV=CANARY-token-env-0123")...)
+			reg := newRegEnv(t).registry(t, cfg)
+			withToken := map[bool][]string{
+				true:  {"gh-tok", "tag-tok", "gl-tok"},
+				false: {"github-release", "github-tag", "gitlab-release"},
+			}[variant == "instance-has-token"]
+			for name, c := range caps {
+				src, err := reg.Get(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = src.List(t.Context(), source.Target{Kind: src.Kind(), Coordinates: coords[src.Kind()]}, source.FetchState{})
+				n, found := c.carries("CANARY-token-env-0123")
+				if n == 0 {
+					t.Fatalf("%s: no request", name)
+				}
+				if want := slices.Contains(withToken, name); found != want {
+					t.Errorf("%s: token sent = %v, want %v", name, found, want)
+				}
+			}
+		})
+	}
+}
+
+// S4: two npm instances each send their own token_env, to their own registry.
+func TestTokenEnvOfTwoNPMInstances(t *testing.T) {
+	var hitsA, hitsB atomic.Int32
+	a := httptest.NewServer(countingNPM("CANARY-token-a", &hitsA))
+	b := httptest.NewServer(countingNPM("CANARY-token-b", &hitsB))
+	defer a.Close()
+	defer b.Close()
+	cfg := loadYAML(t, `http: {allow_http_hosts: [127.0.0.1], allow_networks: [127.0.0.0/8]}
+sources:
+  npm-a: {kind: npm, token_env: TOKEN_A}
+  npm-b: {kind: npm, token_env: TOKEN_B}
+`, "ANGELIA_SOURCES_NPM_A_BASE_URL="+a.URL, "ANGELIA_SOURCES_NPM_B_BASE_URL="+b.URL, "TOKEN_A=CANARY-token-a", "TOKEN_B=CANARY-token-b")
+	reg := newRegEnv(t).registry(t, cfg)
+	for _, name := range []string{"npm-a", "npm-b"} {
+		src, _ := reg.Get(name)
+		if res, err := src.List(t.Context(), npmTarget(), source.FetchState{}); err != nil || len(res.Versions) != 2 {
+			t.Errorf("%s: %d versions, %v", name, len(res.Versions), err)
+		}
+	}
+}
+
+// N2: metrics wrap each source and label it by its kind, so instances of one
+// kind share a series.
+func TestMetricsSeeTheKindNotTheInstanceName(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sources["npm-internal"] = config.Source{Kind: "npm"}
+	var kinds []string
+	_, err := builtinSources(cfg, &http.Client{}, nil, func(s source.Source) source.Source {
+		kinds = append(kinds, s.Kind())
+		return s
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := slices.DeleteFunc(slices.Clone(kinds), func(k string) bool { return k != "npm" }); len(n) != 2 {
+		t.Fatalf("wrapped kinds = %v, want npm twice and no instance name", kinds)
+	}
+	if slices.Contains(kinds, "npm-internal") {
+		t.Fatalf("wrapped kinds = %v", kinds)
 	}
 }

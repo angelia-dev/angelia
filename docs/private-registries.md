@@ -68,7 +68,8 @@ watches:
 ```
 
 - The instance has its own `base_url`, `token_env` and `auth`, all as for a built-in kind. The built-in
-  `npm` (the public registry, or whatever `sources.npm` configures) stays available next to it.
+  `npm` (the public registry, or whatever `sources.npm` configures) stays available next to it. A
+  `token_env` is sent only by the source it is set on.
   `http.ca_file` and the proxy rules are instance-wide and apply to every instance.
 - The name is lower-case letters, digits and single hyphens. A name that is a built-in kind (`npm`) cannot
   select another kind. `kind` is one of `pypi`, `npm`, `crates`, `github-release`, `github-tag`,
@@ -79,9 +80,36 @@ watches:
   `npm`, whatever the instance is called. The purl's `repository_url` is the instance's `base_url`. A
   subscription `filter.source` therefore names kinds, not instances.
 - The watch's `source` (watch file, API) is the instance name. The same package on two instances is two
-  targets, each fetched from its own registry. Renaming the instance in the configuration points its stored
-  watches at nothing: their checks fail until the name is configured again.
+  targets, each fetched from its own registry.
 - Secrets named by an instance's `auth` are checked against the instance's own host.
+
+### What a name is bound to
+
+A target remembers the kind it was created for (`target.source_kind`, migration 00017; empty means the kind
+equals the name, which is every target of a built-in kind and every target stored before instances). The
+registry now behind the name must still be of that kind:
+
+- If you change `kind` of an instance (or a future built-in kind takes the name of one of your instances), its
+  stored targets are **not** reinterpreted. Their checks fail with a permanent error, are retried only
+  once a day, fetch nothing and emit no events; `angelia apply` and `PUT /v1/watches/<name>` refuse a watch
+  that would use them, with an error that names both kinds.
+- To change a registry's kind, give the instance a new name and re-create its watches. To keep the name, put
+  `kind` back.
+- Removing or renaming an instance leaves its stored targets without a source: their checks fail until the
+  name is configured again. `angelia config check` and the log at `serve` start warn about stored targets
+  whose source is not configured or changed kind (when the database can be read).
+- The migration only adds a nullable column; it does not rewrite any row.
+
+### Naming rules
+
+- 1 to 63 characters, lower-case letters, digits and single hyphens.
+- An instance cannot take the name of an installed plugin's kind (`config check` fails). A `sources` key that is
+  neither a built-in kind, an installed plugin nor an instance (no `kind`) is reported by `config check`
+  as ignored, usually a typo.
+- Logs and traces of a check carry `source=<name>` and `kind=<kind>` (`angelia.source.name`,
+  `angelia.source.kind`). Metrics are per kind, never per instance, so their cardinality stays bounded.
+- `?source=` means the name in `GET /v1/watches` (it filters the watches by the `source` they have) and the
+  kind in `GET /v1/events` and in subscription filters (events carry `data.source`, the kind).
 
 ## Examples
 

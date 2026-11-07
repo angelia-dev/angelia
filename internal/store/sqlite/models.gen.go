@@ -99,6 +99,7 @@ type Target struct {
 	NextCheckAt     int64
 	ErrorCount      int64
 	IntervalMs      sql.NullInt64
+	SourceKind      sql.NullString
 }
 
 type Version struct {

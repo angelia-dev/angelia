@@ -1,6 +1,6 @@
 -- name: CreateTarget :exec
-INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms, source_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetTargetByCoordinates :one
 SELECT * FROM target WHERE kind = ? AND coordinates_json = ?;
@@ -404,3 +404,6 @@ SELECT * FROM secret ORDER BY name;
 
 -- name: CountSecretsByKeyID :many
 SELECT key_id, COUNT(*) AS n FROM secret GROUP BY key_id ORDER BY key_id;
+
+-- name: ListTargetSources :many
+SELECT kind, source_kind, count(*) AS targets FROM target GROUP BY kind, source_kind ORDER BY kind, source_kind;

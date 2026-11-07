@@ -176,3 +176,40 @@ func TestNamedSourceCredentialWarningUsesTheKind(t *testing.T) {
 		t.Errorf("warnings = %q", w)
 	}
 }
+
+// The auth rules that depend on the kind apply to an instance by its kind,
+// not by its name (S1).
+func TestNamedSourceAuthRulesFollowTheKind(t *testing.T) {
+	basic := "auth: {type: basic, username: u, password_ref: pw}"
+	// An instance of a kind that does not accept basic is refused...
+	for _, kind := range []string{"github-tag", "gitlab-release"} {
+		_, err := load(t, writeFile(t, "sources:\n  my-registry:\n    kind: "+kind+"\n    "+basic+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.my-registry.auth.type: basic is not accepted") {
+			t.Errorf("%s instance: err = %v", kind, err)
+		}
+	}
+	// ...one of a kind that does is accepted, even under the name of
+	// another kind.
+	for _, key := range []string{"github-tag", "gitlab-release", "mirror"} {
+		if _, err := load(t, writeFile(t, "sources:\n  "+key+":\n    kind: npm\n    "+basic+"\n")); err != nil {
+			t.Errorf("npm instance named %s: %v", key, err)
+		}
+	}
+}
+
+// Names and kinds are at most 63 characters, the length the API's Kind
+// pattern allows (S3).
+func TestNamedSourceLengthLimit(t *testing.T) {
+	ok, long := strings.Repeat("a", 63), strings.Repeat("a", 64)
+	if _, err := load(t, writeFile(t, "sources:\n  "+ok+":\n    kind: "+ok+"\n")); err != nil {
+		t.Fatalf("63 characters: %v", err)
+	}
+	_, err := load(t, writeFile(t, "sources:\n  "+long+":\n    kind: npm\n"))
+	if err == nil || !strings.Contains(err.Error(), "invalid source name") {
+		t.Errorf("a 64 character name: err = %v", err)
+	}
+	_, err = load(t, writeFile(t, "sources:\n  mine:\n    kind: "+long+"\n"))
+	if err == nil || !strings.Contains(err.Error(), "sources.mine.kind: invalid kind") {
+		t.Errorf("a 64 character kind: err = %v", err)
+	}
+}
