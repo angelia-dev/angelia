@@ -2,6 +2,8 @@ package netguard
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +89,13 @@ type Config struct {
 	// the dial-time check are read from it once, in New, by asking it for
 	// an http and an https probe URL. Go-level option: it has no YAML key.
 	Proxy func(*http.Request) (*url.URL, error)
+	// RootCAs, when not nil, is the pool that verifies server certificates
+	// of the default transport, for the origin and for an https proxy
+	// alike. The caller builds it from the system roots plus
+	// http.ca_file (config.LoadCAPool), so it extends the system roots and
+	// never replaces them. Certificate verification is never switched
+	// off. Ignored when Transport is set.
+	RootCAs *x509.CertPool
 	// Transport sends each attempt. By default it is an *http.Transport
 	// dialling through netguard's own dialer, which checks the address
 	// actually connected (dial-time check, see the package doc). A custom
@@ -155,7 +164,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	guard := NewGuard(cfg.Allow, cfg.Resolver)
 	if cfg.Transport == nil {
-		cfg.Transport = newTransport(guard, cfg.Proxy)
+		cfg.Transport = newTransport(guard, cfg.Proxy, cfg.RootCAs)
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = realClock{}
@@ -192,7 +201,7 @@ func New(cfg Config) (*Client, error) {
 
 // newTransport returns the default transport, dialling through netguard's
 // guarded dialer rather than sharing http.DefaultTransport.
-func newTransport(g *Guard, proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+func newTransport(g *Guard, proxy func(*http.Request) (*url.URL, error), roots *x509.CertPool) *http.Transport {
 	if proxy == nil {
 		proxy = http.ProxyFromEnvironment
 	}
@@ -201,7 +210,12 @@ func newTransport(g *Guard, proxy func(*http.Request) (*url.URL, error)) *http.T
 		guard:   g,
 		proxies: proxyAddrs(proxy),
 	}
+	var tlsCfg *tls.Config
+	if roots != nil {
+		tlsCfg = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	}
 	return &http.Transport{
+		TLSClientConfig:       tlsCfg,
 		Proxy:                 proxy,
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
