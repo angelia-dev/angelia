@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/version/pep440"
 )
 
 // simpleAccept asks for PEP 691 JSON and accepts the HTML forms of PEP 503
@@ -54,14 +56,27 @@ func (s *Source) listSimple(ctx context.Context, name string, st source.FetchSta
 			return source.Result{}, fmt.Errorf("pypi: decode response for %q: %w", name, err)
 		}
 	} else {
-		files = parseSimpleHTML(res.Body)
+		files = parseSimpleHTML(ctx, s.log, res.Body)
 	}
 
-	byVersion := map[string][]file{}
-	for _, raw := range declared {
-		if raw != "" {
-			byVersion[raw] = nil
+	// Group by PEP 440 equality when the version parses (so 1.0b0 and
+	// 1.0-beta, or 1.0 and 1.0.0, are one release), else by the raw string.
+	// Raw is the spelling of the first file.
+	type group struct {
+		raw    string
+		parsed pep440.Version
+		ok     bool
+		files  []file
+	}
+	var groups []*group
+	find := func(raw string) *group {
+		p, err := pep440.Parse(raw)
+		for _, g := range groups {
+			if (err == nil && g.ok && pep440.Compare(g.parsed, p) == 0) || ((err != nil || !g.ok) && g.raw == raw) {
+				return g
+			}
 		}
+		return nil
 	}
 	for _, f := range files {
 		raw, ok := versionOfFilename(name, f.Filename)
@@ -69,18 +84,24 @@ func (s *Source) listSimple(ctx context.Context, name string, st source.FetchSta
 			s.log.DebugContext(ctx, "pypi: skipping link that is not a file of the project", "project", name, "filename", f.Filename)
 			continue
 		}
-		byVersion[raw] = append(byVersion[raw], file{
-			UploadTime: f.UploadTime, Yanked: f.Yanked, YankedReason: f.Reason,
-		})
-	}
-	versions := make([]source.Version, 0, len(byVersion))
-	for raw, fs := range byVersion {
-		v := s.version(ctx, name, raw, fs)
-		if len(fs) == 0 {
-			// Listed by "versions" but no file seen: nothing says it is yanked.
-			v.Yanked = false
+		g := find(raw)
+		if g == nil {
+			g = &group{raw: raw}
+			g.parsed, err = pep440.Parse(raw)
+			g.ok = err == nil
+			groups = append(groups, g)
 		}
-		versions = append(versions, v)
+		g.files = append(g.files, file{UploadTime: f.UploadTime, Yanked: f.Yanked, YankedReason: f.Reason})
+	}
+	for _, raw := range declared {
+		if raw != "" && find(raw) == nil {
+			// As on the JSON path, a release without files is not listed.
+			s.log.DebugContext(ctx, "pypi: skipping release without files", "project", name, "version", raw)
+		}
+	}
+	versions := make([]source.Version, 0, len(groups))
+	for _, g := range groups {
+		versions = append(versions, s.version(ctx, name, g.raw, g.files))
 	}
 	sortNewestFirst(versions)
 	return source.Result{Versions: versions, State: state}, nil
@@ -158,10 +179,22 @@ func versionOfFilename(name, filename string) (string, bool) {
 	// left part normalizes to the project name.
 	for i := range len(stem) {
 		if stem[i] == '-' && i+1 < len(stem) && Normalize(stem[:i]) == name {
-			return stem[i+1:], true
+			rest := stem[i+1:]
+			if !startsVersion(rest) {
+				return "", false
+			}
+			return rest, true
 		}
 	}
 	return "", false
+}
+
+// startsVersion reports whether s begins like a version: a digit (an epoch
+// "1!2.0" starts with one too), or "v" and a digit. It keeps "bar-1.0" out of
+// the files of project "foo" when the file is "foo-bar-1.0.tar.gz".
+func startsVersion(s string) bool {
+	s = strings.TrimPrefix(s, "v")
+	return s != "" && s[0] >= '0' && s[0] <= '9'
 }
 
 // parseSimpleHTML reads the anchors of a PEP 503 page: the link text is the
@@ -170,7 +203,7 @@ func versionOfFilename(name, filename string) (string, bool) {
 // scanner, not an HTML parser: comments are skipped, tag and attribute names
 // are case-insensitive, values may be quoted or bare, and a malformed anchor
 // ends the scan with what was read so far.
-func parseSimpleHTML(body []byte) []simpleFile {
+func parseSimpleHTML(ctx context.Context, log *slog.Logger, body []byte) []simpleFile {
 	src := string(body)
 	low := asciiLower(src)
 	var out []simpleFile
@@ -194,9 +227,10 @@ func parseSimpleHTML(body []byte) []simpleFile {
 		}
 		attrs, next, ok := parseAttrs(src, i+2)
 		if !ok {
+			log.DebugContext(ctx, "pypi: malformed anchor in the Simple API page, stopping the scan", "offset", i, "links", len(out))
 			break
 		}
-		closeAt := strings.Index(low[next:], "</a")
+		closeAt := indexAnchorClose(low[next:])
 		if closeAt < 0 {
 			closeAt = len(src) - next
 		}
@@ -275,6 +309,22 @@ func parseAttrs(src string, i int) (attrs map[string]string, next int, ok bool) 
 		}
 	}
 	return nil, 0, false
+}
+
+// indexAnchorClose returns the index of "</a>" or "</a" followed by white
+// space, not of "</abbr>", or -1.
+func indexAnchorClose(low string) int {
+	for off := 0; ; {
+		i := strings.Index(low[off:], "</a")
+		if i < 0 {
+			return -1
+		}
+		i += off
+		if j := i + 3; j >= len(low) || low[j] == '>' || low[j] == '/' || isSpace(low[j]) {
+			return i
+		}
+		off = i + 3
+	}
 }
 
 func filenameOfHref(href string) string {

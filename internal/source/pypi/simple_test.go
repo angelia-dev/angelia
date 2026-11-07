@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,7 +60,7 @@ func (u *simpleServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	etag := `"` + name + "-" + ext + `-` + string(rune('a'+u.rev.Load())) + `"`
+	etag := `"` + name + "-" + ext + `-` + strconv.Itoa(int(u.rev.Load())) + `"`
 	w.Header().Set("ETag", etag)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
@@ -296,11 +297,17 @@ func TestWithAPIRejectsOtherValues(t *testing.T) {
 	}
 }
 
-// The PEP 691 "versions" key lists versions whose files the page may not
-// carry; a version with no file is listed, not yanked.
-func TestSimpleVersionsKey(t *testing.T) {
+// The PEP 691 "versions" key adds nothing for a version without a file (as on
+// the JSON path), and differing spellings of one version are one release, with
+// the spelling of the file.
+func TestSimpleVersionSpellings(t *testing.T) {
 	t.Parallel()
-	body := `{"name":"example-pkg","versions":["1.0","0.9"],"files":[{"filename":"example_pkg-1.0.tar.gz","url":"x","hashes":{}}]}`
+	body := `{"name":"example-pkg","versions":["1.0.0","0.9","1.0b0","2.0"],"files":[
+{"filename":"example_pkg-1.0.tar.gz","url":"x","hashes":{}},
+{"filename":"example_pkg-1.0.0-py3-none-any.whl","url":"x","hashes":{}},
+{"filename":"example_pkg-1.0-beta.tar.gz","url":"x","hashes":{}},
+{"filename":"example_pkg-1.0b0-py3-none-any.whl","url":"x","hashes":{}},
+{"filename":"example_pkg-1.0.0.post1.tar.gz","url":"x","hashes":{}}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", pep691)
 		_, _ = w.Write([]byte(body))
@@ -310,9 +317,43 @@ func TestSimpleVersionsKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vs := byRaw(res)
-	if len(vs) != 2 || vs["0.9"].Yanked || vs["0.9"].Metadata["files"] != 0 || vs["1.0"].Metadata["files"] != 1 {
-		t.Fatalf("versions = %+v", res.Versions)
+	var got []string
+	for _, v := range res.Versions {
+		got = append(got, v.Raw)
+	}
+	if !slices.Equal(got, []string{"1.0.0.post1", "1.0", "1.0-beta"}) {
+		t.Fatalf("versions = %v, want 1.0.0.post1, 1.0 (sdist and wheel) and 1.0-beta (1.0b0 too); 0.9 and 2.0 have no file", got)
+	}
+	if n := byRaw(res)["1.0"].Metadata["files"]; n != 2 {
+		t.Errorf("1.0 files = %v, want 2", n)
+	}
+	if n := byRaw(res)["1.0-beta"].Metadata["files"]; n != 2 {
+		t.Errorf("1.0-beta files = %v, want 2", n)
+	}
+}
+
+// A file of another project whose name starts with this one's, and a link
+// whose text only looks like a file, are not versions; </abbr> does not close
+// an anchor.
+func TestSimpleStrayLinks(t *testing.T) {
+	t.Parallel()
+	body := `<a href="x">foo-bar-1.0.tar.gz</a><a href="y">foo-2.0.tar.gz</a>
+<a href="z"><abbr>foo-3.0.tar.gz</abbr></a>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	res, err := newSimple(srv.URL, srv.Client()).List(context.Background(), target("foo"), source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, v := range res.Versions {
+		got = append(got, v.Raw)
+	}
+	if !slices.Equal(got, []string{"3.0", "2.0"}) {
+		t.Fatalf("versions = %v, want [3.0 2.0]", got)
 	}
 }
 
