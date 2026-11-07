@@ -1,9 +1,8 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `3f97901` ("feat(openapi): shoutrrr sink config with a whole-URL secret (ADR 0026)", the
-spec pull request #14 of angelia-dev/angelia#120, **not yet merged**: re-point this at the merge
-commit once it is). Only `openapi/angelia.v1.yaml` changed since `670a586` ("feat(openapi):
+at commit `da249d8` ("feat(openapi): shoutrrr sink config with a whole-URL secret (#14)", the spec
+pull request of angelia-dev/angelia#120, merged on the spec repository's `main`). Only `openapi/angelia.v1.yaml` changed since `670a586` ("feat(openapi):
 github-dispatch sink config (#12)"): version 0.3.1 documents the github-dispatch input names and
 payload size guard (#13), and version 0.4.0 adds `ShoutrrrSinkConfig` to `x-angelia-kind-config` and
 the `x-angelia-secret-destination` annotation.
