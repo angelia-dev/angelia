@@ -713,12 +713,15 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 	w := Watch{Line: n.Line, Interval: DefaultInterval, Labels: map[string]string{}, Policy: defaultPolicy()}
 	w.Name = p.name(m, jp, n, seen)
 
-	var kinds []string
+	var names []string
 	if p.opts.Sources != nil {
-		kinds = p.opts.Sources.Kinds()
+		names = p.opts.Sources.Names()
 	}
 	if sn := p.need(m, "source", jp+".source", n); sn != nil {
-		w.Source = p.enum(sn, jp+".source", kinds)
+		w.Source = p.enum(sn, jp+".source", names)
+		if w.Source != "" && p.opts.Sources != nil {
+			w.Kind = p.opts.Sources.KindOf(w.Source)
+		}
 	}
 	if cn := p.need(m, "coordinates", jp+".coordinates", n); cn != nil {
 		w.Coordinates = p.stringMap(cn, jp+".coordinates", false, nil)
@@ -753,7 +756,7 @@ func (p *parser) watch(n *yaml.Node, jp string, seen map[string]int) (Watch, boo
 // row, so that every spelling of one upstream object shares one target. On
 // an error it records it and returns the coordinates as written.
 func (p *parser) canonical(src source.Source, cn *yaml.Node, jp string, w Watch) map[string]string {
-	t := source.Target{Kind: w.Source, Coordinates: w.Coordinates}
+	t := source.Target{Kind: w.SourceKind(), Coordinates: w.Coordinates}
 	err := src.Validate(t)
 	if err == nil {
 		if t, err = source.Canonical(src, t); err == nil {
@@ -774,7 +777,7 @@ func (p *parser) compilePolicy(w Watch, m map[string]*yaml.Node, wn *yaml.Node, 
 	pol, err := policy.Decode(w.PolicyJSON())
 	if err == nil {
 		var s version.Scheme
-		if s, err = schemes.Select(w.Source, pol.Scheme, nil); err == nil {
+		if s, err = schemes.Select(w.SourceKind(), pol.Scheme, nil); err == nil {
 			_, err = policy.Compile(pol, s)
 		}
 	}

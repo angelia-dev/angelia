@@ -8,7 +8,8 @@
 //   - error: next = now + backoff ± jitter, where backoff doubles from
 //     BackoffBase with every consecutive error and is capped at 24h before
 //     jitter applies; the fetch state is kept. A check that exceeds
-//     Options.CheckTimeout counts as an error.
+//     Options.CheckTimeout counts as an error. An error that wraps
+//     [ErrPermanent] (retrying cannot fix it) waits the longest backoff.
 //
 // The unit of work is the target, not the watch, so any number of watches
 // on one upstream object cost one fetch per interval.

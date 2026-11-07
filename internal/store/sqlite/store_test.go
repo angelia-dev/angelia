@@ -183,8 +183,8 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 1 {
-		t.Fatalf("applied %d migrations, want 1", applied)
+	if applied != 2 { // 00016 and 00017
+		t.Fatalf("applied %d migrations, want 2", applied)
 	}
 	s := &Store{db: db, q: New(db)}
 	if vs, err := s.ListVersions(ctx, "t1"); err != nil || len(vs) != 1 {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -41,66 +42,103 @@ import (
 // built from the instance configuration, shared by the sources (scheduler)
 // and the sinks (dispatcher), so http.allow_networks applies to both.
 
-// builtinSources registers the built-in source kinds with hc. A non-nil wrap
-// decorates each source (metrics). log may be nil. The kinds are the ones the watch file
-// and the API accept (watchSources), so every stored target can be checked.
-// res resolves the stored secrets of sources.<kind>.auth at fetch time (nil:
-// such a source fails each fetch); the watch file check passes nil.
+// builtinKinds are the source kinds this binary implements, which a named
+// instance (sources.<name>.kind) may select.
+var builtinKinds = []string{
+	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind,
+}
+
+// builtinSources registers the built-in source kinds with hc, and one more
+// source for each named instance of sources.<name>.kind. A non-nil wrap
+// decorates each source (metrics). log may be nil. The names are the ones the
+// watch file and the API accept (watchSources), so every stored target can be
+// checked. res resolves the stored secrets of sources.<name>.auth at fetch
+// time (nil: such a source fails each fetch); the watch file check passes nil.
 func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap func(source.Source) source.Source, res registryauth.Resolver) (*source.Registry, error) {
-	var ghOpts []githubrelease.Option
-	if tok := cfg.SourceToken(githubrelease.Kind); tok != "" {
-		ghOpts = append(ghOpts, githubrelease.WithToken(tok))
+	type entry struct{ name, kind string }
+	var entries []entry
+	for _, k := range builtinKinds {
+		entries = append(entries, entry{k, k})
 	}
-	var tagOpts []githubtag.Option
-	if tok := cfg.SourceToken(githubtag.Kind); tok != "" {
-		tagOpts = append(tagOpts, githubtag.WithToken(tok))
+	for _, name := range slices.Sorted(maps.Keys(cfg.Sources)) {
+		kind := cfg.Sources[name].Kind
+		switch {
+		case kind == "" || kind == name:
+			continue // a built-in kind (or an unknown key, ignored)
+		case slices.Contains(builtinKinds, name):
+			return nil, fmt.Errorf("sources.%s.kind: %s is a built-in kind and cannot select another; give the instance its own name", name, name)
+		case !slices.Contains(builtinKinds, kind):
+			return nil, fmt.Errorf("sources.%s.kind: unknown source kind %q (kinds: %s)", name, kind, strings.Join(builtinKinds, ", "))
+		}
+		entries = append(entries, entry{name, kind})
 	}
-	// token_env sends GitLab's own header, PRIVATE-TOKEN (a personal, project
-	// or group access token); auth sends "Authorization: Bearer", which GitLab
-	// accepts for the same tokens and for OAuth tokens.
-	var glOpts []gitlabrelease.Option
-	if tok := cfg.SourceToken(gitlabrelease.Kind); tok != "" {
-		glOpts = append(glOpts, gitlabrelease.WithToken(tok))
-	}
-	var pypiOpts []pypi.Option
-	if log != nil {
-		pypiOpts = append(pypiOpts, pypi.WithLogger(log))
-	}
-	pypiURL := baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL)
-	npmURL := baseURL(cfg, npm.Kind, "")
-	ghURL := baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL)
-	tagURL := baseURL(cfg, githubtag.Kind, githubtag.DefaultBaseURL)
-	glURL := baseURL(cfg, gitlabrelease.Kind, gitlabrelease.DefaultBaseURL)
-	cratesURL := baseURL(cfg, crates.Kind, crates.DefaultIndexURL)
 	reg := source.NewRegistry()
-	for _, s := range []source.Source{
-		pypi.New(pypiURL, sourceClient(cfg, pypi.Kind, pypiURL, hc, res), pypiOpts...),
-		npm.New(npmURL, sourceClient(cfg, npm.Kind, npmURL, hc, res)),
-		githubrelease.New(ghURL, sourceClient(cfg, githubrelease.Kind, ghURL, hc, res), ghOpts...),
-		githubtag.New(tagURL, sourceClient(cfg, githubtag.Kind, tagURL, hc, res), tagOpts...),
-		gitlabrelease.New(glURL, sourceClient(cfg, gitlabrelease.Kind, glURL, hc, res), glOpts...),
-		// crates sends no credential: its index and API are public, and a
-		// private cargo registry authenticates with a raw token that no
-		// source option defines yet.
-		crates.New(cratesURL, hc),
-	} {
+	for _, e := range entries {
+		s := newSource(cfg, e.name, e.kind, hc, log, res)
 		if wrap != nil {
 			s = wrap(s)
 		}
-		if err := reg.Register(s); err != nil {
+		if err := reg.RegisterAs(e.name, s); err != nil {
 			return nil, err
 		}
 	}
 	return reg, nil
 }
 
-// sourceClient returns the HTTP client of source kind: hc, or hc adding the
-// credential of sources.<kind>.auth (stored secrets, bound to the base URL's
-// host) or, for pypi and npm, of token_env (github-release, github-tag and
+// newSource builds the source of built-in kind for the configuration
+// sources.<name>: its kind itself or an instance of it, with its own base
+// URL, token and auth.
+func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog.Logger, res registryauth.Resolver) source.Source {
+	base := baseURL(cfg, name, publicRegistries[kind])
+	c := sourceClient(cfg, name, kind, base, hc, res)
+	tok := cfg.SourceToken(name)
+	switch kind {
+	case pypi.Kind:
+		var opts []pypi.Option
+		if log != nil {
+			opts = append(opts, pypi.WithLogger(log))
+		}
+		return pypi.New(base, c, opts...)
+	case npm.Kind:
+		return npm.New(base, c)
+	case githubrelease.Kind:
+		var opts []githubrelease.Option
+		if tok != "" {
+			opts = append(opts, githubrelease.WithToken(tok))
+		}
+		return githubrelease.New(base, c, opts...)
+	case githubtag.Kind:
+		var opts []githubtag.Option
+		if tok != "" {
+			opts = append(opts, githubtag.WithToken(tok))
+		}
+		return githubtag.New(base, c, opts...)
+	case gitlabrelease.Kind:
+		// token_env sends GitLab's own header, PRIVATE-TOKEN (a personal,
+		// project or group access token); auth sends "Authorization:
+		// Bearer", which GitLab accepts for the same tokens and for OAuth
+		// tokens.
+		var opts []gitlabrelease.Option
+		if tok != "" {
+			opts = append(opts, gitlabrelease.WithToken(tok))
+		}
+		return gitlabrelease.New(base, c, opts...)
+	default: // crates.Kind
+		// crates sends no credential: its index and API are public, and a
+		// private cargo registry authenticates with a raw token that no
+		// source option defines yet.
+		return crates.New(base, hc)
+	}
+}
+
+// sourceClient returns the HTTP client of the source configured as
+// sources.<name>, an instance of kind (or the kind itself): hc, or hc adding
+// the credential of its auth (stored secrets, bound to the base URL's host)
+// or, for pypi and npm, of token_env (github-release, github-tag and
 // gitlab-release read their token themselves, each with its own header).
 // base is the URL the source reads from.
-func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
-	a := cfg.Sources[kind].Auth
+func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
+	a := cfg.Sources[name].Auth
 	c := registryauth.Config{Resolver: res}
 	switch {
 	case a.TokenRef != "":
@@ -108,7 +146,7 @@ func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res re
 	case a.PasswordRef != "":
 		c.PasswordRef, c.Username = a.PasswordRef, a.Username
 	case kind == pypi.Kind || kind == npm.Kind:
-		c.Token = secrets.NewValueString(cfg.SourceToken(kind))
+		c.Token = secrets.NewValueString(cfg.SourceToken(name))
 	}
 	if base == "" {
 		base = npm.DefaultBaseURL
@@ -129,18 +167,14 @@ func outgoingProxy(r *http.Request) (*url.URL, error) { return http.ProxyFromEnv
 // sourceRefs lists the stored secrets the sources of cfg name, with the
 // registry URL each is sent to.
 func sourceRefs(cfg *config.Config) []registryauth.Ref {
-	kinds := make([]string, 0, len(cfg.Sources))
-	for k := range cfg.Sources {
-		kinds = append(kinds, k)
-	}
-	slices.Sort(kinds)
 	var refs []registryauth.Ref
-	for _, k := range kinds {
+	for _, k := range slices.Sorted(maps.Keys(cfg.Sources)) {
 		a := cfg.Sources[k].Auth
-		if a.IsZero() || !config.SendsCredential(k) {
+		kind := cfg.SourceKind(k)
+		if a.IsZero() || !config.SendsCredential(kind) {
 			continue
 		}
-		u, err := url.Parse(baseURL(cfg, k, publicRegistries[k]))
+		u, err := url.Parse(baseURL(cfg, k, publicRegistries[kind]))
 		if err != nil {
 			continue // config.Validate has reported it
 		}
@@ -172,12 +206,13 @@ var publicRegistries = map[string]string{
 	crates.Kind:        crates.DefaultIndexURL,
 }
 
-// registryURL returns event.CheckInput.RegistryURL for a kind: its
-// configured base_url when that is not the public registry, else "".
-func registryURL(cfg *config.Config) func(kind string) string {
-	return func(kind string) string {
-		b := strings.TrimRight(cfg.Sources[kind].BaseURL, "/")
-		if b == "" || strings.EqualFold(b, strings.TrimRight(publicRegistries[kind], "/")) {
+// registryURL returns event.CheckInput.RegistryURL for a source (a kind, or
+// the name of an instance): its configured base_url when that is not the
+// public registry of its kind, else "".
+func registryURL(cfg *config.Config) func(name string) string {
+	return func(name string) string {
+		b := strings.TrimRight(cfg.Sources[name].BaseURL, "/")
+		if b == "" || strings.EqualFold(b, strings.TrimRight(publicRegistries[cfg.SourceKind(name)], "/")) {
 			return ""
 		}
 		return b
@@ -342,6 +377,21 @@ func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo
 		}
 		if err := checkSourceSecrets(cfg, hosts); err != nil {
 			return nil, errorsJoin(fmt.Errorf("source credentials: %w", err), st.Close())
+		}
+	}
+	if log != nil {
+		if stored, err := st.TargetSources(ctx); err == nil {
+			if reg, err := watchSources(cfg); err == nil {
+				var pluginKinds []string
+				for _, p := range plugins {
+					if p.Interface == "source" && p.Runtime != "builtin" {
+						pluginKinds = append(pluginKinds, p.Kind)
+					}
+				}
+				for _, w := range storedSourceWarnings(reg, stored, pluginKinds) {
+					log.Warn(w)
+				}
+			}
 		}
 	}
 	return st, nil

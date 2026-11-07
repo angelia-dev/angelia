@@ -83,6 +83,11 @@ type CheckerFunc func(ctx context.Context, t store.Target) (Outcome, error)
 // Check implements Checker.
 func (f CheckerFunc) Check(ctx context.Context, t store.Target) (Outcome, error) { return f(ctx, t) }
 
+// ErrPermanent is wrapped by a Checker error that retrying cannot fix, such
+// as a target whose source was reconfigured to another kind: the check is
+// recorded as failed and repeated only at the longest backoff.
+var ErrPermanent = errors.New("scheduler: permanent check error")
+
 // Outcome is the result of a successful check.
 type Outcome struct {
 	// FetchState replaces the target's fetch state (ETag, Last-Modified,
@@ -385,9 +390,10 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 	// One trace per check (story #118): this span is its root, whatever
 	// context the poll loop runs in. Deliveries made by the check link to it.
 	ctx, span := telemetry.StartRoot(ctx, s.opts.TracerProvider, "angelia.check", nil,
-		attribute.String("angelia.target.id", t.ID), attribute.String("angelia.source.kind", t.Kind))
+		attribute.String("angelia.target.id", t.ID), attribute.String("angelia.source.name", t.Kind),
+		attribute.String("angelia.source.kind", t.EffectiveSourceKind()))
 	defer span.End()
-	log := s.log.With("target", t.ID, "kind", t.Kind)
+	log := s.log.With("target", t.ID, "source", t.Kind, "kind", t.EffectiveSourceKind())
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 		defer cancel()
@@ -430,8 +436,15 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 		span.SetAttributes(attribute.Bool("angelia.check.timed_out", timedOut), attribute.Int64("angelia.check.errors", int64(next.ErrorCount)))
 		// Cap first, then jitter, so targets at the cap do not all land on
 		// exactly BackoffMax.
-		next.NextCheckAt = now.Add(s.jitter(Backoff(next.ErrorCount, s.opts.BackoffBase, s.opts.BackoffMax)))
-		log.WarnContext(ctx, "check failed", "error", err, "errors", next.ErrorCount, "next_check_at", next.NextCheckAt)
+		delay := Backoff(next.ErrorCount, s.opts.BackoffBase, s.opts.BackoffMax)
+		if errors.Is(err, ErrPermanent) {
+			// Retrying sooner cannot help: only a change of configuration
+			// does. Check again at the longest backoff, so that the fix is
+			// picked up without a restart of the target.
+			delay = s.opts.BackoffMax
+		}
+		next.NextCheckAt = now.Add(s.jitter(delay))
+		log.WarnContext(ctx, "check failed", "error", err, "errors", next.ErrorCount, "permanent", errors.Is(err, ErrPermanent), "next_check_at", next.NextCheckAt)
 	} else {
 		interval := s.opts.Interval
 		if t.Interval > 0 { // set by a watch file (docs/watch-file.md)

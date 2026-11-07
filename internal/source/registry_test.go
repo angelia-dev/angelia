@@ -92,3 +92,38 @@ func TestFetchStateIsZero(t *testing.T) {
 		t.Error("non-zero state reported zero")
 	}
 }
+
+func TestRegistryInstances(t *testing.T) {
+	r := source.NewRegistry()
+	pub, internal := sourcetest.NewFake("npm"), sourcetest.NewFake("npm")
+	if err := r.Register(pub); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RegisterAs("npm-internal", internal); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Get("npm-internal"); err != nil || got != source.Source(internal) {
+		t.Fatalf("Get(npm-internal) = %v, %v", got, err)
+	}
+	if want := []string{"npm", "npm-internal"}; !slices.Equal(r.Names(), want) {
+		t.Errorf("Names() = %v, want %v", r.Names(), want)
+	}
+	if want := []string{"npm"}; !slices.Equal(r.Kinds(), want) {
+		t.Errorf("Kinds() = %v, want the one base kind %v", r.Kinds(), want)
+	}
+	if got := r.KindOf("npm-internal"); got != "npm" {
+		t.Errorf("KindOf(npm-internal) = %q, want npm", got)
+	}
+	if got := r.KindOf("unknown"); got != "unknown" {
+		t.Errorf("KindOf(unknown) = %q, want the name back", got)
+	}
+	if err := r.RegisterAs("npm-internal", sourcetest.NewFake("npm")); !errors.Is(err, source.ErrDuplicateKind) {
+		t.Errorf("duplicate instance: err = %v, want ErrDuplicateKind", err)
+	}
+	if err := r.RegisterAs("", sourcetest.NewFake("npm")); err == nil {
+		t.Error("empty name accepted")
+	}
+	if err := r.RegisterAs("x", nil); err == nil {
+		t.Error("nil source accepted")
+	}
+}

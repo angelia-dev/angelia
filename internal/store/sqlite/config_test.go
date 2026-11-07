@@ -3,6 +3,7 @@ package sqlite
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -111,4 +112,49 @@ func TestUpdateWatchKeepsBaseline(t *testing.T) {
 		t.Fatal("baseline not reset")
 	}
 	wantErr(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error { return tx.ResetWatchBaseline(ctx, "nope") }), store.ErrNotFound, "reset missing")
+}
+
+// Story #205: a target stores the kind of the source it was created for,
+// NULL when that is its own kind; the stored sources can be listed.
+func TestTargetSourceKindRoundTrip(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	mk := func(id, kind, srcKind, name string) {
+		t.Helper()
+		must(t, s.CreateTarget(ctx, store.Target{ID: id, Kind: kind, SourceKind: srcKind, Coordinates: map[string]string{"name": name}, NextCheckAt: at}))
+	}
+	mk("t1", "npm", "", "a")
+	mk("t2", "npm", "npm", "b") // redundant: stored as NULL
+	mk("t3", "npm-internal", "npm", "a")
+	for id, want := range map[string]string{"t1": "npm", "t2": "npm", "t3": "npm"} {
+		got, err := s.GetTarget(ctx, id)
+		must(t, err)
+		if got.EffectiveSourceKind() != want {
+			t.Errorf("%s: effective source kind %q, want %q", id, got.EffectiveSourceKind(), want)
+		}
+	}
+	if g, _ := s.GetTarget(ctx, "t2"); g.SourceKind != "" {
+		t.Errorf("a source kind equal to the kind is stored as NULL, got %q", g.SourceKind)
+	}
+	if g, _ := s.GetTarget(ctx, "t3"); g.SourceKind != "npm" || g.Kind != "npm-internal" {
+		t.Errorf("t3 = kind %q source kind %q", g.Kind, g.SourceKind)
+	}
+	// The same coordinates under two names are two targets.
+	if a, b := mustTarget(t, s, "t1"), mustTarget(t, s, "t3"); a.ID == b.ID {
+		t.Fatal("instance and kind share a target")
+	}
+	got, err := s.TargetSources(ctx)
+	must(t, err)
+	want := []store.TargetSource{{Name: "npm", Targets: 2}, {Name: "npm-internal", Kind: "npm", Targets: 1}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("TargetSources = %+v, want %+v", got, want)
+	}
+}
+
+func mustTarget(t *testing.T, s *Store, id string) store.Target {
+	t.Helper()
+	tg, err := s.GetTarget(t.Context(), id)
+	must(t, err)
+	return tg
 }

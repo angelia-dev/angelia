@@ -24,9 +24,10 @@ subscriptions** from one YAML file and reconciles them into the store. A complet
 - Source credentials (for example a GitHub token) stay in the instance config under
   `sources.<kind>.token_env` or `sources.<kind>.auth` (a stored secret, see
   [private-registries.md](private-registries.md)). A watch cannot choose its own token or base URL: decision
-  D9 is unchanged. A watch of a private registry is an ordinary watch of that source kind; the registry is the
-  `base_url` of the kind in the instance configuration (one registry per kind per instance; several named
-  registries of one kind are not supported yet).
+  D9 is unchanged. A watch of a private registry is an ordinary watch of that source; the registry is the
+  `base_url` of the kind in the instance configuration, or of a named instance
+  (`sources.npm-internal: {kind: npm, base_url: ...}`, selected with `source: npm-internal`, see
+  [private-registries.md](private-registries.md#several-registries-of-one-kind)).
 - Same conventions as the instance config: unknown keys are errors, reported as
   `<file>: line N: ...` (the issue requires path and line); the file must contain exactly one YAML
   document; nothing is interpolated (`${VAR}` is not expanded, decision D10); values that look like
@@ -62,7 +63,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
@@ -74,6 +75,11 @@ also across owners: apply refuses a name that a row created through the API alre
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
   `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id; each in the
   form `Source.Validate` accepts.
+- A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`
+  validation, the default `scheme`, the events (`data.source`, purl type) and `filter.source` use the kind.
+  The `source` of a stored watch, and of the API, is the name the watch gave; the target remembers the kind
+  it was created for and is refused if the name later becomes a source of another kind
+  ([private-registries.md](private-registries.md#what-a-name-is-bound-to)).
 - `scheme` overrides the default chosen by source kind (`internal/version/schemes.ForSourceKind`).
   The loader checks the value against `schemes.Names()`, so it accepts `calver` as soon as #68 merges.
   `maven` is not accepted (Phase 1).
@@ -187,7 +193,7 @@ templates, accepted before, are now rejected at load time:
 
 | Key | Type | Default | Validation |
 |---|---|---|---|
-| `source` | list of string | any | registered source kinds ("ecosystem" in the PRD) |
+| `source` | list of string | any | registered source kinds ("ecosystem" in the PRD); the kind of an event, not the name of a named instance |
 | `labels` | map string to string | none | the event's watch must carry all of these labels with equal values |
 | `bump` | list of string | any | `major`, `minor`, `patch` |
 | `package` | string | any | glob (`path.Match` syntax) on the package name |

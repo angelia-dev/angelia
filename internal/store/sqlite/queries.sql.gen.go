@@ -325,8 +325,8 @@ func (q *Queries) CreateSubscription(ctx context.Context, arg CreateSubscription
 }
 
 const createTarget = `-- name: CreateTarget :exec
-INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO target (id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms, source_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateTargetParams struct {
@@ -338,6 +338,7 @@ type CreateTargetParams struct {
 	NextCheckAt     int64
 	ErrorCount      int64
 	IntervalMs      sql.NullInt64
+	SourceKind      sql.NullString
 }
 
 func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) error {
@@ -350,6 +351,7 @@ func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) erro
 		arg.NextCheckAt,
 		arg.ErrorCount,
 		arg.IntervalMs,
+		arg.SourceKind,
 	)
 	return err
 }
@@ -807,7 +809,7 @@ func (q *Queries) GetSubscriptionByName(ctx context.Context, name sql.NullString
 }
 
 const getTarget = `-- name: GetTarget :one
-SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE id = ?
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms, source_kind FROM target WHERE id = ?
 `
 
 func (q *Queries) GetTarget(ctx context.Context, id string) (Target, error) {
@@ -822,12 +824,13 @@ func (q *Queries) GetTarget(ctx context.Context, id string) (Target, error) {
 		&i.NextCheckAt,
 		&i.ErrorCount,
 		&i.IntervalMs,
+		&i.SourceKind,
 	)
 	return i, err
 }
 
 const getTargetByCoordinates = `-- name: GetTargetByCoordinates :one
-SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target WHERE kind = ? AND coordinates_json = ?
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms, source_kind FROM target WHERE kind = ? AND coordinates_json = ?
 `
 
 type GetTargetByCoordinatesParams struct {
@@ -847,6 +850,7 @@ func (q *Queries) GetTargetByCoordinates(ctx context.Context, arg GetTargetByCoo
 		&i.NextCheckAt,
 		&i.ErrorCount,
 		&i.IntervalMs,
+		&i.SourceKind,
 	)
 	return i, err
 }
@@ -1212,7 +1216,7 @@ func (q *Queries) ListLeasableDueDeliveries(ctx context.Context, arg ListLeasabl
 }
 
 const listLeasableDueTargets = `-- name: ListLeasableDueTargets :many
-SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms FROM target
+SELECT id, kind, coordinates_json, fetch_state_json, last_checked_at, next_check_at, error_count, interval_ms, source_kind FROM target
 WHERE next_check_at <= ?1
   AND NOT EXISTS (
     SELECT 1 FROM lease
@@ -1248,6 +1252,7 @@ func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDu
 			&i.NextCheckAt,
 			&i.ErrorCount,
 			&i.IntervalMs,
+			&i.SourceKind,
 		); err != nil {
 			return nil, err
 		}
@@ -1675,6 +1680,39 @@ func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy stri
 			&i.ManagedBy,
 			&i.PolicyJson,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTargetSources = `-- name: ListTargetSources :many
+SELECT kind, source_kind, count(*) AS targets FROM target GROUP BY kind, source_kind ORDER BY kind, source_kind
+`
+
+type ListTargetSourcesRow struct {
+	Kind       string
+	SourceKind sql.NullString
+	Targets    int64
+}
+
+func (q *Queries) ListTargetSources(ctx context.Context) ([]ListTargetSourcesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTargetSources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTargetSourcesRow
+	for rows.Next() {
+		var i ListTargetSourcesRow
+		if err := rows.Scan(&i.Kind, &i.SourceKind, &i.Targets); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

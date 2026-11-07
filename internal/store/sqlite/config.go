@@ -91,8 +91,13 @@ func (o txOps) CreateTarget(ctx context.Context, t store.Target) error {
 	return wrap(o.q.CreateTarget(ctx, CreateTargetParams{
 		ID: t.ID, Kind: t.Kind, CoordinatesJson: string(coords), FetchStateJson: fs,
 		LastCheckedAt: nullMillis(t.LastCheckedAt), NextCheckAt: millis(t.NextCheckAt), ErrorCount: t.ErrorCount,
-		IntervalMs: nullInterval(t.Interval),
+		IntervalMs: nullInterval(t.Interval), SourceKind: nullSourceKind(t),
 	}), "create target", t.ID)
+}
+
+// nullSourceKind is NULL when the source kind is the target's kind.
+func nullSourceKind(t store.Target) sql.NullString {
+	return sql.NullString{String: t.SourceKind, Valid: t.SourceKind != "" && t.SourceKind != t.Kind}
 }
 
 func nullInterval(d time.Duration) sql.NullInt64 {
@@ -107,6 +112,7 @@ func targetFromRow(r Target) (store.Target, error) {
 	if r.IntervalMs.Valid {
 		t.Interval = time.Duration(r.IntervalMs.Int64) * time.Millisecond
 	}
+	t.SourceKind = r.SourceKind.String
 	if err := json.Unmarshal([]byte(r.CoordinatesJson), &t.Coordinates); err != nil {
 		return store.Target{}, fmt.Errorf("store: target %s coordinates: %w", r.ID, err)
 	}
@@ -374,3 +380,58 @@ func (o txOps) FailHeldDelivery(ctx context.Context, id, reason string, now time
 }
 
 var _ store.ConfigTx = txOps{}
+
+// TargetSources lists the distinct sources the stored targets use, with how
+// many targets each has, for `config check` and the start-up check of the
+// configured source names (story #205).
+func (s *Store) TargetSources(ctx context.Context) ([]store.TargetSource, error) {
+	rows, err := s.q.ListTargetSources(ctx)
+	if err != nil {
+		return nil, wrap(err, "list target sources", "")
+	}
+	out := make([]store.TargetSource, len(rows))
+	for i, r := range rows {
+		out[i] = store.TargetSource{Name: r.Kind, Kind: r.SourceKind.String, Targets: r.Targets}
+	}
+	return out, nil
+}
+
+// StoredTargetSources reads the sources the stored targets use from the
+// database file at path, read-only and without applying migrations, like
+// SecretHosts. A database that has no targets yet, or that migration 00017
+// has not reached (every target then has the kind of its name), is read as
+// far as it goes. ErrNoDatabase when the file does not exist.
+func StoredTargetSources(ctx context.Context, path string) ([]store.TargetSource, error) {
+	db, err := openReadOnly(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	var hasTarget, hasKind bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pragma_table_info('target'))`).Scan(&hasTarget); err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", path, err)
+	}
+	if !hasTarget {
+		return nil, nil
+	}
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pragma_table_info('target') WHERE name = 'source_kind')`).Scan(&hasKind); err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", path, err)
+	}
+	if !hasKind {
+		rows, err := db.QueryContext(ctx, `SELECT kind, count(*) FROM target GROUP BY kind ORDER BY kind`)
+		if err != nil {
+			return nil, fmt.Errorf("store: list target sources in %s: %w", path, err)
+		}
+		defer func() { _ = rows.Close() }()
+		var out []store.TargetSource
+		for rows.Next() {
+			var ts store.TargetSource
+			if err := rows.Scan(&ts.Name, &ts.Targets); err != nil {
+				return nil, fmt.Errorf("store: list target sources in %s: %w", path, err)
+			}
+			out = append(out, ts)
+		}
+		return out, rows.Err()
+	}
+	return (&Store{q: New(db)}).TargetSources(ctx)
+}

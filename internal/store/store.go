@@ -327,8 +327,15 @@ type PruneResult struct {
 
 // Target is one upstream object, shared by every watch on it.
 type Target struct {
-	ID            string
-	Kind          string
+	ID string
+	// Kind is the name the watch gave its source: a source kind, or the name
+	// of a configured instance of one (story #205). Kind and Coordinates are
+	// the target's identity.
+	Kind string
+	// SourceKind is the kind of the source the target was created for; empty
+	// means Kind (a target of a built-in kind, or one written before
+	// instances). Immutable, like Kind. Use EffectiveSourceKind.
+	SourceKind    string
 	Coordinates   map[string]string
 	FetchState    json.RawMessage // opaque to the core (architecture.md §3.3)
 	LastCheckedAt time.Time       // zero: never checked
@@ -337,6 +344,15 @@ type Target struct {
 	// Interval is the check interval, the smallest interval among the watches
 	// that use the target. Zero means not set.
 	Interval time.Duration
+}
+
+// EffectiveSourceKind returns the kind of the source t was created for:
+// SourceKind, else Kind.
+func (t Target) EffectiveSourceKind() string {
+	if t.SourceKind != "" {
+		return t.SourceKind
+	}
+	return t.Kind
 }
 
 // Watch is a user's interest in a target.
@@ -484,4 +500,13 @@ type Hold struct {
 	// Input is the filter input (JSON, opaque to the store) the delivery was
 	// matched with, so that an edited filter can be applied to it again.
 	Input json.RawMessage
+}
+
+// TargetSource is a source name that stored targets use (Target.Kind), the
+// kind they were created for (Target.SourceKind, empty: the name) and how
+// many targets there are.
+type TargetSource struct {
+	Name    string
+	Kind    string
+	Targets int64
 }

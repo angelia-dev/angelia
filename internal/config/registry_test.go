@@ -124,3 +124,92 @@ func TestBasicAuthRefusedForGitHubTagAndGitLab(t *testing.T) {
 		}
 	}
 }
+
+// Named source instances (#205): sources.<name>.kind selects the
+// implementation; auth and token_env belong to the instance.
+func TestNamedSourceInstanceParses(t *testing.T) {
+	cfg, err := load(t, writeFile(t, `
+sources:
+  npm: {base_url: https://registry.npmjs.org}
+  npm-internal:
+    kind: npm
+    base_url: https://nexus.example.com/repository/npm-group
+    auth: {token_ref: nexus-npm-token}
+  npm-legacy:
+    kind: npm
+    token_env: NEXUS_TOKEN
+`), "NEXUS_TOKEN=t0ken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"npm": "npm", "npm-internal": "npm", "npm-legacy": "npm", "unlisted": "unlisted"} {
+		if got := cfg.SourceKind(name); got != want {
+			t.Errorf("SourceKind(%s) = %q, want %q", name, got, want)
+		}
+	}
+	if got := cfg.Sources["npm-internal"]; got.BaseURL == "" || got.Auth.TokenRef != "nexus-npm-token" {
+		t.Errorf("npm-internal = %+v", got)
+	}
+	if cfg.SourceToken("npm-legacy") != "t0ken" || cfg.SourceToken("npm") != "" {
+		t.Error("token_env is read per instance name")
+	}
+	for _, w := range cfg.Warnings() {
+		t.Errorf("unexpected warning: %s", w)
+	}
+}
+
+func TestNamedSourceInstanceRejectsABadKind(t *testing.T) {
+	_, err := load(t, writeFile(t, "sources:\n  mine:\n    kind: Not_A_Kind\n"))
+	if err == nil || !strings.Contains(err.Error(), "sources.mine.kind: invalid kind") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The credential warning looks at the instance's kind, not its name.
+func TestNamedSourceCredentialWarningUsesTheKind(t *testing.T) {
+	cfg, err := load(t, writeFile(t, "sources:\n  internal-oci:\n    kind: oci\n    auth: {token_ref: t}\n  internal-npm:\n    kind: npm\n    auth: {token_ref: t}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(cfg.Warnings(), "\n")
+	if !strings.Contains(w, "sources.internal-oci:") || strings.Contains(w, "sources.internal-npm:") {
+		t.Errorf("warnings = %q", w)
+	}
+}
+
+// The auth rules that depend on the kind apply to an instance by its kind,
+// not by its name (S1).
+func TestNamedSourceAuthRulesFollowTheKind(t *testing.T) {
+	basic := "auth: {type: basic, username: u, password_ref: pw}"
+	// An instance of a kind that does not accept basic is refused...
+	for _, kind := range []string{"github-tag", "gitlab-release"} {
+		_, err := load(t, writeFile(t, "sources:\n  my-registry:\n    kind: "+kind+"\n    "+basic+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.my-registry.auth.type: basic is not accepted") {
+			t.Errorf("%s instance: err = %v", kind, err)
+		}
+	}
+	// ...one of a kind that does is accepted, even under the name of
+	// another kind.
+	for _, key := range []string{"github-tag", "gitlab-release", "mirror"} {
+		if _, err := load(t, writeFile(t, "sources:\n  "+key+":\n    kind: npm\n    "+basic+"\n")); err != nil {
+			t.Errorf("npm instance named %s: %v", key, err)
+		}
+	}
+}
+
+// Names and kinds are at most 63 characters, the length the API's Kind
+// pattern allows (S3).
+func TestNamedSourceLengthLimit(t *testing.T) {
+	ok, long := strings.Repeat("a", 63), strings.Repeat("a", 64)
+	if _, err := load(t, writeFile(t, "sources:\n  "+ok+":\n    kind: "+ok+"\n")); err != nil {
+		t.Fatalf("63 characters: %v", err)
+	}
+	_, err := load(t, writeFile(t, "sources:\n  "+long+":\n    kind: npm\n"))
+	if err == nil || !strings.Contains(err.Error(), "invalid source name") {
+		t.Errorf("a 64 character name: err = %v", err)
+	}
+	_, err = load(t, writeFile(t, "sources:\n  mine:\n    kind: "+long+"\n"))
+	if err == nil || !strings.Contains(err.Error(), "sources.mine.kind: invalid kind") {
+		t.Errorf("a 64 character kind: err = %v", err)
+	}
+}

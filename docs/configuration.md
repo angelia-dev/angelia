@@ -23,6 +23,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
+| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind; makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
@@ -33,6 +34,9 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 
+- `<kind>` in the `sources.*` keys is a built-in source kind or, with `kind` set, the name of a named
+  instance of one (`npm-internal`). A watch selects either by its `source`. The settings of an instance are
+  its own; nothing is inherited from the kind it selects.
 - In env names, `<KIND>` is upper-case and `-` becomes `_` (`github-release` -> `GITHUB_RELEASE`).
 - Tokens are never configured inline: `token_env` names the variable that holds the token. A
   `token:` key is an unknown key and an error.
