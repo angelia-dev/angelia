@@ -185,3 +185,45 @@ func SecretKeyCounts(ctx context.Context, path string) (map[string]int64, error)
 	}
 	return out, nil
 }
+
+// SecretReader reads stored secrets from a database opened read-only, for
+// `angelia config check` (ADR 0026 decided questions 4 and 7). It
+// implements secrets.Lookup. Close it after use.
+type SecretReader struct {
+	db *sql.DB
+	q  *Queries
+}
+
+// OpenSecretReader opens the database file at path read-only, without
+// creating it or applying migrations. ErrNoDatabase when the file does not
+// exist; a database without the secret table reads as empty.
+func OpenSecretReader(ctx context.Context, path string) (*SecretReader, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoDatabase
+	}
+	db, err := sql.Open("sqlite", "file:"+(&url.URL{Path: path}).EscapedPath()+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	return &SecretReader{db: db, q: New(db)}, nil
+}
+
+// SecretByName returns the secret with this name, or store.ErrNotFound.
+func (r *SecretReader) SecretByName(ctx context.Context, name string) (store.Secret, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'secret')`).Scan(&exists)
+	switch {
+	case err != nil:
+		return store.Secret{}, fmt.Errorf("store: read secrets: %w", err)
+	case !exists:
+		return store.Secret{}, store.ErrNotFound
+	}
+	return txOps{q: r.q}.SecretByName(ctx, name)
+}
+
+// Close closes the database.
+func (r *SecretReader) Close() error { return r.db.Close() }

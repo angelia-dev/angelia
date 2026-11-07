@@ -52,3 +52,28 @@ func TestPutGithubDispatchSink(t *testing.T) {
 	ref := map[string]any{"kind": "github-dispatch", "config": map[string]any{"repo": "o/r", "token_ref": "gh-token"}}
 	e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/by-ref", tokAdmin, ref))
 }
+
+// ADR 0026 §7: a shoutrrr sink is written through the API with the rules
+// of its spec schema: exactly one URL reference, a url_env on
+// api.allowed_env, no inline URL.
+func TestPutShoutrrrSink(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.Plugins = append(o.Plugins, PluginInfo{Kind: "shoutrrr", Interface: "sink", Runtime: "builtin", Version: "0.1.0"})
+		o.API = config.API{AllowedEnv: []string{"CHAT_URL"}}
+	})
+	e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/chat", tokAdmin, map[string]any{"kind": "shoutrrr", "config": map[string]any{"url_ref": "slack-releases", "service": "slack"}}))
+	e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/chat-env", tokAdmin, map[string]any{"kind": "shoutrrr", "config": map[string]any{"url_env": "CHAT_URL", "timeout": "5s"}}))
+	if r := e.do("PUT", "/v1/sinks/other", tokAdmin, map[string]any{"kind": "shoutrrr", "config": map[string]any{"url_env": "OTHER_URL"}}); r.Status != http.StatusUnprocessableEntity || r.problemType(t) != SlugEnvNotAllowed {
+		t.Errorf("unlisted url_env: %d %s", r.Status, r.Body)
+	}
+	for name, cfg := range map[string]map[string]any{
+		"none":        {"service": "slack"},
+		"both":        {"url_ref": "a", "url_env": "CHAT_URL"},
+		"inline url":  {"url": "slack://hook:x@webhook"}, //nolint:gosec // G101: synthetic URL
+		"bad service": {"url_ref": "a", "service": "smtp"},
+	} {
+		if r := e.do("PUT", "/v1/sinks/bad", tokAdmin, map[string]any{"kind": "shoutrrr", "config": cfg}); r.Status != http.StatusUnprocessableEntity {
+			t.Errorf("%s: %d %s", name, r.Status, r.Body)
+		}
+	}
+}

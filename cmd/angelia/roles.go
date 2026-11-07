@@ -21,6 +21,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
+	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
@@ -90,6 +91,9 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// decided question 4 and D12).
 		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
 		githubdispatch.New(hc, githubdispatch.Options{}),
+		// The dispatcher checks the origins it derives from the URL secret
+		// (ADR 0026 §2); the sink sends only to them.
+		shoutrrr.New(hc, shoutrrr.Options{}),
 	}
 }
 
@@ -188,9 +192,14 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 		if err != nil {
 			return out, err
 		}
+		selfDest, err := api.SinkSecretDestinations(d.plugins)
+		if err != nil {
+			return out, err
+		}
 		out.dispatcher, err = dispatch.New(d.store, reg, dispatch.Options{
 			Logger: d.log, Metrics: dispM, TracerProvider: d.tracer,
 			Secrets: &secrets.Resolver{Store: d.store, Keys: d.keys}, Destinations: dest,
+			SecretDestinations: selfDest, URLCheck: client, AllowHTTPHosts: d.cfg.HTTP.AllowHTTPHosts,
 		})
 		if err != nil {
 			return out, err
