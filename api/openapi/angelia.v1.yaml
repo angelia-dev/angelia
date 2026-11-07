@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.2.0
+  version: 0.3.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -1848,6 +1848,8 @@ components:
       x-angelia-kind-config:
         webhook:
           $ref: '#/components/schemas/WebhookSinkConfig'
+        github-dispatch:
+          $ref: '#/components/schemas/GithubDispatchSinkConfig'
     SinkPage:
       type: object
       required: [items, next_cursor]
@@ -2328,6 +2330,114 @@ components:
           $ref: '#/components/schemas/Duration'
           description: Per-attempt timeout, `1s` to `2m`.
           default: 10s
+    GithubDispatchSinkConfig:
+      description: |
+        The `config` of a `github-dispatch` sink: it triggers a `repository_dispatch` event or a
+        `workflow_dispatch` run in one GitHub repository. Documentation of the built-in kind; the
+        server validates against the kind's `config_schema`.
+
+        Exactly one of `token_env` and `token_ref` names the GitHub token (a fine-grained token
+        or GitHub App installation token; `repository_dispatch` needs `contents: write`,
+        `workflow_dispatch` needs `actions: write`). The token is sent only to `api_base_url`.
+
+        **`repository_dispatch`** sends `event_type` (rendered from the template) and a flat
+        `client_payload` with at most 10 top-level keys, the GitHub limit: `event_id`, `source`,
+        `package`, `version`, `previous_version` (null when unknown), `bump`, `purl`,
+        `release_url`, `watch` (the watch name) and, only when something was cut, `truncated: true`.
+        Every string value is cut to at most 2048 bytes at a UTF-8 boundary; when any value is
+        cut, `truncated` is `true`. The result stays far below GitHub's 65535-character limit
+        for `client_payload`.
+
+        **`workflow_dispatch`** sends `ref` and `inputs`: each value of `inputs` is a template
+        rendered to a string and cut to 1024 bytes at a UTF-8 boundary (no marker: inputs are
+        plain strings). GitHub accepts at most 25 inputs.
+
+        Both templates are ADR 0016 templates (core repository), rendered with the same
+        context as a subscription template. A template that fails to render is a permanent
+        delivery error.
+
+        Responses: `204` is success for both modes; `404`
+        (repository, workflow or token without access) and `422` (invalid payload or inputs) are
+        permanent errors; `5xx` is retried. A `403` or `429` caused by a rate limit is retried
+        after `Retry-After` or `x-ratelimit-reset`; any other `4xx` is permanent. Redirects are not
+        followed.
+      type: object
+      required: [repo]
+      additionalProperties: false
+      properties:
+        mode:
+          description: Which GitHub API is called.
+          type: string
+          enum: [repository_dispatch, workflow_dispatch]
+          default: repository_dispatch
+        repo:
+          description: The target repository as `owner/name`.
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$'
+        api_base_url:
+          description: Base URL of the GitHub REST API. For GitHub Enterprise Server it is `https://<host>/api/v3`. Absolute `https://` URL with no userinfo and no query. The token is sent only here.
+          type: string
+          format: uri
+          default: https://api.github.com
+          x-angelia-destination: true
+        token_env:
+          description: Name of an environment variable of the instance that holds the GitHub token. Exactly one of `token_env` and `token_ref`.
+          type: string
+          pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+        token_ref:
+          description: Name of a stored secret (`/v1/secrets`) that holds the GitHub token. Exactly one of `token_env` and `token_ref`.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+        event_type:
+          description: Template of the `event_type` (`repository_dispatch` only). The result is 1 to 100 characters.
+          type: string
+          minLength: 1
+          maxLength: 1024
+          default: angelia.release.published
+        workflow:
+          description: Workflow file name (`release.yml`) or numeric id (`workflow_dispatch` only, required there).
+          type: string
+          minLength: 1
+          maxLength: 255
+        ref:
+          description: Branch or tag the workflow runs on (`workflow_dispatch` only, required there).
+          type: string
+          minLength: 1
+          maxLength: 255
+        inputs:
+          description: Workflow inputs (`workflow_dispatch` only). Keys are input names, values are templates.
+          type: object
+          maxProperties: 25
+          additionalProperties:
+            type: string
+            maxLength: 4096
+        timeout:
+          $ref: '#/components/schemas/Duration'
+          description: Per-attempt timeout, `1s` to `2m`.
+          default: 10s
+      allOf:
+        - oneOf:
+            - required: [token_env]
+              not:
+                required: [token_ref]
+            - required: [token_ref]
+              not:
+                required: [token_env]
+        - if:
+            properties:
+              mode:
+                const: workflow_dispatch
+            required: [mode]
+          then:
+            required: [workflow, ref]
+            not:
+              required: [event_type]
+          else:
+            not:
+              anyOf:
+                - required: [workflow]
+                - required: [ref]
+                - required: [inputs]
 
   examples:
     WatchPut:

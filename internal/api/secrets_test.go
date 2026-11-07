@@ -461,3 +461,29 @@ func TestCheckStoredSinks(t *testing.T) {
 	}
 	noSecretLeak(t, "error", err.Error())
 }
+
+// The package-level check is what a role that opens the store without
+// serving the API (scheduler, dispatcher) runs before it starts.
+func TestCheckStoredSinksWithoutServer(t *testing.T) {
+	secretKind := PluginInfo{
+		Kind: "chat", Interface: "sink", Runtime: "wasm", Version: "1.0.0",
+		ConfigSchema: json.RawMessage(`{"type":"object","properties":{"token":{"type":"string","x-angelia-secret":true}}}`),
+	}
+	e := newEnv(t)
+	ctx := context.Background()
+	plugins := []PluginInfo{secretKind, {Kind: "webhook", Interface: "sink", Runtime: "builtin", Version: "0.1.0"}}
+	if err := CheckStoredSinks(ctx, e.st, plugins); err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if err := e.st.CreateSink(ctx, store.Sink{ID: "01B", Kind: "chat", Name: "old", ConfigEncrypted: []byte(`{"token":"` + leakCanary + `"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	err := CheckStoredSinks(ctx, e.st, plugins)
+	if err == nil || !strings.Contains(err.Error(), "sink old /config/token") {
+		t.Fatalf("literal secret: %v", err)
+	}
+	noSecretLeak(t, "error", err.Error())
+	if err := CheckStoredSinks(ctx, nil, plugins); err == nil {
+		t.Fatal("nil store")
+	}
+}

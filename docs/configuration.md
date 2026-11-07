@@ -75,11 +75,11 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
   D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
 - Both lists live only here: the watch file and the REST API cannot widen them.
-- **Not in effect yet for delivery or polling.** `config check`, the watch file and the API already
-  apply `allow_http_hosts`. The client that sources and the webhook sink send through gets both lists
-  once `angelia serve` runs the dispatcher and scheduler roles instead of stubs
-  ([#198](https://github.com/angelia-dev/angelia/issues/198)). Until then, nothing is sent, so nothing
-  is allowed beyond the defaults.
+- `angelia serve` builds one HTTP client from these keys, shared by the scheduler role (sources) and the
+  dispatcher role (sinks): `allow_networks` is what both may dial. The webhook sink checks
+  `allow_http_hosts` again at every delivery, so removing a host stops plain `http://` even for sinks
+  stored while it was listed (a permanent failure). `config check`, the watch file and the API apply
+  `allow_http_hosts` when a sink is written.
 - Write IPv4 prefixes in IPv4 form: an IPv4-mapped prefix (`::ffff:10.0.0.0/104`) is refused, because
   the guard checks mapped addresses as IPv4.
 - The guard checks the addresses a URL's host resolves to, then, for a direct connection, the address
@@ -88,7 +88,7 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
 
-See [webhooks.md](webhooks.md) for the webhook sink.
+See [webhooks.md](webhooks.md) for the webhook sink and [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink.
 
 ## REST API
 
@@ -220,10 +220,10 @@ config with a `*_ref` key (such as the webhook's `secret_ref`). The design is
 log line contains one. Manage them with [`angelia secret`](cli.md#stored-secrets) (through the API, `admin`
 scope) and the keys with `angelia secrets` (instance-side).
 
-Once the dispatcher role runs ([#198](https://github.com/angelia-dev/angelia/issues/198)), at every delivery attempt it resolves each `*_ref` key of the sink's config from the store, and
+At every delivery attempt the dispatcher role resolves each `*_ref` key of the sink's config from the store, and
 each `*_env` key from the environment, before the sink is called; values are not cached. A secret bound to
 `hosts` is resolved only when the URL the sink sends to (the key its kind marks `x-angelia-destination`,
-the webhook's `url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
+the webhook's `url`, the GitHub dispatch sink's `api_base_url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
 a value that cannot be decrypted fails the attempt before anything is sent, and it is retried; `last_error`
 names the key and the secret (`dispatch: secret /secret_ref: ... secret ci-webhook does not exist`), never
 the value. Sinks follow no redirect, so a bound secret never leaves its hosts; a sink kind that sent one
@@ -299,6 +299,10 @@ The startup check reads SQLite databases; a Postgres store is not checked yet.
 `angelia serve` runs the selected roles in one process.
 
 - `--roles=api,scheduler,worker,dispatcher` (or `all`) overrides `roles` from the config. `all` cannot be combined with other roles.
+  - `scheduler` checks due targets through the sources (on its own pool of workers) and commits new versions, events and deliveries.
+  - `dispatcher` sends due deliveries through the sinks, with retries and backoff ([ADR 0017](adr/0017-dispatcher-delivery-leases-and-retries.md)).
+  - `api` serves the REST API. `worker` does nothing of its own yet: checks run in the `scheduler` role.
+- Before any role starts, `serve` checks the [secrets key](#stored-secrets) against the stored secrets and, when a role opens the database (`api`, `scheduler`, `dispatcher`), refuses stored sinks that hold a literal value at a key their kind marks `x-angelia-secret` ([ADR 0024](adr/0024-secrets-encrypted-at-rest.md) §6).
 - The process serves `/healthz` and `/readyz` on the `listen` address. Roles that expose HTTP routes mount them on the same port.
   - `/healthz` returns 200 while the process is up.
   - `/readyz` returns 503 until the instance is ready (database reachable, migrations applied) and again as soon as shutdown starts, so load balancers stop sending new work.
