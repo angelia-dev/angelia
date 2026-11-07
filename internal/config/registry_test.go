@@ -213,3 +213,42 @@ func TestNamedSourceLengthLimit(t *testing.T) {
 		t.Errorf("a 64 character kind: err = %v", err)
 	}
 }
+
+// sources.<name>.api (#206): json or simple, on pypi sources only.
+func TestSourceAPI(t *testing.T) {
+	for y, want := range map[string]string{
+		"sources:\n  pypi:\n    api: simple\n":                                                            "simple",
+		"sources:\n  pypi:\n    api: json\n":                                                              "json",
+		"sources:\n  pypi:\n    base_url: https://x.example.com\n":                                        "",
+		"sources:\n  pypiserver:\n    kind: pypi\n    base_url: https://x.example.com\n    api: simple\n": "simple",
+	} {
+		cfg, err := load(t, writeFile(t, y))
+		if err != nil {
+			t.Errorf("%q: %v", y, err)
+			continue
+		}
+		for name, s := range cfg.Sources {
+			if s.API != want {
+				t.Errorf("%q: sources.%s.api = %q, want %q", y, name, s.API, want)
+			}
+		}
+	}
+	for y, want := range map[string]string{
+		"sources:\n  pypi:\n    api: xmlrpc\n":                            "sources.pypi.api: must be json or simple",
+		"sources:\n  pypi:\n    api: Simple\n":                            "sources.pypi.api: must be json or simple",
+		"sources:\n  npm:\n    api: simple\n":                             "sources.npm.api: only pypi sources take api (this source is of kind npm)",
+		"sources:\n  npm-internal:\n    kind: npm\n    api: json\n":       "sources.npm-internal.api: only pypi sources take api",
+		"sources:\n  mirror:\n    kind: pypi\n    api: html\n":            "sources.mirror.api: must be json or simple",
+		"sources:\n  crates:\n    api: simple\n  pypi:\n    api: bogus\n": "sources.crates.api: only pypi",
+	} {
+		_, err := load(t, writeFile(t, y))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %q", y, err, want)
+		}
+	}
+	// Both errors are reported together.
+	_, err := load(t, writeFile(t, "sources:\n  crates:\n    api: simple\n  pypi:\n    api: bogus\n"))
+	if err == nil || !strings.Contains(err.Error(), "sources.pypi.api") {
+		t.Errorf("err = %v, want both api errors", err)
+	}
+}

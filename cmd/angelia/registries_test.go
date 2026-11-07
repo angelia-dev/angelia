@@ -187,6 +187,74 @@ func TestPrivateNPMRegistryWithoutCredentialIsRefusedByTheRegistry(t *testing.T)
 	}
 }
 
+// fakePypiserver mimics pypiserver: only the Simple API, as PEP 503 HTML (it
+// ignores Accept), behind basic auth. Like pypiserver it redirects
+// /simple/<name> to the trailing-slash form.
+func fakePypiserver(user, password string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != user || p != password {
+			w.Header().Set("WWW-Authenticate", `Basic realm="pypiserver"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/simple/example-pkg/" {
+			http.NotFound(w, r) // including /pypi/example-pkg/json
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body>
+<a href="../../packages/example_pkg-1.0.0.tar.gz#sha256=00">example_pkg-1.0.0.tar.gz</a><br>
+<a href="../../packages/example_pkg-1.1.0-py3-none-any.whl#sha256=01">example_pkg-1.1.0-py3-none-any.whl</a><br>
+</body></html>`))
+	})
+}
+
+// sources.pypi.api: simple (#206) reaches a Simple-API-only server through
+// the same client, with the stored credential, and api: json (the default)
+// gets the 404 of the absent JSON API.
+func TestPypiSimpleAPIWiring(t *testing.T) {
+	srv := httptest.NewServer(fakePypiserver("ci", regCanary))
+	defer srv.Close()
+	tgt := source.Target{Kind: "pypi", Coordinates: map[string]string{"name": "Example_Pkg"}}
+	for _, tc := range []struct {
+		name, key, kind, api string
+		wantVersions         int
+	}{
+		{"built-in simple", "pypi", "", "simple", 2},
+		{"named instance simple", "pypiserver", "pypi", "simple", 2},
+		{"json default", "pypi", "", "", 0},
+		{"json explicit", "pypi", "", "json", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newRegEnv(t)
+			e.put(t, "ps-password", regCanary, hostOf(t, srv.URL))
+			cfg := config.Default()
+			cfg.Sources[tc.key] = config.Source{Kind: tc.kind, API: tc.api, BaseURL: srv.URL, Auth: config.SourceAuth{Type: config.AuthBasic, Username: "ci", PasswordRef: "ps-password"}}
+			cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
+			cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+			src, err := e.registry(t, cfg).Get(tc.key) // a source never sees the instance name
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := src.List(t.Context(), tgt, source.FetchState{})
+			if tc.wantVersions == 0 {
+				if err == nil || !strings.Contains(err.Error(), "404") {
+					t.Fatalf("err = %v, want a 404", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Versions) != tc.wantVersions || res.Versions[0].Raw != "1.1.0" {
+				t.Fatalf("versions = %+v", res.Versions)
+			}
+			out, _ := json.Marshal(res)
+			noRegLeak(t, string(out)+e.logs.String())
+		})
+	}
+}
+
 func TestPrivatePyPIMirrorWithBasicAuth(t *testing.T) {
 	const prefix = "/artifactory/api/pypi/pypi-remote"
 	srv := httptest.NewServer(fakeIndexMirror("ci-bot", regCanary, prefix))

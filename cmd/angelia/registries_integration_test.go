@@ -142,9 +142,10 @@ func noRegLeak2(t *testing.T, secret, out string) {
 	}
 }
 
-// pypiserver does not serve the JSON API at the path the pypi source reads
-// (/pypi/<name>/json), so this checks the credential (basic auth, htpasswd) through the
-// source's client and expects the source to get past authentication to a 404.
+// pypiserver serves only the Simple API, so the source is configured with
+// api: simple (#206). It publishes a package straight into the packages
+// directory, checks the credential (basic auth, htpasswd) through the
+// source's client and lists the release.
 func TestIntegrationPypiserver(t *testing.T) {
 	dir := t.TempDir()
 	ht := docker(t, "run", "--rm", "httpd:2.4-alpine", "htpasswd", "-nbB", "ci", "s3cret-pass-ci")
@@ -157,6 +158,11 @@ func TestIntegrationPypiserver(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "packages"), 0o755); err != nil { //nolint:gosec // G301: read by the container user.
 		t.Fatal(err)
 	}
+	// pypiserver lists the files it finds in the packages directory; the
+	// content of an sdist is not read.
+	if err := os.WriteFile(filepath.Join(dir, "packages", "demo-1.0.0.tar.gz"), []byte("synthetic"), 0o644); err != nil { //nolint:gosec // G306: read by the container user.
+		t.Fatal(err)
+	}
 	base := startContainer(t, "pypiserver/pypiserver:v2.3.2", 8080, []string{"-v", dir + ":/data:ro"},
 		"run", "-P", "/data/htpasswd", "-a", "list,download,update", "/data/packages")
 	if code, _ := send(t, http.MethodGet, base+"/simple/", "", nil); code != http.StatusUnauthorized {
@@ -165,10 +171,13 @@ func TestIntegrationPypiserver(t *testing.T) {
 	e := newRegEnv(t)
 	e.put(t, "pypiserver-password", "s3cret-pass-ci", hostOf(t, base))
 	cfg := config.Default()
-	cfg.Sources["pypi"] = config.Source{BaseURL: base, Auth: config.SourceAuth{Type: config.AuthBasic, Username: "ci", PasswordRef: "pypiserver-password"}}
-	_, err := e.list(t, cfg, source.Target{Kind: "pypi", Coordinates: map[string]string{"name": "demo"}})
-	if err == nil || strings.Contains(err.Error(), "401") {
-		t.Fatalf("with credentials: err = %v, want an error that is not a 401 (the JSON API is absent)", err)
+	cfg.Sources["pypi"] = config.Source{BaseURL: base, API: "simple", Auth: config.SourceAuth{Type: config.AuthBasic, Username: "ci", PasswordRef: "pypiserver-password"}}
+	res, err := e.list(t, cfg, source.Target{Kind: "pypi", Coordinates: map[string]string{"name": "Demo"}})
+	if err != nil {
+		t.Fatalf("with credentials: %v", err)
+	}
+	if len(res.Versions) != 1 || res.Versions[0].Raw != "1.0.0" {
+		t.Fatalf("versions = %+v, want the release 1.0.0", res.Versions)
 	}
 	noRegLeak2(t, "s3cret-pass-ci", e.logs.String())
 }
