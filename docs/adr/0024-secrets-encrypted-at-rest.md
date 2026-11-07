@@ -464,9 +464,9 @@ The maintainer approved this design on 2026-11-06 (see #111), as written:
   kind to be the source kind. Until then there is one registry per kind per instance, and watch-file
   decision D9 stays.
 
-### Added during implementation, pending maintainer confirmation
+### Added during implementation, confirmed by the maintainer
 
-These were not in the approved proposal:
+These were not in the approved proposal. The maintainer confirmed them on 2026-11-07, when PR #208 was merged:
 
 - **`token_env` also authenticates `pypi` and `npm`** as `Authorization: Bearer` (`github-release` still
   reads it itself). This changes existing configurations that set `token_env` on those kinds.
