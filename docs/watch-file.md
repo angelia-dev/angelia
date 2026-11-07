@@ -22,7 +22,11 @@ subscriptions** from one YAML file and reconciles them into the store. A complet
 - The two files never share keys. The watch file does not repeat `database.dsn`, `roles` or a source's
   `base_url`.
 - Source credentials (for example a GitHub token) stay in the instance config under
-  `sources.<kind>.token_env`. A watch cannot choose its own token in Phase 0 (decision D9).
+  `sources.<kind>.token_env` or `sources.<kind>.auth` (a stored secret, see
+  [private-registries.md](private-registries.md)). A watch cannot choose its own token or base URL: decision
+  D9 is unchanged. A watch of a private registry is an ordinary watch of that source kind; the registry is the
+  `base_url` of the kind in the instance configuration (one registry per kind per instance; several named
+  registries of one kind are not supported yet).
 - Same conventions as the instance config: unknown keys are errors, reported as
   `<file>: line N: ...` (the issue requires path and line); the file must contain exactly one YAML
   document; nothing is interpolated (`${VAR}` is not expanded, decision D10); values that look like

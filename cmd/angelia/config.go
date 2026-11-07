@@ -47,8 +47,14 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range cfg.Warnings() {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
+			if _, err := cfg.HTTP.LoadCAPool(); err != nil {
+				return fmt.Errorf("invalid configuration: %w", err)
+			}
 			secretsLine, err := checkSecretsConfig(cmd.Context(), cfg, cmd.ErrOrStderr())
 			if err != nil {
+				return err
+			}
+			if err := checkSourceSecretsOnDisk(cmd.Context(), cfg, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			plugins, warns, err := config.LoadPlugins(cmd.Context(), cfg.PluginsDir, os.Environ())
@@ -228,4 +234,32 @@ func keysLine(keys *secrets.Keyring) string {
 		s += fmt.Sprintf(" and %d previous key%s", prev, plural(prev))
 	}
 	return s
+}
+
+// checkSourceSecretsOnDisk checks the stored secrets named by
+// sources.<kind>.auth against the database, read-only and by metadata (name
+// and hosts) as serve does at start. With no sqlite database yet there is
+// nothing to check against, which is a warning when a source names one.
+func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.Writer) error {
+	if len(sourceRefs(cfg)) == 0 {
+		return nil
+	}
+	dbPath, err := cfg.Database.SQLitePath()
+	if err != nil {
+		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked (postgres)")
+		return nil //nolint:nilerr // only sqlite stores are read in this phase
+	}
+	hosts, err := sqlite.SecretHosts(ctx, dbPath)
+	switch {
+	case errors.Is(err, sqlite.ErrNoDatabase):
+		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked: the database does not exist yet; store the secrets named by sources.<kind>.auth before serve")
+		return nil
+	case err != nil:
+		_, _ = fmt.Fprintf(warn, "warning: source credentials not checked: %v\n", err)
+		return nil
+	}
+	if err := checkSourceSecrets(cfg, hosts); err != nil {
+		return fmt.Errorf("source credentials: %w", err)
+	}
+	return nil
 }

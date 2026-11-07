@@ -153,18 +153,62 @@ func secretFromRow(r Secret) (store.Secret, error) {
 // not exist.
 var ErrNoDatabase = errors.New("store: database file does not exist")
 
-// SecretKeyCounts opens the database file at path read-only, without
-// creating it or applying migrations, and counts the stored secrets per key
-// id. `angelia config check` uses it so that a check has no side effect. A
-// database the secret migration has not reached has no secret: the result
-// is empty. ErrNoDatabase when the file does not exist.
-func SecretKeyCounts(ctx context.Context, path string) (map[string]int64, error) {
+// openReadOnly opens the database file at path read-only, without creating
+// it or applying migrations; ErrNoDatabase when it does not exist.
+func openReadOnly(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoDatabase
 	}
 	db, err := sql.Open("sqlite", "file:"+(&url.URL{Path: path}).EscapedPath()+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	return db, nil
+}
+
+// SecretHosts reads the name and hosts of every stored secret from the
+// database file at path, read-only like SecretKeyCounts and without touching
+// a ciphertext. `angelia config check` uses it to check the secrets a
+// configuration names. A database the secret migration has not reached has
+// none. ErrNoDatabase when the file does not exist.
+func SecretHosts(ctx context.Context, path string) (map[string][]string, error) {
+	db, err := openReadOnly(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	var exists bool
+	err = db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'secret')`).Scan(&exists)
+	if err != nil {
+		return nil, fmt.Errorf("store: read %s: %w", path, err)
+	}
+	out := map[string][]string{}
+	if !exists {
+		return out, nil
+	}
+	rows, err := New(db).ListSecrets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: list secrets in %s: %w", path, err)
+	}
+	for _, r := range rows {
+		s, err := secretFromRow(r)
+		if err != nil {
+			return nil, err
+		}
+		out[s.Name] = s.Hosts
+	}
+	return out, nil
+}
+
+// SecretKeyCounts opens the database file at path read-only, without
+// creating it or applying migrations, and counts the stored secrets per key
+// id. `angelia config check` uses it so that a check has no side effect. A
+// database the secret migration has not reached has no secret: the result
+// is empty. ErrNoDatabase when the file does not exist.
+func SecretKeyCounts(ctx context.Context, path string) (map[string]int64, error) {
+	db, err := openReadOnly(path)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = db.Close() }()
 	var exists bool
