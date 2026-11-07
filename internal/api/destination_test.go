@@ -30,3 +30,30 @@ func TestSinkDestinations(t *testing.T) {
 		t.Errorf("two destinations: %v", err)
 	}
 }
+
+// ADR 0026 §1: the shoutrrr kind's url_ref and url_env (from the vendored
+// spec) are secret destinations; a plugin can mark its own, only on a
+// reference key, and not together with x-angelia-destination.
+func TestSinkSecretDestinations(t *testing.T) {
+	got, err := SinkSecretDestinations([]PluginInfo{
+		{Kind: "webhook", Interface: "sink", Runtime: "builtin"},
+		{Kind: "shoutrrr", Interface: "sink", Runtime: "builtin"},
+		{Kind: "apprise", Interface: "sink", Runtime: "wasm", ConfigSchema: json.RawMessage(
+			`{"properties":{"target":{"properties":{"url_env":{"type":"string","x-angelia-secret-destination":true}}}}}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || strings.Join(got["shoutrrr"], ",") != "/url_env,/url_ref" || strings.Join(got["apprise"], ",") != "/target/url_env" {
+		t.Errorf("SinkSecretDestinations = %v", got)
+	}
+	for name, schema := range map[string]string{
+		"not a reference": `{"properties":{"url":{"x-angelia-secret-destination":true}}}`,
+		"both":            `{"properties":{"url_ref":{"x-angelia-secret-destination":true},"url":{"x-angelia-destination":true}}}`,
+	} {
+		_, err := SinkSecretDestinations([]PluginInfo{{Kind: "bad", Interface: "sink", Runtime: "wasm", ConfigSchema: json.RawMessage(schema)}})
+		if err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}

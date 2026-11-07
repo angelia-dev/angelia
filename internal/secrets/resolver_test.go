@@ -114,3 +114,47 @@ func TestResolverStoreError(t *testing.T) {
 		t.Fatalf("store error: %v", err)
 	}
 }
+
+// ADR 0026 §2: a self-addressed reference is decrypted without a
+// destination and comes back with its hosts, for the caller to check; the
+// other errors are those of Resolve.
+func TestResolveSelfAddressed(t *testing.T) {
+	ctx := t.Context()
+	st := openStore(t)
+	keys := ring(t, 1)
+	put(t, st, keys, "01A", "chat", canary)
+	put(t, st, keys, "01B", "chat-bound", canary, "hooks.slack.com")
+	r := &Resolver{Store: st, Keys: keys}
+
+	b, err := r.ResolveSelfAddressed(ctx, "chat")
+	if err != nil || string(b.Value.Reveal()) != canary || b.Name != "chat" || len(b.Hosts) != 0 {
+		t.Fatalf("unbound: %+v, %v", b, err)
+	}
+	b, err = r.ResolveSelfAddressed(ctx, "chat-bound")
+	if err != nil || string(b.Value.Reveal()) != canary || len(b.Hosts) != 1 || b.Hosts[0] != "hooks.slack.com" {
+		t.Fatalf("bound: %+v, %v", b, err)
+	}
+	if err := b.Allows(mustURL(t, "https://hooks.slack.com")); err != nil {
+		t.Fatalf("bound host: %v", err)
+	}
+	if err := b.Allows(mustURL(t, "https://evil.example.com")); !errors.Is(err, ErrHostMismatch) {
+		t.Fatalf("other host: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		r    *Resolver
+		ref  string
+		want error
+	}{
+		"missing":      {r, "nope", ErrNotFound},
+		"invalid name": {r, "Bad Name", ErrInvalidName},
+		"no key":       {&Resolver{Store: st}, "chat", ErrKeyMissing},
+		"wrong key":    {&Resolver{Store: st, Keys: ring(t, 2)}, "chat-bound", ErrUnknownKey},
+	} {
+		_, err := tc.r.ResolveSelfAddressed(ctx, tc.ref)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+			continue
+		}
+		noLeak(t, name, err.Error())
+	}
+}

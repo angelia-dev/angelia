@@ -207,3 +207,37 @@ func TestGuardInvalidURLErrors(t *testing.T) {
 		}
 	}
 }
+
+// ADR 0026 §2: Client.CheckURL is the guard's URL check, with the client's
+// allowlist, and sends nothing.
+func TestClientCheckURL(t *testing.T) {
+	c, err := New(Config{
+		Allow:    []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")},
+		Resolver: fakeResolver{"chat.example": addrs("192.0.2.10"), "lan.example": addrs("10.1.2.3"), "meta.example": addrs("169.254.169.254")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for raw, want := range map[string]error{
+		"https://chat.example":         nil,
+		"http://lan.example:8080":      nil,
+		"https://meta.example":         ErrBlocked,
+		"https://127.0.0.1":            ErrBlocked,
+		"ftp://chat.example":           ErrInvalidURL,
+		"https://2130706433":           ErrInvalidURL,
+		"https://unresolvable.example": errors.New("lookup"),
+	} {
+		u, _ := url.Parse(raw)
+		err := c.CheckURL(t.Context(), u)
+		switch {
+		case want == nil && err != nil:
+			t.Errorf("%s: %v", raw, err)
+		case want != nil && err == nil:
+			t.Errorf("%s: allowed", raw)
+		case errors.Is(want, ErrBlocked) || errors.Is(want, ErrInvalidURL):
+			if !errors.Is(err, want) {
+				t.Errorf("%s: %v, want %v", raw, err, want)
+			}
+		}
+	}
+}

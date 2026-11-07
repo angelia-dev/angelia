@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/event"
@@ -47,6 +48,23 @@ type Sink interface {
 	Deliver(ctx context.Context, req Request) (Result, error)
 }
 
+// SecretDestinations is implemented by kinds whose config_schema marks a
+// reference x-angelia-secret-destination: the resolved value of that
+// reference is itself the destination, such as a shoutrrr service URL (ADR
+// 0026 §2). It is an optional addition to Sink.
+//
+// The core calls it on every attempt, after resolving the reference and
+// before Deliver, with the reference's JSON Pointer (such as "/url_ref")
+// and value. It parses the value and returns the origins
+// (scheme://host[:port], no userinfo, path or query) the sink will send
+// to. It does no I/O, and its errors never contain the value or text
+// derived from it other than a service name and an origin. The core checks
+// each origin and passes the checked ones as Request.Destinations. A kind
+// that marks the annotation without implementing it fails every delivery.
+type SecretDestinations interface {
+	SecretDestinations(ptr string, v secrets.Value) ([]*url.URL, error)
+}
+
 // Config is a sink's configuration (sink.config_json),
 // opaque to the core: only the sink of its kind interprets it.
 type Config json.RawMessage
@@ -74,6 +92,14 @@ type Request struct {
 	// bound secret anywhere else (a redirect, a second request) needs the
 	// per-request netguard check of ADR 0024 §2 first.
 	Secrets map[string]secrets.Value
+	// Destinations is set for a kind whose config_schema marks a reference
+	// x-angelia-secret-destination (ADR 0026 §2): the canonical "host:port"
+	// of every origin the sink's SecretDestinations derived from the
+	// resolved value, each checked by the core (https, or http for a host in
+	// http.allow_http_hosts; the SSRF guard; the secret's hosts). The sink
+	// sends only to these, refusing any other request before it is sent,
+	// and follows no redirect. Nil for other kinds.
+	Destinations []string
 	// IdempotencyKey is the same on every attempt and replay of a delivery:
 	// IdempotencyKey(event id, subscription id). Sinks pass it on, for
 	// example as a header, so that consumers can drop duplicates.

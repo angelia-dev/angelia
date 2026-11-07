@@ -15,11 +15,15 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 )
 
-// SecretResolver resolves a stored secret for one destination:
-// *secrets.Resolver. A secret bound to hosts is resolved only when dest's
-// host and port equal one of them (ADR 0024 §2).
+// SecretResolver resolves a stored secret: *secrets.Resolver. Resolve
+// resolves it for one destination: a secret bound to hosts is resolved only
+// when dest's host and port equal one of them (ADR 0024 §2).
+// ResolveSelfAddressed resolves a secret whose value is the destination,
+// with its hosts, for the dispatcher to check against the origins derived
+// from it (ADR 0026 §2).
 type SecretResolver interface {
 	Resolve(ctx context.Context, name string, dest *url.URL) (secrets.Bound, error)
+	ResolveSelfAddressed(ctx context.Context, name string) (secrets.Bound, error)
 }
 
 // errNoStoredSecrets is the error of a *_ref key when the dispatcher has no
@@ -36,6 +40,20 @@ type SecretSources struct {
 	// kind's config_schema marks x-angelia-destination. A bound secret is
 	// resolved only for it; nil refuses every bound secret.
 	Destination *url.URL
+	// SelfAddressed are the pointers of the keys the kind's config_schema
+	// marks x-angelia-secret-destination (ADR 0026 §2). A *_ref key at one
+	// of them is resolved with Stored.ResolveSelfAddressed, without the
+	// host check, and comes back with its hosts for the caller to check.
+	SelfAddressed []string
+}
+
+// selfAddressed is a resolved reference marked x-angelia-secret-destination.
+type selfAddressed struct {
+	ptr string
+	// label names the reference for errors: "secret NAME" or "environment
+	// variable NAME", never the value.
+	label string
+	bound secrets.Bound
 }
 
 // ResolveSecrets resolves the secret references of a sink configuration
@@ -55,13 +73,23 @@ type SecretSources struct {
 // never a value. The dispatcher retries it: the operator fixes it by
 // setting the variable, storing the secret or changing its binding.
 func ResolveSecrets(ctx context.Context, cfg []byte, src SecretSources) (map[string]secrets.Value, error) {
+	out, _, err := resolveSecrets(ctx, cfg, src)
+	return out, err
+}
+
+// resolveSecrets is ResolveSecrets that also returns the references at
+// src.SelfAddressed, in pointer order, with their hosts.
+func resolveSecrets(ctx context.Context, cfg []byte, src SecretSources) (map[string]secrets.Value, []selfAddressed, error) {
 	var root any
 	dec := json.NewDecoder(bytes.NewReader(cfg))
 	dec.UseNumber()
 	if err := dec.Decode(&root); err != nil {
-		return nil, nil //nolint:nilerr // the sink reports an invalid configuration, permanently
+		return nil, nil, nil //nolint:nilerr // the sink reports an invalid configuration, permanently
 	}
-	var out map[string]secrets.Value
+	var (
+		out  map[string]secrets.Value
+		self []selfAddressed
+	)
 	put := func(p string, v secrets.Value) {
 		if out == nil {
 			out = map[string]secrets.Value{}
@@ -83,9 +111,21 @@ func ResolveSecrets(ctx context.Context, cfg []byte, src SecretSources) (map[str
 					val secrets.Value
 					err error
 				)
+				marked := slices.Contains(src.SelfAddressed, p)
 				switch {
 				case strings.HasSuffix(k, "_env"):
 					val, err = resolveEnv(x[k], p, src.LookupEnv)
+					if err == nil && marked {
+						name, _ := x[k].(string)
+						self = append(self, selfAddressed{ptr: p, label: "environment variable " + name, bound: secrets.Bound{Name: name, Value: val}})
+					}
+				case strings.HasSuffix(k, "_ref") && marked:
+					var b secrets.Bound
+					b, err = resolveSelfAddressedRef(ctx, x[k], p, src.Stored)
+					if err == nil {
+						val = b.Value
+						self = append(self, selfAddressed{ptr: p, label: "secret " + b.Name, bound: b})
+					}
 				case strings.HasSuffix(k, "_ref"):
 					val, err = resolveRef(ctx, x[k], p, src)
 				default:
@@ -110,9 +150,9 @@ func ResolveSecrets(ctx context.Context, cfg []byte, src SecretSources) (map[str
 		return nil
 	}
 	if err := walk(root, ""); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	return out, self, nil
 }
 
 func resolveEnv(v any, p string, lookupEnv func(string) (string, bool)) (secrets.Value, error) {
@@ -144,6 +184,23 @@ func resolveRef(ctx context.Context, v any, p string, src SecretSources) (secret
 		return secrets.Value{}, fmt.Errorf("dispatch: secret %s: %w", p, err)
 	}
 	return b.Value, nil
+}
+
+// resolveSelfAddressedRef resolves a *_ref key marked
+// x-angelia-secret-destination: the secret with its hosts, unchecked.
+func resolveSelfAddressedRef(ctx context.Context, v any, p string, stored SecretResolver) (secrets.Bound, error) {
+	name, ok := v.(string)
+	if !ok || !secrets.ValidName(name) {
+		return secrets.Bound{}, fmt.Errorf("dispatch: secret %s: not a stored secret name", p)
+	}
+	if stored == nil {
+		return secrets.Bound{}, fmt.Errorf("dispatch: secret %s: %w", p, errNoStoredSecrets)
+	}
+	b, err := stored.ResolveSelfAddressed(ctx, name)
+	if err != nil {
+		return secrets.Bound{}, fmt.Errorf("dispatch: secret %s: %w", p, err)
+	}
+	return b, nil
 }
 
 // destination returns the URL at the JSON Pointer ptr of a sink
