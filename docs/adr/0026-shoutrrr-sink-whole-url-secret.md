@@ -357,6 +357,26 @@ The maintainer accepted every recommendation on #120 (2026-11-07).
    the host is in `http.allow_http_hosts`, like D12 for webhooks, and `config check` warns about
    them because credentials then travel in clear text.
 
+## Implementation notes (2026-11-07, #120)
+
+The implementation keeps the decision above. It records three points where the code is more specific
+than the text, accepted in the #120 review:
+
+- **Origins are derived through the library's own parser** (§3). `SecretDestinations` builds a new
+  value of the service and calls its `Initialize` with a discarded logger, which does no I/O in v0.23.0.
+  It then reads the parsed configuration: the slack token type, telegram `apiurl`, ntfy `GetAPIURL`,
+  gotify `DefaultURLBuilder`, matrix host, `disabletls` and the `skiptlsverify` fields. The URL is
+  parsed once, by the library, so Angelia and the library cannot read it differently. A test runs every
+  derivation with `http.DefaultTransport` set to fail, so an upgrade whose `Initialize` sends a request
+  is caught.
+- **The `service` check runs at the start of `Deliver`** (decided question 3), not in the core. The §2
+  interface passes no configuration to `SecretDestinations`. The check still runs before any request
+  and is still retried.
+- **The core's check errors name the sink kind, not the service** (§2). The dispatcher does not know
+  the service. Its errors read `shoutrrr: secret /url_ref (secret NAME): https://host: <reason>`. A
+  refusal by the sink's own derivation adds the service (`shoutrrr: secret /url_ref (secret NAME):
+  slack: ...`). A refused scheme is named only when it is one of the router's known schemes.
+
 ## Alternatives considered
 
 - **B: base URL plus `token_ref`, as ADR 0024 §1 says.** The sink would build the URL from plain
