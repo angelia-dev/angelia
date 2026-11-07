@@ -163,6 +163,20 @@ type Options struct {
 	// secret bound to hosts is resolved only for that URL. A kind with
 	// none gets only unbound secrets.
 	Destinations map[string]string
+	// SecretDestinations maps a sink kind to the JSON Pointers of the
+	// reference keys its config_schema marks x-angelia-secret-destination
+	// (api.SinkSecretDestinations; ADR 0026): the resolved value is the
+	// destination. For such a kind the sink derives the origins
+	// (sink.SecretDestinations) and the dispatcher checks each against
+	// AllowHTTPHosts, URLCheck and the secret's hosts before Deliver.
+	SecretDestinations map[string][]string
+	// URLCheck is the SSRF guard's URL check of those origins: the netguard
+	// client the sinks send through. Nil fails every delivery of a kind
+	// with secret destinations (retried).
+	URLCheck URLChecker
+	// AllowHTTPHosts is http.allow_http_hosts: the only hosts a derived
+	// origin may use over plain http (decision D12).
+	AllowHTTPHosts []string
 }
 
 // Dispatcher is the "dispatcher" role: it leases due deliveries from the
@@ -479,12 +493,22 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 	// The configuration is plaintext: secret values live in the secret
 	// table, named by *_ref keys (ADR 0024 §6).
 	cfg := ld.Sink.ConfigEncrypted
-	secrets, err := ResolveSecrets(ctx, cfg, SecretSources{
+	selfPtrs := d.opts.SecretDestinations[ld.Sink.Kind]
+	secrets, self, err := resolveSecrets(ctx, cfg, SecretSources{
 		LookupEnv: d.opts.LookupEnv, Stored: d.opts.Secrets,
-		Destination: destination(cfg, d.opts.Destinations[ld.Sink.Kind]),
+		Destination:   destination(cfg, d.opts.Destinations[ld.Sink.Kind]),
+		SelfAddressed: selfPtrs,
 	})
 	if err != nil { // the operator fixes it by setting the variable or storing the secret: retried
 		return sink.Result{}, err
+	}
+	var dests []string
+	if len(selfPtrs) > 0 {
+		// Retried, like every failure that comes from the secret's value
+		// (ADR 0026 §2, decided question 5).
+		if dests, err = d.checkSecretDestinations(ctx, ld.Sink.Kind, s, self); err != nil {
+			return sink.Result{}, err
+		}
 	}
 	ev := sink.ReleaseEvent{JSON: ld.Event.Payload}
 	if err := json.Unmarshal(ld.Event.Payload, &ev.Envelope); err != nil {
@@ -497,7 +521,7 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 		return sink.Result{}, fmt.Errorf("dispatch: render: %w", err)
 	}
 	res, err := s.Deliver(dctx, sink.Request{
-		Config: sink.Config(cfg), Secrets: secrets, Event: ev, Rendered: rendered,
+		Config: sink.Config(cfg), Secrets: secrets, Destinations: dests, Event: ev, Rendered: rendered,
 		IdempotencyKey: sink.IdempotencyKey(ld.Event.ID, ld.Delivery.SubscriptionID),
 		DeliveryID:     ld.Delivery.ID, SubscriptionID: ld.Delivery.SubscriptionID, SinkID: ld.Sink.ID, Attempt: ld.Delivery.Attempts,
 	})

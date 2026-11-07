@@ -583,8 +583,11 @@ type Sink struct {
 	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
 	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
 	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
-	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
-	// be set through the API. The configuration of each built-in kind is listed in
+	// sent to, checked against the secret's `hosts`. A reference key the `config_schema` marks
+	// `x-angelia-secret-destination: true` names a secret whose whole value is the destination
+	// (a `shoutrrr` service URL): the server checks the HTTP hosts derived from that value against
+	// the SSRF guard and the secret's `hosts` at every delivery. A key the `config_schema` marks
+	// `x-angelia-secret: true` cannot be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
 
@@ -616,8 +619,11 @@ type Sink struct {
 // through the API must be allowed by the instance configuration (`422 env-not-allowed`).
 // `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
 // the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
-// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
-// be set through the API. The configuration of each built-in kind is listed in
+// sent to, checked against the secret's `hosts`. A reference key the `config_schema` marks
+// `x-angelia-secret-destination: true` names a secret whose whole value is the destination
+// (a `shoutrrr` service URL): the server checks the HTTP hosts derived from that value against
+// the SSRF guard and the secret's `hosts` at every delivery. A key the `config_schema` marks
+// `x-angelia-secret: true` cannot be set through the API. The configuration of each built-in kind is listed in
 // `x-angelia-kind-config`.
 type SinkConfig map[string]interface{}
 
@@ -639,8 +645,11 @@ type SinkWrite struct {
 	// through the API must be allowed by the instance configuration (`422 env-not-allowed`).
 	// `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
 	// the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
-	// sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
-	// be set through the API. The configuration of each built-in kind is listed in
+	// sent to, checked against the secret's `hosts`. A reference key the `config_schema` marks
+	// `x-angelia-secret-destination: true` names a secret whose whole value is the destination
+	// (a `shoutrrr` service URL): the server checks the HTTP hosts derived from that value against
+	// the SSRF guard and the secret's `hosts` at every delivery. A key the `config_schema` marks
+	// `x-angelia-secret: true` cannot be set through the API. The configuration of each built-in kind is listed in
 	// `x-angelia-kind-config`.
 	Config SinkConfig `json:"config"`
 

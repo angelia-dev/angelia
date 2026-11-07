@@ -653,8 +653,8 @@ func TestFailureClass(t *testing.T) {
 		"request failed":     errors.New("something else on 10.0.0.1:443"),
 		"connection refused": fmt.Errorf("dial tcp 10.0.0.1:443: %w", errConnRefused),
 	} {
-		if got := failureClass(err); got != want {
-			t.Errorf("failureClass(%v) = %q, want %q", err, got, want)
+		if got := sink.TransportClass(err); got != want {
+			t.Errorf("sink.TransportClass(%v) = %q, want %q", err, got, want)
 		}
 	}
 }

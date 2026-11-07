@@ -105,7 +105,7 @@ at load time with the file, line and path of the key. The policy is stored as `w
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind: `webhook` or `github-dispatch` |
+| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch` or `shoutrrr` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -145,6 +145,19 @@ and `config check` warns. Signing, rotation, responses and the receiver's side: 
 `event_type` and the values of `inputs` are [templates](templates.md), checked when the file loads like a
 subscription template. A missing token reference is an error, and an unset `token_env` variable is a warning, as
 for the webhook. The defaults are written into the stored configuration.
+
+`shoutrrr` config ([shoutrrr.md](shoutrrr.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `url_ref` | string | exactly one of the two | none | name of a [stored secret](configuration.md#stored-secrets) whose value is the whole shoutrrr service URL (`^[a-z0-9][a-z0-9._-]{0,62}$`); bind it with `--host` to the hosts the service sends to |
+| `url_env` | string | exactly one of the two | none | name of an environment variable holding the URL; a name starting with `ANGELIA_` is refused |
+| `service` | string | no | none | `slack`, `discord`, `telegram`, `ntfy`, `gotify` or `matrix`; the URL's scheme must equal it at delivery |
+| `timeout` | duration | no | `10s` | `1s` to `2m`; above the dispatcher's 15 s deliver timeout has no effect and `config check` warns |
+
+The URL is never in the file. It is read and checked at every delivery (allowed services, `https` or
+`http.allow_http_hosts`, the SSRF guard, the secret's hosts); a failure is retried. An unset `url_env` variable
+is a warning, as for the webhook.
 
 ### 2.5 `subscriptions[]`
 

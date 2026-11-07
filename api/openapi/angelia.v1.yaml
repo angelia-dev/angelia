@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.3.0
+  version: 0.4.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -1840,8 +1840,11 @@ components:
         through the API must be allowed by the instance configuration (`422 env-not-allowed`).
         `*_ref` and `*_env` values are names, never secrets, and are returned as written. A key
         the `config_schema` marks `x-angelia-destination: true` is the URL a referenced secret is
-        sent to, checked against the secret's `hosts`. A key the `config_schema` marks `x-angelia-secret: true` cannot
-        be set through the API. The configuration of each built-in kind is listed in
+        sent to, checked against the secret's `hosts`. A reference key the `config_schema` marks
+        `x-angelia-secret-destination: true` names a secret whose whole value is the destination
+        (a `shoutrrr` service URL): the server checks the HTTP hosts derived from that value against
+        the SSRF guard and the secret's `hosts` at every delivery. A key the `config_schema` marks
+        `x-angelia-secret: true` cannot be set through the API. The configuration of each built-in kind is listed in
         `x-angelia-kind-config`.
       type: object
       additionalProperties: true
@@ -1850,6 +1853,8 @@ components:
           $ref: '#/components/schemas/WebhookSinkConfig'
         github-dispatch:
           $ref: '#/components/schemas/GithubDispatchSinkConfig'
+        shoutrrr:
+          $ref: '#/components/schemas/ShoutrrrSinkConfig'
     SinkPage:
       type: object
       required: [items, next_cursor]
@@ -2345,8 +2350,10 @@ components:
         `package`, `version`, `previous_version` (null when unknown), `bump`, `purl`,
         `release_url`, `watch` (the watch name) and, only when something was cut, `truncated: true`.
         Every string value is cut to at most 2048 bytes at a UTF-8 boundary; when any value is
-        cut, `truncated` is `true`. The result stays far below GitHub's 65535-character limit
-        for `client_payload`.
+        cut, `truncated` is `true`. If the JSON body would still exceed 60000 bytes (escaped
+        control characters can multiply the size), the cut length is halved (1024, 512, ...)
+        until the body fits, and `truncated` is `true`; this keeps the body under GitHub's
+        65535-character limit for `client_payload`.
 
         **`workflow_dispatch`** sends `ref` and `inputs`: each value of `inputs` is a template
         rendered to a string and cut to 1024 bytes at a UTF-8 boundary (no marker: inputs are
@@ -2405,9 +2412,15 @@ components:
           minLength: 1
           maxLength: 255
         inputs:
-          description: Workflow inputs (`workflow_dispatch` only). Keys are input names, values are templates.
+          description: >-
+            Workflow inputs (`workflow_dispatch` only). Keys are input names, values are templates.
+            An input name must not end in `_env` or `_ref`: the core reads every such key of a
+            sink configuration as the name of an environment variable or of a stored secret.
           type: object
           maxProperties: 25
+          propertyNames:
+            not:
+              pattern: '(_env|_ref)$'
           additionalProperties:
             type: string
             maxLength: 4096
@@ -2438,6 +2451,62 @@ components:
                 - required: [workflow]
                 - required: [ref]
                 - required: [inputs]
+    ShoutrrrSinkConfig:
+      description: |
+        The `config` of a `shoutrrr` sink: it sends a plain-text message to one chat or push
+        service through the shoutrrr library (ADR 0026, core repository). Documentation of the
+        built-in kind; the server validates against the kind's `config_schema`.
+
+        The **whole shoutrrr service URL is a secret** (`slack://hook:…@webhook`,
+        `ntfy://host/topic`, …), named by exactly one of `url_ref` and `url_env`. Both keys are
+        marked `x-angelia-secret-destination`: the URL is never stored in the configuration,
+        returned, logged or put in `last_error`. At every delivery the server derives the HTTP
+        origins the service sends to and checks each of them before sending: `https` (or
+        `http` only for a host in the instance's `http.allow_http_hosts`), the SSRF guard, and
+        the stored secret's `hosts` when it has any. Every request is pinned to those origins;
+        redirects are not followed.
+
+        Allowed services (URL schemes) and their origins: `slack` (`hooks.slack.com` for a
+        webhook token, `slack.com` for an `xoxb`/`xoxp` token), `discord` (`discord.com`),
+        `telegram` (`api.telegram.org`, or the `apiurl` host), `ntfy` (the URL host, default
+        `ntfy.sh`), `gotify` (the URL host) and `matrix` (the URL host, access-token form
+        `matrix://:TOKEN@host` only). Every other scheme (`generic`, `smtp`, …) and
+        `skiptlsverify=yes` are refused. Title, priority and similar options come from the
+        URL's query.
+
+        A failure derived from the URL (an unparsable or refused URL, a `service` mismatch, a
+        host refused by the SSRF guard or by the secret's `hosts`) happens before sending and is
+        retried, since the fix is to rewrite the secret. HTTP responses are classified as for
+        the `webhook` kind: `3xx` and `4xx` other than `408` and `429` are permanent; `408`,
+        `429` and `5xx` are retried. `last_error` names the service and the origin only.
+      type: object
+      additionalProperties: false
+      properties:
+        url_ref:
+          description: Name of a stored secret (`/v1/secrets`) whose value is one shoutrrr service URL. Its `hosts`, when set, must contain every HTTP host the service sends to; without `hosts`, `config check` warns. Exactly one of `url_ref` and `url_env`.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+          x-angelia-secret-destination: true
+        url_env:
+          description: Name of an environment variable of the instance whose value is one shoutrrr service URL. Exactly one of `url_ref` and `url_env`.
+          type: string
+          pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+          x-angelia-secret-destination: true
+        service:
+          description: Optional. The service the URL must be for; at delivery, the URL's scheme must equal it, or the attempt fails (retried). It shows the service without revealing the secret.
+          type: string
+          enum: [slack, discord, telegram, ntfy, gotify, matrix]
+        timeout:
+          $ref: '#/components/schemas/Duration'
+          description: Per-attempt timeout, `1s` to `2m`.
+          default: 10s
+      oneOf:
+        - required: [url_ref]
+          not:
+            required: [url_env]
+        - required: [url_env]
+          not:
+            required: [url_ref]
 
   examples:
     WatchPut:

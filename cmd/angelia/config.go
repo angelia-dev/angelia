@@ -107,6 +107,9 @@ func newConfigCheckCmd() *cobra.Command {
 			for _, w := range f.Warnings {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
+			for _, w := range shoutrrrWarnings(cmd.Context(), cfg, f.Sinks, os.LookupEnv) {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+			}
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "configuration OK; watch file OK: %d sinks, %d watches, %d subscriptions\n", len(f.Sinks), len(f.Watches), len(f.Subscriptions)); err != nil {
 				return err
 			}

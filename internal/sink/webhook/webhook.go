@@ -19,21 +19,17 @@ package webhook
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/config"
@@ -274,40 +270,7 @@ func requestError(origin, host string, err error) error {
 	if errors.Is(err, netguard.ErrInvalidURL) {
 		return sink.Permanent(&requestFailure{origin: origin, class: "invalid URL (scheme or host not allowed)", err: err})
 	}
-	return &requestFailure{origin: origin, class: failureClass(err), err: err}
-}
-
-// failureClass describes a transport error without its addresses.
-func failureClass(err error) string {
-	var (
-		dnsErr  *net.DNSError
-		ne      net.Error
-		certErr *tls.CertificateVerificationError
-		recErr  tls.RecordHeaderError
-		alert   tls.AlertError
-		unknown x509.UnknownAuthorityError
-		badHost x509.HostnameError
-		invalid x509.CertificateInvalidError
-	)
-	switch {
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.As(err, &dnsErr):
-		return "DNS lookup failed"
-	case errors.Is(err, syscall.ECONNREFUSED):
-		return "connection refused"
-	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
-		return "connection reset"
-	case errors.As(err, &certErr), errors.As(err, &recErr), errors.As(err, &alert),
-		errors.As(err, &unknown), errors.As(err, &badHost), errors.As(err, &invalid):
-		return "TLS handshake failed"
-	case strings.Contains(err.Error(), "netguard: resolve "):
-		return "DNS lookup failed"
-	default:
-		return "request failed"
-	}
+	return &requestFailure{origin: origin, class: sink.TransportClass(err), err: err}
 }
 
 // requestFailure is a request that got no response: "webhook:

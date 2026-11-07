@@ -248,6 +248,17 @@ func (c *Client) HTTPClient() *http.Client {
 	}
 }
 
+// CheckURL applies the URL-level SSRF check of every hop (scheme http or
+// https, a host, every address it resolves to allowed by the guard and
+// http.allow_networks) to u without sending anything. The core uses it on
+// the origins a sink derives from a secret value before the sink sends
+// (ADR 0026 §2). The dial-time check still applies when the request is
+// sent. Errors are those of RoundTrip's check: a *BlockedError,
+// ErrInvalidURL or a lookup failure.
+func (c *Client) CheckURL(ctx context.Context, u *url.URL) error {
+	return c.guard.CheckURL(ctx, u)
+}
+
 // RoundTrip sends one hop after the SSRF check and the hop host's rate
 // limit. Requests without a body and with an idempotent method are retried
 // on 429, 5xx and timeouts. The response body is capped at the serving

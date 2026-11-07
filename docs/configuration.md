@@ -110,7 +110,9 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   `http.allow_http_hosts` (`config check` rejects a credentialed source whose `base_url` is such an `http://`
   URL outside the list). See [Private registries and mirrors](private-registries.md#proxy).
 
-See [webhooks.md](webhooks.md) for the webhook sink and [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink.
+See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink
+and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
+secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
 
 ## REST API
 

@@ -408,7 +408,7 @@ func TestNetClientAllowNetworks(t *testing.T) {
 // new built-in kind plugs in through builtinSinks.
 func TestBuiltinSinksMatchWatchFileKinds(t *testing.T) {
 	var kinds []string
-	for _, s := range builtinSinks(&config.Config{}, &http.Client{}, nil) {
+	for _, s := range builtinSinks(&config.Config{}, &http.Client{Transport: http.DefaultTransport}, nil) {
 		kinds = append(kinds, s.Kind())
 	}
 	slices.Sort(kinds)

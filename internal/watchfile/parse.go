@@ -26,6 +26,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
+	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
 	"github.com/angelia-dev/angelia/internal/version"
@@ -50,7 +51,7 @@ const NamePattern = `^[a-z0-9][a-z0-9._-]{0,62}$`
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
 // SinkKinds are the sink kinds a watch file may declare.
-var SinkKinds = []string{"webhook", githubdispatch.Kind}
+var SinkKinds = []string{"webhook", githubdispatch.Kind, shoutrrr.Kind}
 
 // Options controls Parse.
 type Options struct {
@@ -429,6 +430,8 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 			s.Config = p.webhook(cn, jp+".config")
 		case githubdispatch.Kind:
 			s.Config = p.githubDispatch(cn, jp+".config")
+		case shoutrrr.Kind:
+			s.Config = p.shoutrrr(cn, jp+".config")
 		}
 	}
 	return s, len(p.errs) == before
@@ -460,6 +463,34 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 			if d > dispatch.DefaultDeliverTimeout {
 				// ADR 0023 decided question 3: the contract stays, the
 				// dispatcher's bound wins.
+				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
+					d, dispatch.DefaultDeliverTimeout)
+			}
+		}
+	}
+	return marshal(cfg)
+}
+
+// shoutrrr reads the config of a shoutrrr sink (spec ShoutrrrSinkConfig,
+// ADR 0026). The service URL is a secret: the file names it with url_ref
+// or url_env and never holds it.
+func (p *parser) shoutrrr(n *yaml.Node, jp string) json.RawMessage {
+	m := p.mapping(n, jp, "url_ref", "url_env", "service", "timeout")
+	if m == nil {
+		return nil
+	}
+	cfg := shoutrrr.Config{Timeout: shoutrrr.DefaultTimeout.String()}
+	cfg.URLEnv, cfg.URLRef = p.credentialRefs(m, jp, "url_env", "url_ref")
+	if m["url_env"] == nil && m["url_ref"] == nil {
+		p.errf(n, jp, "set exactly one of url_ref and url_env: the shoutrrr URL is a secret")
+	}
+	if sn := m["service"]; sn != nil {
+		cfg.Service = p.enum(sn, jp+".service", shoutrrr.Services())
+	}
+	if tn := m["timeout"]; tn != nil {
+		if d, ok := p.duration(tn, jp+".timeout", shoutrrr.MinTimeout, shoutrrr.MaxTimeout, false); ok {
+			cfg.Timeout = d.String()
+			if d > dispatch.DefaultDeliverTimeout {
 				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
 					d, dispatch.DefaultDeliverTimeout)
 			}

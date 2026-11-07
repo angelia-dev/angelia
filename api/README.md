@@ -1,10 +1,11 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `670a586` ("feat(openapi): github-dispatch sink config (#12)", the spec pull request of
-angelia-dev/angelia#113, merged on the spec repository's `main`). Only `openapi/angelia.v1.yaml` changed since
-`292e6e2` ("feat(openapi): write-only stored secrets and *_ref references (#10)"): version 0.3.0 adds
-`GithubDispatchSinkConfig` to `x-angelia-kind-config`.
+at commit `da249d8` ("feat(openapi): shoutrrr sink config with a whole-URL secret (#14)", the spec
+pull request of angelia-dev/angelia#120, merged on the spec repository's `main`). Only `openapi/angelia.v1.yaml` changed since `670a586` ("feat(openapi):
+github-dispatch sink config (#12)"): version 0.3.1 documents the github-dispatch input names and
+payload size guard (#13), and version 0.4.0 adds `ShoutrrrSinkConfig` to `x-angelia-kind-config` and
+the `x-angelia-secret-destination` annotation.
 
 | Here | In the spec repository |
 | --- | --- |
