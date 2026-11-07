@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.4.0
+  version: 0.4.1
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -1346,7 +1346,7 @@ components:
     SourceFilter:
       name: source
       in: query
-      description: Only watches (or events of watches) with these source kinds.
+      description: Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
       style: form
       explode: true
       schema:
@@ -1575,7 +1575,7 @@ components:
           description: Optional; when given it must equal the name in the path.
         source:
           $ref: '#/components/schemas/Kind'
-          description: A registered source kind (`GET /v1/plugins?interface=source`).
+          description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
           description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
           type: object
@@ -1611,7 +1611,7 @@ components:
           $ref: '#/components/schemas/ManagedBy'
         source:
           $ref: '#/components/schemas/Kind'
-          description: A registered source kind (`GET /v1/plugins?interface=source`).
+          description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
           description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
           type: object
