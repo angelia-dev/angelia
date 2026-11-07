@@ -1,0 +1,50 @@
+# Overlay for the CI quickstart check. Used together with ../sqlite/compose.yaml:
+#
+#   docker compose -p angelia-quickstart-ci \
+#     -f ../sqlite/compose.yaml -f compose.override.yaml up -d
+#
+# run.sh does exactly that. Paths are relative to ../sqlite, the directory of the
+# first file. CI_WEBHOOK_SECRET must be set (run.sh generates it).
+services:
+  angelia:
+    # Built from this checkout by run.sh; never pulled.
+    image: ${ANGELIA_IMAGE:-angelia:ci}
+    pull_policy: never
+    environment:
+      CI_WEBHOOK_SECRET: ${CI_WEBHOOK_SECRET:?set CI_WEBHOOK_SECRET (run.sh does)}
+    volumes:
+      # Same container paths as the base file, so these replace its mounts.
+      - ../ci/angelia.yaml:/etc/angelia/angelia.yaml:ro
+      - ../ci/watches.yaml:/etc/angelia/watches.yaml:ro
+    depends_on:
+      registry:
+        condition: service_started
+      receiver:
+        condition: service_started
+
+  # The fake PyPI: bench/fakereg behind a clock that POST /_ci/publish moves forward.
+  registry:
+    image: &runtime gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+    entrypoint: ["/ciharness", "registry", "-listen", ":8099"]
+    ports:
+      - "127.0.0.1:8099:8099"
+    volumes:
+      - ../ci/bin/ciharness:/ciharness:ro
+
+  # The webhook receiver: verifies the Standard Webhooks signature and keeps what it got.
+  receiver:
+    image: *runtime
+    entrypoint: ["/ciharness", "receiver", "-listen", ":9000"]
+    environment:
+      CI_WEBHOOK_SECRET: ${CI_WEBHOOK_SECRET:?set CI_WEBHOOK_SECRET (run.sh does)}
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - ../ci/bin/ciharness:/ciharness:ro
+
+networks:
+  default:
+    ipam:
+      config:
+        # Must contain http.allow_networks of angelia.yaml, and nothing wider.
+        - subnet: 172.28.77.0/24

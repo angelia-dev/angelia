@@ -1,0 +1,29 @@
+# Instance configuration for the CI quickstart check (deploy/compose/ci/README.md).
+# Same as ../sqlite/angelia.yaml, plus the two things the check needs: the fake
+# registry as the PyPI source, and permission to reach it and the receiver.
+instance:
+  name: quickstart-ci
+
+listen: ":8080"
+
+database:
+  dsn: sqlite:///var/lib/angelia/angelia.db
+
+roles: [all]
+
+log:
+  format: json
+  level: info
+
+http:
+  # The SSRF guard refuses private addresses (docs/configuration.md#outgoing-http-and-private-networks).
+  # compose.override.yaml pins the check's network to exactly this /24, so the
+  # registry and the receiver are the only private addresses Angelia may dial.
+  allow_networks: [172.28.77.0/24]
+  # The receiver speaks plain http, which a webhook may use only for a listed host.
+  allow_http_hosts: [receiver]
+
+sources:
+  pypi:
+    # The fake registry of bench/fakereg, served by ciharness (see main.go).
+    base_url: http://registry:8099/pypi
