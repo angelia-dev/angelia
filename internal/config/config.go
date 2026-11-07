@@ -79,7 +79,7 @@ type Config struct {
 	PluginsDir string `yaml:"plugins_dir"`
 
 	// Tokens holds the values read from each source's token_env variable,
-	// keyed by kind. It is not part of the file format; use SourceToken.
+	// keyed by source name. It is not part of the file format; use SourceToken.
 	Tokens   map[string]secret `yaml:"-"`
 	warnings []string
 	// pluginsDirDefault is true when PluginsDir was not configured.
@@ -223,9 +223,14 @@ func (a API) AllowsEnv(name string) bool {
 	return !ReservedEnvName(name) && slices.Contains(a.AllowedEnv, name)
 }
 
-// Source configures one source kind. There is deliberately no token field:
+// Source configures one source: a built-in kind (the key is the kind) or a
+// named instance of one (Kind is set). There is deliberately no token field:
 // the token is read from the environment variable named by TokenEnv.
 type Source struct {
+	// Kind selects the implementation of a named instance, such as
+	// sources.npm-internal.kind: npm. Empty: the key is the kind. A watch
+	// selects an instance by its key; events keep the kind.
+	Kind     string `yaml:"kind"`
 	BaseURL  string `yaml:"base_url"`
 	TokenEnv string `yaml:"token_env"`
 	// Auth names the stored secrets that authenticate requests to BaseURL
@@ -630,8 +635,11 @@ func (c *Config) Validate() error {
 	for _, k := range kinds {
 		s := c.Sources[k]
 		if !kindRE.MatchString(k) {
-			bad("sources: invalid kind name (want lower-case letters, digits and single hyphens)")
+			bad("sources: invalid source name (want lower-case letters, digits and single hyphens)")
 			continue
+		}
+		if s.Kind != "" && !kindRE.MatchString(s.Kind) {
+			bad("sources.%s.kind: invalid kind (want lower-case letters, digits and single hyphens)", k)
 		}
 		if s.BaseURL != "" {
 			u, err := url.Parse(s.BaseURL)
@@ -774,7 +782,7 @@ func (c *Config) resolveTokens(env map[string]string) {
 	}
 	sort.Strings(kinds)
 	for _, k := range kinds {
-		if s := c.Sources[k]; (s.TokenEnv != "" || !s.Auth.IsZero()) && !slices.Contains(credentialKinds, k) {
+		if s := c.Sources[k]; (s.TokenEnv != "" || !s.Auth.IsZero()) && !SendsCredential(c.SourceKind(k)) {
 			c.warnings = append(c.warnings, fmt.Sprintf("sources.%s: no built-in source of this kind sends a credential (kinds: %s); the key is ignored", k, strings.Join(credentialKinds, ", ")))
 		}
 		name := c.Sources[k].TokenEnv
@@ -792,6 +800,15 @@ func (c *Config) resolveTokens(env map[string]string) {
 // Warnings lists non-fatal findings, such as a token_env naming an unset variable.
 func (c *Config) Warnings() []string { return slices.Clone(c.warnings) }
 
-// SourceToken returns the token for a source kind, read from the environment
+// SourceKind returns the kind of the source configured under name: its kind
+// key when it is a named instance, otherwise name itself.
+func (c *Config) SourceKind(name string) string {
+	if k := c.Sources[name].Kind; k != "" {
+		return k
+	}
+	return name
+}
+
+// SourceToken returns the token for a source (its name; a built-in's is its kind), read from the environment
 // variable named by its token_env. It is empty when none is configured or set.
-func (c *Config) SourceToken(kind string) string { return reveal(c.Tokens[kind]) }
+func (c *Config) SourceToken(name string) string { return reveal(c.Tokens[name]) }

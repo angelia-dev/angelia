@@ -55,8 +55,14 @@ type Sink struct {
 
 // Watch is one upstream to watch.
 type Watch struct {
-	Name        string
-	Source      string
+	Name string
+	// Source names the registry the watch reads: a source kind, or the name
+	// of a configured instance of one (sources.<name>.kind). It is stored as
+	// the target's kind, so two instances never share a target.
+	Source string
+	// Kind is the kind of the source named by Source, the one events, purls,
+	// version schemes and policy use. The parser sets it; empty means Source.
+	Kind        string
 	Coordinates map[string]string
 	Interval    time.Duration
 	Scheme      string
@@ -110,12 +116,20 @@ type policyJSON struct {
 	Scheme     string   `json:"scheme,omitempty"`
 }
 
+// SourceKind returns the kind of the watch's source (Kind, else Source).
+func (w Watch) SourceKind() string {
+	if w.Kind != "" {
+		return w.Kind
+	}
+	return w.Source
+}
+
 // PolicyJSON returns the canonical JSON stored as watch.policy_json.
 func (w Watch) PolicyJSON() json.RawMessage {
 	p := w.Policy
 	scheme := w.Scheme
 	if scheme == "" { // store the default too, so the stored policy is complete
-		scheme = schemes.ForSourceKind(w.Source).Name()
+		scheme = schemes.ForSourceKind(w.SourceKind()).Name()
 	}
 	b := marshal(policyJSON{
 		Prerelease: p.Prerelease, Include: nonNilStrings(p.Include), Exclude: nonNilStrings(p.Exclude),

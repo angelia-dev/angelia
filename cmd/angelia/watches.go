@@ -44,8 +44,8 @@ func watchSources(cfg *config.Config) (*source.Registry, error) {
 	return builtinSources(cfg, &http.Client{}, nil, nil, nil)
 }
 
-func baseURL(cfg *config.Config, kind, def string) string {
-	if b := cfg.Sources[kind].BaseURL; b != "" {
+func baseURL(cfg *config.Config, name, def string) string {
+	if b := cfg.Sources[name].BaseURL; b != "" {
 		return b
 	}
 	return def

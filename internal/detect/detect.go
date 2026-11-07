@@ -20,7 +20,9 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 )
 
-// Sources finds the Source of a kind; *source.Registry implements it.
+// Sources finds the Source registered under a name, which is a source kind or
+// the name of an instance of one; *source.Registry implements it. The
+// Source's Kind is the base kind.
 type Sources interface {
 	Get(kind string) (source.Source, error)
 }
@@ -35,10 +37,10 @@ type Checker struct {
 	Sources Sources
 	// Instance is instance.name, the <instance> of every event's source.
 	Instance string
-	// RegistryURL returns the configured base URL of a kind when it is not
-	// the public registry, otherwise "" (event.CheckInput.RegistryURL). Nil
-	// means "" for every kind.
-	RegistryURL func(kind string) string
+	// RegistryURL returns the configured base URL of a source (its name: a
+	// kind, or an instance) when it is not the public registry, otherwise ""
+	// (event.CheckInput.RegistryURL). Nil means "" for every source.
+	RegistryURL func(name string) string
 	// Matcher caches the compiled subscriptions across checks; nil loads
 	// them on every commit.
 	Matcher *event.MatcherCache
@@ -61,10 +63,14 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 		log = slog.New(slog.DiscardHandler)
 	}
 	log = log.With("target", t.ID, "kind", t.Kind)
+	// t.Kind is the name the watch gave: a kind, or an instance of one. The
+	// source, the events, the version scheme and the policy see the base kind.
 	src, err := c.Sources.Get(t.Kind)
 	if err != nil {
 		return scheduler.Outcome{}, fmt.Errorf("detect: target %s: %w", t.ID, err)
 	}
+	name := t.Kind
+	t.Kind = src.Kind()
 	var state source.FetchState
 	if len(t.FetchState) > 0 {
 		// The state is only a hint for a conditional request: one that no
@@ -84,7 +90,7 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 	}
 	registry := ""
 	if c.RegistryURL != nil {
-		registry = c.RegistryURL(t.Kind)
+		registry = c.RegistryURL(name)
 	}
 	if _, err := event.Commit(ctx, c.Store, event.CheckInput{
 		Target: t, Fetched: res, Instance: c.Instance, RegistryURL: registry,

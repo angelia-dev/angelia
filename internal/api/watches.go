@@ -37,15 +37,17 @@ func effectiveInterval(t store.Target) time.Duration {
 	return watchfile.DefaultInterval
 }
 
-// watchJSONOf builds the response of a watch and its target.
-func watchJSONOf(w store.Watch, t store.Target) (watchJSON, error) {
+// watchJSONOf builds the response of a watch and its target. t.Kind is the
+// source the watch names, an instance or a kind; the scheme default follows
+// its base kind.
+func (s *Server) watchJSONOf(w store.Watch, t store.Target) (watchJSON, error) {
 	p, err := policy.Decode(w.Policy)
 	if err != nil {
 		return watchJSON{}, err
 	}
 	scheme := p.Scheme
 	if scheme == "" {
-		scheme = schemes.ForSourceKind(t.Kind).Name()
+		scheme = schemes.ForSourceKind(s.opts.Sources.KindOf(t.Kind)).Name()
 	}
 	bump := make([]string, len(p.Bump))
 	for i, b := range p.Bump {
@@ -95,7 +97,7 @@ func (s *Server) readWatch(ctx context.Context, r watchReader, name string) (sto
 
 // watchBody is the watch named name in the shape of its PUT body, nil when
 // there is none, for checkRefScope.
-func watchBody(ctx context.Context, tx store.APITx, name string) (any, error) {
+func (s *Server) watchBody(ctx context.Context, tx store.APITx, name string) (any, error) {
 	w, err := tx.WatchByName(ctx, name)
 	if isNotFound(err) {
 		return nil, nil
@@ -107,7 +109,7 @@ func watchBody(ctx context.Context, tx store.APITx, name string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	wj, err := watchJSONOf(w, t)
+	wj, err := s.watchJSONOf(w, t)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +122,7 @@ func (s *Server) GetWatch(ctx context.Context, req GetWatchRequestObject) (GetWa
 	if err != nil {
 		return nil, err
 	}
-	body, err := watchJSONOf(w, t)
+	body, err := s.watchJSONOf(w, t)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +182,7 @@ func (s *Server) ListWatches(ctx context.Context, req ListWatchesRequestObject) 
 		if err != nil {
 			return nil, err
 		}
-		wj, err := watchJSONOf(w, t)
+		wj, err := s.watchJSONOf(w, t)
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +248,7 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 	var body watchJSON
 	var change Change
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
-		before, err := watchBody(ctx, tx, w.Name)
+		before, err := s.watchBody(ctx, tx, w.Name)
 		if err != nil {
 			return err
 		}
@@ -262,7 +264,7 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 		if err != nil {
 			return err
 		}
-		body, err = watchJSONOf(sw, t)
+		body, err = s.watchJSONOf(sw, t)
 		return err
 	})
 	if err != nil {
@@ -369,7 +371,7 @@ func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) 
 		if cur == nil {
 			return problem(SlugNotFound, "no watch named %s", req.Name)
 		}
-		before, err := watchBody(ctx, tx, req.Name)
+		before, err := s.watchBody(ctx, tx, req.Name)
 		if err != nil {
 			return err
 		}
@@ -406,7 +408,7 @@ func (s *Server) ListWatchVersions(ctx context.Context, req ListWatchVersionsReq
 	if err != nil {
 		return nil, err
 	}
-	scheme, err := schemes.Select(t.Kind, pol.Scheme, nil)
+	scheme, err := schemes.Select(s.opts.Sources.KindOf(t.Kind), pol.Scheme, nil)
 	if err != nil {
 		return nil, err
 	}

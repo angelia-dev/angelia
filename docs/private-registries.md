@@ -2,12 +2,13 @@
 
 Angelia can watch packages on a private registry or a mirror: Artifactory, Nexus, Verdaccio, devpi, a
 GitHub Enterprise Server, a self-managed GitLab. You set the registry's `base_url` and its credential once per
-source kind in the [instance configuration](configuration.md). Design and security rules:
+source (or named source instance) in the [instance configuration](configuration.md). Design and security rules:
 [ADR 0024, amendment of #111](adr/0024-secrets-encrypted-at-rest.md).
 
-- One registry per source kind per instance. A watch is an ordinary watch of that kind
-  (`source: npm`); it cannot choose its own base URL or credential
-  ([watch-file.md](watch-file.md) decision D9).
+- A watch cannot choose its own base URL or credential ([watch-file.md](watch-file.md) decision D9).
+  It chooses a **source**: the built-in kind (`source: npm`, one registry per kind) or a
+  [named instance](#several-registries-of-one-kind) (`source: npm-internal`) that the instance
+  configuration defines.
 - Events from a registry other than the public one carry its URL as the `repository_url` qualifier of
   the purl. It is the configured `base_url` as written, with any API path (`/api/v3`, `/api/v4`) and
   without a trailing slash.
@@ -46,6 +47,41 @@ sources:
   is sent only to the host of `base_url`. Set `token_env` or `auth`, not both.
 - No value appears in `config check`, logs, errors, events or API responses. A value written in a `*_ref`
   key is refused as not being a secret name, without being printed.
+
+## Several registries of one kind
+
+To watch the same kind of registry at several URLs (the public npm and an internal Nexus, say), define a
+named instance. The key is the name; `kind` selects the implementation:
+
+```yaml
+sources:
+  npm-internal:
+    kind: npm
+    base_url: https://nexus.example.com/repository/npm-group
+    auth: { token_ref: nexus-npm-token }
+```
+
+```yaml
+# watch file
+watches:
+  - {name: widget, source: npm-internal, coordinates: {name: "@acme/widget"}}
+```
+
+- The instance has its own `base_url`, `token_env` and `auth`, all as for a built-in kind. The built-in
+  `npm` (the public registry, or whatever `sources.npm` configures) stays available next to it.
+  `http.ca_file` and the proxy rules are instance-wide and apply to every instance.
+- The name is lower-case letters, digits and single hyphens. A name that is a built-in kind (`npm`) cannot
+  select another kind. `kind` is one of `pypi`, `npm`, `crates`, `github-release`, `github-tag`,
+  `gitlab-release`; anything else stops `angelia serve` and `config check`.
+- A watch with a name that is neither a built-in kind nor a configured instance is refused by the watch file,
+  by the API and by `angelia config check --watches`.
+- Events keep the kind: the purl type, `data.source`, the subject and the version scheme are those of
+  `npm`, whatever the instance is called. The purl's `repository_url` is the instance's `base_url`. A
+  subscription `filter.source` therefore names kinds, not instances.
+- The watch's `source` (watch file, API) is the instance name. The same package on two instances is two
+  targets, each fetched from its own registry. Renaming the instance in the configuration points its stored
+  watches at nothing: their checks fail until the name is configured again.
+- Secrets named by an instance's `auth` are checked against the instance's own host.
 
 ## Examples
 

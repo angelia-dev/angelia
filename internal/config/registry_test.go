@@ -124,3 +124,55 @@ func TestBasicAuthRefusedForGitHubTagAndGitLab(t *testing.T) {
 		}
 	}
 }
+
+// Named source instances (#205): sources.<name>.kind selects the
+// implementation; auth and token_env belong to the instance.
+func TestNamedSourceInstanceParses(t *testing.T) {
+	cfg, err := load(t, writeFile(t, `
+sources:
+  npm: {base_url: https://registry.npmjs.org}
+  npm-internal:
+    kind: npm
+    base_url: https://nexus.example.com/repository/npm-group
+    auth: {token_ref: nexus-npm-token}
+  npm-legacy:
+    kind: npm
+    token_env: NEXUS_TOKEN
+`), "NEXUS_TOKEN=t0ken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"npm": "npm", "npm-internal": "npm", "npm-legacy": "npm", "unlisted": "unlisted"} {
+		if got := cfg.SourceKind(name); got != want {
+			t.Errorf("SourceKind(%s) = %q, want %q", name, got, want)
+		}
+	}
+	if got := cfg.Sources["npm-internal"]; got.BaseURL == "" || got.Auth.TokenRef != "nexus-npm-token" {
+		t.Errorf("npm-internal = %+v", got)
+	}
+	if cfg.SourceToken("npm-legacy") != "t0ken" || cfg.SourceToken("npm") != "" {
+		t.Error("token_env is read per instance name")
+	}
+	for _, w := range cfg.Warnings() {
+		t.Errorf("unexpected warning: %s", w)
+	}
+}
+
+func TestNamedSourceInstanceRejectsABadKind(t *testing.T) {
+	_, err := load(t, writeFile(t, "sources:\n  mine:\n    kind: Not_A_Kind\n"))
+	if err == nil || !strings.Contains(err.Error(), "sources.mine.kind: invalid kind") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The credential warning looks at the instance's kind, not its name.
+func TestNamedSourceCredentialWarningUsesTheKind(t *testing.T) {
+	cfg, err := load(t, writeFile(t, "sources:\n  internal-oci:\n    kind: oci\n    auth: {token_ref: t}\n  internal-npm:\n    kind: npm\n    auth: {token_ref: t}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(cfg.Warnings(), "\n")
+	if !strings.Contains(w, "sources.internal-oci:") || strings.Contains(w, "sources.internal-npm:") {
+		t.Errorf("warnings = %q", w)
+	}
+}
