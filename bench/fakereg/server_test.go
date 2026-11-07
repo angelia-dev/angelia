@@ -14,6 +14,7 @@ import (
 
 	"github.com/angelia-dev/angelia/bench/wasm"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/crates"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
@@ -296,6 +297,47 @@ func TestRandom429TakesNoToken(t *testing.T) {
 	}
 	if e := s.ecos["npm"]; !e.last.IsZero() {
 		t.Errorf("token bucket was touched: tokens %v", e.tokens)
+	}
+}
+
+// The built-in crates source reads the sparse index. With a custom index it
+// has no API, so its versions carry no PublishedAt; lag is measured here,
+// at the registry, and needs none.
+func TestBuiltinCratesReadsSparseIndex(t *testing.T) {
+	c := fastConfig(func(b *Behaviour) { b.BodyPadding = 10 })
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	cr := c.Ecosystems["crates"]
+	cr.ReleasesPerHour = 10 // one release per package per hour
+	c.Ecosystems["crates"] = cr
+	reg := New(c, WithClock(clk.now))
+	srv := httptest.NewServer(reg)
+	defer srv.Close()
+	src := crates.New(srv.URL+"/crates", srv.Client())
+	tgt := source.Target{Kind: "crates", Coordinates: map[string]string{"name": "pkg-00004"}}
+	ctx := context.Background()
+	res, err := src.List(ctx, tgt, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Versions) != 3 || res.Versions[0].Raw != "1.2.0" || res.State.ETag == "" {
+		t.Fatalf("first list: %+v", res)
+	}
+	again, err := src.List(ctx, tgt, res.State)
+	if err != nil || !again.NotModified {
+		t.Fatalf("conditional list: %+v, %v", again, err)
+	}
+	clk.add(time.Hour)
+	res, err = src.List(ctx, tgt, res.State)
+	if err != nil || len(res.Versions) != 4 || res.Versions[0].Raw != "1.3.0" {
+		t.Fatalf("after a release: %+v, %v", res, err)
+	}
+	if st := reg.Stats().Ecosystems["crates"]; st.Seen == 0 || st.OK != 2 || st.NotModified != 1 {
+		t.Errorf("crates stats = %+v", st)
+	}
+	for _, p := range []string{"/crates/pk/xx/pkg-00004", "/crates/pk/g-/pkg-00010", "/crates/1/a/b"} {
+		if got := get(t, reg, p).Code; got != 404 {
+			t.Errorf("%s = %d, want 404", p, got)
+		}
 	}
 }
 

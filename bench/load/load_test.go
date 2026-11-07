@@ -16,34 +16,48 @@ import (
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/crates"
+	"github.com/angelia-dev/angelia/internal/source/githubrelease"
+	"github.com/angelia-dev/angelia/internal/source/npm"
+	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
+// Watches go round robin over the ecosystems that have a built-in source;
+// oci has none yet and gets no watch.
 func TestGenerateWatches(t *testing.T) {
 	w, per := GenerateWatches(7)
-	if len(w) != 7 || per["pypi"] != 2 || per["oci"] != 1 {
-		t.Fatalf("got %d watches, per ecosystem %v; want 7, pypi 2, oci 1", len(w), per)
+	if len(w) != 7 || per["pypi"] != 2 || per["oci"] != 0 {
+		t.Fatalf("got %d watches, per ecosystem %v; want 7, pypi 2, oci 0", len(w), per)
 	}
 	kinds := map[string]int{}
 	for _, x := range w {
 		kinds[x.Kind]++
 	}
-	want := map[string]int{"pypi": 2, "npm": 2, "crates": 1, "github-release": 1, "oci": 1}
+	want := map[string]int{"pypi": 2, "npm": 2, "crates": 2, "github-release": 1}
 	for k, n := range want {
 		if kinds[k] != n {
 			t.Errorf("%s: %d watches, want %d (all: %v)", k, kinds[k], n, kinds)
 		}
 	}
+	if len(kinds) != len(want) {
+		t.Errorf("kinds = %v", kinds)
+	}
 	if w[3].Coordinates["repo"] != "bench/pkg-00000" || w[5].Coordinates["name"] != "pkg-00001" {
 		t.Errorf("coordinates: %+v / %+v", w[3], w[5])
 	}
+	if got := unmeasuredEcosystems(); len(got) != 1 || got[0] != "oci" {
+		t.Errorf("unmeasured = %v", got)
+	}
 	c := fakereg.DefaultConfig()
 	SizeRegistry(c, per)
-	if c.Ecosystems["oci"].Packages != 1 || c.Ecosystems["npm"].Packages != 2 {
+	if b := c.Ecosystems["oci"]; b.Packages != 1 || b.ReleasesPerHour != 0 || c.Ecosystems["npm"].Packages != 2 {
 		t.Error("SizeRegistry did not size each ecosystem to its watches")
 	}
 	_, per = GenerateWatches(2)
 	SizeRegistry(c, per)
-	if b := c.Ecosystems["oci"]; b.Packages != 1 || b.ReleasesPerHour != 0 {
+	if b := c.Ecosystems["github"]; b.Packages != 1 || b.ReleasesPerHour != 0 {
 		t.Errorf("unwatched ecosystem = %+v, want 1 package without releases", b)
 	}
 	if c.Ecosystems["pypi"].ReleasesPerHour == 0 {
@@ -56,7 +70,7 @@ func TestGenerateWatches(t *testing.T) {
 func TestAngeliaConfigIsValid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "angelia.yaml")
-	if err := WriteAngeliaConfig(path, "127.0.0.1:9", "http://127.0.0.1:5000", dir); err != nil {
+	if err := WriteAngeliaConfig(path, "127.0.0.1:9", "http://127.0.0.1:5000", dir, "127.0.0.1/32"); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(context.Background(), config.Options{Path: path})
@@ -66,15 +80,100 @@ func TestAngeliaConfigIsValid(t *testing.T) {
 	if got := cfg.Sources["github-release"].BaseURL; got != "http://127.0.0.1:5000/github" {
 		t.Errorf("github-release base_url = %q", got)
 	}
-	if len(cfg.Sources) != 5 {
+	if got := cfg.Sources["crates"].BaseURL; got != "http://127.0.0.1:5000/crates" {
+		t.Errorf("crates base_url = %q", got)
+	}
+	if len(cfg.Sources) != 4 {
 		t.Errorf("sources = %v", cfg.Sources)
+	}
+	// Only the registry's address is allowed past the SSRF guard.
+	if p := cfg.HTTP.AllowPrefixes(); len(p) != 1 || p[0].String() != "127.0.0.1/32" {
+		t.Errorf("allow_networks = %v", p)
 	}
 }
 
-func TestMissingLoader(t *testing.T) {
-	var l WatchLoader = missingLoader{}
-	if _, err := l.Prepare(context.Background(), nil, "", ""); !errors.Is(err, ErrNoWatchLoader) || l.Name() != "none" {
-		t.Errorf("err = %v", err)
+// The loader writes a watch file that angelia's own parser accepts, with
+// one watch per target at the requested interval, and returns the serve
+// flag naming it as angelia sees it.
+func TestWatchFileLoader(t *testing.T) {
+	dir := t.TempDir()
+	watches, _ := GenerateWatches(10000)
+	l := watchFileLoader{interval: 5 * time.Minute}
+	args, err := l.Prepare(context.Background(), watches, dir, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Name() != "watch-file" || len(args) != 2 || args[0] != "--watches" || args[1] != "/work/watches.yaml" {
+		t.Errorf("name %q, args %v", l.Name(), args)
+	}
+	f, err := watchfile.Load(filepath.Join(dir, watchFileName), watchfile.Options{Sources: benchSources(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Watches) != 10000 || len(f.Sinks) != 0 || len(f.Subscriptions) != 0 {
+		t.Fatalf("watches %d, sinks %d, subscriptions %d", len(f.Watches), len(f.Sinks), len(f.Subscriptions))
+	}
+	per := map[string]int{}
+	for _, w := range f.Watches {
+		per[w.Source]++
+		if w.Interval != 5*time.Minute {
+			t.Fatalf("watch %s: interval %v", w.Name, w.Interval)
+		}
+	}
+	if per["pypi"] != 2500 || per["github-release"] != 2500 || per["crates"] != 2500 || per["npm"] != 2500 {
+		t.Errorf("per source = %v", per)
+	}
+	if w := f.Watches[3]; w.Name != "github-release-pkg-00000" || w.Coordinates["repo"] != "bench/pkg-00000" {
+		t.Errorf("watch 3 = %+v", w)
+	}
+}
+
+func TestWatchFileLoaderRefuses(t *testing.T) {
+	watches, _ := GenerateWatches(4)
+	if _, err := (watchFileLoader{interval: time.Minute}).Prepare(context.Background(), watches, t.TempDir(), "/w"); err == nil ||
+		!strings.Contains(err.Error(), "5m0s") {
+		t.Errorf("1m interval: err = %v", err)
+	}
+	big, _ := GenerateWatches(60000)
+	if _, err := (watchFileLoader{interval: time.Hour}).Prepare(context.Background(), big, t.TempDir(), "/w"); err == nil ||
+		!strings.Contains(err.Error(), "limit") {
+		t.Errorf("oversized file: err = %v", err)
+	}
+	if _, err := (watchFileLoader{interval: time.Hour}).Prepare(context.Background(), watches, filepath.Join(t.TempDir(), "missing"), "/w"); err == nil {
+		t.Error("unwritable directory: want error")
+	}
+}
+
+// benchSources registers the built-in source kinds the harness watches,
+// for validation only (no request is made).
+func benchSources(t *testing.T) *source.Registry {
+	t.Helper()
+	reg := source.NewRegistry()
+	hc := &http.Client{}
+	for _, s := range []source.Source{pypi.New("", hc), npm.New("", hc), crates.New("", hc), githubrelease.New("", hc)} {
+		if err := reg.Register(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return reg
+}
+
+func TestRegistryNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		container bool
+		host      string
+		want      string
+	}{
+		{false, "127.0.0.1", "127.0.0.1/32"},
+		{true, "172.17.0.1", "172.17.0.1/32"},
+		{true, "127.0.0.1", "192.168.65.0/24"},
+	} {
+		if got, err := registryNetwork(tc.container, tc.host); err != nil || got != tc.want {
+			t.Errorf("registryNetwork(%v, %s) = %q, %v; want %q", tc.container, tc.host, got, err, tc.want)
+		}
+	}
+	if _, err := registryNetwork(true, "0.0.0.0"); err == nil || !strings.Contains(err.Error(), "-allow-network") {
+		t.Errorf("all interfaces: err = %v", err)
 	}
 }
 
@@ -177,15 +276,13 @@ func TestEvaluate(t *testing.T) {
 	samples := []Sample{{MemoryBytes: 30 << 20}, {MemoryBytes: 40 << 20, CPUPercent: 10}}
 	reg := fakereg.Stats{Total: fakereg.EcoStats{Published: 10, Lag: fakereg.LagStats{Samples: 10, P95Seconds: 30}}}
 	for name, tc := range map[string]struct {
-		loaderErr error
-		rss       int64
-		lag       float64
-		want      string
+		rss  int64
+		lag  float64
+		want string
 	}{
-		"pass":       {nil, 40 << 20, 30, "pass"},
-		"rss fails":  {nil, 200 << 20, 30, "fail"},
-		"lag fails":  {nil, 40 << 20, 300, "fail"},
-		"no watches": {ErrNoWatchLoader, 40 << 20, 30, "incomplete"},
+		"pass":      {40 << 20, 30, "pass"},
+		"rss fails": {200 << 20, 30, "fail"},
+		"lag fails": {40 << 20, 300, "fail"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := append([]Sample(nil), samples...)
@@ -193,15 +290,18 @@ func TestEvaluate(t *testing.T) {
 			r := &Report{Samples: s, Registry: reg}
 			r.Registry.Total.Lag.P95Seconds = tc.lag
 			r.Resources = summarizeSamples(s)
-			r.evaluate(tc.loaderErr)
+			r.evaluate()
 			if r.Verdict != tc.want {
 				t.Errorf("verdict = %s, want %s (checks %+v)", r.Verdict, tc.want, r.Checks)
+			}
+			if len(r.Notes) != 1 || !strings.Contains(r.Notes[0], "oci: not measured") {
+				t.Errorf("notes = %v", r.Notes)
 			}
 		})
 	}
 	r := &Report{Samples: samples, Resources: summarizeSamples(samples)}
-	r.evaluate(nil)
-	if r.Verdict != "incomplete" || len(r.Notes) == 0 {
+	r.evaluate()
+	if r.Verdict != "incomplete" || len(r.Notes) != 2 {
 		t.Errorf("no releases: verdict %s, notes %v", r.Verdict, r.Notes)
 	}
 }
@@ -257,8 +357,8 @@ type fakeTarget struct {
 	started []string
 }
 
-func (f *fakeTarget) Start(_ context.Context, cfg string, _ []string) error {
-	f.started = append(f.started, cfg)
+func (f *fakeTarget) Start(_ context.Context, cfg string, args []string) error {
+	f.started = append(append(f.started, cfg), args...)
 	return nil
 }
 func (f *fakeTarget) HealthURL(context.Context) (string, error) { return f.srv.URL, nil }
@@ -268,8 +368,10 @@ func (f *fakeTarget) Sample(context.Context) (Sample, error) {
 func (f *fakeTarget) Stop(context.Context) error { return nil }
 func (f *fakeTarget) Limits() (string, string)   { return "1 CPU", "256m" }
 
-// End to end with a fake angelia: the harness writes both reports, with
-// the environment, and says the run is incomplete without a watch loader.
+// End to end with a fake angelia: the harness writes the watch file and the
+// instance config, starts angelia with both, and writes both reports with
+// the environment. The fake angelia checks nothing, so no release is seen
+// and lag fails.
 func TestRunWritesReport(t *testing.T) {
 	ft := &fakeTarget{srv: httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))}
 	defer ft.srv.Close()
@@ -280,7 +382,7 @@ func TestRunWritesReport(t *testing.T) {
 	}
 	o := options{
 		n: 50, duration: 30 * time.Millisecond, interval: 10 * time.Millisecond, fakeregConfig: cfgPath,
-		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: missingLoader{},
+		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: 5 * time.Minute},
 		checkInterval: 5 * time.Millisecond, censor: 10 * time.Millisecond,
 		newTarget: func(options, string) Target { return ft },
 		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef"}),
@@ -289,11 +391,17 @@ func TestRunWritesReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Verdict != "incomplete" || len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 10 {
+	if rep.Verdict == "pass" || len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 12 || rep.Params.Loader != "watch-file" {
 		t.Errorf("report = %+v", rep)
 	}
-	if len(ft.started) != 1 || ft.started[0] != filepath.Join(out, "angelia.yaml") {
-		t.Errorf("started with %v", ft.started)
+	if want := []string{filepath.Join(out, "angelia.yaml"), "--watches", filepath.Join(out, "watches.yaml")}; strings.Join(ft.started, " ") != strings.Join(want, " ") {
+		t.Errorf("started with %v, want %v", ft.started, want)
+	}
+	if b, err := os.ReadFile(filepath.Join(out, "angelia.yaml")); err != nil || !bytes.Contains(b, []byte("allow_networks:\n        - 127.0.0.1/32")) { //nolint:gosec // test temp dir
+		t.Errorf("angelia.yaml: %v\n%s", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(out, watchFileName)); err != nil {
+		t.Error(err)
 	}
 	var back Report
 	data, err := os.ReadFile(filepath.Join(out, "report.json")) //nolint:gosec // test temp dir
@@ -305,8 +413,8 @@ func TestRunWritesReport(t *testing.T) {
 		t.Errorf("lag window %+v, ready at %v", w, rep.Params.ReadyAt)
 	}
 	for _, want := range []string{
-		"Verdict: incomplete", "| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "no watch loader",
-		"RSS (VmRSS) max", "Lag counts releases published from",
+		"| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "oci: not measured",
+		"RSS (VmRSS) max", "Lag counts releases published from", "watch loader `watch-file`",
 	} {
 		if !bytes.Contains(md, []byte(want)) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
@@ -322,6 +430,10 @@ func TestRunFlags(t *testing.T) {
 	if code := run(context.Background(), []string{"-duration", "2m"}, &bytes.Buffer{}, &stderr); code != 2 ||
 		!strings.Contains(stderr.String(), "warm-up") {
 		t.Errorf("-duration shorter than warm-up + censoring: exit %d, %s", code, stderr.String())
+	}
+	if code := run(context.Background(), []string{"-check-interval", "1m"}, &bytes.Buffer{}, &stderr); code != 2 ||
+		!strings.Contains(stderr.String(), "docs/watch-file.md") {
+		t.Errorf("-check-interval below the watch file minimum: exit %d, %s", code, stderr.String())
 	}
 	if code := run(context.Background(), []string{"-bogus"}, &bytes.Buffer{}, &stderr); code != 2 {
 		t.Errorf("unknown flag: exit %d", code)

@@ -18,7 +18,7 @@ Each ecosystem lives under its own prefix, which is the source's base URL
 |---|---|---|---|
 | `pypi` | `http://HOST/pypi` | `GET /pypi/pypi/{name}/json` (PyPI JSON API) | `internal/source/pypi` |
 | `npm` | `http://HOST/npm` | `GET /npm/{name}` (packument) | `internal/source/npm` |
-| `crates` | `http://HOST/crates` | `GET /crates/api/v1/crates/{name}/versions` | crates plugin (`bench/plugins/crates`); no built-in source yet |
+| `crates` | `http://HOST/crates` | `GET /crates/{nn}/{nn}/{name}` (sparse index file, one JSON line per version); `GET /crates/api/v1/crates/{name}/versions` (crates.io API) | `internal/source/crates` (index; with a custom index it reads no API, so versions carry no publication time), crates plugin (`bench/plugins/crates`, API) |
 | `github` | `http://HOST/github` | `GET /github/repos/{owner}/{name}/releases?per_page=&page=` | `internal/source/githubrelease` |
 | `oci` | `http://HOST/oci` | `GET /oci/v2/{owner}/{name}/tags/list?n=&last=` (distribution spec, lexical order, `Link` for the next page), `GET /oci/v2/` | none yet |
 
@@ -63,7 +63,8 @@ client gave up during the latency); `published` (releases published in the windo
 (those sent to a client at least once); and check lag.
 
 The lag of a seen release is the time from its publication to the first 200 that contained it
-(for GitHub, page 1; for OCI, the page holding the newest tag). An unseen release counts with
+(for GitHub, page 1; for OCI, the page holding the newest tag; for crates, either the index file or
+the API). An unseen release counts with
 the time since its publication, a lower bound of its eventual lag. Percentiles use the
 nearest-rank method.
 
@@ -85,7 +86,8 @@ time of one response, small next to a two-minute target.
 - **Versions** are plain `1.k.0`: no prereleases, yanks, deprecations, unpublished versions,
   drafts or build metadata, so version parsing and policy are exercised only lightly.
 - **Document shape**: one body per package. npm serves the same document for the abbreviated
-  and the full packument; crates.io always fits in one page; GitHub sends no `Link` header (the
+  and the full packument; crates.io always fits in one page, and the sparse index has no
+  `config.json` and no dependencies or features; GitHub sends no `Link` header (the
   source pages by count); OCI has no token handshake; there is no authentication anywhere.
 - **Validators**: the ETag changes only when a release is added (and with the query string);
   `Last-Modified` has one-second resolution.
