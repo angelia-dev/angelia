@@ -26,7 +26,10 @@ import (
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/crates"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
+	"github.com/angelia-dev/angelia/internal/source/githubtag"
+	"github.com/angelia-dev/angelia/internal/source/gitlabrelease"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
@@ -47,6 +50,17 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 	if tok := cfg.SourceToken(githubrelease.Kind); tok != "" {
 		ghOpts = append(ghOpts, githubrelease.WithToken(tok))
 	}
+	var tagOpts []githubtag.Option
+	if tok := cfg.SourceToken(githubtag.Kind); tok != "" {
+		tagOpts = append(tagOpts, githubtag.WithToken(tok))
+	}
+	// token_env sends GitLab's own header, PRIVATE-TOKEN (a personal, project
+	// or group access token); auth sends "Authorization: Bearer", which GitLab
+	// accepts for the same tokens and for OAuth tokens.
+	var glOpts []gitlabrelease.Option
+	if tok := cfg.SourceToken(gitlabrelease.Kind); tok != "" {
+		glOpts = append(glOpts, gitlabrelease.WithToken(tok))
+	}
 	var pypiOpts []pypi.Option
 	if log != nil {
 		pypiOpts = append(pypiOpts, pypi.WithLogger(log))
@@ -54,11 +68,20 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 	pypiURL := baseURL(cfg, pypi.Kind, pypi.DefaultBaseURL)
 	npmURL := baseURL(cfg, npm.Kind, "")
 	ghURL := baseURL(cfg, githubrelease.Kind, githubrelease.DefaultBaseURL)
+	tagURL := baseURL(cfg, githubtag.Kind, githubtag.DefaultBaseURL)
+	glURL := baseURL(cfg, gitlabrelease.Kind, gitlabrelease.DefaultBaseURL)
+	cratesURL := baseURL(cfg, crates.Kind, crates.DefaultIndexURL)
 	reg := source.NewRegistry()
 	for _, s := range []source.Source{
 		pypi.New(pypiURL, sourceClient(cfg, pypi.Kind, pypiURL, hc, res), pypiOpts...),
 		npm.New(npmURL, sourceClient(cfg, npm.Kind, npmURL, hc, res)),
 		githubrelease.New(ghURL, sourceClient(cfg, githubrelease.Kind, ghURL, hc, res), ghOpts...),
+		githubtag.New(tagURL, sourceClient(cfg, githubtag.Kind, tagURL, hc, res), tagOpts...),
+		gitlabrelease.New(glURL, sourceClient(cfg, gitlabrelease.Kind, glURL, hc, res), glOpts...),
+		// crates sends no credential: its index and API are public, and a
+		// private cargo registry authenticates with a raw token that no
+		// source option defines yet.
+		crates.New(cratesURL, hc),
 	} {
 		if wrap != nil {
 			s = wrap(s)
@@ -72,8 +95,9 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 
 // sourceClient returns the HTTP client of source kind: hc, or hc adding the
 // credential of sources.<kind>.auth (stored secrets, bound to the base URL's
-// host) or, for pypi and npm, of token_env (github-release reads its token
-// itself). base is the URL the source reads from.
+// host) or, for pypi and npm, of token_env (github-release, github-tag and
+// gitlab-release read their token themselves, each with its own header).
+// base is the URL the source reads from.
 func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
 	a := cfg.Sources[kind].Auth
 	c := registryauth.Config{Resolver: res}
@@ -82,7 +106,7 @@ func sourceClient(cfg *config.Config, kind, base string, hc *http.Client, res re
 		c.TokenRef = a.TokenRef
 	case a.PasswordRef != "":
 		c.PasswordRef, c.Username = a.PasswordRef, a.Username
-	case kind != githubrelease.Kind:
+	case kind == pypi.Kind || kind == npm.Kind:
 		c.Token = secrets.NewValueString(cfg.SourceToken(kind))
 	}
 	if base == "" {
@@ -112,7 +136,7 @@ func sourceRefs(cfg *config.Config) []registryauth.Ref {
 	var refs []registryauth.Ref
 	for _, k := range kinds {
 		a := cfg.Sources[k].Auth
-		if a.IsZero() {
+		if a.IsZero() || !config.SendsCredential(k) {
 			continue
 		}
 		u, err := url.Parse(baseURL(cfg, k, publicRegistries[k]))
@@ -142,6 +166,9 @@ var publicRegistries = map[string]string{
 	pypi.Kind:          pypi.DefaultBaseURL,
 	npm.Kind:           npm.DefaultBaseURL,
 	githubrelease.Kind: githubrelease.DefaultBaseURL,
+	githubtag.Kind:     githubtag.DefaultBaseURL,
+	gitlabrelease.Kind: gitlabrelease.DefaultBaseURL,
+	crates.Kind:        crates.DefaultIndexURL,
 }
 
 // registryURL returns event.CheckInput.RegistryURL for a kind: its

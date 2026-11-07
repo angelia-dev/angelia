@@ -115,3 +115,12 @@ func TestCAFile(t *testing.T) {
 		t.Errorf("no ca_file: %v, %v; want nil, nil", p, err)
 	}
 }
+
+func TestBasicAuthRefusedForGitHubTagAndGitLab(t *testing.T) {
+	for _, kind := range []string{"github-tag", "gitlab-release"} {
+		_, err := load(t, writeFile(t, "sources:\n  "+kind+":\n    auth: {type: basic, username: u, password_ref: pw}\n"))
+		if err == nil || !strings.Contains(err.Error(), "basic is not accepted") {
+			t.Errorf("%s: err = %v", kind, err)
+		}
+	}
+}

@@ -62,16 +62,18 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source kind (`pypi`, `npm`, `github-release`, ...) |
+| `source` | string | yes | none | a registered source kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
 | `labels` | map string to string | no | `{}` | at most 32 entries; key `^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`, value at most 253 characters, no control characters |
 | `policy` | policy | no | all defaults | section 2.3 |
 
-- `coordinates` keys are source-owned. Defined by the source stories, not here. For the first three
-  sources: `pypi`: `name`; `npm`: `name` (scoped names such as `@types/node` allowed);
-  `github-release`: `repo` as `owner/name` (for example `cli/cli`), the form `Source.Validate` accepts.
+- `coordinates` keys are source-owned. Defined by the source stories, not here. For the built-in
+  sources: `pypi`, `npm` and `crates`: `name` (scoped npm names such as `@types/node` allowed);
+  `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
+  `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id; each in the
+  form `Source.Validate` accepts.
 - `scheme` overrides the default chosen by source kind (`internal/version/schemes.ForSourceKind`).
   The loader checks the value against `schemes.Names()`, so it accepts `calver` as soon as #68 merges.
   `maven` is not accepted (Phase 1).

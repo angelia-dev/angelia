@@ -16,6 +16,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -71,6 +72,13 @@ func newConfigCheckCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("invalid plugins: %w", err)
 			}
+			kindWarns, err := pluginKindWarnings(cfg, plugins)
+			if err != nil {
+				return err
+			}
+			for _, w := range kindWarns {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+			}
 			show := func(w io.Writer) error {
 				if unreadable {
 					if _, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir); err != nil {
@@ -107,6 +115,23 @@ func newConfigCheckCmd() *cobra.Command {
 	}
 	cmd.Flags().String("watches", "", watchesFlagHelp)
 	return cmd
+}
+
+// pluginKindWarnings warns about a plugin whose kind is a built-in source or
+// sink kind: the built-in is the one used.
+func pluginKindWarnings(cfg *config.Config, plugins []config.InstalledPlugin) ([]string, error) {
+	reg, err := watchSources(cfg)
+	if err != nil {
+		return nil, err
+	}
+	builtin := slices.Concat(reg.Kinds(), watchfile.SinkKinds)
+	var warns []string
+	for _, p := range plugins {
+		if slices.Contains(builtin, p.Kind) {
+			warns = append(warns, fmt.Sprintf("plugin kind %s is a built-in kind; the built-in is used", printable(p.Kind)))
+		}
+	}
+	return warns, nil
 }
 
 // printPlugins shows, for each installed plugin, the hosts it may reach and
