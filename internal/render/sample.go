@@ -80,15 +80,25 @@ func Samples() []Sample {
 // cannot render, or renders past the limits, is rejected before any
 // delivery uses it. It does no I/O and each sample is bounded by
 // CheckTimeout (or Limits.Timeout if shorter), so it takes no context.
-func (t *Template) Check() error {
+func (t *Template) Check() error { return t.CheckOutput(nil) }
+
+// CheckOutput is Check that also passes the output for each sample event to
+// check (when not nil); its error is returned naming the sample.
+func (t *Template) CheckOutput(check func(out []byte) error) error {
 	timeout := min(t.limits.Timeout, CheckTimeout)
 	for _, s := range Samples() {
 		b, err := json.Marshal(s.Envelope)
 		if err != nil {
 			return fmt.Errorf("render: sample %s: %w", s.Name, err)
 		}
-		if _, err := t.render(newGuard(timeout), b); err != nil {
+		r, err := t.render(newGuard(timeout), b)
+		if err != nil {
 			return fmt.Errorf("on the %s sample event: %w", s.Name, err)
+		}
+		if check != nil {
+			if err := check(r.Body); err != nil {
+				return fmt.Errorf("on the %s sample event, the result %w", s.Name, err)
+			}
 		}
 	}
 	return nil

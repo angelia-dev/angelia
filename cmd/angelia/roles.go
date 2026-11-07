@@ -23,6 +23,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
+	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
@@ -163,6 +164,7 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// http.allow_http_hosts is checked at every delivery (ADR 0023,
 		// decided question 4 and D12).
 		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
+		githubdispatch.New(hc, githubdispatch.Options{}),
 	}
 }
 
