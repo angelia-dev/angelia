@@ -1,13 +1,14 @@
 # ADR 0026: The shoutrrr sink takes its whole service URL as a secret; the core checks the HTTP destinations derived from it, and every request goes through netguard
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-07, maintainer decision on #120: all seven recommendations)
 - **Date:** 2026-11-06
 - **Story:** angelia-dev/angelia#120
 
-> Design note for #120, written before any code. #120 is labelled `Agent`, but its first
-> criterion contradicts ADR 0024 §1. The maintainer chose option A on the issue: a design note
-> that makes shoutrrr the "whole-URL secret" kind that ADR 0024 §1 anticipates. Implementation
-> waits until this note is accepted. The config shape needs a separate spec PR.
+> Written as the design note for #120 before any code. #120 is labelled `Agent`, but its first
+> criterion contradicted ADR 0024 §1, and the maintainer chose option A on the issue: a design note
+> that makes shoutrrr the "whole-URL secret" kind that ADR 0024 §1 anticipates. The maintainer
+> accepted it on 2026-11-07 with every open question settled as recommended (see Decided
+> questions). The config shape lands in a separate spec PR.
 
 ## Context
 
@@ -107,7 +108,7 @@ sinks:
     config:
       url_ref: slack-releases     # a stored secret (ADR 0024) holding the whole shoutrrr URL
       # url_env: CHAT_URL         # or an environment variable; exactly one of the two
-      service: slack              # optional, see open question 3
+      service: slack              # optional, see decided question 3
       timeout: 10s
 ```
 
@@ -154,13 +155,14 @@ follows a different order. The secret is still checked before any byte of it lea
    - netguard's URL-level guard (`Guard.CheckURL`, through a new exported
      `netguard.Client.CheckURL`);
    - `Bound.Allows` against the secret's `hosts`, when it has any. Every origin must match one
-     entry. **`hosts` stays optional** for sink secrets (ADR 0024 §2).
+     entry. **`hosts` stays optional** for sink secrets (ADR 0024 §2); `config check` warns
+     about a `url_ref` whose secret has none (decided question 4).
 4. **Pass them on.** `sink.Request` gains `Destinations []string`, the canonical `host:port`
    list that was checked. The sink pins its client to it (§4).
 
 **Failures** from steps 1–3 happen before `Deliver` and are **retried** (ADR 0024 decided
 question 9 and the §1 clause). The operator fixes them by rewriting the secret, not the sink, so
-an SSRF refusal here is retried, unlike ADR 0023 §5 (see open question 5). This covers an
+an SSRF refusal here is retried, unlike ADR 0023 §5 (decided question 5). This covers an
 unparsable value, a scheme outside the allowlist, a refused option, a host netguard refuses and a
 host binding mismatch. `last_error` names the pointer, the secret or variable name, the **service
 name** and the **origin** (`scheme://host[:port]`). It never names the shoutrrr URL, its path,
@@ -180,9 +182,9 @@ a small in-house function, tested against the URLs that shoutrrr itself builds:
 | `slack` | `https://hooks.slack.com` (webhook token) or `https://slack.com` (`xoxb`/`xoxp`) | fixed |
 | `discord` | `https://discord.com` | fixed |
 | `telegram` | `https://api.telegram.org`, or the `apiurl` origin | `apiurl` is user-chosen, so it is checked like any host |
-| `ntfy` | URL host (default `ntfy.sh`) | `disabletls=yes` or the deprecated `scheme=http` gives `http://` |
+| `ntfy` | URL host (default `ntfy.sh`) | `disabletls=yes` or the deprecated `scheme=http` gives `http://` (decided question 7) |
 | `gotify` | URL host | `disabletls=yes` gives `http://` |
-| `matrix` | URL host | access-token form only in v0.1 (open question 2) |
+| `matrix` | URL host | access-token form only in v0.1 (decided question 2) |
 
 - **Refused**: every other scheme, including `generic` (arbitrary HTTP; the `webhook` kind covers
   it), `smtp`, `xmpp` and `mqtt` (non-HTTP, netguard cannot guard them) and the rest of the
@@ -332,49 +334,28 @@ injection tests, which are the guard against a regression in the client handling
   raise PRs for them.
 - Partial multi-target sends can duplicate on retry.
 
-### Open questions
+### Decided questions
 
-1. **Agreement with ADR 0024.** 0024 §1 says "no whole-URL secret" for chat sinks and lists
-   `url_ref` as a rejected alternative. Options:
-   (a) a dated Amendment to 0024 pointing here, with 0024 left Accepted (done in this PR, worded
-   as conditional on acceptance);
-   (b) mark 0024 "partly superseded by 0026".
-   **Recommendation: (a)**, since only one table row and its alternative change.
-2. **Matrix.** A `user:password` URL logs in on every delivery, because the service is not cached.
-   Homeservers rate-limit logins, and the password travels on each attempt. Options:
-   (a) allow only the access-token form (`matrix://:TOKEN@host`) in v0.1;
-   (b) allow both;
-   (c) drop matrix from v0.1.
-   **Recommendation: (a).**
-3. **`service` key.** Options:
-   (a) none;
-   (b) optional, checked against the scheme when set;
-   (c) required.
-   **Recommendation: (b).** It costs nothing, makes sink lists readable without the secret, and
-   catches a secret swapped for another service. (c) would make every sink repeat what the URL
-   already says.
-4. **`hosts` for `url_ref` secrets.** Options:
-   (a) optional, as for other sink secrets;
-   (b) mandatory, as for source credentials.
-   **Recommendation: (a)**, with `config check` warning on an unbound `url_ref`. The URL and its
-   host are written together by an admin, so binding guards against mistakes more than against
-   redirection. (b) would also break the "paste one URL" flow for the fixed-host services.
-5. **SSRF refusal: retried or permanent.** ADR 0023 §5 makes a refused webhook host permanent; the
-   0024 §1 clause makes a whole-URL check failure retried. Options:
-   (a) retried, since the fix is a secret rewrite and no config change is needed to replay;
-   (b) permanent, like the webhook.
-   **Recommendation: (a)**, so that a fixed secret takes effect without a replay. The delivery
-   still goes dead after the normal attempts.
-6. **Library version.** v0.23.0 is three days old. v0.22.1 (2026-10-21) has different client
-   handling that this note did not verify. Options:
-   (a) pin v0.23.0;
-   (b) review v0.22.1 as well and pin the older one.
-   **Recommendation: (a)**, guarded by the §4 tests.
-7. **`http` destinations.** `disabletls=yes` sends ntfy, gotify and matrix credentials in clear
-   text. Options:
-   (a) allow it when the host is in `http.allow_http_hosts`, like D12 for webhooks;
-   (b) refuse it.
-   **Recommendation: (a)**, with a `config check` warning.
+The maintainer accepted every recommendation on #120 (2026-11-07).
+
+1. **Agreement with ADR 0024:** a dated Amendment to 0024 points here, and 0024 stays Accepted.
+   Only one table row of 0024 §1 and its rejected alternative change. 0024 is not marked
+   superseded.
+2. **Matrix:** only the access-token form (`matrix://:TOKEN@host`) is allowed in v0.1. A URL with
+   a user name is refused by `SecretDestinations` (retried, §2). It would log in on every delivery,
+   because the service is not cached, and send the password on every attempt.
+3. **`service` key:** optional. When it is set, the URL's scheme must equal it; a mismatch fails
+   before `Deliver` (retried, §2). It makes sink lists readable without the secret.
+4. **`hosts` for `url_ref` secrets:** optional, as for other sink secrets. `config check` warns
+   about a `url_ref` whose secret has no `hosts`.
+5. **SSRF refusal of a derived origin:** retried, like every other failure that comes from the
+   secret's value. The fix is a secret rewrite, which then takes effect without a replay. The
+   delivery still goes dead after the normal attempts.
+6. **Library version:** pinned at v0.23.0, guarded by the §4 injection tests. v0.22.1 is not
+   used.
+7. **`http` destinations** (`disabletls=yes`, ntfy's deprecated `scheme=http`): allowed only when
+   the host is in `http.allow_http_hosts`, like D12 for webhooks, and `config check` warns about
+   them because credentials then travel in clear text.
 
 ## Alternatives considered
 

@@ -30,7 +30,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0023](0023-webhook-sink-standard-webhooks.md) | The webhook sink posts structured CloudEvents signed with Standard Webhooks v1, takes its secrets from the core, and dials only through netguard | Accepted | #108 |
 | [0024](0024-secrets-encrypted-at-rest.md) | Secret values are named, write-only rows sealed with AES-256-GCM under a key from a file; configuration references them by name | Accepted | #75 |
 | [0025](0025-plugin-folder-and-grants-file.md) | Each installed plugin has a folder in `plugins_dir`; the operator's grants live in its `grants.yaml` | Accepted | #184 |
-| [0026](0026-shoutrrr-sink-whole-url-secret.md) | The shoutrrr sink takes its whole service URL as a secret; the core checks the HTTP destinations derived from it, and every request goes through netguard | Proposed | #120 |
+| [0026](0026-shoutrrr-sink-whole-url-secret.md) | The shoutrrr sink takes its whole service URL as a secret; the core checks the HTTP destinations derived from it, and every request goes through netguard | Accepted | #120 |
 
 ## Process
 
