@@ -134,7 +134,7 @@ jobs:
     steps:
       - uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4.8.2
 
-  # Path filter for bench/plugins/**. A job-level filter (not `on.paths`) so the
+  # Path filter for bench/plugins/** and for the quickstart check. A job-level filter (not `on.paths`) so the
   # workflow always runs and CI OK always reports. No third-party action: it
   # diffs the commit range itself. When the range cannot be determined (new
   # branch, force push) it errs on the side of running the check.
@@ -144,12 +144,13 @@ jobs:
     timeout-minutes: 5
     outputs:
       plugins: ${{ steps.filter.outputs.plugins }}
+      quickstart: ${{ steps.filter.outputs.quickstart }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Detect changes under bench/plugins/ or to this workflow
+      - name: Detect changes under bench/plugins/, to the quickstart inputs or to this workflow
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -166,8 +167,9 @@ jobs:
             range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
           if ! files="$(git diff --name-only "$range" --)"; then
-            echo "cannot diff $range; running the plugin check"
+            echo "cannot diff $range; running the plugin and quickstart checks"
             echo "plugins=true" >> "$GITHUB_OUTPUT"
+            echo "quickstart=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # A change to this workflow also runs the check, so edits to the
@@ -176,6 +178,13 @@ jobs:
             echo "plugins=true" >> "$GITHUB_OUTPUT"
           else
             echo "plugins=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The quickstart check runs the real image against the compose example, so it
+          # follows the code that goes into the image, the example and its harness.
+          if grep -qE '^(cmd/|internal/|api/|bench/fakereg/|deploy/compose/|Dockerfile$|go\.(mod|sum)$|\.github/workflows/ci\.yml$)' <<<"$files"; then
+            echo "quickstart=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "quickstart=false" >> "$GITHUB_OUTPUT"
           fi
 
   # The committed .wasm plugins of benchmark 4 must match a fresh build byte for
@@ -196,13 +205,47 @@ jobs:
       - name: Rebuild and compare the committed .wasm files
         run: bench/plugins/build.sh --check
 
+  # Story #77: the SQLite compose example, verified end to end. Builds the image,
+  # starts the stack with a fake registry and a webhook receiver (deploy/compose/ci/),
+  # has the registry publish a version and waits for the signed release event at the
+  # receiver. The watch interval is at least 5 minutes, so the wait is about that long.
+  quickstart:
+    name: quickstart
+    needs: changes
+    if: needs.changes.outputs.quickstart == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # run.sh builds the image and the test doubles, starts the stack, asserts, prints the
+      # logs on failure and always runs `docker compose down -v`.
+      - name: Compose up, publish a version, expect the webhook
+        run: deploy/compose/ci/run.sh
+      # run.sh cleans up by itself; this covers a step killed before its trap ran.
+      - name: Compose down
+        if: always()
+        env:
+          CI_WEBHOOK_SECRET: unused-by-down
+        run: |
+          docker compose -p angelia-quickstart-ci \
+            -f deploy/compose/sqlite/compose.yaml \
+            -f deploy/compose/ci/compose.override.yaml \
+            down -v --remove-orphans
+
   # Single required check. Fails unless every job above succeeded; the only
   # allowed skips are dependency-review on push events, where it does not run,
-  # and wasm-repro when the changes job found nothing under bench/plugins/.
+  # wasm-repro when the changes job found nothing under bench/plugins/, and quickstart
+  # when it found nothing that goes into the image or the compose example.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [build, lint, test, bench-ordering, govulncheck, codeql, dependency-review, changes, wasm-repro]
+    needs: [build, lint, test, bench-ordering, govulncheck, codeql, dependency-review, changes, wasm-repro, quickstart]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -217,6 +260,8 @@ jobs:
       CHANGES: ${{ needs.changes.result }}
       PLUGINS_CHANGED: ${{ needs.changes.outputs.plugins }}
       WASM_REPRO: ${{ needs.wasm-repro.result }}
+      QUICKSTART_CHANGED: ${{ needs.changes.outputs.quickstart }}
+      QUICKSTART: ${{ needs.quickstart.result }}
     steps:
       - name: Check job results
         run: |
@@ -256,5 +301,11 @@ jobs:
             check wasm-repro "$WASM_REPRO" no
           else
             check wasm-repro "$WASM_REPRO" yes
+          fi
+          # quickstart likewise: skipped only when the path filter did not match.
+          if [[ "$QUICKSTART_CHANGED" == true ]]; then
+            check quickstart "$QUICKSTART" no
+          else
+            check quickstart "$QUICKSTART" yes
           fi
           exit "$failed"

@@ -12,7 +12,7 @@ import (
 // instance-config loader and the real watch-file parser, so they cannot drift
 // from the code silently.
 func TestComposeExampleConfigsLoadWithTheRealLoaders(t *testing.T) {
-	for _, dir := range []string{"sqlite", "full"} {
+	for _, dir := range []string{"sqlite", "full", "ci"} {
 		t.Run(dir, func(t *testing.T) {
 			base := filepath.Join("..", "..", "deploy", "compose", dir)
 			cfg, err := config.Load(context.Background(), config.Options{

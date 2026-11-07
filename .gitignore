@@ -38,3 +38,6 @@ go.work.sum
 
 # GoReleaser output
 /dist/
+
+# Built by deploy/compose/ci/run.sh
+/deploy/compose/ci/bin/

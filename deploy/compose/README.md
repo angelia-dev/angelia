@@ -56,8 +56,8 @@ angelia config check --config angelia.yaml --watches watches.yaml
 ### Not covered here
 
 - **Delivery to a webhook receiver.** The example has no sink, so events are stored but not
-  delivered. An end-to-end check with a receiver needs the webhook sink:
-  TODO(#108) (human-led, open). Until then, the quickstart is not verified in CI.
+  delivered. Add one with a [webhook sink](../../docs/webhooks.md); the CI check below does,
+  in its own copy of the example.
 
 ## Full stack (placeholder)
 
@@ -86,3 +86,41 @@ structure of both files: services, volumes, mounts, healthchecks, profiles, dige
 Dockerfile HEALTHCHECK. When the `docker` CLI and its compose plugin are available, it also runs
 `docker compose config --quiet` on each file with all profiles. `go test ./cmd/angelia/` loads
 the example configs with the real loaders. Neither needs a daemon or the network.
+
+## Quickstart check (CI)
+
+The SQLite example is verified end to end by the `quickstart` job of the CI workflow (part of
+**CI OK**; it runs when the code that goes into the image, `deploy/compose/` or the workflow
+changes). The job runs [`ci/run.sh`](ci/run.sh), which:
+
+1. builds the image from the checkout and a small test tool, `ciharness` ([`ci/`](ci/main.go),
+   standard library plus `bench/fakereg` and the webhook verifier);
+2. starts `sqlite/compose.yaml` with the overlay [`ci/compose.override.yaml`](ci/compose.override.yaml)
+   (`docker compose up --wait`). The overlay adds a fake PyPI (`bench/fakereg`, one package,
+   two versions) and a webhook receiver that verifies the Standard Webhooks signature. The
+   overlay's [`angelia.yaml`](ci/angelia.yaml) and [`watches.yaml`](ci/watches.yaml) point the
+   `pypi` source at the fake registry and add one webhook sink, subscription and watch;
+3. waits for the first check (it records the versions known at start and sends nothing);
+4. has the fake registry publish one more version (`POST /_ci/publish`);
+5. polls the receiver until it holds a `release.published` event for that version, or 9 minutes
+   have passed. The shortest watch interval is 5 minutes (plus up to 10% jitter), so a passing
+   run takes about 6 minutes after the stack is up;
+6. on failure prints `compose ps` and the logs of all services; always runs `docker compose down -v`.
+
+To run the same check locally you need Docker with Compose v2, Go, `curl` and `jq`:
+
+```sh
+deploy/compose/ci/run.sh                    # builds angelia:ci and ciharness, then runs the check
+ANGELIA_IMAGE=my/image:tag deploy/compose/ci/run.sh   # test an image you already built
+AWAIT_TIMEOUT=12m deploy/compose/ci/run.sh  # longer wait on a slow machine
+```
+
+It publishes `127.0.0.1:8080`, `:8099` and `:9000`, and uses the network `172.28.77.0/24`; free
+those first. The test uses the instance configuration keys `http.allow_networks` and
+`http.allow_http_hosts` ([Outgoing HTTP](../../docs/configuration.md#outgoing-http-and-private-networks))
+to let Angelia reach the two containers. They are set to that one /24 and to the host name
+`receiver`, in the overlay's `angelia.yaml` only. The shipped examples set neither, and no code
+or default of the SSRF guard changed. The signing secret is generated for each run and is
+never written to disk.
+
+`go test ./deploy/compose/ci/` tests the tool and the overlay without Docker.
