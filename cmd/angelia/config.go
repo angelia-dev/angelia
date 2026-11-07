@@ -16,6 +16,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -68,6 +69,9 @@ func newConfigCheckCmd() *cobra.Command {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v; plugins not checked\n", err)
 				err, unreadable = nil, true
 			}
+			if err == nil {
+				err = checkPluginKinds(cfg, plugins)
+			}
 			if err != nil {
 				return fmt.Errorf("invalid plugins: %w", err)
 			}
@@ -107,6 +111,24 @@ func newConfigCheckCmd() *cobra.Command {
 	}
 	cmd.Flags().String("watches", "", watchesFlagHelp)
 	return cmd
+}
+
+// checkPluginKinds fails when a plugin's kind is a built-in source or sink
+// kind: the registry refuses a second source of a kind (and a plugin could not
+// replace a built-in), so the check says so before serve does.
+func checkPluginKinds(cfg *config.Config, plugins []config.InstalledPlugin) error {
+	reg, err := watchSources(cfg)
+	if err != nil {
+		return err
+	}
+	builtin := append(reg.Kinds(), watchfile.SinkKinds...)
+	var errs []error
+	for _, p := range plugins {
+		if slices.Contains(builtin, p.Kind) {
+			errs = append(errs, fmt.Errorf("plugin %q is a built-in kind; rename the plugin's kind and folder", printable(p.Kind)))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // printPlugins shows, for each installed plugin, the hosts it may reach and

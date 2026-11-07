@@ -57,8 +57,11 @@ Check a configuration with `angelia config check [--config FILE]`.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `sources.<kind>.auth` authenticates requests to a private registry or mirror with a **stored secret**, bound
   to the host of the source's `base_url`; see [Private registries and mirrors](private-registries.md). At most
-  one of `token_env` and `auth` is set. `token_env` now also authenticates `pypi` and `npm` (as
-  `Authorization: Bearer`), not only `github-release`.
+  one of `token_env` and `auth` is set. `token_env` authenticates `pypi` and `npm` (as
+  `Authorization: Bearer`), `github-release` and `github-tag` (bearer), and `gitlab-release` (as GitLab's
+  `PRIVATE-TOKEN` header; `auth` sends `Authorization: Bearer`, which GitLab also accepts). `crates` sends no
+  credential: its `base_url` is the sparse index URL of a mirror, and `token_env` or `auth` on it is ignored
+  with a warning.
 - `base_url` must not contain credentials, and `token_env` must be a variable name: values that
   look like tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `npm_`, `pypi-` prefixes) are
   rejected without being echoed. Tokens print as `[REDACTED]` in logs and `%v`.
@@ -131,7 +134,7 @@ The folder name is the plugin's kind:
 
 ```
 <plugins_dir>/
-  crates/
+  cargo-registry/
     manifest.json   # from the plugin author: kind, allowed_hosts, config_schema (ADR 0011)
     plugin.wasm     # the module
     grants.yaml     # optional, from the operator: extra hosts and credentials
@@ -142,6 +145,10 @@ The folder name is the plugin's kind:
   `ANGELIA_PLUGINS_DIR` means the default. A missing `plugins_dir` means no plugins are installed. A
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
+- A plugin's kind must not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
+  `gitlab-release`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` fails with
+  `plugin "crates" is a built-in kind`. Name a plugin for a registry the built-ins do not cover, such as
+  `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`
   are skipped. Plain files and symbolic links are ignored with a warning: a plugin folder must be a real
   directory, not a link.
@@ -217,7 +224,7 @@ with the `grants.yaml` above, `CRATES_MIRROR_TOKEN` set and `GITLAB_TOKEN` unset
 ```
 configuration OK
 plugins in /var/lib/angelia/plugins: 1
-  crates
+  cargo-registry
     allowed hosts: crates.io (manifest), crates-mirror.example.com (grants), gitlab.example.com (grants)
     credentials:
       crates-mirror.example.com:443  Authorization: Bearer <token from $CRATES_MIRROR_TOKEN>

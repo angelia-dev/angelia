@@ -1,7 +1,7 @@
 # Private registries and mirrors
 
 Angelia can watch packages on a private registry or a mirror: Artifactory, Nexus, Verdaccio, devpi, a
-GitHub Enterprise Server. You set the registry's `base_url` and its credential once per source kind in the
+GitHub Enterprise Server, a self-managed GitLab. You set the registry's `base_url` and its credential once per source kind in the
 [instance configuration](configuration.md). Design and security rules:
 [ADR 0024, amendment of #111](adr/0024-secrets-encrypted-at-rest.md).
 
@@ -40,7 +40,8 @@ sources:
 - The secret is read from the store on every request and checked again on every redirect hop. A redirect
   to a host outside the binding (a registry that redirects downloads to a CDN, say) is refused; bind the
   secret to both hosts if you want it followed.
-- `token_env` (the name of an environment variable) still works, for `pypi`, `npm` and `github-release`. It
+- `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `github-release`, `github-tag` and
+  `gitlab-release` (which sends it as `PRIVATE-TOKEN`). It
   is sent only to the host of `base_url`. Set `token_env` or `auth`, not both.
 - No value appears in `config check`, logs, errors, events or API responses. A value written in a `*_ref`
   key is refused as not being a secret name, without being printed.
@@ -114,6 +115,23 @@ sources:
     base_url: https://ghes.example.com/api/v3
     auth: {token_ref: ghes-token}
 ```
+
+### GitHub tags and GitLab (self-managed)
+
+`github-tag` takes the same `base_url` and credential as `github-release`. `gitlab-release` takes the root
+URL of the instance (a trailing `/api/v4` is accepted):
+
+```yaml
+sources:
+  gitlab-release:
+    base_url: https://gitlab.example.com
+    token_env: GITLAB_TOKEN          # sent as "PRIVATE-TOKEN: <token>"
+  # or a stored secret, sent as "Authorization: Bearer <token>" (basic is not supported by GitLab)
+  #  auth: {token_ref: gitlab-token}
+```
+
+`crates` takes the sparse index URL of a mirror as `base_url` (default `https://index.crates.io`). It sends no
+credential.
 
 ## Private networks
 

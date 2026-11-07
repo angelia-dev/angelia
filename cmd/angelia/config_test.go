@@ -106,7 +106,7 @@ func writePlugin(t *testing.T, dir, kind, manifest, grants string) {
 // and its credential hosts with scheme and header, never a token value.
 func TestConfigCheckPrintsPluginHosts(t *testing.T) {
 	dir := t.TempDir()
-	writePlugin(t, dir, "crates", `{"kind":"crates","allowed_hosts":["crates.io"]}`, `
+	writePlugin(t, dir, "cargo-registry", `{"kind":"cargo-registry","allowed_hosts":["crates.io"]}`, `
 allowed_hosts: [crates-mirror.example.com]
 credentials:
   crates-mirror.example.com:
@@ -129,7 +129,7 @@ credentials:
 		"  bare\n" +
 		"    allowed hosts: none\n" +
 		"    credentials: none\n" +
-		"  crates\n" +
+		"  cargo-registry\n" +
 		"    allowed hosts: crates.io (manifest), crates-mirror.example.com (grants)\n" +
 		"    credentials:\n" +
 		"      crates-mirror.example.com:443  Authorization: Bearer <token from $AGL_TEST_MIRROR_TOK>\n" +
@@ -158,7 +158,7 @@ func TestConfigCheckNoPlugins(t *testing.T) {
 
 func TestConfigCheckBadPluginFails(t *testing.T) {
 	dir := t.TempDir()
-	writePlugin(t, dir, "crates", `{"kind":"crates"}`, "bogus: 1\n")
+	writePlugin(t, dir, "cargo-registry", `{"kind":"cargo-registry"}`, "bogus: 1\n")
 	t.Setenv("ANGELIA_CONFIG", "")
 	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
 	out, errb, err := runCheck(t)
@@ -206,7 +206,7 @@ func TestConfigCheckDocumentedExample(t *testing.T) {
 	grants := docBlock(t, "### `grants.yaml`", "```yaml")
 	want := docBlock(t, "### `angelia config check` output", "```")
 	dir := t.TempDir()
-	writePlugin(t, dir, "crates", `{"kind":"crates","allowed_hosts":["crates.io"]}`, grants)
+	writePlugin(t, dir, "cargo-registry", `{"kind":"cargo-registry","allowed_hosts":["crates.io"]}`, grants)
 	t.Setenv("ANGELIA_CONFIG", "")
 	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
 	t.Setenv("CRATES_MIRROR_TOKEN", "mirror-token-123456")

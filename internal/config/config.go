@@ -234,7 +234,11 @@ type Source struct {
 }
 
 // credentialKinds are the source kinds that send token_env or auth.
-var credentialKinds = []string{"github-release", "npm", "pypi"}
+var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "npm", "pypi"}
+
+// SendsCredential reports whether the built-in source of kind sends
+// token_env or auth.
+func SendsCredential(kind string) bool { return slices.Contains(credentialKinds, kind) }
 
 // Source authentication types.
 const (
