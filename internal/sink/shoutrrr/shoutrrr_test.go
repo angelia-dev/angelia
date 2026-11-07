@@ -33,7 +33,7 @@ const (
 )
 
 var credentials = []string{
-	"AAAAAAAAA-BBBBBBBBB-123456789123456789123456", "123456789123456789123456", "4mt0t4l1YL3g1T5L4cK70k3N", "DISCORDSECRETTOKEN",
+	"tokenlikeprefix0123", "AAAAAAAAA-BBBBBBBBB-123456789123456789123456", "123456789123456789123456", "4mt0t4l1YL3g1T5L4cK70k3N", "DISCORDSECRETTOKEN",
 	telegramTk, "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "NTFYSECRETPASS", "AGOTIFYSECRET01", "MATRIXSECRETTOKEN", "releases",
 }
 
@@ -64,7 +64,13 @@ func origins(t *testing.T, raw string) ([]string, error) {
 
 // ADR 0026 §3: each allowed service's origins, derived without I/O from
 // the URLs the library documents; refused schemes and options.
+//
+// Deriving initializes the library's service before any check: the failing
+// http.DefaultTransport proves that none of them sends a request then
+// (upstream matrix once logged in during Initialize), so a library upgrade
+// that does fails here. The user-form matrix URL is the one that would.
 func TestSecretDestinations(t *testing.T) {
+	noEscape(t)
 	for raw, want := range map[string]string{ //nolint:gosec // G101: synthetic URLs
 		slackHook:  "https://hooks.slack.com",
 		slackBot:   "https://slack.com",
@@ -86,11 +92,13 @@ func TestSecretDestinations(t *testing.T) {
 		}
 	}
 	for raw, want := range map[string]string{ //nolint:gosec // G101: synthetic URLs
-		"generic+https://hooks.example/x":                  `service "generic+https" is not allowed`,
+		"generic+https://hooks.example/x":                  `service "generic" is not allowed`,
 		"smtp://user:pass@mail.example:25/?to=a@b.example": `service "smtp" is not allowed`,
-		"not a url":                  "not a shoutrrr service URL",
-		"%zz":                        "not a shoutrrr service URL",
-		"slack://hook:short@webhook": "slack: the service URL is invalid",
+		"not a url":                    "not a shoutrrr service URL",
+		"%zz":                          "not a shoutrrr service URL",
+		"tokenlikeprefix0123:rest":     "service with this scheme is not allowed",
+		"pushover://shoutrrr:tok@user": `service "pushover" is not allowed`,
+		"slack://hook:short@webhook":   "slack: the service URL is invalid",
 		"ntfy://ntfy.example/releases?skiptlsverify=yes":                   "ntfy: skiptlsverify is not supported",
 		"ntfy://ntfy.example/releases?disabletlsverification=yes":          "ntfy: skiptlsverify is not supported",
 		"gotify://gotify.example/AGOTIFYSECRET01?insecureskipverify=yes":   "gotify: skiptlsverify is not supported",
@@ -342,6 +350,25 @@ func TestOutcomes(t *testing.T) {
 		{"redirect", slackHook, "https://hooks.slack.com", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "https://elsewhere.example/", http.StatusFound)
 		}, true, "redirect not followed", 0},
+		// The library returns nil for these: slack's webhook on a body of
+		// "ok" whatever the status, gotify on any status below 400. The
+		// status the pin saw decides.
+		{"slack 302 ok", slackHook, "https://hooks.slack.com", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://elsewhere.example/")
+			w.WriteHeader(http.StatusFound)
+			_, _ = io.WriteString(w, "ok")
+		}, true, "shoutrrr: slack https://hooks.slack.com: HTTP 302 Found: redirect not followed", 0},
+		{"slack 503 ok", slackHook, "https://hooks.slack.com", status(503, "ok"), false, "shoutrrr: slack https://hooks.slack.com: HTTP 503 Service Unavailable", 0},
+		{"gotify 302", gotifyURL, "https://gotify.example", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://elsewhere.example/")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusFound)
+			_, _ = io.WriteString(w, `{"id":1,"appid":1,"message":"m","title":"t","priority":0,"date":"2026-11-07T00:00:00Z"}`)
+		}, true, "shoutrrr: gotify https://gotify.example: HTTP 302 Found: redirect not followed", 0},
+		{
+			"gotify 500", gotifyURL, "https://gotify.example", status(500, `{"error":"Internal Server Error","errorCode":500,"errorDescription":"x"}`), false,
+			"shoutrrr: gotify https://gotify.example: HTTP 500 Internal Server Error", 0,
+		},
 		{
 			"telegram ok false", "telegram://" + telegramTk + "@telegram?chats=@releases", "https://api.telegram.org", status(200, body), false,
 			"shoutrrr: telegram https://api.telegram.org: service error", 0,
@@ -498,5 +525,55 @@ func TestOnlyAllowedShoutrrrPackages(t *testing.T) {
 	}
 	if n == 0 {
 		t.Error("no shoutrrr package listed")
+	}
+}
+
+// New fails closed without a transport: http.Client would otherwise send
+// through http.DefaultTransport, around netguard.
+func TestNewNeedsATransport(t *testing.T) {
+	for name, c := range map[string]*http.Client{"nil client": nil, "nil transport": {}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: no panic", name)
+				}
+			}()
+			New(c, Options{})
+		}()
+	}
+}
+
+// ADR 0026 §4: when the derivation drifts from where the library really
+// sends, the pin refuses the library's request unsent and the attempt is
+// permanent. The ntfy derivation is replaced by one that predicts another
+// host; the core checked only that host.
+func TestPinRefusesDriftedDerivation(t *testing.T) {
+	noEscape(t)
+	var (
+		mu  sync.Mutex
+		got []received
+	)
+	rw := &rewriter{srv: fakeService(t, &got, &mu), next: &http.Transport{}}
+	s := New(&http.Client{Transport: rw}, Options{})
+	ntfySvc := s.services["ntfy"]
+	ntfySvc.origins = func(sender) ([]*url.URL, error) { return fixed("https://drifted.example"), nil }
+	s.services["ntfy"] = ntfySvc
+
+	res, err := s.Deliver(t.Context(), request(t, `{"url_ref":"chat"}`, ntfyURL, []string{"drifted.example:443"}, true))
+	if err == nil || !sink.IsPermanent(err) || !errors.Is(err, errUnpinned) {
+		t.Fatalf("Deliver: %v (permanent %v)", err, sink.IsPermanent(err))
+	}
+	if !strings.Contains(err.Error(), "shoutrrr: ntfy https://drifted.example: shoutrrr: request to an unchecked destination refused") {
+		t.Errorf("error %q", err)
+	}
+	noCredential(t, "error", err.Error())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(rw.seen) != 0 || len(got) != 0 || res.StatusCode != 0 {
+		t.Errorf("the library's request was sent: %v", rw.seen)
+	}
+	// The default table is untouched.
+	if o, err := (&Sink{}).SecretDestinations(URLRefPointer, value(ntfyURL)); err != nil || o[0].Host != "ntfy.example" {
+		t.Errorf("default table changed: %v %v", o, err)
 	}
 }

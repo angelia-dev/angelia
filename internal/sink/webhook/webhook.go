@@ -270,11 +270,8 @@ func requestError(origin, host string, err error) error {
 	if errors.Is(err, netguard.ErrInvalidURL) {
 		return sink.Permanent(&requestFailure{origin: origin, class: "invalid URL (scheme or host not allowed)", err: err})
 	}
-	return &requestFailure{origin: origin, class: failureClass(err), err: err}
+	return &requestFailure{origin: origin, class: sink.TransportClass(err), err: err}
 }
-
-// failureClass describes a transport error without its addresses.
-var failureClass = sink.TransportClass
 
 // requestFailure is a request that got no response: "webhook:
 // <scheme://host>: <class>". Unwrap gives the cause, for errors.Is and

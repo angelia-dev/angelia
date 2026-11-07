@@ -67,7 +67,8 @@ The configuration only names the secret, so the destination is checked when the 
 
 Every request the library makes is pinned to those origins and follows no redirect. A failure of these checks
 happens before anything is sent and is **retried**: fix it by rewriting the secret, and the next attempt uses the
-new value. `last_error` names the reference, the service and the origin, never the URL.
+new value. `last_error` starts with `shoutrrr:` and names the reference and the origin (and the service when
+the URL itself is refused), never the URL.
 
 ## Messages
 

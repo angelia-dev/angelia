@@ -64,8 +64,8 @@ func TestSecretDestinationsCheckedBeforeDeliver(t *testing.T) {
 		{name: "bound", value: "https://chat.example", hosts: []string{"chat.example"}, dests: []string{"chat.example:443"}},
 		{name: "env", value: "https://chat.example", env: true, dests: []string{"chat.example:443"}},
 		{name: "http allowed", value: "http://lan.example:8080", dests: []string{"lan.example:8080"}},
-		{name: "http refused", value: "http://chat.example", want: "dispatch: secret /url_ref (secret chat): http://chat.example: http:// is not allowed for this host"},
-		{name: "derivation", value: "bad", want: "dispatch: secret /url_ref (secret chat): chat: unparsable service URL"},
+		{name: "http refused", value: "http://chat.example", want: "test: secret /url_ref (secret chat): http://chat.example: http:// is not allowed for this host"},
+		{name: "derivation", value: "bad", want: "test: secret /url_ref (secret chat): chat: unparsable service URL"},
 		{name: "none", value: "", want: "no destination derived"},
 		{name: "not an origin", value: "https://chat.example" + secretTail, want: "derived a destination that is not an origin"},
 		{name: "userinfo", value: "https://u:p@chat.example", want: "not an origin"}, //nolint:gosec // G101: synthetic URL
@@ -74,7 +74,7 @@ func TestSecretDestinationsCheckedBeforeDeliver(t *testing.T) {
 		{name: "no guard", value: "https://chat.example", guard: URLChecker(nil), want: "no SSRF guard configured"},
 		{
 			name: "host binding", value: "https://chat.example https://other.example", hosts: []string{"chat.example"},
-			want: "dispatch: secret /url_ref (secret chat): https://other.example: secrets: host not allowed: secret chat is bound to chat.example; refused for other.example:443",
+			want: "test: secret /url_ref (secret chat): https://other.example: secrets: host not allowed: secret chat is bound to chat.example; refused for other.example:443",
 		},
 		{name: "env no guard", value: "https://chat.example", env: true, guard: URLChecker(nil), want: "(environment variable CHAT_URL): https://chat.example: no SSRF guard"},
 	} {

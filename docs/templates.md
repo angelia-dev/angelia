@@ -102,7 +102,7 @@ Templates accepted before this check (they only had to parse) can now be rejecte
 ## Default chat messages
 
 A [`shoutrrr`](shoutrrr.md) sink whose subscription has no template sends plain text, not the CloudEvents
-JSON. The defaults, per event type (`internal/sink/shoutrrr.DefaultTemplates`; not a schema contract):
+JSON. The defaults, per event type (`internal/sink/shoutrrr.DefaultTemplates()`; not a schema contract):
 
 | Event type | Template |
 |---|---|

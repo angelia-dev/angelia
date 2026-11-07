@@ -122,7 +122,7 @@ func TestShoutrrrDeliveriesNeverLogTheURL(t *testing.T) {
 			"host binding", ntfy("/releases"), true,
 			[]string{"ntfy.sh"},
 			store.DeliveryPending,
-			"dispatch: secret /url_ref (secret chat-url): https://" + local + ": secrets: host not allowed: secret chat-url is bound to ntfy.sh; refused for " + local,
+			"shoutrrr: secret /url_ref (secret chat-url): https://" + local + ": secrets: host not allowed: secret chat-url is bound to ntfy.sh; refused for " + local,
 		},
 		{
 			"ssrf", "ntfy://releases:" + ntfyPass + "@10.0.0.7/releases", false, nil, store.DeliveryPending,
@@ -131,7 +131,7 @@ func TestShoutrrrDeliveriesNeverLogTheURL(t *testing.T) {
 		{"plain http", ntfy("/releases?disabletls=yes"), true, nil, store.DeliveryPending, "http:// is not allowed for this host (http.allow_http_hosts)"},
 		{
 			"refused scheme", "generic+https://" + local + "/x?token=" + ntfyPass, true, nil, store.DeliveryPending,
-			`dispatch: secret /url_ref (secret chat-url): shoutrrr: service "generic+https" is not allowed`,
+			`shoutrrr: secret /url_ref (secret chat-url): service "generic" is not allowed`,
 		},
 	}
 	stored := newSecretStore(t)

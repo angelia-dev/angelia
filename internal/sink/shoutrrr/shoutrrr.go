@@ -72,6 +72,9 @@ type Options struct {
 type Sink struct {
 	client *http.Client
 	now    func() time.Time
+	// services is the table of allowed services; nil means serviceTable().
+	// Tests replace an origin derivation to exercise the pin.
+	services map[string]service
 }
 
 var (
@@ -81,15 +84,25 @@ var (
 
 // New returns a shoutrrr sink sending through client, which must be the
 // netguard client (netguard.Client.HTTPClient): its transport carries every
-// request. New panics if client is nil.
+// request. New panics if client or its Transport is nil: a nil Transport
+// would send through http.DefaultTransport, around netguard.
 func New(client *http.Client, opts Options) *Sink {
-	if client == nil {
-		panic("shoutrrr.New: nil client")
+	if client == nil || client.Transport == nil {
+		panic("shoutrrr.New: nil client or transport; pass the netguard client")
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Sink{client: client, now: opts.Now}
+	return &Sink{client: client, now: opts.Now, services: serviceTable()}
+}
+
+// table returns the service table (a zero Sink, as config check uses for
+// SecretDestinations, gets the default one).
+func (s *Sink) table() map[string]service {
+	if s.services == nil {
+		return serviceTable()
+	}
+	return s.services
 }
 
 // Kind implements sink.Sink.
@@ -132,8 +145,8 @@ func ParseConfig(raw sink.Config) (Parsed, error) {
 		return p, errors.New("shoutrrr: invalid configuration: url_ref must be the name of a stored secret")
 	case p.URLEnv != "" && (!config.IsEnvName(p.URLEnv) || config.LooksLikeToken(p.URLEnv)):
 		return p, errors.New("shoutrrr: invalid configuration: url_env must be an environment variable name")
-	case p.Service != "" && !slices.Contains(Services, p.Service):
-		return p, fmt.Errorf("shoutrrr: invalid configuration: service must be one of %s", strings.Join(Services, ", "))
+	case p.Service != "" && !slices.Contains(Services(), p.Service):
+		return p, fmt.Errorf("shoutrrr: invalid configuration: service must be one of %s", strings.Join(Services(), ", "))
 	}
 	p.Timeout = DefaultTimeout
 	if p.Config.Timeout != "" {
@@ -150,11 +163,11 @@ func ParseConfig(raw sink.Config) (Parsed, error) {
 // with its service, without I/O, and returns the origins the service sends
 // to. A scheme outside Services, skiptlsverify and a matrix user name are
 // refused. Errors name the service at most.
-func (*Sink) SecretDestinations(ptr string, v secrets.Value) ([]*url.URL, error) {
+func (s *Sink) SecretDestinations(ptr string, v secrets.Value) ([]*url.URL, error) {
 	if ptr != URLRefPointer && ptr != URLEnvPointer {
 		return nil, fmt.Errorf("shoutrrr: %s is not a service URL key", ptr)
 	}
-	p, err := parseServiceURL(v)
+	p, err := parseServiceURL(s.table(), v)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +188,7 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	}
 	// Everything up to the send comes from the secret's value: retried, the
 	// operator fixes it by rewriting the secret (ADR 0026 §2).
-	p, err := parseServiceURL(v)
+	p, err := parseServiceURL(s.table(), v)
 	if err != nil {
 		return sink.Result{}, fmt.Errorf("shoutrrr: %s: %w", ref, err)
 	}
@@ -222,13 +235,15 @@ func outcome(service, first string, p *pin, sendErr, ctxErr error) (sink.Result,
 		// Permanent: the library sent somewhere the derivation did not
 		// predict, so retrying sends there again.
 		return res, sink.Permanent(&failure{msg: "shoutrrr: " + service + " " + where + ": " + errUnpinned.Error() + " (the service's destinations changed; this Angelia version does not support it)", err: errUnpinned})
+	case requests > 0 && last.err == nil && (last.status < 200 || last.status > 299):
+		// Before the library's verdict: some services return nil on a
+		// non-2xx (slack's webhook on a body of "ok", gotify below 400).
+		se := sink.HTTPStatus(last.status, last.retryAfter)
+		return res, &failure{msg: "shoutrrr: " + service + " " + where + ": " + strings.TrimPrefix(se.Error(), "sink: "), err: se}
 	case sendErr == nil:
 		return res, nil
 	case requests > 0 && last.err != nil:
 		return res, &failure{msg: "shoutrrr: " + service + " " + where + ": " + sink.TransportClass(last.err), err: last.err}
-	case requests > 0 && (last.status < 200 || last.status > 299):
-		se := sink.HTTPStatus(last.status, last.retryAfter)
-		return res, &failure{msg: "shoutrrr: " + service + " " + where + ": " + strings.TrimPrefix(se.Error(), "sink: "), err: se}
 	case ctxErr != nil:
 		return res, &failure{msg: "shoutrrr: " + service + " " + where + ": " + sink.TransportClass(ctxErr), err: ctxErr}
 	case requests > 0:

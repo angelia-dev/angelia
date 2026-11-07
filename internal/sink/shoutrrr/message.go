@@ -10,18 +10,20 @@ import (
 	"github.com/angelia-dev/angelia/internal/sink"
 )
 
-// DefaultTemplates are the plain-text messages sent for a subscription
+// DefaultTemplates returns the plain-text messages sent for a subscription
 // without a template, per event type (ADR 0026 §6, #120 criterion 2),
 // rendered by the template engine (ADR 0016). docs/templates.md shows them.
-var DefaultTemplates = map[string]string{
-	event.TypePublished: `{{.data.package}} {{.data.version}} released` +
-		`{{with .data.bump}} ({{.}}){{end}}{{with .data.previous_version}}, previous {{.}}{{end}}` +
-		`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
-	event.TypePrerelease: `{{.data.package}} {{.data.version}} pre-release published` +
-		`{{with .data.previous_version}}, previous {{.}}{{end}}` +
-		`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
-	event.TypeYanked: `{{.data.package}} {{.data.version}} was yanked upstream; do not upgrade to it` +
-		`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
+func DefaultTemplates() map[string]string {
+	return map[string]string{
+		event.TypePublished: `{{.data.package}} {{.data.version}} released` +
+			`{{with .data.bump}} ({{.}}){{end}}{{with .data.previous_version}}, previous {{.}}{{end}}` +
+			`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
+		event.TypePrerelease: `{{.data.package}} {{.data.version}} pre-release published` +
+			`{{with .data.previous_version}}, previous {{.}}{{end}}` +
+			`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
+		event.TypeYanked: `{{.data.package}} {{.data.version}} was yanked upstream; do not upgrade to it` +
+			`{{with .data.urls.release}}` + "\n" + `{{.}}{{end}}`,
+	}
 }
 
 // fallbackTemplate is used for an event type that has no default (one a
@@ -37,7 +39,7 @@ func message(ctx context.Context, req sink.Request) (string, error) {
 		}
 		return string(req.Rendered.Body), nil
 	}
-	src, ok := DefaultTemplates[req.Event.Envelope.Type]
+	src, ok := DefaultTemplates()[req.Event.Envelope.Type]
 	if !ok {
 		src = fallbackTemplate
 	}

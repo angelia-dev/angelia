@@ -498,11 +498,11 @@ func TestFailureClass(t *testing.T) {
 		"TLS handshake failed": &tls.CertificateVerificationError{Err: errors.New("x")},
 		"request failed":       errors.New("something else at 10.1.2.3:443"),
 	} {
-		if got := failureClass(err); got != want {
-			t.Errorf("failureClass(%v) = %q, want %q", err, got, want)
+		if got := sink.TransportClass(err); got != want {
+			t.Errorf("sink.TransportClass(%v) = %q, want %q", err, got, want)
 		}
 	}
-	if got := failureClass(fmt.Errorf("netguard: resolve h: %w", errors.New("no such host"))); got != "DNS lookup failed" {
+	if got := sink.TransportClass(fmt.Errorf("netguard: resolve h: %w", errors.New("no such host"))); got != "DNS lookup failed" {
 		t.Errorf("netguard resolve error: %q", got)
 	}
 }

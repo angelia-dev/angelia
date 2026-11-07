@@ -27,9 +27,10 @@ type URLChecker interface {
 //
 // It returns the canonical "host:port" of the checked origins, for
 // sink.Request.Destinations. Every failure is retried: the operator fixes
-// it by rewriting the secret. Errors name the pointer, the secret or
-// variable, the service (from the sink) and the origin, never the value or
-// the address a host resolves to.
+// it by rewriting the secret. Errors start with the sink kind ("shoutrrr:
+// secret /url_ref (secret chat): https://host: ...") and name the pointer,
+// the secret or variable and the origin; the sink's own derivation errors
+// add the service. Never the value or the address a host resolves to.
 func (d *Dispatcher) checkSecretDestinations(ctx context.Context, kind string, s sink.Sink, refs []selfAddressed) ([]string, error) {
 	sd, ok := s.(sink.SecretDestinations)
 	if !ok {
@@ -37,13 +38,15 @@ func (d *Dispatcher) checkSecretDestinations(ctx context.Context, kind string, s
 	}
 	var out []string
 	for _, r := range refs {
+		prefix := fmt.Sprintf("%s: secret %s (%s): ", kind, r.ptr, r.label)
 		fail := func(format string, a ...any) error {
-			return fmt.Errorf("dispatch: secret %s (%s): %s", r.ptr, r.label, fmt.Sprintf(format, a...))
+			return &checkError{msg: prefix + fmt.Sprintf(format, a...)}
 		}
 		origins, err := sd.SecretDestinations(r.ptr, r.bound.Value)
 		if err != nil {
-			// The sink's error names the service and the origin only.
-			return nil, fmt.Errorf("dispatch: secret %s (%s): %w", r.ptr, r.label, err)
+			// The sink's error names the service and the origin only; its
+			// own kind prefix is not repeated.
+			return nil, &checkError{msg: prefix + strings.TrimPrefix(err.Error(), kind+": "), err: err}
 		}
 		if len(origins) == 0 {
 			return nil, fail("no destination derived")
@@ -66,10 +69,10 @@ func (d *Dispatcher) checkSecretDestinations(ctx context.Context, kind string, s
 				return nil, fail("%s: no SSRF guard configured for this dispatcher", origin)
 			}
 			if err := d.opts.URLCheck.CheckURL(ctx, o); err != nil {
-				return nil, &guardError{msg: fmt.Sprintf("dispatch: secret %s (%s): %s: %s", r.ptr, r.label, origin, guardClass(err)), err: err}
+				return nil, &checkError{msg: prefix + origin + ": " + guardClass(err), err: err}
 			}
 			if err := r.bound.Allows(o); err != nil {
-				return nil, fmt.Errorf("dispatch: secret %s (%s): %s: %w", r.ptr, r.label, origin, err)
+				return nil, &checkError{msg: prefix + origin + ": " + err.Error(), err: err}
 			}
 			key, err := secrets.Destination(o)
 			if err != nil {
@@ -97,12 +100,13 @@ func guardClass(err error) string {
 	}
 }
 
-// guardError is a refusal by the SSRF guard. Its message holds no address;
-// Unwrap gives the guard's error, for errors.Is.
-type guardError struct {
+// checkError is a failed destination check. Its message is built from
+// fixed text, the reference and the origin (never an address a host
+// resolved to); Unwrap gives the cause, for errors.Is, or nil.
+type checkError struct {
 	msg string
 	err error
 }
 
-func (e *guardError) Error() string { return e.msg }
-func (e *guardError) Unwrap() error { return e.err }
+func (e *checkError) Error() string { return e.msg }
+func (e *checkError) Unwrap() error { return e.err }

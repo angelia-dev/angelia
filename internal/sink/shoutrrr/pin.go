@@ -78,14 +78,11 @@ func (p *pin) seen() (requests, refused int, last observed) {
 	return p.requests, p.refused, p.last
 }
 
-// pinnedClient returns a client sending through base's transport, pinned
+// pinnedClient returns a client sending through base's transport (never
+// nil: New refuses it), pinned
 // to allowed, that follows no redirect (ADR 0017 §7).
 func pinnedClient(base *http.Client, allowed []string, now func() time.Time) (*http.Client, *pin) {
-	next := base.Transport
-	if next == nil { // as for any *http.Client; production passes netguard's
-		next = http.DefaultTransport
-	}
-	p := &pin{next: next, allowed: allowed, now: now}
+	p := &pin{next: base.Transport, allowed: allowed, now: now}
 	return &http.Client{
 		Transport:     p,
 		Timeout:       base.Timeout,

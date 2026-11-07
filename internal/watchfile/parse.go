@@ -485,7 +485,7 @@ func (p *parser) shoutrrr(n *yaml.Node, jp string) json.RawMessage {
 		p.errf(n, jp, "set exactly one of url_ref and url_env: the shoutrrr URL is a secret")
 	}
 	if sn := m["service"]; sn != nil {
-		cfg.Service = p.enum(sn, jp+".service", shoutrrr.Services)
+		cfg.Service = p.enum(sn, jp+".service", shoutrrr.Services())
 	}
 	if tn := m["timeout"]; tn != nil {
 		if d, ok := p.duration(tn, jp+".timeout", shoutrrr.MinTimeout, shoutrrr.MaxTimeout, false); ok {
