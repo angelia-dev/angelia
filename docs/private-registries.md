@@ -148,8 +148,51 @@ sources:
     auth: {type: basic, username: angelia, password_ref: nexus-pypi-password}
 ```
 
-Angelia reads the PyPI JSON API (`/pypi/<name>/json`). Check that your repository serves it at that path;
-a server that offers only the Simple API, or the JSON API elsewhere, cannot be watched yet (pypiserver is one).
+By default Angelia reads the PyPI JSON API (`/pypi/<name>/json`). Check that your repository serves it at that
+path. A server that offers only the Simple API needs `api: simple` (next section); a JSON API elsewhere cannot
+be watched yet.
+
+### pypiserver and other Simple-API-only indexes
+
+pypiserver (and some mirrors) serve only the Simple API, not `/pypi/<name>/json`. Set `api: simple` on the pypi
+source:
+
+```yaml
+http:
+  allow_networks: [10.0.0.0/8]
+  allow_http_hosts: [pypi.internal]                 # only if the index is plain http and has a credential
+sources:
+  pypiserver:
+    kind: pypi
+    base_url: http://pypi.internal:8080
+    api: simple
+    auth: {type: basic, username: angelia, password_ref: pypiserver-password}
+```
+
+```
+angelia secret set pypiserver-password --from-file ./pw.txt --host pypi.internal:8080
+```
+
+```yaml
+# watch file
+watches:
+  - {name: demo, source: pypiserver, coordinates: {name: demo}}
+```
+
+- `api` is `json` (the default: nothing changes) or `simple`. Any other value is an error, and so is the key
+  on a source that is not pypi; `config check` reports both. There is no automatic fallback: with `json`, a
+  404 on `/pypi/<name>/json` still means "package not found".
+- With `simple` the releases come from `<base_url>/simple/<name>/`, with the name normalized as in PEP 503
+  (lower case, runs of `-`, `_` and `.` become `-`). Angelia asks for PEP 691 JSON
+  (`Accept: application/vnd.pypi.simple.v1+json`) and reads the PEP 503 HTML page when the server answers
+  with HTML, as pypiserver does. A 404 is "package not found".
+- The versions come from the file names (`name-1.0.0.tar.gz`, `.zip`, `name-1.0.0-py3-none-any.whl`) and, in
+  JSON, from the `versions` key. As on the JSON path, a version is yanked when every one of its files is
+  (`yanked` in JSON, `data-yanked` in HTML), and the reason is kept.
+- The publish time is the PEP 700 `upload-time` (the earliest of the version's files) when the server
+  sends it; otherwise it is left unset. pypiserver sends none, so releases listed from it have no publish
+  time.
+- Authentication, the custom CA bundle, the proxy and the SSRF guard are those of the JSON path.
 
 ### Verdaccio and devpi
 
@@ -247,5 +290,5 @@ go test -tags integration -run Integration ./cmd/angelia
 ```
 
 They start `verdaccio/verdaccio:5` (publish a package, read it with a token) and
-`pypiserver/pypiserver:latest` (the credential reaches the server; pypiserver does not serve the JSON API at the path the pypi
-source reads, so the source ends in a 404, not a 401). Without a Docker daemon they skip.
+`pypiserver/pypiserver:v2.3.2` (a package in its directory is listed through `api: simple` with the credential).
+Without a Docker daemon they skip.

@@ -95,6 +95,9 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 	switch kind {
 	case pypi.Kind:
 		var opts []pypi.Option
+		if api := cfg.Sources[name].API; api != "" {
+			opts = append(opts, pypi.WithAPI(pypi.API(api)))
+		}
 		if log != nil {
 			opts = append(opts, pypi.WithLogger(log))
 		}

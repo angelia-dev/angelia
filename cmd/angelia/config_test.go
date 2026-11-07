@@ -242,3 +242,21 @@ func TestConfigCheckUnreadablePluginsDir(t *testing.T) {
 		t.Fatalf("configured: out=%q stderr=%q err=%v", out, errb, err)
 	}
 }
+
+// sources.<name>.api (#206): config check reports a bad value and the key on
+// a source that is not pypi.
+func TestConfigCheckReportsBadSourceAPI(t *testing.T) {
+	p := writeCfg(t, "sources:\n  pypi:\n    api: soap\n  npm:\n    api: simple\n")
+	_, errb, err := runCheck(t, "--config", p)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"sources.pypi.api: must be json or simple", "sources.npm.api: only pypi sources take api"} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("stderr lacks %q: %q", want, errb)
+		}
+	}
+	if out, _, err := runCheck(t, "--config", writeCfg(t, "sources:\n  pypi:\n    api: simple\n")); err != nil || !strings.Contains(out, "configuration OK") {
+		t.Errorf("api: simple: out=%q err=%v", out, err)
+	}
+}

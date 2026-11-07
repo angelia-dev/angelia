@@ -1,9 +1,11 @@
 // Package pypi is the Source for PyPI releases (architecture.md section 3.3).
-// It reads the JSON API, GET {base}/pypi/{name}/json, and lists one Version
-// per entry of "releases" that has at least one file. The base URL is
-// configurable so mirrors work.
+// By default it reads the JSON API, GET {base}/pypi/{name}/json, and lists one
+// Version per entry of "releases" that has at least one file. With
+// WithAPI(APISimple) it reads the Simple API instead (PEP 503 and PEP 691),
+// for pypiserver and other mirrors that do not serve the JSON API. The base
+// URL is configurable so mirrors work.
 //
-// PyPI's Simple API and release notes are out of scope.
+// Release notes are out of scope.
 package pypi
 
 import (
@@ -46,6 +48,7 @@ type Source struct {
 	public string // pypi.org page base for subscriber-facing URLs; "" for mirrors
 	client *http.Client
 	log    *slog.Logger
+	api    API
 	err    error // configuration error from New, returned by List
 }
 
@@ -60,6 +63,24 @@ func WithLogger(l *slog.Logger) Option {
 			s.log = l
 		}
 	}
+}
+
+// API selects the pypi HTTP API a Source reads (sources.<name>.api).
+type API string
+
+const (
+	// APIJSON is the PyPI JSON API, {base}/pypi/{name}/json. The default.
+	APIJSON API = "json"
+	// APISimple is the Simple API, {base}/simple/{name}/ (PEP 503 HTML or
+	// PEP 691 JSON), which pypiserver serves.
+	APISimple API = "simple"
+)
+
+// WithAPI selects the API the source reads. "" means APIJSON; any other value
+// than APIJSON and APISimple makes List return an error wrapping
+// ErrInvalidBase.
+func WithAPI(a API) Option {
+	return func(s *Source) { s.api = a }
 }
 
 // New returns a Source that queries baseURL (for example DefaultBaseURL or a
@@ -87,6 +108,10 @@ func New(baseURL string, c *http.Client, opts ...Option) *Source {
 	s := &Source{client: c, log: slog.Default()}
 	for _, o := range opts {
 		o(s)
+	}
+	if s.api != "" && s.api != APIJSON && s.api != APISimple {
+		s.err = fmt.Errorf("%w: api must be %q or %q", ErrInvalidBase, APIJSON, APISimple)
+		return s
 	}
 	if c == nil {
 		s.err = fmt.Errorf("%w: nil http client", ErrInvalidBase)
@@ -178,6 +203,9 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	name, err := nameOf(t)
 	if err != nil {
 		return source.Result{}, err
+	}
+	if s.api == APISimple {
+		return s.listSimple(ctx, name, st)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.base+"/pypi/"+url.PathEscape(name)+"/json", nil)
 	if err != nil {

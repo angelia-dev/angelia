@@ -240,7 +240,19 @@ type Source struct {
 	// Auth names the stored secrets that authenticate requests to BaseURL
 	// (private registries and mirrors, ADR 0024 amendment of #111).
 	Auth SourceAuth `yaml:"auth"`
+	// API selects the HTTP API of a pypi source: "json" (the default, the
+	// PyPI JSON API) or "simple" (the Simple API of PEP 503 and PEP 691, which
+	// pypiserver serves). Other kinds refuse it.
+	API string `yaml:"api"`
 }
+
+const pypiKind = "pypi"
+
+// Source API values of a pypi source (sources.<name>.api).
+const (
+	SourceAPIJSON   = "json"
+	SourceAPISimple = "simple"
+)
 
 // credentialKinds are the source kinds that send token_env or auth.
 var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "npm", "pypi"}
@@ -653,6 +665,13 @@ func (c *Config) Validate() error {
 			case u.User != nil:
 				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env or auth", k)
 			}
+		}
+		switch {
+		case s.API == "":
+		case kindOf(k, s) != pypiKind:
+			bad("sources.%s.api: only pypi sources take api (this source is of kind %s)", k, kindOf(k, s))
+		case s.API != SourceAPIJSON && s.API != SourceAPISimple:
+			bad("sources.%s.api: must be %s or %s", k, SourceAPIJSON, SourceAPISimple)
 		}
 		if s.TokenEnv != "" {
 			switch {

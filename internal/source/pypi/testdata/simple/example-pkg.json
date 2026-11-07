@@ -1,0 +1,18 @@
+{
+  "meta": {"api-version": "1.1"},
+  "name": "example-pkg",
+  "versions": ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "2.0.0rc1"],
+  "files": [
+    {"filename": "Example_Pkg-1.0.0.tar.gz", "url": "../../packages/Example_Pkg-1.0.0.tar.gz", "hashes": {"sha256": "00"}, "upload-time": "2025-01-10T09:00:00.123456Z"},
+    {"filename": "example.pkg-1.1.0.zip", "url": "../../packages/example.pkg-1.1.0.zip", "hashes": {"sha256": "01"}, "upload-time": "2025-02-10T09:00:00Z"},
+    {"filename": "example_pkg-1.2.0.tar.gz", "url": "../../packages/example_pkg-1.2.0.tar.gz", "hashes": {"sha256": "02"}, "upload-time": "2025-03-10T09:30:00Z"},
+    {"filename": "example_pkg-1.2.0-py3-none-any.whl", "url": "../../packages/example_pkg-1.2.0-py3-none-any.whl", "hashes": {"sha256": "03"}, "upload-time": "2025-03-10T09:00:00Z"},
+    {"filename": "example_pkg-1.3.0.tar.gz", "url": "../../packages/example_pkg-1.3.0.tar.gz", "hashes": {"sha256": "04"}, "yanked": "broken build", "upload-time": "2025-04-10T09:00:00Z"},
+    {"filename": "example_pkg-1.3.0-py3-none-any.whl", "url": "../../packages/example_pkg-1.3.0-py3-none-any.whl", "hashes": {"sha256": "05"}, "yanked": true, "upload-time": "2025-04-10T09:00:00Z"},
+    {"filename": "example_pkg-1.4.0.tar.gz", "url": "../../packages/example_pkg-1.4.0.tar.gz", "hashes": {"sha256": "06"}, "yanked": true},
+    {"filename": "example_pkg-1.4.0-1-cp312-cp312-manylinux_2_17_x86_64.whl", "url": "../../packages/example_pkg-1.4.0-1-cp312-cp312-manylinux_2_17_x86_64.whl", "hashes": {"sha256": "07"}, "yanked": false},
+    {"filename": "example_pkg-2.0.0rc1.tar.gz", "url": "../../packages/example_pkg-2.0.0rc1.tar.gz", "hashes": {"sha256": "08"}},
+    {"filename": "other_pkg-9.9.9.tar.gz", "url": "../../packages/other_pkg-9.9.9.tar.gz", "hashes": {"sha256": "09"}},
+    {"filename": "README.txt", "url": "../../packages/README.txt", "hashes": {"sha256": "0a"}}
+  ]
+}
