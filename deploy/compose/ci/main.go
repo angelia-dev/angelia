@@ -1,5 +1,5 @@
 // Command ciharness holds the two test doubles and the assertion of the CI
-// quickstart check (deploy/compose/ci/README.md). Standard library only, plus
+// quickstart check (deploy/compose/README.md, "Quickstart check (CI)"). Standard library only, plus
 // the repository's own fake registry and webhook verifier.
 //
 //	ciharness registry -listen :8099        fake PyPI whose clock POST /_ci/publish moves forward

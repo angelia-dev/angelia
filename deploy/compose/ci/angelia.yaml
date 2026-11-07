@@ -1,4 +1,4 @@
-# Instance configuration for the CI quickstart check (deploy/compose/ci/README.md).
+# Instance configuration for the CI quickstart check (deploy/compose/README.md, "Quickstart check (CI)").
 # Same as ../sqlite/angelia.yaml, plus the two things the check needs: the fake
 # registry as the PyPI source, and permission to reach it and the receiver.
 instance:

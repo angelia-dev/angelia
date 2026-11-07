@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"time"
 
@@ -23,13 +24,17 @@ type registry struct {
 	reg http.Handler
 	mux *http.ServeMux
 
-	mu      sync.Mutex
-	offset  time.Duration // added to the wall clock
-	version int           // index of the newest version
+	base func() time.Time
+
+	mu     sync.Mutex
+	offset time.Duration // added to the base clock
 }
 
-func newRegistry() (http.Handler, error) {
-	r := &registry{mux: http.NewServeMux(), version: registryHistory - 1}
+func newRegistry() (http.Handler, error) { return newRegistryAt(time.Now) }
+
+// newRegistryAt is newRegistry with an injectable base clock.
+func newRegistryAt(base func() time.Time) (http.Handler, error) {
+	r := &registry{mux: http.NewServeMux(), base: base}
 	cfg := fakereg.DefaultConfig()
 	b := fakereg.DefaultBehaviour()
 	b.Packages, b.History = 1, registryHistory
@@ -50,15 +55,26 @@ func newRegistry() (http.Handler, error) {
 func (r *registry) now() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return time.Now().Add(r.offset)
+	return r.base().Add(r.offset)
 }
 
+// publish moves the clock forward and answers with the newest version the
+// registry then serves, read back from the registry itself.
 func (r *registry) publish(w http.ResponseWriter, _ *http.Request) {
 	r.mu.Lock()
 	r.offset += publishStep
-	r.version++
-	v := fakereg.Version(r.version)
 	r.mu.Unlock()
+	rec := httptest.NewRecorder()
+	r.reg.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pypi/pypi/"+fakereg.PackageName(0)+"/json", nil))
+	var doc struct {
+		Info struct {
+			Version string `json:"version"`
+		} `json:"info"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &doc) != nil || doc.Info.Version == "" {
+		http.Error(w, "cannot read the published version back", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"package": fakereg.PackageName(0), "version": v})
+	_ = json.NewEncoder(w).Encode(map[string]string{"package": fakereg.PackageName(0), "version": doc.Info.Version})
 }

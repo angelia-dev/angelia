@@ -207,3 +207,22 @@ func TestSplitSecretsAndLookup(t *testing.T) {
 		t.Errorf("lookup = %q", got)
 	}
 }
+
+// The version publish names is the one the registry serves, with a fixed clock
+// (so no wall-clock time passes between the calls).
+func TestPublishNamesTheVersionTheRegistryServes(t *testing.T) {
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	h, err := newRegistryAt(func() time.Time { return fixed })
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	for range 3 {
+		got := publish(t, srv.URL)
+		vs := pypiVersions(t, srv.URL)
+		if vs[len(vs)-1] != got {
+			t.Fatalf("publish named %s, registry serves %v", got, vs)
+		}
+	}
+}

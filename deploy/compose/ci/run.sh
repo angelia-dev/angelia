@@ -43,6 +43,10 @@ trap cleanup EXIT
 
 step() { echo "==> $*"; }
 
+step "tool versions"
+docker compose version
+docker version --format '{{.Server.Version}}'
+
 # 1. Build: the test doubles, and the image unless one is given.
 step "build ciharness"
 (cd "$root" && CGO_ENABLED=0 go build -trimpath -o "$here/bin/ciharness" ./deploy/compose/ci)
@@ -75,7 +79,10 @@ curl -fsS -o /dev/null http://127.0.0.1:8099/pypi/pypi/pkg-00000/json
 # 3. The first check records the versions known at start (baseline) and emits nothing.
 step "wait for the baseline"
 deadline=$((SECONDS + 120))
-until compose logs angelia 2>&1 | grep -q 'baseline recorded'; do
+while :; do
+	# Captured first: `grep -q` in a pipe can exit early and fail the pipeline with SIGPIPE.
+	logs="$(compose logs angelia 2>&1 || true)"
+	[[ "$logs" == *'baseline recorded'* ]] && break
 	if ((SECONDS > deadline)); then
 		echo "no 'baseline recorded' in the angelia log within 120s" >&2
 		exit 1
