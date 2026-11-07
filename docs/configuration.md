@@ -88,7 +88,7 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
 
-See [webhooks.md](webhooks.md) for the webhook sink.
+See [webhooks.md](webhooks.md) for the webhook sink and [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink.
 
 ## REST API
 
@@ -223,7 +223,7 @@ scope) and the keys with `angelia secrets` (instance-side).
 At every delivery attempt the dispatcher role resolves each `*_ref` key of the sink's config from the store, and
 each `*_env` key from the environment, before the sink is called; values are not cached. A secret bound to
 `hosts` is resolved only when the URL the sink sends to (the key its kind marks `x-angelia-destination`,
-the webhook's `url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
+the webhook's `url`, the GitHub dispatch sink's `api_base_url`) has a host and port equal to one entry. A missing secret, a host outside the binding or
 a value that cannot be decrypted fails the attempt before anything is sent, and it is retried; `last_error`
 names the key and the secret (`dispatch: secret /secret_ref: ... secret ci-webhook does not exist`), never
 the value. Sinks follow no redirect, so a bound secret never leaves its hosts; a sink kind that sent one

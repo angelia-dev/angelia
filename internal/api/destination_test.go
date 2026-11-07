@@ -13,6 +13,7 @@ func TestSinkDestinations(t *testing.T) {
 	got, err := SinkDestinations([]PluginInfo{
 		{Kind: "pypi", Interface: "source", Runtime: "builtin"},
 		{Kind: "webhook", Interface: "sink", Runtime: "builtin"},
+		{Kind: "github-dispatch", Interface: "sink", Runtime: "builtin"},
 		{Kind: "chat", Interface: "sink", Runtime: "wasm", ConfigSchema: json.RawMessage(
 			`{"type":"object","properties":{"name":{"type":"string"},"target":{"type":"object","properties":{"a/b":{"type":"string","x-angelia-destination":true}}}}}`)},
 		{Kind: "open", Interface: "sink", Runtime: "wasm"},
@@ -20,7 +21,7 @@ func TestSinkDestinations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got["webhook"] != "/url" || got["chat"] != "/target/a~1b" {
+	if len(got) != 3 || got["webhook"] != "/url" || got["github-dispatch"] != "/api_base_url" || got["chat"] != "/target/a~1b" {
 		t.Errorf("SinkDestinations = %v", got)
 	}
 	_, err = SinkDestinations([]PluginInfo{{Kind: "two", Interface: "sink", Runtime: "wasm", ConfigSchema: json.RawMessage(
