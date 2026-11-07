@@ -132,7 +132,7 @@ func serviceTable() map[string]service {
 	}
 }
 
-var errSkipTLS = errors.New("skiptlsverify is not supported: TLS is always verified; add the server's CA to the system trust store")
+var errSkipTLS = errors.New("skiptlsverify is not supported: TLS is always verified; add the server's CA to http.ca_file")
 
 func fixed(raw string) []*url.URL {
 	u, _ := url.Parse(raw)

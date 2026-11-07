@@ -376,6 +376,9 @@ than the text, accepted in the #120 review:
   the service. Its errors read `shoutrrr: secret /url_ref (secret NAME): https://host: <reason>`. A
   refusal by the sink's own derivation adds the service (`shoutrrr: secret /url_ref (secret NAME):
   slack: ...`). A refused scheme is named only when it is one of the router's known schemes.
+- **Private CAs** (§3, `skiptlsverify`). Since #208, `http.ca_file` adds CAs to the netguard client
+  that the sink sends through, so a self-signed server is trusted that way rather than through the
+  system trust store. `skiptlsverify=yes` stays refused.
 
 ## Alternatives considered
 

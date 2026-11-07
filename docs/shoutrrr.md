@@ -50,7 +50,7 @@ library (v0.23.0). Decisions: [ADR 0026](adr/0026-shoutrrr-sink-whole-url-secret
 | `matrix` | `matrix://:ACCESS_TOKEN@matrix.example.com?rooms=!room:matrix.example.com` | the URL host |
 
 Every other scheme is refused, among them `generic` (use the [webhook sink](webhooks.md)), `smtp`, `xmpp` and
-`mqtt`. So are `skiptlsverify=yes` (TLS is always verified; add a private CA to the system trust store) and a
+`mqtt`. So are `skiptlsverify=yes` (TLS is always verified; add a private CA with [`http.ca_file`](configuration.md)) and a
 matrix URL with a user name (only the access-token form is allowed: a password login would run, and send the
 password, on every delivery). Title, priority, tags and similar options come from the URL's query.
 
