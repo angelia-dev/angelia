@@ -1,6 +1,8 @@
 package watchfile
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -44,5 +46,26 @@ func TestShoutrrrRejected(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error %v, want %q", name, err, tc.want)
 		}
+	}
+}
+
+// The example of docs/shoutrrr.md loads.
+func TestShoutrrrDocsExampleLoads(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/shoutrrr.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile("(?s)```yaml\n( *sinks:.*?)```").FindStringSubmatch(string(doc))
+	if m == nil {
+		t.Fatal("no watch file example in docs/shoutrrr.md")
+	}
+	indent := len(m[1]) - len(strings.TrimLeft(m[1], " "))
+	var lines []string
+	for l := range strings.SplitSeq(m[1], "\n") {
+		lines = append(lines, strings.TrimPrefix(l, strings.Repeat(" ", indent)))
+	}
+	f := mustParse(t, base+strings.Join(lines, "\n")+"watches: []\n")
+	if len(f.Sinks) != 1 || f.Sinks[0].Kind != shoutrrr.Kind || string(f.Sinks[0].Config) != `{"url_ref":"slack-releases","service":"slack","timeout":"10s"}` {
+		t.Fatalf("parsed %+v", f.Sinks)
 	}
 }

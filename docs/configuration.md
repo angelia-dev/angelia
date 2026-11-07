@@ -88,7 +88,9 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
 
-See [webhooks.md](webhooks.md) for the webhook sink and [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink.
+See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink
+and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
+secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
 
 ## REST API
 

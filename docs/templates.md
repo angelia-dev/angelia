@@ -99,6 +99,18 @@ only when it is a function name, or at most 24 characters of `[a-z_][a-z0-9_]*` 
 Templates accepted before this check (they only had to parse) can now be rejected; see
 [watch-file.md §2.5](watch-file.md#25-subscriptions).
 
+## Default chat messages
+
+A [`shoutrrr`](shoutrrr.md) sink whose subscription has no template sends plain text, not the CloudEvents
+JSON. The defaults, per event type (`internal/sink/shoutrrr.DefaultTemplates`; not a schema contract):
+
+| Event type | Template |
+|---|---|
+| `release.published` | `{{.data.package}} {{.data.version}} released{{with .data.bump}} ({{.}}){{end}}{{with .data.previous_version}}, previous {{.}}{{end}}` and, on a second line, the release URL when there is one |
+| `release.prerelease` | `{{.data.package}} {{.data.version}} pre-release published{{with .data.previous_version}}, previous {{.}}{{end}}` and the release URL |
+| `release.yanked` | `{{.data.package}} {{.data.version}} was yanked upstream; do not upgrade to it` and the release URL |
+| any later type | `{{.data.package}} {{.data.version}}: {{.type}}` |
+
 ## Examples
 
 A chat line:
