@@ -23,6 +23,9 @@ func await(ctx context.Context, c *http.Client, base, version string, poll time.
 	for {
 		got, err := fetch(ctx, c, base)
 		switch {
+		case err != nil && ctx.Err() != nil:
+			// The deadline cut this request short: keep what the last
+			// completed poll saw instead of reporting the cancellation.
 		case err != nil:
 			last = err
 		default:
