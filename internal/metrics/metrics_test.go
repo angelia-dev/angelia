@@ -141,6 +141,14 @@ func TestSchedulerMetrics(t *testing.T) {
 		`angelia_check_lag_seconds_bucket{le="120"} 2`,
 		`angelia_check_lag_seconds_bucket{le="60"} 1`,
 	)
+	// The buckets resolve a P95 anywhere from 0 to 5 minutes, around the 2 minute target.
+	// Observations are 2 s and 90 s.
+	for le, n := range map[string]int{
+		"0.5": 0, "1": 0, "2": 1, "5": 1, "10": 1, "15": 1, "30": 1, "60": 1, "90": 2, "120": 2,
+		"180": 2, "240": 2, "300": 2, "600": 2, "900": 2, "3600": 2, "+Inf": 2,
+	} {
+		mustHave(t, body, fmt.Sprintf(`angelia_check_lag_seconds_bucket{le=%q} %d`, le, n))
+	}
 	m.CheckLag(-time.Second) // a check started early counts as no lag
 	mustHave(t, scrape(t, m), "angelia_check_lag_seconds_sum 92")
 }
