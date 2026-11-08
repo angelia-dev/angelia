@@ -295,7 +295,7 @@ func TestEvaluate(t *testing.T) {
 			s := append([]Sample(nil), samples...)
 			s[1].MemoryBytes = tc.rss
 			// The release lag (500 s here) is information: it never fails the run.
-			r := &Report{Samples: s, Registry: reg, DueDelay: DueDelay{Samples: 100, P95Seconds: tc.delay, Open: tc.open}}
+			r := &Report{Samples: s, Registry: reg, DueDelay: DueDelay{Samples: 100, P95Seconds: tc.delay, P95Open: tc.open}}
 			r.Resources = summarizeSamples(s)
 			r.evaluate()
 			if r.Verdict != tc.want {
@@ -314,6 +314,12 @@ func TestEvaluate(t *testing.T) {
 			}
 		})
 	}
+	// A P99 above the highest bucket with P95 under the target passes, with a note.
+	o99 := &Report{Samples: samples, Resources: summarizeSamples(samples), DueDelay: DueDelay{Samples: 100, P95Seconds: 60, P99Seconds: 3600, P99Open: true}}
+	o99.evaluate()
+	if o99.Verdict != "pass" || len(o99.Notes) != 2 {
+		t.Errorf("open P99: verdict %s, notes %v", o99.Verdict, o99.Notes)
+	}
 	// No check was leased in the window: the delay is not measured.
 	r := &Report{Samples: samples, Resources: summarizeSamples(samples)}
 	r.evaluate()
@@ -331,7 +337,7 @@ func TestEvaluate(t *testing.T) {
 
 func TestMarkdownReportsDelayAndReleaseLag(t *testing.T) {
 	r := &Report{
-		Benchmark: "b", DueDelay: DueDelay{Samples: 1234, P50Seconds: 1.5, P95Seconds: 42.25, P99Seconds: 99, Open: true},
+		Benchmark: "b", DueDelay: DueDelay{Samples: 1234, P50Seconds: 1.5, P95Seconds: 42.25, P99Seconds: 99, P95Open: true},
 		Registry: fakereg.Stats{Total: fakereg.EcoStats{Published: 3, Seen: 3, Lag: fakereg.LagStats{Samples: 3, P50Seconds: 100, P95Seconds: 280}}},
 	}
 	var b bytes.Buffer
@@ -339,7 +345,7 @@ func TestMarkdownReportsDelayAndReleaseLag(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"## Due-to-check delay", "1234 checks", "P50 1.5s", "P95 42.2s", "P99 99.0s", "above the highest histogram bucket",
+		"## Due-to-check delay", "1234 checks", "P50 1.5s", "P95 above 42.2s", "P99 99.0s", "above the highest histogram bucket",
 		"## Release lag (information, no pass/fail)",
 	} {
 		if !strings.Contains(b.String(), want) {
@@ -437,7 +443,7 @@ func TestRunWritesReport(t *testing.T) {
 	o := options{
 		n: 50, duration: 30 * time.Millisecond, interval: 10 * time.Millisecond, fakeregConfig: cfgPath,
 		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: 5 * time.Minute},
-		checkInterval: 5 * time.Millisecond, censor: 10 * time.Millisecond,
+		checkInterval: 5 * time.Millisecond, releaseCensor: 10 * time.Millisecond,
 		newTarget: func(options, string) Target { return ft },
 		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef"}),
 	}
@@ -445,7 +451,7 @@ func TestRunWritesReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := rep.DueDelay; d.Samples != 20 || d.P50Seconds <= 0 || d.P95Seconds <= 0 || !d.Open || rep.Verdict != "fail" {
+	if d := rep.DueDelay; d.Samples != 20 || d.P50Seconds <= 0 || d.P95Seconds <= 0 || !d.P95Open || rep.Verdict != "fail" {
 		t.Errorf("due-to-check delay = %+v, verdict %s (checks %+v)", d, rep.Verdict, rep.Checks)
 	}
 	if len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 12 || rep.Params.Loader != "watch-file" {

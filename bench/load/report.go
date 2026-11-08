@@ -63,17 +63,18 @@ type Environment struct {
 
 // Params are the inputs of the run.
 type Params struct {
-	Watches        int            `json:"watches"`
-	PerEcosystem   map[string]int `json:"watches_per_ecosystem"`
-	Loader         string         `json:"watch_loader"`
-	Duration       string         `json:"duration"`
-	SampleInterval string         `json:"sample_interval"`
-	CheckInterval  string         `json:"check_interval"`
-	FakeregConfig  string         `json:"fakereg_config"`
-	StartedAt      time.Time      `json:"started_at"`
-	ReadyAt        time.Time      `json:"ready_at"`
-	DelayFrom      time.Time      `json:"delay_window_from"`
-	DelayTo        time.Time      `json:"delay_window_to"`
+	Watches          int            `json:"watches"`
+	PerEcosystem     map[string]int `json:"watches_per_ecosystem"`
+	Loader           string         `json:"watch_loader"`
+	Duration         string         `json:"duration"`
+	SampleInterval   string         `json:"sample_interval"`
+	CheckInterval    string         `json:"check_interval"`
+	FakeregConfig    string         `json:"fakereg_config"`
+	StartedAt        time.Time      `json:"started_at"`
+	ReadyAt          time.Time      `json:"ready_at"`
+	SchedulerWorkers int            `json:"scheduler_workers"`
+	DelayFrom        time.Time      `json:"delay_window_from"`
+	DelayTo          time.Time      `json:"delay_window_to"`
 }
 
 // Resources summarizes the samples. Memory is the process RSS (VmRSS) in
@@ -129,16 +130,19 @@ func p95(v []float64) float64 {
 func (r *Report) evaluate() {
 	d := r.DueDelay
 	actual := fmt.Sprintf("%.1fs over %d checks", d.P95Seconds, d.Samples)
-	if d.Open {
+	if d.P95Open {
 		actual = fmt.Sprintf("above %.0fs over %d checks", d.P95Seconds, d.Samples)
 	}
 	r.Checks = []Check{
 		check("due-to-check delay P95", "< 2m0s", actual,
-			d.Samples > 0, d.P95Seconds < targetDelayP95.Seconds() && !d.Open),
+			d.Samples > 0, d.P95Seconds < targetDelayP95.Seconds() && !d.P95Open),
 		check(r.Resources.MemorySource+" max", fmt.Sprintf("< %.1f MiB (100 MB)", targetMemMiB), fmt.Sprintf("%.1f MiB", r.Resources.MemMaxMiB),
 			len(r.Samples) > 0, r.Resources.MemMaxMiB < targetMemMiB),
 		check("CPU mean", fmt.Sprintf("< %.0f%%", targetCPUPct), fmt.Sprintf("%.1f%%", r.Resources.CPUMeanPct),
 			len(r.Samples) > 1, r.Resources.CPUMeanPct < targetCPUPct),
+	}
+	if d.P50Open || d.P99Open {
+		r.Notes = append(r.Notes, "a P50 or P99 of the due-to-check delay is above the highest histogram bucket; the report shows that bound")
 	}
 	if d.Samples == 0 {
 		r.Notes = append(r.Notes, "no check started in the delay window, or angelia's metrics could not be read: raise -duration")
@@ -236,10 +240,10 @@ func (r *Report) Markdown(w io.Writer) error {
 	p("\n%s max %.1f MiB, P95 %.1f MiB; CPU mean %.1f%%, P95 %.1f%% of one CPU (%d samples).",
 		rs.MemorySource, rs.MemMaxMiB, rs.MemP95MiB, rs.CPUMeanPct, rs.CPUP95Pct, len(r.Samples))
 	d := r.DueDelay
-	p("\n## Due-to-check delay\n\nHow late each check started compared with its due time (`%s`, lease time minus due time), %d checks started between %s (ready + warm-up) and %s: P50 %.1fs, P95 %.1fs, P99 %.1fs.",
-		delayMetric, d.Samples, pr.DelayFrom.Format(time.RFC3339), pr.DelayTo.Format(time.RFC3339), d.P50Seconds, d.P95Seconds, d.P99Seconds)
-	if d.Open {
-		p("\nA quantile is above the highest histogram bucket, so the value shown is that bound and the real one is higher.")
+	p("\n## Due-to-check delay\n\nHow late each check started compared with its due time (`%s`, lease time minus due time), %d checks started between %s (ready + warm-up) and %s: P50 %s, P95 %s, P99 %s, with %d scheduler workers.",
+		delayMetric, d.Samples, pr.DelayFrom.Format(time.RFC3339), pr.DelayTo.Format(time.RFC3339), qs(d.P50Seconds, d.P50Open), qs(d.P95Seconds, d.P95Open), qs(d.P99Seconds, d.P99Open), pr.SchedulerWorkers)
+	if d.P50Open || d.P95Open || d.P99Open {
+		p("\nA quantile shown as \"above\" is above the highest histogram bucket, so the value shown is that bound and the real one is higher.")
 	}
 	p("\n## Release lag (information, no pass/fail)\n")
 	if w := r.Registry.Window; !w.From.IsZero() {
@@ -332,4 +336,12 @@ func procField(read func(string) ([]byte, error), path, key string) string {
 		}
 	}
 	return ""
+}
+
+// qs formats a quantile in seconds; an open one is only a lower bound.
+func qs(v float64, open bool) string {
+	if open {
+		return fmt.Sprintf("above %.1fs", v)
+	}
+	return fmt.Sprintf("%.1fs", v)
 }

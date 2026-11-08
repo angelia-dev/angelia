@@ -16,6 +16,9 @@ import (
 // delayMetric is the scheduler's histogram of how late each check started:
 // lease time minus the time the target was due (internal/metrics). It is the
 // due-to-check delay of benchmark 1 (architecture.md section 6).
+// scrapeTimeout bounds one scrape so a slow angelia cannot stall sampling.
+const scrapeTimeout = 5 * time.Second
+
 const delayMetric = "angelia_check_lag_seconds"
 
 // delayBucket is one cumulative bucket of the histogram: observations <= le.
@@ -25,17 +28,22 @@ type delayBucket struct {
 }
 
 // delayHist is a scraped Prometheus histogram, buckets in ascending order.
-type delayHist struct{ buckets []delayBucket }
+type delayHist struct {
+	buckets []delayBucket
+	count   float64 // the _count line; 0 when absent
+}
 
 // DueDelay summarizes the due-to-check delay over the measuring window, in
-// seconds. Open means a quantile fell above the highest finite bucket, so
-// its value is that bound and the real one is higher.
+// seconds. An Open flag means that quantile fell above the highest finite
+// bucket, so its value is that bound and the real one is higher.
 type DueDelay struct {
 	Samples    uint64  `json:"samples"`
 	P50Seconds float64 `json:"p50_seconds"`
 	P95Seconds float64 `json:"p95_seconds"`
 	P99Seconds float64 `json:"p99_seconds"`
-	Open       bool    `json:"open_ended,omitempty"`
+	P50Open    bool    `json:"p50_open_ended,omitempty"`
+	P95Open    bool    `json:"p95_open_ended,omitempty"`
+	P99Open    bool    `json:"p99_open_ended,omitempty"`
 }
 
 // parseDelayHistogram reads the bucket lines of delayMetric from a
@@ -45,6 +53,12 @@ func parseDelayHistogram(body string) (delayHist, error) {
 	sc := bufio.NewScanner(strings.NewReader(body))
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
+		if v, ok := strings.CutPrefix(sc.Text(), delayMetric+"_count "); ok {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				h.count = n
+			}
+			continue
+		}
 		rest, ok := strings.CutPrefix(sc.Text(), delayMetric+`_bucket{`)
 		if !ok {
 			continue
@@ -79,7 +93,7 @@ func parseDelayHistogram(body string) (delayHist, error) {
 
 // scrapeDelay reads the histogram from base+"/metrics".
 func scrapeDelay(ctx context.Context, base string) (delayHist, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, scrapeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(base, "/")+"/metrics", nil)
 	if err != nil {
@@ -117,6 +131,9 @@ func (h delayHist) since(earlier delayHist) (delayHist, error) {
 	if len(earlier.buckets) != len(h.buckets) {
 		return delayHist{}, errors.New("the histogram buckets changed between scrapes")
 	}
+	if h.count < earlier.count {
+		return delayHist{}, errors.New("the histogram counters went down between scrapes: did angelia restart?")
+	}
 	out := delayHist{buckets: make([]delayBucket, len(h.buckets))}
 	for i, b := range h.buckets {
 		if earlier.buckets[i].le != b.le {
@@ -146,9 +163,6 @@ func (h delayHist) quantile(q float64) (v float64, open bool) {
 			if math.IsInf(b.le, 1) {
 				return lower, true
 			}
-			if b.count == prev {
-				return b.le, false
-			}
 			return lower + (b.le-lower)*(rank-prev)/(b.count-prev), false
 		}
 		if !math.IsInf(b.le, 1) {
@@ -164,10 +178,8 @@ func (h delayHist) summary() DueDelay {
 	if d.Samples == 0 {
 		return d
 	}
-	var o1, o2, o3 bool
-	d.P50Seconds, o1 = h.quantile(0.50)
-	d.P95Seconds, o2 = h.quantile(0.95)
-	d.P99Seconds, o3 = h.quantile(0.99)
-	d.Open = o1 || o2 || o3
+	d.P50Seconds, d.P50Open = h.quantile(0.50)
+	d.P95Seconds, d.P95Open = h.quantile(0.95)
+	d.P99Seconds, d.P99Open = h.quantile(0.99)
 	return d
 }

@@ -65,7 +65,13 @@ finite bucket (1 h) the report says so and the check fails.
 
 The **delay window** runs from the first scrape after the warm-up (1.1 × the check interval:
 the first round of checks is all due at once) to the last scrape at the end of the run; the
-report holds the difference of the two scrapes, so only checks started in the window count. No
+report holds the difference of the two scrapes, so only checks started in the window count.
+If the first scrape fails it is retried on the next sample tick, and the window starts later.
+At large `BENCH_N` the first round of checks can take longer than the warm-up (the scheduler
+leases only as many targets as it has workers, and the rate limit queues requests); a backlog
+that is still being worked off at the first scrape is counted in the delay, which is intended:
+the target is to keep up in steady state. The report records the number of scheduler workers
+(`scheduler_workers`, the `serve` default of 4). No
 censoring is needed: a check's delay is known when it starts. If the metrics cannot be read,
 or no check started in the window, the delay is **not measured** and the run is incomplete.
 Any `BENCH_DURATION` above the minimum measures it; a longer window gives more samples.

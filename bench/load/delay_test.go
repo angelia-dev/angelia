@@ -58,8 +58,23 @@ func TestDelayQuantiles(t *testing.T) {
 	}
 	// A quantile in the +Inf bucket is the highest finite bound, flagged.
 	tail := delayHist{buckets: []delayBucket{{300, 90}, {math.Inf(1), 100}}}.summary()
-	if tail.P95Seconds != 300 || !tail.Open {
+	if tail.P95Seconds != 300 || !tail.P95Open {
 		t.Errorf("open tail = %+v", tail)
+	}
+	// P99 in +Inf while P95 is inside a bucket: only P99 is open.
+	p99 := delayHist{buckets: []delayBucket{{120, 97}, {math.Inf(1), 100}}}.summary()
+	if p99.P95Open || !p99.P99Open || p99.P95Seconds >= 120 {
+		t.Errorf("open P99 only: %+v", p99)
+	}
+	// A rank exactly on a bucket boundary is that bucket's bound.
+	edge := delayHist{buckets: []delayBucket{{60, 95}, {120, 100}, {math.Inf(1), 100}}}.summary()
+	if math.Abs(edge.P95Seconds-60) > 1e-9 || edge.P95Open {
+		t.Errorf("boundary P95 = %+v", edge)
+	}
+	// Only a +Inf bucket: everything is open at zero.
+	inf := delayHist{buckets: []delayBucket{{math.Inf(1), 10}}}.summary()
+	if !inf.P50Open || !inf.P95Open || !inf.P99Open || inf.P95Seconds != 0 {
+		t.Errorf("+Inf only = %+v", inf)
 	}
 	if e := (delayHist{}).summary(); e.Samples != 0 {
 		t.Errorf("empty = %+v", e)
@@ -77,6 +92,10 @@ func TestDelayWindow(t *testing.T) {
 	}
 	if w.total() != 20 || w.buckets[0].count != 15 {
 		t.Errorf("window = %+v", w)
+	}
+	// A lower _count with higher buckets is a restart too.
+	if _, err := (delayHist{buckets: end.buckets, count: 5}).since(delayHist{buckets: start.buckets, count: 9}); err == nil {
+		t.Error("a _count that went down must be an error")
 	}
 	if _, err := start.since(end); err == nil {
 		t.Error("counters that went down must be an error")
