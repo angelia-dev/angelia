@@ -279,6 +279,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-s.freed:
 			stop()
 		}
+		// A wake-up and the cancellation can be ready at once; select
+		// picks either, so do not start another poll after shutdown.
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 }
 
@@ -327,6 +332,9 @@ func (s *Scheduler) poll(ctx context.Context) int {
 		s.storeOK(ctx)
 		return 0
 	}
+	// With a backlog this is one write transaction per finished check
+	// (about 44 per second at 4 workers in benchmark 1 at 10,000 watches,
+	// story #224), which measured fine: leasing was about 1% of a CPU.
 	targets, err := s.store.LeaseDueTargets(ctx, s.opts.Holder, now, now.Add(s.opts.LeaseTTL), free)
 	if err != nil {
 		s.storeFailed(ctx, now, "lease due targets", err)

@@ -424,15 +424,7 @@ func TestRun(t *testing.T) {
 	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.PollInterval = 10 * time.Second })
 	idle, resume := make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
-	s.testHookIdle = func() {
-		// After cancellation a pending wake-up from a finished check may
-		// still run one more (empty) poll; do not park it.
-		if ctx.Err() != nil {
-			return
-		}
-		idle <- struct{}{}
-		<-resume
-	}
+	s.testHookIdle = func() { idle <- struct{}{}; <-resume }
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
@@ -441,9 +433,15 @@ func TestRun(t *testing.T) {
 		t.Fatalf("checked %s", id)
 	}
 	s.wg.Wait() // Run is parked in the hook, so no poll adds work
+	// Drop the wake-up of the finished check, so only the timer can wake
+	// the loop below.
+	select {
+	case <-s.freed:
+	default:
+	}
 	clk.Advance(time.Hour)
 	resume <- struct{}{}
-	<-idle // the loop woke (poll timer or finished check) and the target was due again
+	<-idle // the poll timer fired and the target was due again
 	if id := <-checked; id != "t1" {
 		t.Fatalf("checked %s", id)
 	}
@@ -1048,5 +1046,60 @@ func TestDueBacklogCountedOncePerPollInterval(t *testing.T) {
 	}
 	if want := []int64{6, 3}; fmt.Sprint(m.backlog) != fmt.Sprint(want) {
 		t.Fatalf("backlog = %v, want %v", m.backlog, want)
+	}
+}
+
+// Story #224: a poll that leases nothing starts no check, so nothing wakes
+// the loop again before the poll timer; the loop does not spin.
+func TestEmptyPollDoesNotWakeTheLoop(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "a", t0)
+	st := &spyStore{Store: base}
+	checked := make(chan struct{}, 4)
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) {
+		checked <- struct{}{}
+		return Outcome{}, nil
+	})
+	// The clock never moves, so the poll timer never fires.
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.PollInterval = time.Hour })
+	idle := make(chan struct{}, 16)
+	s.testHookIdle = func() { idle <- struct{}{} }
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	<-idle    // the first poll leased t1
+	<-checked // t1 was checked; its next check is an hour away
+	<-idle    // its wake-up ran a poll that found nothing due
+	select {
+	case <-idle:
+		t.Fatal("the loop polled again without a finished check or the timer")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if len(s.freed) != 0 {
+		t.Fatal("a wake-up is pending after a poll that leased nothing")
+	}
+	st.mu.Lock()
+	calls := st.leaseCalls
+	st.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("%d leasing transactions, want 1", calls)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+
+	// The same for a poll whose store fails: no check, no wake-up.
+	st.mu.Lock()
+	st.leaseErr = errors.New("database is locked")
+	st.mu.Unlock()
+	addTarget(t, base, "t2", "b", t0)
+	if n := s.poll(t.Context()); n != 0 {
+		t.Fatalf("failing poll started %d checks", n)
+	}
+	if len(s.freed) != 0 {
+		t.Fatal("a failing poll left a wake-up")
 	}
 }
