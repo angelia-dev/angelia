@@ -3,7 +3,7 @@
 // ecosystems angelia has a source for into a watch file, runs
 // `angelia serve` with it (in a CPU and memory limited container,
 // or as a plain process with -container=false), samples memory and CPU,
-// reads check lag from the fake registry and writes report.json and
+// reads the due-to-check delay from angelia's metrics and writes report.json and
 // report.md.
 //
 //	make bench-scale BENCH_N=10000                  # container, needs Docker
@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
+	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -52,12 +53,12 @@ type options struct {
 	readyTimeout            time.Duration
 	// checkInterval is the per-watch check interval the loader asks for;
 	// lag counts only releases published one interval (plus jitter) after
-	// readiness. censor drops the releases published in the last censor of
+	// readiness. releaseCensor drops the releases published in the last releaseCensor of
 	// the run, so every unseen release counts with at least that lag.
-	checkInterval, censor time.Duration
-	loader                WatchLoader
-	newTarget             func(o options, workdir string) Target // tests replace it
-	probe                 probe
+	checkInterval, releaseCensor time.Duration
+	loader                       WatchLoader
+	newTarget                    func(o options, workdir string) Target // tests replace it
+	probe                        probe
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -79,7 +80,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDR the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the address of host.docker.internal")
 	fs.Float64Var(&o.hostLimit.RPS, "host-rps", DefaultHostLimit.RPS, "rate limit of the fake registry's host in requests per second (http.host_limits, 1/3600 to 100); 5 is angelia's default")
 	fs.IntVar(&o.hostLimit.Burst, "host-burst", 0, "burst of the fake registry's host (1 to 200); default ceil(-host-rps)")
-	o.censor = targetLagP95
+	o.releaseCensor = targetDelayP95
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -96,8 +97,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	o.loader = watchFileLoader{interval: o.checkInterval}
-	if least := warmup(o.checkInterval) + o.censor; o.duration <= least {
-		_, _ = fmt.Fprintf(stderr, "load: -duration must exceed the warm-up plus %v of censoring: more than %v\n", o.censor, least)
+	if least := warmup(o.checkInterval) + o.releaseCensor; o.duration <= least {
+		_, _ = fmt.Fprintf(stderr, "load: -duration must exceed the warm-up plus %v of censoring: more than %v\n", o.releaseCensor, least)
 		return 2
 	}
 	if err := checkMode(o.container, runtime.GOOS); err != nil {
@@ -199,8 +200,27 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	}
 	readyAt := time.Now()
 	end := readyAt.Add(o.duration)
-	window := fakereg.Window{From: readyAt.Add(warmup(o.checkInterval)), To: end.Add(-o.censor)}
+	window := fakereg.Window{From: readyAt.Add(warmup(o.checkInterval)), To: end.Add(-o.releaseCensor)}
 	rep.Params.ReadyAt, rep.Params.CheckInterval = readyAt.UTC(), o.checkInterval.String()
+	rep.Params.SchedulerWorkers = scheduler.DefaultWorkers // what `serve` runs with
+	// The delay window starts with the first scrape after the warm-up (the
+	// first round of checks is due all at once and is not steady state) and
+	// ends with the last scrape. Nothing is censored: a check's delay is
+	// known when it starts.
+	var delayStart delayHist
+	delayStarted := false
+	base, err := t.HealthURL(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scrape := func() (delayHist, time.Time) {
+		h, err := scrapeDelay(ctx, base)
+		if err != nil {
+			log.Warn("cannot read the due-to-check delay from angelia", "err", err)
+			return delayHist{}, time.Time{}
+		}
+		return h, time.Now().UTC()
+	}
 
 	tick := time.NewTicker(o.interval)
 	defer tick.Stop()
@@ -210,6 +230,12 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 			return nil, fmt.Errorf("sample: %w", err)
 		}
 		rep.Samples = append(rep.Samples, s)
+		if !delayStarted && !time.Now().Before(window.From) {
+			// Only a successful scrape starts the window; a failed one is retried on the next tick.
+			if h, at := scrape(); len(h.buckets) > 0 {
+				delayStarted, delayStart, rep.Params.DelayFrom = true, h, at
+			}
+		}
 		if !time.Now().Before(end) {
 			break
 		}
@@ -220,6 +246,16 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		}
 	}
 	rep.Registry = reg.StatsIn(window)
+	if len(delayStart.buckets) > 0 {
+		if last, at := scrape(); len(last.buckets) > 0 {
+			rep.Params.DelayTo = at
+			if w, err := last.since(delayStart); err != nil {
+				log.Warn("cannot compute the due-to-check delay", "err", err)
+			} else {
+				rep.DueDelay = w.summary()
+			}
+		}
+	}
 	rep.Resources = summarizeSamples(rep.Samples)
 	rep.Resources.MemorySource = "RSS (VmRSS)"
 	if o.container {

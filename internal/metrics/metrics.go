@@ -88,8 +88,10 @@ func New(log *slog.Logger) *Metrics {
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",
 		Help: "How late a check started: lease time minus the time the target was due.",
-		// The Phase 0 target is P95 < 2 minutes, so 60 s and 120 s are buckets.
-		Buckets: []float64{0.5, 1, 5, 15, 30, 60, 120, 300, 900, 3600},
+		// The Phase 0 target is P95 < 2 minutes (benchmark 1 reads this
+		// histogram): 120 s is a bucket, with 30 to 60 s steps around it so
+		// that a P95 between 0 and 5 minutes is resolved.
+		Buckets: []float64{0.5, 1, 2, 5, 10, 15, 30, 60, 90, 120, 180, 240, 300, 600, 900, 3600},
 	})
 	m.fetches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "angelia_source_fetches_total",
