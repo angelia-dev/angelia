@@ -1,6 +1,6 @@
 # ADR 0027: Operators can set per-host rate limits in the instance configuration (`http.host_limits`); built-in budgets and server signals still win
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-08, maintainer, with the recommended answers below)
 - **Date:** 2026-11-08
 - **Story:** angelia-dev/angelia#217
 
@@ -358,6 +358,8 @@ worker-count question of ADR 0009, not a reason to raise this limit.
   run it, with a documented setting, not a code path that ships unused.
 
 ## Questions for the maintainer
+
+**Answered 2026-11-08:** the maintainer accepted every recommendation: 1(a), 2(a), 3(a), 4(a), 5(a), 6(a), 7(a), 8(a), 9(a). The text below is kept as the record of the options.
 
 1. **Built-in budget hosts** (`api.github.com`, `gitlab.com`, `crates.io`).
    - (a) Entries may only lower them; a higher value is capped, with a warning.
