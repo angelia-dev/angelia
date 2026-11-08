@@ -103,7 +103,8 @@ type Outcome struct {
 // Prometheus; until then a nil Metrics discards them.
 type Metrics interface {
 	// DueBacklog is the number of due targets waiting for a worker (not
-	// leased), observed on every poll.
+	// leased), observed at most once per PollInterval: counting reads every
+	// due row, and the loop polls after every finished check.
 	DueBacklog(n int64)
 	// CheckLag is how late a check starts: lease time minus NextCheckAt.
 	CheckLag(d time.Duration)
@@ -180,11 +181,15 @@ type Scheduler struct {
 	mu       sync.Mutex
 	inflight int
 	wg       sync.WaitGroup
-	freed    chan struct{} // a worker finished while every slot was busy
+	// freed wakes the poll loop when a check finishes. It holds at most one
+	// wake-up, so several finished checks cost one poll, and none is lost: a
+	// check that finishes while a poll runs leaves a wake-up for the next.
+	freed chan struct{}
 
 	// Owned by the poll loop (Run, or a test calling poll directly).
 	lastPrune                time.Time // zero: prune on the first poll
 	lastDemand               time.Time // zero: estimate on the first poll
+	lastCount                time.Time // zero: count the backlog on the next poll
 	failingSince, lastErrLog time.Time // zero: the store is not failing
 
 	// testHookIdle, if set, runs each time Run is about to wait.
@@ -287,9 +292,13 @@ func (s *Scheduler) poll(ctx context.Context) int {
 	s.pruneLeases(ctx, now)
 	s.refreshDemand(ctx, now)
 	// A cheap read decides whether the leasing write transaction is worth
-	// running, so idle polls take no write lock (SQLite has only one).
+	// running, so idle polls take no write lock (SQLite has only one). The
+	// backlog count for the metrics reads every due row, so it runs at most
+	// once per PollInterval; the polls in between only ask whether any
+	// target is due.
 	due := int64(-1) // unknown
-	if s.opts.Metrics != nil {
+	if s.opts.Metrics != nil && (s.lastCount.IsZero() || now.Sub(s.lastCount) >= s.opts.PollInterval) {
+		s.lastCount = now
 		if n, err := s.store.CountDueTargets(ctx, now); err != nil {
 			s.log.WarnContext(ctx, "count due targets", "error", err)
 		} else {
@@ -335,14 +344,15 @@ func (s *Scheduler) poll(ctx context.Context) int {
 		s.wg.Go(func() {
 			s.check(ctx, t, leasedUntil)
 			s.mu.Lock()
-			full := s.inflight == s.opts.Workers
 			s.inflight--
 			s.mu.Unlock()
-			if full {
-				select {
-				case s.freed <- struct{}{}:
-				default:
-				}
+			// Wake the loop on every finished check, not only when the pool
+			// was full: a poll may lease fewer targets than it has free slots
+			// (a check finished while it ran, or fewer were due), and those
+			// slots would otherwise wait for the poll timer (story #224).
+			select {
+			case s.freed <- struct{}{}:
+			default:
 			}
 		})
 	}
