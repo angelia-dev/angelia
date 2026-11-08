@@ -31,6 +31,7 @@ func full(t *testing.T) *Metrics {
 		t.Fatal(err)
 	}
 	m.SetHostLimits(table)
+	m.SetHostDemand(map[string]float64{"pypi.org": 1})
 	return m
 }
 

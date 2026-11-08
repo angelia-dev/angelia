@@ -322,8 +322,12 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 			Store: d.store, Sources: sources, Instance: d.cfg.Instance.Name,
 			RegistryURL: registryURL(d.cfg), Matcher: event.NewMatcherCache(), Logger: d.log,
 		}
+		demand, err := newHostDemand(d.cfg, client, d.metrics, d.store, d.log)
+		if err != nil {
+			return out, err
+		}
 		out.scheduler, err = scheduler.New(d.store, checker, scheduler.Options{
-			Logger: d.log, Metrics: schedM, TracerProvider: d.tracer,
+			Logger: d.log, Metrics: schedM, TracerProvider: d.tracer, Demand: demand,
 		})
 		if err != nil {
 			return out, err

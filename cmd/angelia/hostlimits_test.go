@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
 
 // builtinHostLimitsListing is what config check prints without
@@ -263,5 +271,111 @@ func TestConfigCheckWarnsOnHostNamedOther(t *testing.T) {
 	}
 	if !strings.Contains(out, "  other                    2 rps, burst 2 (config)\n") {
 		t.Errorf("out = %q", out)
+	}
+}
+
+const hostDemandCfg = `http:
+  host_limits:
+    hosts:
+      pypi.org: {rps: 1}
+sources:
+  github-release:
+    token_env: GH_DEMAND_TOKEN
+  npm-internal:
+    kind: npm
+    base_url: https://Nexus.Example:8443/npm/
+`
+
+// Story #220: the host of a source comes from its base URL or its kind's
+// public registry, and the credential selects the authenticated bucket.
+func TestSourceHost(t *testing.T) {
+	t.Setenv("GH_DEMAND_TOKEN", "x")
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, hostDemandCfg), Environ: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		host   string
+		authed bool
+		ok     bool
+	}{
+		{"pypi", "pypi.org", false, true},
+		{"npm", "registry.npmjs.org", false, true},
+		{"npm-internal", "nexus.example", false, true},
+		{"github-release", "api.github.com", true, true},
+		{"github-tag", "api.github.com", false, true},
+		{"crates", "index.crates.io", false, true},
+		{"some-plugin", "", false, false},
+	} {
+		host, authed, ok := sourceHost(cfg, tc.name)
+		if host != tc.host || authed != tc.authed || ok != tc.ok {
+			t.Errorf("sourceHost(%q) = %q, %v, %v; want %q, %v, %v", tc.name, host, authed, ok, tc.host, tc.authed, tc.ok)
+		}
+	}
+}
+
+// Story #220 end to end: stored targets, the client's limits, the warning and
+// the gauge agree.
+func TestHostDemandFromStoredTargets(t *testing.T) {
+	t.Setenv("GH_DEMAND_TOKEN", "x")
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, hostDemandCfg), Environ: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "d.db"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	for i, tg := range []store.Target{
+		{Kind: "pypi", Interval: time.Second}, {Kind: "pypi", Interval: time.Second}, // 2 rps against 1
+		{Kind: "npm-internal", Interval: time.Minute},                                                    // other: 1/60
+		{Kind: "github-release", Interval: time.Second}, {Kind: "github-release", Interval: time.Second}, // 2 rps, token: 1.39
+		{Kind: "unknown-plugin", Interval: time.Second}, // host unknown: left out
+	} {
+		tg.ID, tg.Coordinates, tg.NextCheckAt = fmt.Sprint("t", i), map[string]string{"name": fmt.Sprint("p", i)}, at
+		if err := st.CreateTarget(t.Context(), tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, err := newNetClient(cfg, slog.New(slog.DiscardHandler), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := metrics.New(nil)
+	m.SetHostLimits(client.Limits())
+	var logs bytes.Buffer
+	d, err := newHostDemand(cfg, client, m, st, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Refresh(t.Context(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, w := range []string{
+		`angelia_host_demand_rps{host="pypi.org"} 2`,
+		`angelia_host_demand_rps{host="api.github.com"} 2`,
+		`angelia_host_demand_rps{host="other"} 0.01666`,
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("metrics lack %q", w)
+		}
+	}
+	if strings.Contains(body, "nexus.example") {
+		t.Error("an unlisted host reached a label")
+	}
+	out := logs.String()
+	for _, w := range []string{"host=pypi.org", "limit_rps=1 ", "host=api.github.com", "bucket=authenticated", "limit_rps=1.386", "cannot raise"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("log lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "nexus.example") {
+		t.Errorf("a host under its limit warned:\n%s", out)
 	}
 }

@@ -124,3 +124,19 @@ func resolveLimits(hosts map[string]HostLimit, fallback HostLimit) ([]EffectiveL
 // Limits returns the limits table c applies (see EffectiveLimits). The
 // caller may modify the result.
 func (c *Client) Limits() []EffectiveLimit { return slices.Clone(c.table) }
+
+// LimitFor returns the line of the limits table that applies to host: its
+// own entry, or the fallback line (Host OtherHost, Fallback true) for a host
+// without one. It uses the lookup of the rate limiter, so the answer is the
+// bucket the client would take a token from, and its Host is the label that
+// the Observer receives for requests to host.
+func (c *Client) LimitFor(host string) EffectiveLimit {
+	h := normHost(host)
+	_, listed := c.limiter.limits[h]
+	for _, e := range c.table {
+		if e.Fallback != listed && (e.Fallback || e.Host == h) {
+			return e
+		}
+	}
+	return EffectiveLimit{} // unreachable: the table always ends with the fallback
+}

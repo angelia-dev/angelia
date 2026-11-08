@@ -5,7 +5,7 @@
 // (dispatch.Metrics) and the netguard client (netguard.Observer). Source
 // fetches are counted by wrapping each source (Metrics.Source); the delivery
 // table is counted by a collector that queries the store at scrape time
-// (Metrics.RegisterDeliveryCounts). Handler serves the registry.
+// (Metrics.RegisterDeliveryCounts); the scheduler's per-host demand estimate is set with Metrics.SetHostDemand. Handler serves the registry.
 //
 // Cardinality is bounded by design. The only labels are source kind,
 // fetch result, delivery outcome and status, fixed lists (bucket, origin,
@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -56,6 +57,10 @@ type Metrics struct {
 	attempts   *prometheus.CounterVec
 	log        *slog.Logger
 
+	mu         sync.Mutex
+	limitHosts map[string]bool // hosts of the limits table, the closed set of the host label
+
+	hostDemand       *prometheus.GaugeVec
 	hostLimitRate    *prometheus.GaugeVec
 	hostLimitBurst   *prometheus.GaugeVec
 	serverPauses     *prometheus.CounterVec
@@ -114,6 +119,10 @@ func New(log *slog.Logger) *Metrics {
 		Name: "angelia_netguard_host_limit_burst",
 		Help: "Effective per-host burst (token bucket size), by host, bucket and origin. Set at start; per process.",
 	}, []string{"host", "bucket", "origin"})
+	m.hostDemand = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "angelia_host_demand_rps",
+		Help: "Estimated request demand per host in requests per second: stored targets of the host divided by their check intervals. Hosts outside the rate-limit table are summed as other. Refreshed by the scheduler.",
+	}, []string{"host"})
 	m.serverPauses = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "angelia_netguard_server_pauses_total",
 		Help: "Pauses of a host's rate limit set by the server, by host and reason: retry_after or ratelimit_reset.",
@@ -136,7 +145,7 @@ func New(log *slog.Logger) *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		info, m.dueTargets, m.checkLag, m.fetches, m.rateWait, m.attempts,
-		m.hostLimitRate, m.hostLimitBurst, m.serverPauses, m.responses, m.deadlineRefusals,
+		m.hostLimitRate, m.hostLimitBurst, m.hostDemand, m.serverPauses, m.responses, m.deadlineRefusals,
 	)
 	return m
 }
@@ -215,8 +224,15 @@ func (m *Metrics) DeadlineRefusal(host string) {
 func (m *Metrics) SetHostLimits(table []netguard.EffectiveLimit) {
 	m.hostLimitRate.Reset()
 	m.hostLimitBurst.Reset()
+	hosts := map[string]bool{}
+	defer func() {
+		m.mu.Lock()
+		m.limitHosts = hosts
+		m.mu.Unlock()
+	}()
 	for _, e := range table {
 		host := strings.ToLower(e.Host)
+		hosts[host] = true
 		for _, b := range []struct {
 			bucket, origin string
 			limit          netguard.Limit
@@ -233,6 +249,29 @@ func (m *Metrics) SetHostLimits(table []netguard.EffectiveLimit) {
 			m.hostLimitRate.WithLabelValues(host, b.bucket, origin).Set(b.limit.Rate)
 			m.hostLimitBurst.WithLabelValues(host, b.bucket, origin).Set(float64(b.limit.Burst))
 		}
+	}
+}
+
+// SetHostDemand sets angelia_host_demand_rps from the scheduler's estimate,
+// by host label (netguard.Client.LimitFor), replacing earlier values. A host
+// that is not in the limits table given to SetHostLimits is folded into
+// "other", so the label set stays the closed one of ADR 0019 whatever the
+// caller passes.
+func (m *Metrics) SetHostDemand(rps map[string]float64) {
+	m.mu.Lock()
+	known := m.limitHosts
+	m.mu.Unlock()
+	sum := map[string]float64{}
+	for host, v := range rps {
+		host = strings.ToLower(host)
+		if !known[host] {
+			host = netguard.OtherHost
+		}
+		sum[host] += v
+	}
+	m.hostDemand.Reset()
+	for host, v := range sum {
+		m.hostDemand.WithLabelValues(host).Set(v)
 	}
 }
 

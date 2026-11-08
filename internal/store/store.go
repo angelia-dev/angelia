@@ -510,3 +510,12 @@ type TargetSource struct {
 	Kind    string
 	Targets int64
 }
+
+// TargetDemand is a group of stored targets that share a source name
+// (Target.Kind) and a check interval, for the host demand estimate (story
+// #220). Interval is Target.Interval: zero means not set.
+type TargetDemand struct {
+	Name     string
+	Interval time.Duration
+	Targets  int64
+}

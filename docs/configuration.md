@@ -191,6 +191,16 @@ limit shows as a growing `angelia_netguard_rate_limit_wait_seconds`, as
 once and backs off) and as check lag. With 4 workers, checks waiting on a saturated host also delay checks
 of other hosts. See [Metrics](operations/metrics.md).
 
+The scheduler checks this for you. At start, and again every minute (it logs only when the numbers change),
+it estimates each host's demand from the stored targets and their intervals, `targets / interval x 1
+request`, and exposes it as `angelia_host_demand_rps{host}`. When a host's demand is above 80% of its
+effective limit (the authenticated bucket for a source with a token, else the anonymous one; an unlisted
+host is judged against the fallback on its own), it logs a warning that names the host, the demand, the limit
+and the rule above. For `api.github.com`, `gitlab.com` and `crates.io` the limit cannot be raised, so the
+warning suggests longer intervals instead. The estimate is a floor (a check that finds news, or reads a long
+listing, sends more requests), it leaves out targets of plugin sources, and it is per process like the
+limits.
+
 **Metrics.** A host listed here becomes a value of the `host` label of the netguard metrics, like the
 built-in hosts; any other host is `other`. Do not list a webhook host whose name you do not want in
 metrics. A host literally named `other` is accepted, but its series share that label with every unlisted
