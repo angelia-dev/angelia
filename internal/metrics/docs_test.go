@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/dispatch"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
 )
 
@@ -22,6 +23,14 @@ func full(t *testing.T) *Metrics {
 	m.CheckLag(time.Second)
 	m.AttemptFinished(dispatch.OutcomeDelivered)
 	m.RateLimitWait("pypi.org", time.Second)
+	m.ServerPause("pypi.org", netguard.PauseRetryAfter)
+	m.Response("pypi.org", netguard.ClassOK)
+	m.DeadlineRefusal("pypi.org")
+	table, err := netguard.EffectiveLimits(nil, netguard.HostLimit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetHostLimits(table)
 	return m
 }
 

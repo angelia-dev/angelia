@@ -73,6 +73,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
+	for _, w := range serveHostLimitWarnings(cmd.Context(), cfg, os.Environ()) {
+		log.Warn(w)
+	}
 	keys, err := loadKeys(cfg, log)
 	if err != nil {
 		return err

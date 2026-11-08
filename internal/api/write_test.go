@@ -539,3 +539,25 @@ func TestDropReservedEnvDuplicates(t *testing.T) {
 		t.Errorf("with no env errors, %d of 3 kept", len(got))
 	}
 }
+
+// ADR 0027 §5: the API cannot set host limits; host_limits is an unknown
+// key on every object it writes.
+func TestAPIRefusesHostLimits(t *testing.T) {
+	e := newEnv(t)
+	limits := map[string]any{"hosts": map[string]any{"pypi.org": map[string]any{"rps": 100}}}
+	for _, tc := range []struct {
+		path, token string
+		body        map[string]any
+	}{
+		{"/v1/watches/requests", tokWrite, watchPut},
+		{"/v1/sinks/ci-webhook", tokAdmin, sinkPut},
+		{"/v1/subscriptions/s", tokWrite, subscriptionPut},
+	} {
+		body := clone(tc.body)
+		body["host_limits"] = limits
+		r := e.do("PUT", tc.path, tc.token, body)
+		if r.Status != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "/host_limits") {
+			t.Errorf("%s: %d %s", tc.path, r.Status, r.Body)
+		}
+	}
+}

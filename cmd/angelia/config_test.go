@@ -124,7 +124,7 @@ credentials:
 	if err != nil {
 		t.Fatalf("err = %v, stderr %q", err, errb)
 	}
-	want := "configuration OK\n" +
+	want := "configuration OK\n" + builtinHostLimitsListing +
 		"plugins in " + dir + ": 2\n" +
 		"  bare\n" +
 		"    allowed hosts: none\n" +
@@ -151,7 +151,7 @@ func TestConfigCheckNoPlugins(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 	t.Setenv("ANGELIA_PLUGINS_DIR", dir)
 	out, _, err := runCheck(t)
-	if err != nil || out != "configuration OK\nplugins in "+dir+": none\nsecrets: no key configured (0 stored)\n" {
+	if err != nil || out != "configuration OK\n"+builtinHostLimitsListing+"plugins in "+dir+": none\nsecrets: no key configured (0 stored)\n" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }

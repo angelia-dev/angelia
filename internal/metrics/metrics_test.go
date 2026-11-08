@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -108,7 +109,15 @@ func TestCardinalityBounded(t *testing.T) {
 	for _, h := range []string{"api.github.com", "pypi.org", "other", "API.GitHub.com"} {
 		m.RateLimitWait(h, time.Millisecond)
 	}
-	allowed := map[string]bool{"source": true, "result": true, "host": true, "outcome": true, "status": true, "version": true, "le": true}
+	for _, h := range []string{"api.github.com", "pypi.org", "other"} {
+		m.ServerPause(h, netguard.PauseRetryAfter)
+		m.Response(h, netguard.ClassOK)
+		m.DeadlineRefusal(h)
+	}
+	allowed := map[string]bool{
+		"source": true, "result": true, "host": true, "outcome": true, "status": true, "version": true, "le": true,
+		"bucket": true, "origin": true, "reason": true, "class": true,
+	}
 	series := 0
 	for _, f := range gather(t, m) {
 		if !strings.HasPrefix(f.GetName(), "angelia_") {
@@ -361,4 +370,88 @@ func TestConcurrentUseUnderRace(t *testing.T) {
 	}
 	wg.Wait()
 	mustHave(t, scrape(t, m), `angelia_delivery_attempts_total{outcome="retry"} 1600`)
+}
+
+// ADR 0027 §8: the gauges carry the effective table, one series per host
+// and bucket, with the origin of each limit; "other" is the fallback.
+func TestHostLimitGauges(t *testing.T) {
+	m := New(nil)
+	table, err := netguard.EffectiveLimits(map[string]netguard.HostLimit{
+		"127.0.0.1":      {Authenticated: netguard.Limit{Rate: 50, Burst: 50}, Anonymous: netguard.Limit{Rate: 50, Burst: 50}},
+		"api.github.com": {Authenticated: netguard.Limit{Rate: 100, Burst: 100}, Anonymous: netguard.Limit{Rate: 100, Burst: 100}},
+	}, netguard.HostLimit{Authenticated: netguard.Limit{Rate: 2, Burst: 2}, Anonymous: netguard.Limit{Rate: 2, Burst: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetHostLimits(table)
+	body := scrape(t, m)
+	mustHave(t, body,
+		`angelia_netguard_host_limit_rate{bucket="anonymous",host="127.0.0.1",origin="config"} 50`,
+		`angelia_netguard_host_limit_burst{bucket="authenticated",host="127.0.0.1",origin="config"} 50`,
+		`angelia_netguard_host_limit_burst{bucket="authenticated",host="api.github.com",origin="builtin"} 10`,
+		`angelia_netguard_host_limit_burst{bucket="anonymous",host="api.github.com",origin="builtin"} 1`,
+		`angelia_netguard_host_limit_rate{bucket="anonymous",host="crates.io",origin="builtin"} 1`,
+		`angelia_netguard_host_limit_rate{bucket="anonymous",host="other",origin="default"} 2`,
+	)
+	// Setting the table again replaces it.
+	defaults, _ := netguard.EffectiveLimits(nil, netguard.HostLimit{})
+	m.SetHostLimits(defaults)
+	body = scrape(t, m)
+	if strings.Contains(body, `host="127.0.0.1"`) {
+		t.Error("a host of the previous table is still exposed")
+	}
+	mustHave(t, body, `angelia_netguard_host_limit_rate{bucket="anonymous",host="other",origin="builtin"} 5`)
+}
+
+// ADR 0027 §8: the counters, with closed reason and class labels.
+func TestNetguardCounters(t *testing.T) {
+	m := New(nil)
+	m.ServerPause("pypi.org", netguard.PauseRetryAfter)
+	m.ServerPause("pypi.org", netguard.PauseRateLimitReset)
+	m.ServerPause("pypi.org", "surprise")
+	for _, c := range []string{"2xx", "304", "3xx", "4xx", "429", "5xx", "error", "1xx"} {
+		m.Response("API.GitHub.com", c)
+	}
+	m.DeadlineRefusal("other")
+	m.DeadlineRefusal("other")
+	mustHave(t, scrape(t, m),
+		`angelia_netguard_server_pauses_total{host="pypi.org",reason="retry_after"} 1`,
+		`angelia_netguard_server_pauses_total{host="pypi.org",reason="ratelimit_reset"} 1`,
+		`angelia_netguard_server_pauses_total{host="pypi.org",reason="other"} 1`,
+		`angelia_netguard_responses_total{class="304",host="api.github.com"} 1`,
+		`angelia_netguard_responses_total{class="429",host="api.github.com"} 1`,
+		`angelia_netguard_responses_total{class="error",host="api.github.com"} 1`,
+		`angelia_netguard_responses_total{class="other",host="api.github.com"} 1`,
+		`angelia_netguard_deadline_refusals_total{host="other"} 2`,
+	)
+}
+
+// The counters are fed by a real netguard client: a sink host outside the
+// table is "other", never its name.
+func TestNetguardClientFeedsCounters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	m := New(nil)
+	c, err := netguard.New(netguard.Config{
+		Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, Observer: m, MaxAttempts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetHostLimits(c.Limits())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if _, err := netguard.Fetch(t.Context(), c.HTTPClient(), req, netguard.Validators{}); err == nil {
+		t.Fatal("want a status error")
+	}
+	body := scrape(t, m)
+	mustHave(t, body,
+		`angelia_netguard_responses_total{class="429",host="other"} 1`,
+		`angelia_netguard_server_pauses_total{host="other",reason="retry_after"} 1`,
+	)
+	if strings.Contains(body, "127.0.0.1") {
+		t.Error("an unlisted host reached a label")
+	}
 }

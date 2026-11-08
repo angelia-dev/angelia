@@ -219,6 +219,17 @@ func normHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(h), ".")
 }
 
+// slotPastDeadline is the error of a wait refused because the host's next
+// slot comes after the caller's deadline. It reads and matches as
+// context.DeadlineExceeded, and lets the client tell it from a wait the
+// context ended (Observer.DeadlineRefusal).
+type slotPastDeadline struct{}
+
+func (slotPastDeadline) Error() string { return context.DeadlineExceeded.Error() }
+func (slotPastDeadline) Unwrap() error { return context.DeadlineExceeded }
+
+var errSlotPastDeadline error = slotPastDeadline{}
+
 // limiter is a set of per-host token buckets. It is safe for concurrent use.
 type limiter struct {
 	clock    Clock
@@ -330,7 +341,7 @@ func (l *limiter) wait(ctx context.Context, host string, authed bool) error {
 
 	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < ready.Sub(now) {
 		l.refund(b)
-		return fmt.Errorf("netguard: rate limit wait for %s would pass the deadline: %w", host, context.DeadlineExceeded)
+		return fmt.Errorf("netguard: rate limit wait for %s would pass the deadline: %w", host, errSlotPastDeadline)
 	}
 	for {
 		if err := l.clock.Sleep(ctx, ready.Sub(now)); err != nil {

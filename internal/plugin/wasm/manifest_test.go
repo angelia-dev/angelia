@@ -88,3 +88,11 @@ func TestHelpers(t *testing.T) {
 		t.Errorf("sortedKeys = %v", got)
 	}
 }
+
+// ADR 0027 §5: a plugin manifest cannot set host limits.
+func TestParseManifestRefusesHostLimits(t *testing.T) {
+	_, err := ParseManifest([]byte(`{"kind":"cargo-registry","allowed_hosts":["crates.io"],"host_limits":{"hosts":{"crates.io":{"rps":100}}}}`))
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("err = %v, want ErrInvalidManifest", err)
+	}
+}

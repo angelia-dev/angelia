@@ -13,9 +13,15 @@ import (
 // serveAndGet runs `serve` with args and returns the status and body of GET path.
 func serveAndGet(t *testing.T, path string, args ...string) (int, string) {
 	t.Helper()
+	return serveAndGetCfg(t, "", path, args...)
+}
+
+// serveAndGetCfg is serveAndGet with extra lines in the instance config.
+func serveAndGetCfg(t *testing.T, extra, path string, args ...string) (int, string) {
+	t.Helper()
 	t.Setenv("ANGELIA_CONFIG", "")
 	addr := freeAddr(t)
-	cfg := writeCfg(t, fmt.Sprintf("listen: %q\n", addr))
+	cfg := writeCfg(t, fmt.Sprintf("listen: %q\n", addr)+extra)
 	root := newRootCmd()
 	root.SetOut(&syncBuf{})
 	root.SetErr(&syncBuf{})

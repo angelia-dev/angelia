@@ -81,10 +81,14 @@ func newConfigCheckCmd() *cobra.Command {
 			}
 			kindWarns = append(kindWarns, sourceKeyWarnings(cfg, plugins)...)
 			kindWarns = append(kindWarns, storedTargetWarnings(cmd.Context(), cfg, plugins)...)
+			kindWarns = append(kindWarns, hostLimitWarnings(cfg, plugins)...)
 			for _, w := range kindWarns {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 			}
 			show := func(w io.Writer) error {
+				if err := printHostLimits(w, cfg); err != nil {
+					return err
+				}
 				if unreadable {
 					if _, err := fmt.Fprintf(w, "plugins in %s: not readable, not checked\n", cfg.PluginsDir); err != nil {
 						return err

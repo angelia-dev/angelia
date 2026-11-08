@@ -172,6 +172,10 @@ type HTTP struct {
 	// roots for every outgoing HTTPS request, for registries behind a
 	// private CA. Env ANGELIA_HTTP_CA_FILE. Read by LoadCAPool.
 	CAFile string `yaml:"ca_file"`
+	// HostLimits sets per-host rate limits for netguard (ADR 0027). Only
+	// the instance configuration sets it, and there is no environment
+	// override.
+	HostLimits HostLimits `yaml:"host_limits"`
 }
 
 // LoadCAPool returns the system roots plus the certificates of CAFile, or
@@ -642,6 +646,7 @@ func (c *Config) Validate() error {
 	if strings.ContainsAny(c.HTTP.CAFile, "\r\n") {
 		bad("http.ca_file: must be a single-line path")
 	}
+	errs = append(errs, c.HTTP.HostLimits.validate()...)
 
 	kinds := make([]string, 0, len(c.Sources))
 	for k := range c.Sources {
