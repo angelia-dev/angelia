@@ -18,6 +18,7 @@ import (
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/crates"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
@@ -72,7 +73,7 @@ func TestGenerateWatches(t *testing.T) {
 func TestAngeliaConfigIsValid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "angelia.yaml")
-	if err := WriteAngeliaConfig(path, "127.0.0.1:9", "http://127.0.0.1:5000", dir, "127.0.0.1/32"); err != nil {
+	if err := WriteAngeliaConfig(path, "127.0.0.1:9", "http://127.0.0.1:5000", dir, "127.0.0.1/32", DefaultHostLimit); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(context.Background(), config.Options{Path: path})
@@ -91,6 +92,32 @@ func TestAngeliaConfigIsValid(t *testing.T) {
 	// Only the registry's address is allowed past the SSRF guard.
 	if p := cfg.HTTP.AllowPrefixes(); len(p) != 1 || p[0].String() != "127.0.0.1/32" {
 		t.Errorf("allow_networks = %v", p)
+	}
+	// ADR 0027 §9: the fake registry's host gets 50 rps, burst 50.
+	hosts, fallback := cfg.HTTP.HostLimits.Netguard()
+	if l := hosts["127.0.0.1"]; len(hosts) != 1 || l.Anonymous.Rate != 50 || l.Anonymous.Burst != 50 || l.Authenticated != l.Anonymous {
+		t.Errorf("host_limits = %+v", hosts)
+	}
+	if fallback.Anonymous.Rate != 0 {
+		t.Errorf("the default limit changed: %+v", fallback)
+	}
+	// In a container the instance dials the registry by name: the limit
+	// follows the URL's host.
+	if err := WriteAngeliaConfig(path, ":8080", "http://host.docker.internal:5000", dir, "172.17.0.1/32", HostLimit{RPS: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = config.Load(context.Background(), config.Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	// BENCH_HOST_RPS=5 without a burst: angelia's default limit, burst ceil(5).
+	if hosts, _ := cfg.HTTP.HostLimits.Netguard(); hosts["host.docker.internal"].Anonymous != (netguard.Limit{Rate: 5, Burst: 5}) {
+		t.Errorf("container host_limits = %+v", hosts)
+	}
+	if got := registryHostLimit("http://127.0.0.1:5000", DefaultHostLimit); got != "127.0.0.1 50 rps, burst 50 (http.host_limits)" {
+		t.Errorf("registryHostLimit = %q", got)
+	}
+	if got := registryHostLimit("http://127.0.0.1:5000", HostLimit{RPS: 2.5}); got != "127.0.0.1 2.5 rps, burst 3 (http.host_limits)" {
+		t.Errorf("registryHostLimit = %q", got)
 	}
 }
 
@@ -443,7 +470,7 @@ func TestRunWritesReport(t *testing.T) {
 	o := options{
 		n: 50, duration: 30 * time.Millisecond, interval: 10 * time.Millisecond, fakeregConfig: cfgPath,
 		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: 5 * time.Minute},
-		checkInterval: 5 * time.Millisecond, releaseCensor: 10 * time.Millisecond,
+		checkInterval: 5 * time.Millisecond, releaseCensor: 10 * time.Millisecond, hostLimit: DefaultHostLimit,
 		newTarget: func(options, string) Target { return ft },
 		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef"}),
 	}
@@ -478,6 +505,7 @@ func TestRunWritesReport(t *testing.T) {
 	for _, want := range []string{
 		"| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "oci: not measured",
 		"RSS (VmRSS) max", "## Due-to-check delay", "## Release lag (information, no pass/fail)", "watch loader `watch-file`",
+		"Fake registry host limit: 127.0.0.1 50 rps, burst 50 (http.host_limits).",
 	} {
 		if !bytes.Contains(md, []byte(want)) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
@@ -497,6 +525,12 @@ func TestRunFlags(t *testing.T) {
 	if code := run(context.Background(), []string{"-check-interval", "1m"}, &bytes.Buffer{}, &stderr); code != 2 ||
 		!strings.Contains(stderr.String(), "docs/watch-file.md") {
 		t.Errorf("-check-interval below the watch file minimum: exit %d, %s", code, stderr.String())
+	}
+	for _, args := range [][]string{{"-host-rps", "0"}, {"-host-rps", "101"}, {"-host-burst", "201"}, {"-host-burst", "-1"}} {
+		stderr.Reset()
+		if code := run(context.Background(), args, &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "host_limits") {
+			t.Errorf("%v: exit %d, %s", args, code, stderr.String())
+		}
 	}
 	if code := run(context.Background(), []string{"-bogus"}, &bytes.Buffer{}, &stderr); code != 2 {
 		t.Errorf("unknown flag: exit %d", code)

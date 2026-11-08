@@ -250,15 +250,17 @@ func warnDrainBudget(log *slog.Logger, drain time.Duration) {
 }
 
 // newNetClient builds the one outgoing HTTP client of the process, with the
-// SSRF guard's allowlist from http.allow_networks. obs may be nil.
+// SSRF guard's allowlist from http.allow_networks and the per-host rate
+// limits from http.host_limits (ADR 0027). obs may be nil.
 func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
 	roots, err := cfg.HTTP.LoadCAPool()
 	if err != nil {
 		return nil, fmt.Errorf("http client: %w", err)
 	}
+	hosts, fallback := netguardLimits(cfg)
 	c, err := netguard.New(netguard.Config{
 		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs, RootCAs: roots,
-		Proxy: outgoingProxy,
+		Proxy: outgoingProxy, HostLimits: hosts, FallbackLimit: fallback,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("http client: %w", err)
@@ -306,6 +308,9 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	client, err := newNetClient(d.cfg, d.log, obs)
 	if err != nil {
 		return out, err
+	}
+	if d.metrics != nil {
+		d.metrics.SetHostLimits(client.Limits())
 	}
 	hc := client.HTTPClient()
 	if withScheduler {

@@ -49,6 +49,7 @@ type options struct {
 	container               bool
 	memory, cpus, image     string
 	allowNetwork            string // http.allow_networks entry for the registry; "" picks it
+	hostLimit               HostLimit
 	readyTimeout            time.Duration
 	// checkInterval is the per-watch check interval the loader asks for;
 	// lag counts only releases published one interval (plus jitter) after
@@ -77,8 +78,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.DurationVar(&o.readyTimeout, "ready-timeout", 5*time.Minute, "how long to wait for /readyz (it includes applying the watch file)")
 	fs.DurationVar(&o.checkInterval, "check-interval", watchfile.MinInterval, "per-watch check interval (the watch file accepts 5m to 720h); the warm-up is 1.1 times this")
 	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDR the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the address of host.docker.internal")
+	fs.Float64Var(&o.hostLimit.RPS, "host-rps", DefaultHostLimit.RPS, "rate limit of the fake registry's host in requests per second (http.host_limits, 1/3600 to 100); 5 is angelia's default")
+	fs.IntVar(&o.hostLimit.Burst, "host-burst", 0, "burst of the fake registry's host (1 to 200); default ceil(-host-rps)")
 	o.releaseCensor = targetDelayP95
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !(o.hostLimit.RPS >= 1.0/3600 && o.hostLimit.RPS <= 100) || o.hostLimit.Burst < 0 || o.hostLimit.Burst > 200 {
+		_, _ = fmt.Fprintln(stderr, "load: -host-rps must be 1/3600 to 100 and -host-burst 1 to 200 (http.host_limits bounds)")
 		return 2
 	}
 	if o.n < 1 || o.duration <= 0 || o.interval <= 0 || o.checkInterval <= 0 || fs.NArg() != 0 {
@@ -170,7 +177,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := WriteAngeliaConfig(filepath.Join(workdir, "angelia.yaml"), listen, registry, angeliaDir, allow); err != nil {
+	if err := WriteAngeliaConfig(filepath.Join(workdir, "angelia.yaml"), listen, registry, angeliaDir, allow, o.hostLimit); err != nil {
 		return nil, err
 	}
 
@@ -179,6 +186,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		Params: Params{
 			Watches: o.n, PerEcosystem: perEco, Loader: o.loader.Name(), Duration: o.duration.String(),
 			SampleInterval: o.interval.String(), FakeregConfig: o.fakeregConfig, StartedAt: time.Now().UTC(),
+			HostLimit: registryHostLimit(registry, o.hostLimit),
 		},
 	}
 	rep.Environment = o.probe.environment(ctx, o.bin, t, o.container)

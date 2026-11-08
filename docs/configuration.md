@@ -28,6 +28,8 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `sources.<name>.api` | none | `json` | `pypi` sources only: `json` (the PyPI JSON API) or `simple` (the Simple API, PEP 503 / PEP 691, for pypiserver); see [pypiserver](private-registries.md#pypiserver-and-other-simple-api-only-indexes) |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
+| `http.host_limits.default` | none | unset (5 rps, burst 5) | `{rps, burst}` for every unlisted host: `rps` from 1/3600 to 20, `burst` from 1 to 20; see [Per-host rate limits](#per-host-rate-limits) |
+| `http.host_limits.hosts.<host>` | none | empty | `{rps, burst}` for one exact host: `rps` from 1/3600 to 100, `burst` from 1 to 200 (default `ceil(rps)`) |
 | `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
 | `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
@@ -118,6 +120,101 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
 See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink
 and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
 secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
+
+### Per-host rate limits
+
+Every request, of a source, a sink or a plugin, waits for a token in its host's bucket
+([ADR 0027](adr/0027-configurable-per-host-rate-limits.md)). Without configuration:
+
+- `api.github.com`, `gitlab.com` and `crates.io` follow their published budgets (5,000/h and 60/h for
+  GitHub, 2,000/min and 500/min for GitLab, with and without a token; 1/s for crates.io).
+- Every other host, public registries and webhook receivers included, gets 5 requests per second with a
+  burst of 5.
+
+`http.host_limits` changes these limits, for example for a private mirror that can take more, or for a
+large watch list on one registry:
+
+```yaml
+http:
+  host_limits:
+    default:                  # optional: replaces 5 rps / burst 5 for unlisted hosts
+      rps: 5
+      burst: 5
+    hosts:                    # optional: exact host names
+      nexus.internal.example: {rps: 40, burst: 40}
+      pypi.org: {rps: 10, burst: 20}
+      registry.npmjs.org: {rps: 10}       # burst defaults to ceil(rps)
+      api.github.com: {rps: 0.5, burst: 5} # may only lower a built-in budget
+```
+
+- **Values.** `rps` is a positive decimal number of requests per second, refilled continuously. `burst` is an
+  integer, the bucket size; it defaults to `ceil(rps)`, at least 1. One entry applies to both the
+  authenticated and the anonymous bucket of the host; the two buckets stay separate.
+- **Bounds.** Under `hosts`, `rps` goes from 1/3600 (one per hour) to 100 and `burst` from 1 to 200. Under
+  `default`, at most 20 and 20, because it raises every host nobody named, webhook hosts and hosts a
+  watch-file author can choose included. Out of range, `0`, a negative value, a string such as `"10/s"`, a
+  fractional `burst` or an unknown key fails `config check` and `serve`.
+- **Host names.** Matching is exact and case-insensitive, on the host name only: all ports of a host share
+  its bucket, and a trailing dot is ignored. Write a host name, an IPv4 address or an IPv6 address without
+  brackets, in lower case and in its canonical form (`::1`, not `0:0::1`; no `%zone`). Write an
+  internationalised domain name in its punycode (`xn--`) form, as it appears in a URL's host. A scheme, a
+  port, a path, brackets and upper case are errors, as are wildcards and suffixes (`*.example.com`,
+  `.example.com`), and one host listed twice. A redirect is limited by the host it goes to: a limit on
+  `pypi.org` does not cover `files.pythonhosted.org`.
+- **Built-in budgets can only be lowered.** For `api.github.com`, `gitlab.com` and `crates.io`, the effective
+  limit is the lower of the entry and the built-in one, bucket by bucket, rate by rate and burst by burst. A
+  value above the authenticated (higher) budget is capped, with a warning. The anonymous budget is lower
+  (60/h for GitHub), so an entry that only lowers the authenticated bucket is usually capped in the
+  anonymous one too, without a warning: `config check` lists both effective buckets.
+- **The server keeps the last word.** `Retry-After`, `X-RateLimit-*` and `RateLimit-*` still pause a host
+  (for at most an hour), a 429 is still retried with backoff (at most 4 attempts), and every attempt, retries
+  and redirect hops included, takes a token. A limit is a ceiling, never a floor.
+- **Only here.** The limits are read at start, from this file only: there is no environment variable, and
+  the watch file, the REST API, a plugin manifest and `grants.yaml` cannot set them (`host_limits` is an
+  unknown key there). Raising a limit never widens the SSRF guard: `allow_networks` still decides what may be
+  dialled.
+
+**Limits apply per process.** Each `serve` process has its own buckets: three schedulers sharing one
+database, each with `pypi.org: {rps: 10}`, can send 30 requests per second to PyPI. Divide the rate you
+intend for a host by the number of scheduler and worker processes. Sources, sinks and plugins share the
+client, so a limit on a host also paces deliveries to it.
+
+**Public registries.** Keep `pypi.org`, `registry.npmjs.org`, `index.crates.io` and the others at or near the
+default. Angelia sends conditional requests (a 304 still takes a token here, but costs the registry little);
+for a large watch list, prefer longer intervals or a mirror over a higher limit. Every request carries
+`http.user_agent`, so a registry can tell which instance sends it. `config check` warns above 20 rps on the
+default host of a built-in source.
+
+**Sizing.** A host needs about `targets on the host / shortest interval x requests per check`. Too low a
+limit shows as a growing `angelia_netguard_rate_limit_wait_seconds`, as
+`angelia_netguard_deadline_refusals_total` (a check whose slot comes after its 3-minute deadline fails at
+once and backs off) and as check lag. With 4 workers, checks waiting on a saturated host also delay checks
+of other hosts. See [Metrics](operations/metrics.md).
+
+**Metrics.** A host listed here becomes a value of the `host` label of the netguard metrics, like the
+built-in hosts; any other host is `other`. Do not list a webhook host whose name you do not want in
+metrics. A host literally named `other` is accepted, but its series share that label with every unlisted
+host, and `config check` warns about it. In the `angelia_netguard_host_limit_*` gauges, `origin` is
+`config` as soon as any part of an entry applies to a bucket, for example a lowered rate with the burst
+capped at the built-in value; it is `builtin` only when the built-in limit applies unchanged.
+
+`config check` prints the effective table once, with the origin of each line, and warns about a value above
+a built-in budget, a rate above 20 on a public registry, a raised `default`, a host named `other` and a host
+no configured source or plugin uses (sinks are not in this file, so for a webhook host that warning is
+expected). `serve` logs the
+same warnings at start. For example:
+
+```text
+http host limits (per process):
+  127.0.0.1                50 rps, burst 50 (config)
+  api.github.com           1.39 rps, burst 10 with a token; 0.0164 rps, burst 1 without (built-in)
+  crates.io                1 rps, burst 1 (built-in)
+  gitlab.com               33.2 rps, burst 10 with a token; 8.17 rps, burst 10 without (built-in)
+  other hosts              5 rps, burst 5 (built-in default)
+```
+
+The origin is `config` for a host listed under `hosts`, `config, capped at built-in` when a listed value was
+above a built-in budget, `built-in`, `built-in default` or `config default` (from `default`).
 
 ## REST API
 
@@ -231,6 +328,11 @@ with the `grants.yaml` above, `CRATES_MIRROR_TOKEN` set and `GITLAB_TOKEN` unset
 
 ```
 configuration OK
+http host limits (per process):
+  api.github.com           1.39 rps, burst 10 with a token; 0.0164 rps, burst 1 without (built-in)
+  crates.io                1 rps, burst 1 (built-in)
+  gitlab.com               33.2 rps, burst 10 with a token; 8.17 rps, burst 10 without (built-in)
+  other hosts              5 rps, burst 5 (built-in default)
 plugins in /var/lib/angelia/plugins: 1
   cargo-registry
     allowed hosts: crates.io (manifest), crates-mirror.example.com (grants), gitlab.example.com (grants)

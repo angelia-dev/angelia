@@ -72,6 +72,7 @@ type Params struct {
 	FakeregConfig    string         `json:"fakereg_config"`
 	StartedAt        time.Time      `json:"started_at"`
 	ReadyAt          time.Time      `json:"ready_at"`
+	HostLimit        string         `json:"host_limit"` // the fake registry host's rate limit
 	SchedulerWorkers int            `json:"scheduler_workers"`
 	DelayFrom        time.Time      `json:"delay_window_from"`
 	DelayTo          time.Time      `json:"delay_window_to"`
@@ -200,6 +201,9 @@ func (r *Report) Markdown(w io.Writer) error {
 	p := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	e := r.Environment
 	p("# %s\n\n**Verdict: %s**\n", r.Benchmark, r.Verdict)
+	if r.Params.HostLimit != "" {
+		p("Fake registry host limit: %s. The result holds only with this limit.\n", r.Params.HostLimit)
+	}
 	for _, n := range r.Notes {
 		p("> %s\n", n)
 	}

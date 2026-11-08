@@ -9,9 +9,30 @@ import (
 )
 
 type waitObs struct {
-	mu    sync.Mutex
-	hosts []string
-	waits []time.Duration
+	mu        sync.Mutex
+	hosts     []string
+	waits     []time.Duration
+	pauses    []string // host/reason
+	responses []string // host/class
+	refusals  []string
+}
+
+func (o *waitObs) ServerPause(host, reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pauses = append(o.pauses, host+"/"+reason)
+}
+
+func (o *waitObs) Response(host, class string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.responses = append(o.responses, host+"/"+class)
+}
+
+func (o *waitObs) DeadlineRefusal(host string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.refusals = append(o.refusals, host)
 }
 
 func (o *waitObs) RateLimitWait(host string, d time.Duration) {

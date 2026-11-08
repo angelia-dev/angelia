@@ -62,9 +62,14 @@ type Config struct {
 	// A longer wait, or one past the context deadline, ends the call with
 	// the last response; the host stays paused. Default 2m.
 	MaxRetryWait time.Duration
-	// HostLimits override or extend DefaultHostLimits, keyed by hostname.
+	// HostLimits extend DefaultHostLimits, keyed by hostname, and may
+	// lower them: the rates and bursts of a host of DefaultHostLimits are
+	// capped at its built-in limit, bucket by bucket (ADR 0027 §4); its
+	// MaxBodyBytes and Timeout are kept. Client.Limits returns the result.
+	// `angelia serve` fills it from http.host_limits.hosts.
 	HostLimits map[string]HostLimit
 	// FallbackLimit applies to other hosts. Default DefaultFallbackLimit().
+	// `angelia serve` fills it from http.host_limits.default.
 	FallbackLimit HostLimit
 	// ExtraAuthHeaders names request headers, besides Authorization and
 	// PRIVATE-TOKEN, whose presence (non-empty value) makes the limiter use a
@@ -126,6 +131,63 @@ type Observer interface {
 	// nil pointer stored in the interface: that is not a nil Observer and
 	// would panic on the first call.
 	RateLimitWait(host string, d time.Duration)
+	// ServerPause is called each time a response pauses its host's bucket:
+	// reason is PauseRetryAfter (a Retry-After header) or
+	// PauseRateLimitReset (an X-RateLimit-* or RateLimit-* pair with
+	// Remaining at 0). host is reported as for RateLimitWait.
+	ServerPause(host, reason string)
+	// Response is called once per attempt that was sent, with the class of
+	// its outcome: ClassOK ("2xx"), ClassNotModified ("304"), "3xx", "4xx",
+	// ClassTooManyRequests ("429"), "5xx", or ClassError when the attempt
+	// got no response (a transport error or a timeout). host is reported as
+	// for RateLimitWait.
+	Response(host, class string)
+	// DeadlineRefusal is called when the limiter refuses a wait at once
+	// because the host's next slot comes after the caller's deadline: the
+	// sign that a host's limit is too low for the demand (ADR 0027 §8).
+	// host is reported as for RateLimitWait.
+	DeadlineRefusal(host string)
+}
+
+// Reasons of Observer.ServerPause.
+const (
+	PauseRetryAfter     = "retry_after"
+	PauseRateLimitReset = "ratelimit_reset"
+)
+
+// Classes of Observer.Response.
+const (
+	ClassOK              = "2xx"
+	ClassNotModified     = "304"
+	ClassRedirect        = "3xx"
+	ClassClientError     = "4xx"
+	ClassTooManyRequests = "429"
+	ClassServerError     = "5xx"
+	ClassError           = "error"
+)
+
+// responseClass classifies the outcome of one attempt for Observer.Response.
+// A status outside 200-599 (an informational status a transport should not
+// return as final) counts as ClassError.
+func responseClass(resp *http.Response, err error) string {
+	if err != nil || resp == nil {
+		return ClassError
+	}
+	switch code := resp.StatusCode; {
+	case code == http.StatusNotModified:
+		return ClassNotModified
+	case code == http.StatusTooManyRequests:
+		return ClassTooManyRequests
+	case code >= 200 && code < 300:
+		return ClassOK
+	case code >= 300 && code < 400:
+		return ClassRedirect
+	case code >= 400 && code < 500:
+		return ClassClientError
+	case code >= 500 && code < 600:
+		return ClassServerError
+	}
+	return ClassError
 }
 
 // Client is the shared HTTP transport: an http.RoundTripper that applies
@@ -138,6 +200,7 @@ type Client struct {
 	transport http.RoundTripper
 	guard     *Guard
 	limiter   *limiter
+	table     []EffectiveLimit
 	clock     Clock
 	log       *slog.Logger
 	jitter    func(time.Duration) time.Duration
@@ -158,7 +221,11 @@ func New(cfg Config) (*Client, error) {
 	setDefault(&cfg.BaseBackoff, DefaultBaseBackoff)
 	setDefault(&cfg.MaxBackoff, DefaultMaxBackoff)
 	setDefault(&cfg.MaxRetryWait, DefaultMaxRetryWait)
-	setDefault(&cfg.FallbackLimit, DefaultFallbackLimit())
+	table, limits, fallback, err := resolveLimits(cfg.HostLimits, cfg.FallbackLimit)
+	if err != nil {
+		return nil, err
+	}
+	cfg.FallbackLimit = fallback
 	if cfg.Resolver == nil {
 		cfg.Resolver = net.DefaultResolver
 	}
@@ -173,23 +240,11 @@ func New(cfg Config) (*Client, error) {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	if cfg.FallbackLimit.MaxBodyBytes != 0 {
-		return nil, errors.New("netguard: fallback limit: MaxBodyBytes must be zero (use Config.MaxBodyBytes)")
-	}
-	if err := cfg.FallbackLimit.validate(); err != nil {
-		return nil, fmt.Errorf("netguard: fallback limit: %w", err)
-	}
 	cfg.ExtraAuthHeaders = slices.Clone(cfg.ExtraAuthHeaders)
-	limits := DefaultHostLimits()
-	for h, l := range cfg.HostLimits {
-		if err := l.validate(); err != nil {
-			return nil, fmt.Errorf("netguard: limit for %s: %w", h, err)
-		}
-		limits[normHost(h)] = l
-	}
 
 	return &Client{
 		cfg:       cfg,
+		table:     table,
 		transport: cfg.Transport,
 		guard:     guard,
 		limiter:   newLimiter(cfg.Clock, cfg.FallbackLimit, limits),
@@ -301,6 +356,9 @@ func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 	for attempt := 1; ; attempt++ {
 		waitStart := c.clock.Now()
 		if err := c.limiter.wait(ctx, host, authed); err != nil {
+			if c.cfg.Observer != nil && errors.Is(err, errSlotPastDeadline) {
+				c.cfg.Observer.DeadlineRefusal(c.limiter.observedHost(host))
+			}
 			closeRequestBody(req)
 			return nil, err
 		}
@@ -309,6 +367,9 @@ func (c *Client) roundTrip(req *http.Request) (*http.Response, error) {
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, c.limiter.timeout(host, c.cfg.Timeout))
 		resp, err := c.transport.RoundTrip(r.WithContext(attemptCtx))
+		if c.cfg.Observer != nil {
+			c.cfg.Observer.Response(c.limiter.observedHost(host), responseClass(resp, err))
+		}
 		retry, serverWait := c.inspect(ctx, attemptCtx, host, authed, resp, err)
 		wait := serverWait
 		if wait <= 0 {
@@ -394,9 +455,12 @@ func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bo
 		return errors.As(err, &ne) && ne.Timeout(), 0
 	}
 	now := c.clock.Now()
-	retryAt := retryAt(resp.Header, now)
+	retryAt, reason := retryAtReason(resp.Header, now)
 	if !retryAt.IsZero() {
 		c.limiter.pause(host, authed, retryAt)
+		if c.cfg.Observer != nil {
+			c.cfg.Observer.ServerPause(c.limiter.observedHost(host), reason)
+		}
 		serverWait = retryAt.Sub(now)
 	}
 	switch code := resp.StatusCode; {
@@ -423,8 +487,15 @@ func (c *Client) inspect(ctx, attemptCtx context.Context, host string, authed bo
 // The X- pair takes precedence if both are present. It returns the zero time
 // if the server set no limit.
 func retryAt(h http.Header, now time.Time) time.Time {
+	t, _ := retryAtReason(h, now)
+	return t
+}
+
+// retryAtReason is retryAt plus the header that set the time:
+// PauseRetryAfter or PauseRateLimitReset ("" with the zero time).
+func retryAtReason(h http.Header, now time.Time) (time.Time, string) {
 	if d := ParseRetryAfter(h.Get("Retry-After"), now); d > 0 {
-		return now.Add(d)
+		return now.Add(d), PauseRetryAfter
 	}
 	for _, p := range [][2]string{{"X-RateLimit-Remaining", "X-RateLimit-Reset"}, {"RateLimit-Remaining", "RateLimit-Reset"}} {
 		if n, ok := leadingInt(h.Get(p[0])); !ok || n > 0 {
@@ -432,11 +503,11 @@ func retryAt(h http.Header, now time.Time) time.Time {
 		}
 		if reset, err := strconv.ParseInt(h.Get(p[1]), 10, 64); err == nil {
 			if t := time.Unix(reset, 0); t.After(now) {
-				return t
+				return t, PauseRateLimitReset
 			}
 		}
 	}
-	return time.Time{}
+	return time.Time{}, ""
 }
 
 // leadingInt parses the integer at the start of v, ignoring parameters after

@@ -430,3 +430,23 @@ worker-count question of ADR 0009, not a reason to raise this limit.
   [ADR 0023](0023-webhook-sink-standard-webhooks.md) (sinks share the client)
 - angelia-dev/angelia#62 (maintainer decisions of 2026-11-08), #215 (first 10k run), #216 (due-to-check
   delay)
+
+## Amendment 2026-11-08: implementation notes (#219)
+
+The decision is unchanged. Implementing it (angelia-dev/angelia#219) settled these details, which the
+sections above leave open or state differently:
+
+- **Benchmark host (§9).** The bench sets the limit on the host name of the fake registry's URL, not on
+  an IP address: `127.0.0.1` in process mode, `host.docker.internal` in container mode. The limiter keys
+  its buckets on `URL.Hostname()`, so a limit on the bridge gateway or Docker Desktop address would never
+  apply to requests sent to `host.docker.internal`. `BENCH_HOST_RPS` (default 50) and `BENCH_HOST_BURST`
+  (default `ceil(rps)`) set it; `BENCH_HOST_RPS=5` runs at the default limit.
+- **IPv6 entries (§3).** An IPv6 address must be written in its canonical form (`::1`, not `0:0::1`), as
+  `netip.Addr.String()` prints it, because matching is by exact spelling; the error names the canonical
+  form. An address with a zone (`fe80::1%eth0`) is refused.
+- **Warning on built-in budgets (§4, §6).** One entry applies to both buckets. The warning compares the
+  entry with the authenticated bucket, the higher built-in limit of every built-in host. The anonymous
+  bucket is capped at its own lower budget without a warning; `config check` lists both effective
+  buckets.
+- **A host named `other` (§8).** It is a valid host name and is accepted, but its metrics share the
+  `host="other"` label of every unlisted host. `config check` and the `serve` start log warn about it.

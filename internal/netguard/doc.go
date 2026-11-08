@@ -7,7 +7,9 @@
 //
 //   - a per-host token bucket with defaults for known hosts
 //     ([DefaultHostLimits]) and separate budgets for authenticated and
-//     anonymous requests;
+//     anonymous requests. [Config].HostLimits and FallbackLimit (from
+//     http.host_limits, ADR 0027) add hosts and replace the fallback, but
+//     can only lower a built-in budget ([EffectiveLimits]);
 //   - pauses driven by Retry-After and GitHub's X-RateLimit-* headers;
 //   - retries with exponential backoff and full jitter on 429, 5xx and
 //     timeouts, for idempotent requests only;
