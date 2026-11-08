@@ -213,6 +213,7 @@ Proposed stack [P0]:
 
 **Phase 0 benchmarks (pass/fail):**
 1. 10,000 watches over 5 ecosystems on 1 vCPU / 256 MB: P95 check lag < 2 min, RSS < 100 MB, CPU < 20%.
+   - *Amended 2026-11-08 (maintainer decision on [#62](https://github.com/angelia-dev/angelia/issues/62)):* "check lag" is the **due-to-check delay**, how late each check starts compared with the time it was due (lease time minus `next_check_at`, the histogram `angelia_check_lag_seconds`), measured by the benchmark from angelia's own metrics over the steady-state window. It measures what the scheduler controls: whether 10,000 watches fit in 1 vCPU and the rate limits without checks queuing up. The earlier reading, publish to first serve of a release, stays in the report as information without pass/fail: polling at the 5-minute minimum interval cannot get it below about 4.75 min whatever the scheduler does, so it would fail a target that no implementation of polling can meet.
 2. Idle (100 watches): RSS < 40 MB, binary < 40 MB, image < 50 MB (distroless).
 3. GitHub: 2,000 repos on a single token without hitting 429/403 (ETag hit rate > 90%).
 4. WASM source plugin round-trip overhead < 5 ms per call vs native.

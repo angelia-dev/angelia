@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,21 +279,23 @@ func TestDockerTarget(t *testing.T) {
 
 func TestEvaluate(t *testing.T) {
 	samples := []Sample{{MemoryBytes: 30 << 20}, {MemoryBytes: 40 << 20, CPUPercent: 10}}
-	reg := fakereg.Stats{Total: fakereg.EcoStats{Published: 10, Lag: fakereg.LagStats{Samples: 10, P95Seconds: 30}}}
+	reg := fakereg.Stats{Total: fakereg.EcoStats{Published: 10, Lag: fakereg.LagStats{Samples: 10, P95Seconds: 500}}}
 	for name, tc := range map[string]struct {
-		rss  int64
-		lag  float64
-		want string
+		rss   int64
+		delay float64
+		open  bool
+		want  string
 	}{
-		"pass":      {40 << 20, 30, "pass"},
-		"rss fails": {200 << 20, 30, "fail"},
-		"lag fails": {40 << 20, 300, "fail"},
+		"pass":            {40 << 20, 30, false, "pass"},
+		"rss fails":       {200 << 20, 30, false, "fail"},
+		"delay fails":     {40 << 20, 130, false, "fail"},
+		"open tail fails": {40 << 20, 3600, true, "fail"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := append([]Sample(nil), samples...)
 			s[1].MemoryBytes = tc.rss
-			r := &Report{Samples: s, Registry: reg}
-			r.Registry.Total.Lag.P95Seconds = tc.lag
+			// The release lag (500 s here) is information: it never fails the run.
+			r := &Report{Samples: s, Registry: reg, DueDelay: DueDelay{Samples: 100, P95Seconds: tc.delay, Open: tc.open}}
 			r.Resources = summarizeSamples(s)
 			r.evaluate()
 			if r.Verdict != tc.want {
@@ -300,12 +304,47 @@ func TestEvaluate(t *testing.T) {
 			if len(r.Notes) != 1 || !strings.Contains(r.Notes[0], "oci: not measured") {
 				t.Errorf("notes = %v", r.Notes)
 			}
+			if r.Checks[0].Name != "due-to-check delay P95" {
+				t.Errorf("first check = %+v", r.Checks[0])
+			}
+			for _, c := range r.Checks {
+				if strings.Contains(c.Name, "release lag") {
+					t.Errorf("release lag must not be a pass/fail check: %+v", c)
+				}
+			}
 		})
 	}
+	// No check was leased in the window: the delay is not measured.
 	r := &Report{Samples: samples, Resources: summarizeSamples(samples)}
 	r.evaluate()
 	if r.Verdict != "incomplete" || len(r.Notes) != 2 {
-		t.Errorf("no releases: verdict %s, notes %v", r.Verdict, r.Notes)
+		t.Errorf("no delay samples: verdict %s, notes %v", r.Verdict, r.Notes)
+	}
+	// Releases published but none seen is information, not a failure.
+	r = &Report{Samples: samples, Resources: summarizeSamples(samples), Registry: reg, DueDelay: DueDelay{Samples: 5, P95Seconds: 1}}
+	r.Registry.Total.Lag.Samples = 0
+	r.evaluate()
+	if r.Verdict != "pass" {
+		t.Errorf("verdict = %s", r.Verdict)
+	}
+}
+
+func TestMarkdownReportsDelayAndReleaseLag(t *testing.T) {
+	r := &Report{
+		Benchmark: "b", DueDelay: DueDelay{Samples: 1234, P50Seconds: 1.5, P95Seconds: 42.25, P99Seconds: 99, Open: true},
+		Registry: fakereg.Stats{Total: fakereg.EcoStats{Published: 3, Seen: 3, Lag: fakereg.LagStats{Samples: 3, P50Seconds: 100, P95Seconds: 280}}},
+	}
+	var b bytes.Buffer
+	if err := r.Markdown(&b); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Due-to-check delay", "1234 checks", "P50 1.5s", "P95 42.2s", "P99 99.0s", "above the highest histogram bucket",
+		"## Release lag (information, no pass/fail)",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("report.md lacks %q:\n%s", want, b.String())
+		}
 	}
 }
 
@@ -376,7 +415,19 @@ func (f *fakeTarget) Limits() (string, string)   { return "1 CPU", "256m" }
 // the environment. The fake angelia checks nothing, so no release is seen
 // and lag fails.
 func TestRunWritesReport(t *testing.T) {
-	ft := &fakeTarget{srv: httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))}
+	// /metrics: the first scrape (window start) has 10 checks, later ones 30,
+	// 18 of them within 120 s and 2 above 300 s.
+	var scrapes atomic.Int32
+	ft := &fakeTarget{srv: httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			return
+		}
+		if scrapes.Add(1) == 1 {
+			_, _ = io.WriteString(w, "angelia_check_lag_seconds_bucket{le=\"120\"} 10\nangelia_check_lag_seconds_bucket{le=\"+Inf\"} 10\n")
+			return
+		}
+		_, _ = io.WriteString(w, "angelia_check_lag_seconds_bucket{le=\"120\"} 28\nangelia_check_lag_seconds_bucket{le=\"+Inf\"} 30\n")
+	}))}
 	defer ft.srv.Close()
 	out := t.TempDir()
 	cfgPath := filepath.Join(out, "fakereg.yaml")
@@ -394,7 +445,10 @@ func TestRunWritesReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Verdict == "pass" || len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 12 || rep.Params.Loader != "watch-file" {
+	if d := rep.DueDelay; d.Samples != 20 || d.P50Seconds <= 0 || d.P95Seconds <= 0 || !d.Open || rep.Verdict != "fail" {
+		t.Errorf("due-to-check delay = %+v, verdict %s (checks %+v)", d, rep.Verdict, rep.Checks)
+	}
+	if len(rep.Samples) == 0 || rep.Params.PerEcosystem["crates"] != 12 || rep.Params.Loader != "watch-file" {
 		t.Errorf("report = %+v", rep)
 	}
 	if want := []string{filepath.Join(out, "angelia.yaml"), "--watches", filepath.Join(out, "watches.yaml")}; strings.Join(ft.started, " ") != strings.Join(want, " ") {
@@ -417,7 +471,7 @@ func TestRunWritesReport(t *testing.T) {
 	}
 	for _, want := range []string{
 		"| Commit | deadbeef", "| Memory limit | 256m", "| Go (harness) |", "oci: not measured",
-		"RSS (VmRSS) max", "Lag counts releases published from", "watch loader `watch-file`",
+		"RSS (VmRSS) max", "## Due-to-check delay", "## Release lag (information, no pass/fail)", "watch loader `watch-file`",
 	} {
 		if !bytes.Contains(md, []byte(want)) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
