@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -147,8 +148,33 @@ type angeliaConfig struct {
 	Roles    []string                     `yaml:"roles"`
 	Database map[string]string            `yaml:"database"`
 	Log      map[string]string            `yaml:"log"`
-	HTTP     map[string][]string          `yaml:"http"`
+	HTTP     map[string]any               `yaml:"http"`
 	Sources  map[string]map[string]string `yaml:"sources"`
+}
+
+// The per-host rate limit of the fake registry's host (ADR 0027 §9): 1.5
+// times the 33.3 rps demand of 10,000 targets at the 5-minute interval, all
+// on one host, under the fake GitHub limit of 80 rps. The result of a run
+// holds only with this limit.
+const (
+	registryHostRPS   = 50
+	registryHostBurst = 50
+)
+
+// registryHostLimit describes the limit WriteAngeliaConfig sets for the
+// registry's host, for the report: the host the instance's requests go to.
+func registryHostLimit(registry string) string {
+	return fmt.Sprintf("%s %d rps, burst %d (http.host_limits)", registryHost(registry), registryHostRPS, registryHostBurst)
+}
+
+// registryHost is the host name of the registry URL: the key of the
+// instance's rate-limit bucket.
+func registryHost(registry string) string {
+	u, err := url.Parse(registry)
+	if err != nil {
+		return registry
+	}
+	return u.Hostname()
 }
 
 // WriteAngeliaConfig writes the instance configuration to path: every
@@ -156,14 +182,20 @@ type angeliaConfig struct {
 // ("http://host:port"), and the database lives in dataDir. allowNetwork
 // is the one prefix the SSRF guard accepts although it is loopback or
 // private (http.allow_networks): the fake registry's address and no other.
+// The registry's host gets registryHostRPS (http.host_limits).
 func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string) error {
 	c := angeliaConfig{
 		Listen:   listen,
 		Roles:    []string{"all"},
 		Database: map[string]string{"dsn": "sqlite://" + filepath.ToSlash(filepath.Join(dataDir, "angelia.db"))},
 		Log:      map[string]string{"level": "info", "format": "json"},
-		HTTP:     map[string][]string{"allow_networks": {allowNetwork}},
-		Sources:  map[string]map[string]string{},
+		HTTP: map[string]any{
+			"allow_networks": []string{allowNetwork},
+			"host_limits": map[string]any{"hosts": map[string]any{
+				registryHost(registry): map[string]int{"rps": registryHostRPS, "burst": registryHostBurst},
+			}},
+		},
+		Sources: map[string]map[string]string{},
 	}
 	for _, eco := range watchedEcosystems() {
 		c.Sources[sourceKinds()[eco]] = map[string]string{"base_url": registry + "/" + eco}

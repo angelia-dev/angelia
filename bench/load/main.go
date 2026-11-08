@@ -178,6 +178,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		Params: Params{
 			Watches: o.n, PerEcosystem: perEco, Loader: o.loader.Name(), Duration: o.duration.String(),
 			SampleInterval: o.interval.String(), FakeregConfig: o.fakeregConfig, StartedAt: time.Now().UTC(),
+			HostLimit: registryHostLimit(registry),
 		},
 	}
 	rep.Environment = o.probe.environment(ctx, o.bin, t, o.container)
