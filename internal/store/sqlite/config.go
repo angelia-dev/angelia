@@ -396,6 +396,22 @@ func (s *Store) TargetSources(ctx context.Context) ([]store.TargetSource, error)
 	return out, nil
 }
 
+// TargetDemand groups the stored targets by source name and check interval,
+// for the per-host request demand estimate of the scheduler (story #220).
+func (s *Store) TargetDemand(ctx context.Context) ([]store.TargetDemand, error) {
+	rows, err := s.q.ListTargetDemand(ctx)
+	if err != nil {
+		return nil, wrap(err, "list target demand", "")
+	}
+	out := make([]store.TargetDemand, len(rows))
+	for i, r := range rows {
+		out[i] = store.TargetDemand{
+			Name: r.Kind, Interval: time.Duration(r.IntervalMs.Int64) * time.Millisecond, Targets: r.Targets,
+		}
+	}
+	return out, nil
+}
+
 // StoredTargetSources reads the sources the stored targets use from the
 // database file at path, read-only and without applying migrations, like
 // SecretHosts. A database that has no targets yet, or that migration 00017

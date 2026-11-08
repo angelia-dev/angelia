@@ -424,3 +424,47 @@ func TestResponseClass(t *testing.T) {
 		t.Errorf("transport error = %s", got)
 	}
 }
+
+// Story #220: LimitFor resolves a host the way the limiter does, and its
+// Host is the label the Observer gets for that host.
+func TestClientLimitFor(t *testing.T) {
+	c, err := New(Config{
+		HostLimits:    map[string]HostLimit{"pypi.org": same(Limit{Rate: 30, Burst: 30}), "api.github.com": same(Limit{Rate: 1, Burst: 1})},
+		FallbackLimit: same(Limit{Rate: 7, Burst: 7}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host     string
+		label    string
+		rate     float64
+		fallback bool
+	}{
+		{"pypi.org", "pypi.org", 30, false},
+		{"PyPI.org.", "pypi.org", 30, false},
+		{"api.github.com", "api.github.com", 1, false},
+		{"crates.io", "crates.io", 1, false},
+		{"registry.example", OtherHost, 7, true},
+		{"", OtherHost, 7, true},
+	} {
+		got := c.LimitFor(tc.host)
+		if got.Host != tc.label || got.Authenticated.Rate != tc.rate || got.Fallback != tc.fallback {
+			t.Errorf("LimitFor(%q) = %+v, want host %q rate %v fallback %v", tc.host, got, tc.label, tc.rate, tc.fallback)
+		}
+		if got.Host != c.limiter.observedHost(tc.host) {
+			t.Errorf("LimitFor(%q).Host = %q, limiter label %q", tc.host, got.Host, c.limiter.observedHost(tc.host))
+		}
+	}
+	// A listed host named "other" is its own entry, not the fallback.
+	c2, err := New(Config{HostLimits: map[string]HostLimit{"other": same(Limit{Rate: 2, Burst: 2})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c2.LimitFor("other"); got.Fallback || got.Anonymous.Rate != 2 {
+		t.Errorf("LimitFor(other) = %+v, want the configured entry", got)
+	}
+	if got := c2.LimitFor("unlisted.example"); !got.Fallback {
+		t.Errorf("LimitFor(unlisted) = %+v, want the fallback", got)
+	}
+}

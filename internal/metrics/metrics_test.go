@@ -411,6 +411,36 @@ func TestHostLimitGauges(t *testing.T) {
 	mustHave(t, body, `angelia_netguard_host_limit_rate{bucket="anonymous",host="other",origin="builtin"} 5`)
 }
 
+// Story #220: the demand gauge has the closed host label of the limits
+// table; any other host is folded into "other", and a new estimate replaces
+// the old one.
+func TestHostDemand(t *testing.T) {
+	m := New(nil)
+	table, err := netguard.EffectiveLimits(map[string]netguard.HostLimit{
+		"pypi.org": {Authenticated: netguard.Limit{Rate: 10, Burst: 10}, Anonymous: netguard.Limit{Rate: 10, Burst: 10}},
+	}, netguard.HostLimit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetHostLimits(table)
+	m.SetHostDemand(map[string]float64{"PyPI.org": 2.5, "other": 1, "secret-sink.example": 0.5, "crates.io": 0.25})
+	body := scrape(t, m)
+	mustHave(t, body,
+		`angelia_host_demand_rps{host="pypi.org"} 2.5`,
+		`angelia_host_demand_rps{host="other"} 1.5`,
+		`angelia_host_demand_rps{host="crates.io"} 0.25`,
+	)
+	if strings.Contains(body, "secret-sink") {
+		t.Error("a host outside the limits table reached a label")
+	}
+	m.SetHostDemand(map[string]float64{"pypi.org": 4})
+	body = scrape(t, m)
+	mustHave(t, body, `angelia_host_demand_rps{host="pypi.org"} 4`)
+	if strings.Contains(body, `angelia_host_demand_rps{host="other"}`) || strings.Contains(body, `host="crates.io"} 0.25`) {
+		t.Error("a host of the previous estimate is still exposed")
+	}
+}
+
 // ADR 0027 §8: the counters, with closed reason and class labels.
 func TestNetguardCounters(t *testing.T) {
 	m := New(nil)
@@ -461,5 +491,24 @@ func TestNetguardClientFeedsCounters(t *testing.T) {
 	)
 	if strings.Contains(body, "127.0.0.1") {
 		t.Error("an unlisted host reached a label")
+	}
+}
+
+// A new demand estimate never leaves a gap: values that stay are updated in
+// place and only vanished labels are deleted.
+func TestHostDemandKeepsLabelsThatStay(t *testing.T) {
+	m := New(nil)
+	table, _ := netguard.EffectiveLimits(nil, netguard.HostLimit{})
+	m.SetHostLimits(table)
+	m.SetHostDemand(map[string]float64{"crates.io": 1, "api.github.com": 2})
+	m.SetHostDemand(map[string]float64{"crates.io": 3})
+	body := scrape(t, m)
+	mustHave(t, body, `angelia_host_demand_rps{host="crates.io"} 3`)
+	if strings.Contains(body, `host="api.github.com"} 2`) {
+		t.Error("a vanished label is still exposed")
+	}
+	m.SetHostDemand(nil)
+	if strings.Contains(scrape(t, m), "angelia_host_demand_rps{") {
+		t.Error("labels remain after an empty estimate")
 	}
 }

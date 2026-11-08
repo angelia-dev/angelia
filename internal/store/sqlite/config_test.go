@@ -158,3 +158,32 @@ func mustTarget(t *testing.T, s *Store, id string) store.Target {
 	must(t, err)
 	return tg
 }
+
+// Story #220: targets are grouped by source name and interval, for the
+// host demand estimate.
+func TestTargetDemand(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := t.Context()
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	mk := func(id, kind, name string, interval time.Duration) {
+		t.Helper()
+		must(t, s.CreateTarget(ctx, store.Target{ID: id, Kind: kind, Coordinates: map[string]string{"name": name}, NextCheckAt: at, Interval: interval}))
+	}
+	if got, err := s.TargetDemand(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("empty store: %+v, %v", got, err)
+	}
+	mk("t1", "npm", "a", time.Hour)
+	mk("t2", "npm", "b", time.Hour)
+	mk("t3", "npm", "c", 5*time.Minute)
+	mk("t4", "pypi", "a", 0) // interval not set
+	got, err := s.TargetDemand(ctx)
+	must(t, err)
+	want := []store.TargetDemand{
+		{Name: "npm", Interval: 5 * time.Minute, Targets: 1},
+		{Name: "npm", Interval: time.Hour, Targets: 2},
+		{Name: "pypi", Targets: 1},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("TargetDemand = %+v, want %+v", got, want)
+	}
+}

@@ -450,3 +450,11 @@ sections above leave open or state differently:
   buckets.
 - **A host named `other` (§8).** It is a valid host name and is accepted, but its metrics share the
   `host="other"` label of every unlisted host. `config check` and the `serve` start log warn about it.
+
+## Amendment 2026-11-08: demand estimate (#220)
+
+The decision is unchanged. Question 9(a) is implemented by angelia-dev/angelia#220: the scheduler estimates
+the request demand per host from the stored targets and their intervals, exposes it as
+`angelia_host_demand_rps{host}` and logs a warning when a host's demand is above 80% of its effective limit.
+See [Per-host rate limits](../configuration.md#per-host-rate-limits) and
+[metrics](../operations/metrics.md).

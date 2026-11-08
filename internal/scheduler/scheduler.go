@@ -151,6 +151,13 @@ type Options struct {
 	Rand    func() float64 // in [0, 1); nil means math/rand/v2
 	Logger  *slog.Logger
 	Metrics Metrics
+	// Demand, if set, estimates the request demand per host (story #220):
+	// it is refreshed on the first poll and then every DemandEvery. Nil
+	// disables the estimate.
+	Demand DemandEstimator
+	// DemandEvery is how often Demand is refreshed. Zero means
+	// DefaultDemandEvery.
+	DemandEvery time.Duration
 	// TracerProvider starts the root span of every check; spans below it
 	// (fetch, commit) inherit it through the context. Nil records nothing.
 	TracerProvider trace.TracerProvider
@@ -177,6 +184,7 @@ type Scheduler struct {
 
 	// Owned by the poll loop (Run, or a test calling poll directly).
 	lastPrune                time.Time // zero: prune on the first poll
+	lastDemand               time.Time // zero: estimate on the first poll
 	failingSince, lastErrLog time.Time // zero: the store is not failing
 
 	// testHookIdle, if set, runs each time Run is about to wait.
@@ -189,7 +197,7 @@ func New(st Store, c Checker, opts Options) (*Scheduler, error) {
 		return nil, errors.New("scheduler: nil store or checker")
 	}
 	if opts.Workers < 0 || opts.Interval < 0 || opts.BackoffBase < 0 || opts.BackoffMax < 0 ||
-		opts.LeaseTTL < 0 || opts.PollInterval < 0 || opts.CheckTimeout < 0 || opts.Jitter >= 1 {
+		opts.LeaseTTL < 0 || opts.PollInterval < 0 || opts.CheckTimeout < 0 || opts.DemandEvery < 0 || opts.Jitter >= 1 {
 		return nil, fmt.Errorf("scheduler: invalid options: negative duration or worker count, or jitter >= 1")
 	}
 	def := func(d *time.Duration, v time.Duration) {
@@ -205,6 +213,7 @@ func New(st Store, c Checker, opts Options) (*Scheduler, error) {
 	def(&opts.BackoffMax, DefaultBackoffMax)
 	def(&opts.LeaseTTL, DefaultLeaseTTL)
 	def(&opts.PollInterval, DefaultPollInterval)
+	def(&opts.DemandEvery, DefaultDemandEvery)
 	if opts.CheckTimeout == 0 {
 		opts.CheckTimeout = DefaultCheckTimeout
 		if opts.CheckTimeout >= opts.LeaseTTL {
@@ -276,6 +285,7 @@ func (s *Scheduler) poll(ctx context.Context) int {
 	}
 	now := s.opts.Clock.Now()
 	s.pruneLeases(ctx, now)
+	s.refreshDemand(ctx, now)
 	// A cheap read decides whether the leasing write transaction is worth
 	// running, so idle polls take no write lock (SQLite has only one).
 	due := int64(-1) // unknown

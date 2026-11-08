@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/source/crates"
 )
 
@@ -116,4 +119,49 @@ func limitOrigin(e netguard.EffectiveLimit, configured bool) string {
 		return "config"
 	}
 	return "built-in"
+}
+
+// sourceHost returns the host the source called name (a kind or a named
+// instance) sends its requests to, and whether it sends a credential, which
+// selects the authenticated bucket of that host. ok is false when the host
+// is unknown, as for a source that is not built in (a plugin).
+func sourceHost(cfg *config.Config, name string) (host string, authenticated, ok bool) {
+	kind := cfg.SourceKind(name)
+	def, builtin := publicRegistries[kind]
+	if !builtin {
+		return "", false, false
+	}
+	u, err := url.Parse(baseURL(cfg, name, def))
+	if err != nil || u.Hostname() == "" {
+		return "", false, false
+	}
+	a := cfg.Sources[name].Auth
+	authenticated = config.SendsCredential(kind) && (cfg.SourceToken(name) != "" || !a.IsZero())
+	return normHost(u.Hostname()), authenticated, true
+}
+
+// newHostDemand returns the host demand estimate of the scheduler (story
+// #220): the host of each source from the configuration, and the limit of
+// each host from the client, so that the estimate and the rate limiter agree.
+// m may be nil.
+func newHostDemand(cfg *config.Config, client *netguard.Client, m *metrics.Metrics, st scheduler.DemandStore, log *slog.Logger) (*scheduler.Demand, error) {
+	opts := scheduler.DemandOptions{
+		Store:      st,
+		SourceHost: func(name string) (string, bool, bool) { return sourceHost(cfg, name) },
+		Limit: func(host string, authenticated bool) scheduler.HostLimitInfo {
+			e := client.LimitFor(host)
+			l := e.Anonymous
+			if authenticated {
+				l = e.Authenticated
+			}
+			return scheduler.HostLimitInfo{
+				Label: e.Host, RPS: l.Rate, Burst: l.Burst, Fixed: netguard.IsBuiltinBudgetHost(host),
+			}
+		},
+		Logger: log,
+	}
+	if m != nil {
+		opts.Report = m.SetHostDemand
+	}
+	return scheduler.NewDemand(opts)
 }
