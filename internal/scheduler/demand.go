@@ -14,6 +14,9 @@ import (
 
 // Host demand estimate (story #220, ADR 0027 §4 and question 9).
 //
+// Targets in backoff after errors are counted at their normal interval, so
+// the estimate is the demand once the upstream recovers.
+//
 // The scheduler does not throttle per host (ADR 0009 §6), so a limit that is
 // too low for the stored targets only shows up later, as rate-limit waits and
 // check lag. The estimate makes it visible at once: for every host, the sum
@@ -188,8 +191,8 @@ func (d *Demand) warn(ctx context.Context, b *bucketDemand, lim HostLimitInfo) {
 	if lim.Fixed {
 		advice = fmt.Sprintf("the limit of %s is a published budget that http.host_limits cannot raise; lengthen the watch intervals or spread the targets over more hosts", b.host)
 	}
-	d.log.WarnContext(ctx, fmt.Sprintf("estimated request demand on %s is above %.0f%% of its rate limit; %s", b.host, DemandWarnRatio*100, advice),
-		"host", b.host, "bucket", bucket,
+	d.log.WarnContext(ctx, "host demand above 80% of rate limit",
+		"advice", advice, "host", b.host, "bucket", bucket,
 		"demand_rps", round3(b.rps), "limit_rps", round3(lim.RPS), "burst", lim.Burst,
 		"targets", b.targets, "shortest_interval", b.shortest.String(), "min_rps", round3(need))
 }

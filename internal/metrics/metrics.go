@@ -59,6 +59,7 @@ type Metrics struct {
 
 	mu         sync.Mutex
 	limitHosts map[string]bool // hosts of the limits table, the closed set of the host label
+	demandSet  map[string]bool // host labels currently set on hostDemand
 
 	hostDemand       *prometheus.GaugeVec
 	hostLimitRate    *prometheus.GaugeVec
@@ -269,9 +270,21 @@ func (m *Metrics) SetHostDemand(rps map[string]float64) {
 		}
 		sum[host] += v
 	}
-	m.hostDemand.Reset()
+	// Set the new values first and delete only the labels that disappeared,
+	// so a scrape never sees a gap.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for host, v := range sum {
 		m.hostDemand.WithLabelValues(host).Set(v)
+	}
+	for host := range m.demandSet {
+		if _, ok := sum[host]; !ok {
+			m.hostDemand.DeleteLabelValues(host)
+		}
+	}
+	m.demandSet = map[string]bool{}
+	for host := range sum {
+		m.demandSet[host] = true
 	}
 }
 

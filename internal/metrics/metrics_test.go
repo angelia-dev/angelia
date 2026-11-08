@@ -493,3 +493,22 @@ func TestNetguardClientFeedsCounters(t *testing.T) {
 		t.Error("an unlisted host reached a label")
 	}
 }
+
+// A new demand estimate never leaves a gap: values that stay are updated in
+// place and only vanished labels are deleted.
+func TestHostDemandKeepsLabelsThatStay(t *testing.T) {
+	m := New(nil)
+	table, _ := netguard.EffectiveLimits(nil, netguard.HostLimit{})
+	m.SetHostLimits(table)
+	m.SetHostDemand(map[string]float64{"crates.io": 1, "api.github.com": 2})
+	m.SetHostDemand(map[string]float64{"crates.io": 3})
+	body := scrape(t, m)
+	mustHave(t, body, `angelia_host_demand_rps{host="crates.io"} 3`)
+	if strings.Contains(body, `host="api.github.com"} 2`) {
+		t.Error("a vanished label is still exposed")
+	}
+	m.SetHostDemand(nil)
+	if strings.Contains(scrape(t, m), "angelia_host_demand_rps{") {
+		t.Error("labels remain after an empty estimate")
+	}
+}
