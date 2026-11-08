@@ -116,11 +116,11 @@ func p95(v []float64) float64 {
 	return v[min(i, len(v)-1)]
 }
 
-// evaluate fills Checks and Verdict. Lag is only measured when angelia had
-// watches and releases were published during the run.
-func (r *Report) evaluate(loaderErr error) {
+// evaluate fills Checks and Verdict. Lag is only measured when releases
+// were published in the lag window.
+func (r *Report) evaluate() {
 	lag := r.Registry.Total.Lag
-	lagMeasured := loaderErr == nil && r.Registry.Total.Published > 0
+	lagMeasured := r.Registry.Total.Published > 0
 	r.Checks = []Check{
 		check("check lag P95", "< 2m0s", fmt.Sprintf("%.1fs over %d releases", lag.P95Seconds, lag.Samples),
 			lagMeasured, lag.P95Seconds < targetLagP95.Seconds()),
@@ -129,10 +129,11 @@ func (r *Report) evaluate(loaderErr error) {
 		check("CPU mean", fmt.Sprintf("< %.0f%%", targetCPUPct), fmt.Sprintf("%.1f%%", r.Resources.CPUMeanPct),
 			len(r.Samples) > 1, r.Resources.CPUMeanPct < targetCPUPct),
 	}
-	if loaderErr != nil {
-		r.Notes = append(r.Notes, loaderErr.Error()+". Resources below are of an idle instance.")
-	} else if r.Registry.Total.Published == 0 {
+	if r.Registry.Total.Published == 0 {
 		r.Notes = append(r.Notes, "no release was published in the lag window: raise -duration or releases_per_hour")
+	}
+	for _, e := range unmeasuredEcosystems() {
+		r.Notes = append(r.Notes, e+": not measured; angelia has no built-in "+e+" source yet, so it gets no watches")
 	}
 	r.Verdict = "pass"
 	for _, c := range r.Checks {
@@ -144,9 +145,6 @@ func (r *Report) evaluate(loaderErr error) {
 				r.Verdict = "incomplete"
 			}
 		}
-	}
-	if loaderErr != nil && r.Verdict == "pass" {
-		r.Verdict = "incomplete"
 	}
 }
 

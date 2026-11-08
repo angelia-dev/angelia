@@ -5,8 +5,9 @@ story angelia-dev/angelia#62): 10,000 watches over 5 ecosystems on 1 vCPU / 256 
 P95 check lag < 2 min, memory < 100 MB (95.4 MiB) and CPU < 20%.
 
 ```
-make bench-scale BENCH_N=10000                                   # Docker, --cpus 1 --memory 256m
-BENCH_CONTAINER=0 BENCH_DURATION=4m make bench-scale BENCH_N=100 # plain process, Linux only
+make bench-scale BENCH_N=10000                                   # Docker Engine on Linux, --cpus 1 --memory 256m
+BENCH_ALLOW_NETWORK=192.168.65.254/32 make bench-scale BENCH_N=10000 # Docker Desktop (see below)
+BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (no meaningful lag): plain process, Linux only
 ```
 
 `make bench-scale N=10000` works too.
@@ -17,12 +18,16 @@ BENCH_CONTAINER=0 BENCH_DURATION=4m make bench-scale BENCH_N=100 # plain process
    `BENCH_FAKEREG` (default [fakereg.yaml](../fakereg/fakereg.yaml)). Each ecosystem gets
    exactly one package per watch, so every release belongs to a watched package; an ecosystem
    without watches (only when `BENCH_N` < 5) gets no releases.
-2. Generates `BENCH_N` watches round robin over pypi, npm, crates, github-release and oci.
-3. Hands them to angelia through the **watch loader** (see below), which asks for a check
-   interval of `BENCH_CHECK_INTERVAL`.
+2. Generates `BENCH_N` watches round robin over the ecosystems angelia has a built-in source
+   for: pypi, npm, crates and github-release. oci has none yet, so it gets no watches and the
+   report says it was **not measured**.
+3. Writes them as a [watch file](../../docs/watch-file.md) (`watches.yaml`), every watch with the
+   check interval `BENCH_CHECK_INTERVAL` and the default policy, so the first check of a package
+   records its history as the baseline without events. There are no sinks or subscriptions.
 4. Writes an instance configuration (`angelia.yaml`, the existing format of
    [docs/configuration.md](../../docs/configuration.md)) whose `sources.<kind>.base_url` point
-   at the fake registry, and starts `angelia serve`:
+   at the fake registry and whose `http.allow_networks` holds only the registry's address (see
+   below), and starts `angelia serve --config angelia.yaml --watches watches.yaml` with all roles:
    - container mode (default): the Linux binary is mounted into
      `gcr.io/distroless/static-debian12:nonroot` and run with `--cpus`, `--memory` and
      `--memory-swap` (no swap) and the label `angelia-bench`. It reaches the registry as
@@ -30,7 +35,7 @@ BENCH_CONTAINER=0 BENCH_DURATION=4m make bench-scale BENCH_N=100 # plain process
    - process mode (`BENCH_CONTAINER=0`): a child process without limits, sampled from `/proc`.
      It needs Linux and fails at once elsewhere.
 5. Waits for `/readyz`, then samples memory and CPU every 5 s for `BENCH_DURATION` (default
-   15m).
+   30m).
 6. Reads the registry's statistics for the lag window (below) and writes `report.json` and
    `report.md`, with the logs and config, into `BENCH_OUT` (default `bin/bench/scale-N`).
 
@@ -38,8 +43,9 @@ BENCH_CONTAINER=0 BENCH_DURATION=4m make bench-scale BENCH_N=100 # plain process
 |---|---|---|
 | `BENCH_N` | `10000` | watches (`N` is accepted by `make`) |
 | `BENCH_CONTAINER` | `1` | `0`: plain process |
-| `BENCH_DURATION` | `15m` | measuring time after `/readyz`; must exceed the warm-up plus 2 minutes |
-| `BENCH_CHECK_INTERVAL` | `1m` | per-watch check interval; sets the warm-up |
+| `BENCH_DURATION` | `30m` | measuring time after `/readyz`; must exceed the warm-up plus 2 minutes (7.5m with the default interval, so at least 8m). For a meaningful lag reading, keep at least 3 check intervals in the lag window: 22.5m with the default interval (see below) |
+| `BENCH_CHECK_INTERVAL` | `5m` | per-watch check interval; sets the warm-up. The watch file accepts 5m to 720h |
+| `BENCH_ALLOW_NETWORK` | picked per mode | the `http.allow_networks` entry for the registry (below) |
 | `BENCH_MEMORY`, `BENCH_CPUS` | `256m`, `1` | container limits |
 | `BENCH_OUT` | `bin/bench/scale-$BENCH_N` | output directory |
 | `BENCH_FAKEREG` | `bench/fakereg/fakereg.yaml` | registry behaviour |
@@ -56,6 +62,27 @@ Check lag counts only releases published between **ready + warm-up** and **end �
   before the end and not yet seen would count with a lag of 10 s. With the cut-off, every
   unseen release in the window counts with a lag of at least 2 minutes, so it fails the
   target instead of flattering it.
+- the window is therefore `BENCH_DURATION` − 1.1 × interval − 2 min long. Each package is
+  checked once per interval, so a window shorter than a few intervals holds few releases and
+  few lag samples. Keep at least **3 intervals** in it: `BENCH_DURATION` ≥ 4.1 × interval +
+  2 min, which is 22.5m with the default 5m interval. The 30m default leaves 22.5m (4.5
+  intervals). The enforced minimum (8m at 5m intervals) only checks that the run works.
+
+### Reaching the registry past the SSRF guard
+
+The fake registry has a loopback or private address, which angelia's SSRF guard refuses. The
+harness lists that one address in the instance configuration's `http.allow_networks`
+([Outgoing HTTP](../../docs/configuration.md#outgoing-http-and-private-networks)), the same
+opt-in an operator uses for a homelab registry; netguard itself is unchanged:
+
+- process mode: `127.0.0.1/32`;
+- container mode on Linux Docker Engine: the bridge gateway, for example `172.17.0.1/32`;
+- container mode on Docker Desktop: no default. The address `host.docker.internal` has inside
+  the container cannot be told from the host, so the run stops and asks for
+  `BENCH_ALLOW_NETWORK` (`-allow-network`). The usual value is `192.168.65.254/32`; check it with
+  `docker run --rm alpine getent hosts host.docker.internal`.
+- container mode when the Linux bridge gateway cannot be found: the same; set
+  `BENCH_ALLOW_NETWORK` to the address `host.docker.internal` has in the container.
 
 ### Where the registry listens (container mode)
 
@@ -89,22 +116,27 @@ Exit status: 0 pass, 1 fail, 2 error, 3 **incomplete** (a target was not measure
 Incomplete is deliberately non-zero, so `make bench-scale` fails: a run that measured nothing
 must not look green.
 
-## Status: incomplete until angelia can be given watches
+## Known limits
 
-On `main`, `angelia serve` runs stub roles and has no way to receive watches, so every run is
-reported **incomplete**: memory and CPU are those of an idle instance and check lag is not
-measured. The harness keeps the missing part behind one seam, `WatchLoader` in
-[plan.go](plan.go), whose only implementation (`none`) says so. What is missing:
+What a run on `main` measures, and what it cannot yet:
 
-1. **Watch loading** (#48, watch file): a way to give `angelia serve` N watches with a check
-   interval. A loader then writes the watch file into the output directory and returns the
-   `serve` arguments that load it. The harness deliberately does not define that format.
-2. **Real roles**: the scheduler and worker roles are stubs (`supervisor.NewStub`), and
-   `serve` does not build the sources from `sources.<kind>.base_url` yet.
-3. **Private addresses**: the netguard SSRF guard rejects loopback and private addresses. The
-   fake registry is on `127.0.0.1` or the Docker bridge gateway, so the instance needs a way
-   to allow it (`netguard.Config.Allow` is not in the instance configuration yet).
-4. **Sources**: crates and oci have no built-in source yet (crates exists as the WASM plugin
-   prototype in `bench/plugins/crates`). The `oci` watch coordinates (`repository`) are
-   provisional: ADR 0006 leaves them open.
-5. **Image**: there is no Dockerfile yet, hence the mounted binary.
+1. **oci is not measured**: there is no built-in oci source, so the fake registry's oci
+   endpoint gets no watches and the report says so. The other four ecosystems share the
+   watches.
+2. **One host for every ecosystem**: all sources reach the fake registry on one address, so
+   netguard's per-host rate limit (the fallback limit: 5 requests per second, burst 5) applies
+   to all four ecosystems together, where the real registries are four hosts. With the default
+   interval of 5 minutes, about 1,500 watches fit in that budget; above that, checks queue in
+   the rate limiter and check lag grows with `BENCH_N`: the request counts in the report's fake
+   registry table then add up to about 5 per second. Real registries would each get their own
+   budget.
+3. **Interval and lag target**: a watch's interval is at least 5 minutes (the watch file's
+   minimum), and periodic polling finds a release on average half an interval after it is
+   published. A check lag P95 below 2 minutes therefore needs either a shorter interval or
+   another way of detecting releases; with 5-minute intervals the lag check is expected to
+   fail even when every check runs on time.
+4. **crates without timestamps**: with a custom index the crates source reads no API, so its
+   versions have no publication time. Check lag is measured at the registry and does not need
+   them.
+5. **Image**: the harness mounts the binary into a distroless base image instead of building
+   the repository's Dockerfile, so a run needs no image build.

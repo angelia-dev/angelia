@@ -1,6 +1,7 @@
 // Command load is the Phase 0 scale benchmark (architecture.md section 6,
-// benchmark 1): it starts the fake registry, generates N watches over five
-// ecosystems, runs `angelia serve` (in a CPU and memory limited container,
+// benchmark 1): it starts the fake registry, writes N watches over the
+// ecosystems angelia has a source for into a watch file, runs
+// `angelia serve` with it (in a CPU and memory limited container,
 // or as a plain process with -container=false), samples memory and CPU,
 // reads check lag from the fake registry and writes report.json and
 // report.md.
@@ -9,7 +10,7 @@
 //	BENCH_CONTAINER=0 make bench-scale BENCH_N=100  # plain process, Linux only
 //
 // Exit status: 0 pass, 1 fail, 2 error, 3 incomplete (a target could not be
-// measured, for example because angelia cannot be given watches yet).
+// measured, for example because no release was published in the lag window).
 package main
 
 import (
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
+	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
 func main() {
@@ -45,6 +47,7 @@ type options struct {
 	fakeregConfig, bin, out string
 	container               bool
 	memory, cpus, image     string
+	allowNetwork            string // http.allow_networks entry for the registry; "" picks it
 	readyTimeout            time.Duration
 	// checkInterval is the per-watch check interval the loader asks for;
 	// lag counts only releases published one interval (plus jitter) after
@@ -59,9 +62,9 @@ type options struct {
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	o := options{loader: missingLoader{}, newTarget: newTarget, probe: probe{readFile: os.ReadFile, run: runCmd, goos: runtime.GOOS}}
-	fs.IntVar(&o.n, "n", 10000, "number of watches, spread over 5 ecosystems")
-	fs.DurationVar(&o.duration, "duration", 15*time.Minute, "how long to measure after angelia is ready")
+	o := options{newTarget: newTarget, probe: probe{readFile: os.ReadFile, run: runCmd, goos: runtime.GOOS}}
+	fs.IntVar(&o.n, "n", 10000, "number of watches, spread over the ecosystems with a built-in source")
+	fs.DurationVar(&o.duration, "duration", 30*time.Minute, "how long to measure after angelia is ready; must exceed the warm-up plus 2m")
 	fs.DurationVar(&o.interval, "sample-interval", 5*time.Second, "time between memory/CPU samples")
 	fs.StringVar(&o.fakeregConfig, "fakereg-config", "bench/fakereg/fakereg.yaml", "fake registry behaviour YAML")
 	fs.StringVar(&o.bin, "angelia", "bin/angelia", "angelia binary (linux build for -container)")
@@ -70,8 +73,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.memory, "memory", "256m", "container memory limit")
 	fs.StringVar(&o.cpus, "cpus", "1", "container CPU limit")
 	fs.StringVar(&o.image, "image", "gcr.io/distroless/static-debian12:nonroot", "base image the binary is mounted into")
-	fs.DurationVar(&o.readyTimeout, "ready-timeout", time.Minute, "how long to wait for /readyz")
-	fs.DurationVar(&o.checkInterval, "check-interval", time.Minute, "per-watch check interval; the warm-up is 1.1 times this")
+	fs.DurationVar(&o.readyTimeout, "ready-timeout", 5*time.Minute, "how long to wait for /readyz (it includes applying the watch file)")
+	fs.DurationVar(&o.checkInterval, "check-interval", watchfile.MinInterval, "per-watch check interval (the watch file accepts 5m to 720h); the warm-up is 1.1 times this")
+	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDR the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the address of host.docker.internal")
 	o.censor = targetLagP95
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -80,6 +84,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "load: -n, -duration, -sample-interval and -check-interval must be positive; no arguments")
 		return 2
 	}
+	if o.checkInterval < watchfile.MinInterval || o.checkInterval > watchfile.MaxInterval {
+		_, _ = fmt.Fprintf(stderr, "load: -check-interval must be %v to %v, the range of a watch's interval (docs/watch-file.md)\n", watchfile.MinInterval, watchfile.MaxInterval)
+		return 2
+	}
+	o.loader = watchFileLoader{interval: o.checkInterval}
 	if least := warmup(o.checkInterval) + o.censor; o.duration <= least {
 		_, _ = fmt.Fprintf(stderr, "load: -duration must exceed the warm-up plus %v of censoring: more than %v\n", o.censor, least)
 		return 2
@@ -145,18 +154,22 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		registry, listen, angeliaDir = fmt.Sprintf("http://host.docker.internal:%d", port), ":8080", "/work"
 	}
 
+	allow := o.allowNetwork
+	if allow == "" {
+		if allow, err = registryNetwork(o.container, host); err != nil {
+			return nil, err
+		}
+	}
+
 	t := o.newTarget(o, workdir)
 	if pt, ok := t.(*processTarget); ok {
 		listen = pt.listen
 	}
-	serveArgs, loaderErr := o.loader.Prepare(ctx, watches, workdir, angeliaDir)
-	if loaderErr != nil {
-		if !errors.Is(loaderErr, ErrNoWatchLoader) {
-			return nil, loaderErr
-		}
-		log.Warn("running without watches", "reason", loaderErr)
+	serveArgs, err := o.loader.Prepare(ctx, watches, workdir, angeliaDir)
+	if err != nil {
+		return nil, err
 	}
-	if err := WriteAngeliaConfig(filepath.Join(workdir, "angelia.yaml"), listen, registry, angeliaDir); err != nil {
+	if err := WriteAngeliaConfig(filepath.Join(workdir, "angelia.yaml"), listen, registry, angeliaDir, allow); err != nil {
 		return nil, err
 	}
 
@@ -204,7 +217,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	if o.container {
 		rep.Resources.MemorySource = "container memory (docker stats)"
 	}
-	rep.evaluate(loaderErr)
+	rep.evaluate()
 	return rep, rep.Write(workdir)
 }
 
@@ -263,6 +276,24 @@ func bindHost(ctx context.Context, run runFunc, goos string, log *slog.Logger) s
 	}
 	log.Warn("cannot find the docker bridge gateway; the fake registry listens on all interfaces for this run", "err", err)
 	return "0.0.0.0"
+}
+
+// registryNetwork is the one prefix the instance needs in
+// http.allow_networks to reach the fake registry listening on host: the
+// loopback address in process mode and the bridge gateway in a container on
+// Linux Docker Engine. On Docker Desktop (the registry listens on the
+// host's loopback in container mode) and when the gateway is unknown, the
+// address of host.docker.internal inside the container cannot be told from
+// the host, so the operator must give it with -allow-network.
+func registryNetwork(container bool, host string) (string, error) {
+	switch {
+	case !container:
+		return host + "/32", nil
+	case host == "127.0.0.1" || host == "0.0.0.0":
+		return "", errors.New("cannot tell which address host.docker.internal has in the container: " +
+			"set -allow-network (BENCH_ALLOW_NETWORK), on Docker Desktop usually 192.168.65.254/32 (see bench/load/README.md)")
+	}
+	return host + "/32", nil
 }
 
 // freeAddr returns a loopback address with a port that was free a moment ago.

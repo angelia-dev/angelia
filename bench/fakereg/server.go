@@ -59,6 +59,7 @@ func New(c *Config, opts ...Option) *Server {
 	s.mux.HandleFunc("GET /pypi/pypi/{name}/json", s.handle("pypi", renderPyPI))
 	s.mux.HandleFunc("GET /npm/{name}", s.handle("npm", renderNPM))
 	s.mux.HandleFunc("GET /crates/api/v1/crates/{name}/versions", s.handle("crates", renderCrates))
+	s.mux.HandleFunc("GET /crates/{a}/{b}/{name}", s.cratesIndex())
 	s.mux.HandleFunc("GET /github/repos/{owner}/{name}/releases", s.handle("github", renderGitHub))
 	s.mux.HandleFunc("GET /oci/v2/{owner}/{name}/tags/list", s.handle("oci", renderOCI))
 	s.mux.HandleFunc("GET /oci/v2/{$}", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{}) })
@@ -311,7 +312,13 @@ func (s *Server) handle(name string, render renderer) http.HandlerFunc {
 		}
 		body, newest := render(p, w.Header())
 		e.primaryHeaders(w.Header())
-		writeJSON(w, http.StatusOK, body)
+		if raw, ok := body.(rawBody); ok {
+			w.Header().Set("Content-Type", raw.contentType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(raw.data)
+		} else {
+			writeJSON(w, http.StatusOK, body)
+		}
 		e.ok.Add(1)
 		if newest {
 			e.recordServed(i, n, now)
@@ -400,6 +407,48 @@ func renderCrates(p page, _ http.Header) (any, bool) {
 	return map[string]any{
 		"versions": versions, "meta": map[string]any{"total": p.n, "next_page": nil}, "_padding": p.pad,
 	}, true
+}
+
+// cratesIndex serves the sparse index after checking the path prefix.
+func (s *Server) cratesIndex() http.HandlerFunc {
+	h, e := s.handle("crates", renderCratesIndex), s.ecos["crates"]
+	return func(w http.ResponseWriter, r *http.Request) {
+		if n := r.PathValue("name"); len(n) < 4 || r.PathValue("a") != n[:2] || r.PathValue("b") != n[2:4] {
+			e.requests.Add(1)
+			e.notFound.Add(1)
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+			return
+		}
+		h(w, r)
+	}
+}
+
+// rawBody is a renderer result that is not JSON.
+type rawBody struct {
+	contentType string
+	data        []byte
+}
+
+// renderCratesIndex serves the sparse index file of a crate
+// (https://doc.rust-lang.org/cargo/reference/registry-index.html): one JSON
+// line per version, oldest first. Package names have more than three
+// characters, so the path is {name[0:2]}/{name[2:4]}/{name}; cratesIndex
+// answers any other prefix with 404.
+func renderCratesIndex(p page, _ http.Header) (any, bool) {
+	var b strings.Builder
+	for k := range p.n {
+		line := map[string]any{
+			"name": p.name, "vers": Version(k), "deps": []any{}, "features": map[string]any{},
+			"cksum": fmt.Sprintf("%064x", phaseHash(uint64(k), "crates", p.i)), "yanked": false, //nolint:gosec // k >= 0
+		}
+		if k == 0 && p.pad != "" {
+			line["_padding"] = p.pad
+		}
+		data, _ := json.Marshal(line)
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return rawBody{contentType: "text/plain; charset=utf-8", data: []byte(b.String())}, true
 }
 
 func renderGitHub(p page, _ http.Header) (any, bool) {
