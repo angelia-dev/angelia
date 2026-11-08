@@ -69,8 +69,27 @@ func TestEffectiveLimitsConfigured(t *testing.T) {
 	if e := m[OtherHost]; e.Anonymous != (Limit{Rate: 2, Burst: 3}) || e.AnonymousOrigin != OriginDefault {
 		t.Errorf("other = %+v, want 2 rps burst 3 from the configured default", e)
 	}
-	if table[len(table)-1].Host != OtherHost {
+	if last := table[len(table)-1]; last.Host != OtherHost || !last.Fallback {
 		t.Errorf("fallback is not last: %+v", table)
+	}
+	for _, e := range table[:len(table)-1] {
+		if e.Fallback {
+			t.Errorf("%s is marked as the fallback", e.Host)
+		}
+	}
+	// A configured host named "other" is a host, not the fallback.
+	table, err = EffectiveLimits(map[string]HostLimit{"other": same(Limit{Rate: 2, Burst: 2})}, HostLimit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fallbacks int
+	for _, e := range table {
+		if e.Fallback {
+			fallbacks++
+		}
+	}
+	if fallbacks != 1 || len(table) != 5 {
+		t.Errorf("table with a host named other: %+v", table)
 	}
 }
 

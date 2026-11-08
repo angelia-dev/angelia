@@ -156,12 +156,16 @@ http:
   fractional `burst` or an unknown key fails `config check` and `serve`.
 - **Host names.** Matching is exact and case-insensitive, on the host name only: all ports of a host share
   its bucket, and a trailing dot is ignored. Write a host name, an IPv4 address or an IPv6 address without
-  brackets (`::1`), in lower case. A scheme, a port, a path, brackets, upper case and wildcards
-  (`*.example.com`, `.example.com`) are errors, and so is one host listed twice. A redirect is limited by
-  the host it goes to: a limit on `pypi.org` does not cover `files.pythonhosted.org`.
+  brackets, in lower case and in its canonical form (`::1`, not `0:0::1`; no `%zone`). Write an
+  internationalised domain name in its punycode (`xn--`) form, as it appears in a URL's host. A scheme, a
+  port, a path, brackets and upper case are errors, as are wildcards and suffixes (`*.example.com`,
+  `.example.com`), and one host listed twice. A redirect is limited by the host it goes to: a limit on
+  `pypi.org` does not cover `files.pythonhosted.org`.
 - **Built-in budgets can only be lowered.** For `api.github.com`, `gitlab.com` and `crates.io`, the effective
-  limit is the lower of the entry and the built-in one, rate by rate and burst by burst. A higher value is
-  capped, with a warning.
+  limit is the lower of the entry and the built-in one, bucket by bucket, rate by rate and burst by burst. A
+  value above the authenticated (higher) budget is capped, with a warning. The anonymous budget is lower
+  (60/h for GitHub), so an entry that only lowers the authenticated bucket is usually capped in the
+  anonymous one too, without a warning: `config check` lists both effective buckets.
 - **The server keeps the last word.** `Retry-After`, `X-RateLimit-*` and `RateLimit-*` still pause a host
   (for at most an hour), a 429 is still retried with backoff (at most 4 attempts), and every attempt, retries
   and redirect hops included, takes a token. A limit is a ceiling, never a floor.
@@ -189,11 +193,15 @@ of other hosts. See [Metrics](operations/metrics.md).
 
 **Metrics.** A host listed here becomes a value of the `host` label of the netguard metrics, like the
 built-in hosts; any other host is `other`. Do not list a webhook host whose name you do not want in
-metrics.
+metrics. A host literally named `other` is accepted, but its series share that label with every unlisted
+host, and `config check` warns about it. In the `angelia_netguard_host_limit_*` gauges, `origin` is
+`config` as soon as any part of an entry applies to a bucket, for example a lowered rate with the burst
+capped at the built-in value; it is `builtin` only when the built-in limit applies unchanged.
 
 `config check` prints the effective table once, with the origin of each line, and warns about a value above
-a built-in budget, a rate above 20 on a public registry, a raised `default` and a host no configured source
-or plugin uses (sinks are not in this file, so for a webhook host that warning is expected). `serve` logs the
+a built-in budget, a rate above 20 on a public registry, a raised `default`, a host named `other` and a host
+no configured source or plugin uses (sinks are not in this file, so for a webhook host that warning is
+expected). `serve` logs the
 same warnings at start. For example:
 
 ```text

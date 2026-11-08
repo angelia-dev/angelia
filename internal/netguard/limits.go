@@ -31,6 +31,9 @@ type EffectiveLimit struct {
 	Anonymous           Limit
 	AuthenticatedOrigin string
 	AnonymousOrigin     string
+	// Fallback marks the last line, the limit of every unlisted host. Use
+	// it rather than Host: a configured host may be named "other" too.
+	Fallback bool
 }
 
 // IsBuiltinBudgetHost reports whether host has a built-in limit in
@@ -113,7 +116,7 @@ func resolveLimits(hosts map[string]HostLimit, fallback HostLimit) ([]EffectiveL
 	}
 	table = append(table, EffectiveLimit{
 		Host: OtherHost, Authenticated: fallback.Authenticated, Anonymous: fallback.Anonymous,
-		AuthenticatedOrigin: fallbackOrigin, AnonymousOrigin: fallbackOrigin,
+		AuthenticatedOrigin: fallbackOrigin, AnonymousOrigin: fallbackOrigin, Fallback: true,
 	})
 	return table, limits, fallback, nil
 }

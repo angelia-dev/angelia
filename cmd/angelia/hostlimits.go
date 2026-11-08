@@ -53,8 +53,13 @@ func hostLimitWarnings(cfg *config.Config, plugins []config.InstalledPlugin) []s
 
 // serveHostLimitWarnings is hostLimitWarnings for the serve start log. serve
 // does not load plugins, so the plugin folders are read here only for their
-// allowed hosts; a folder that cannot be read adds none.
+// allowed hosts, and only when http.host_limits.hosts lists a host; a
+// folder that cannot be read adds none.
 func serveHostLimitWarnings(ctx context.Context, cfg *config.Config, environ []string) []string {
+	if len(cfg.HTTP.HostLimits.Hosts) == 0 {
+		// Only the hosts entries need the plugins' hosts.
+		return cfg.HTTP.HostLimits.Warnings(nil, nil)
+	}
 	plugins, _, _ := config.LoadPlugins(ctx, cfg.PluginsDir, environ)
 	return hostLimitWarnings(cfg, plugins)
 }
@@ -76,7 +81,7 @@ func printHostLimits(w io.Writer, cfg *config.Config) error {
 	b.WriteString("http host limits (per process):\n")
 	for _, e := range table {
 		name := e.Host
-		if name == netguard.OtherHost {
+		if e.Fallback {
 			name = "other hosts"
 		}
 		_, configured := hosts[e.Host]
@@ -101,9 +106,9 @@ func describeLimits(e netguard.EffectiveLimit) string {
 // true when http.host_limits.hosts lists the host.
 func limitOrigin(e netguard.EffectiveLimit, configured bool) string {
 	switch {
-	case e.Host == netguard.OtherHost && e.AnonymousOrigin == netguard.OriginDefault:
+	case e.Fallback && e.AnonymousOrigin == netguard.OriginDefault:
 		return "config default"
-	case e.Host == netguard.OtherHost:
+	case e.Fallback:
 		return "built-in default"
 	case configured && (e.AuthenticatedOrigin == netguard.OriginBuiltin || e.AnonymousOrigin == netguard.OriginBuiltin):
 		return "config, capped at built-in"

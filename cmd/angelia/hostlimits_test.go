@@ -236,3 +236,32 @@ func TestHostLimitsDocumentedExamples(t *testing.T) {
 		t.Errorf("out =\n%s\ndocumented\n%s", out, want)
 	}
 }
+
+// Without hosts entries serve does not need the plugins' hosts: only the
+// default warning remains.
+func TestServeHostLimitWarningsWithoutHosts(t *testing.T) {
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, "http:\n  host_limits:\n    default: {rps: 10}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := serveHostLimitWarnings(t.Context(), cfg, nil)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "http.host_limits.default: rps 10") {
+		t.Errorf("warnings = %v", got)
+	}
+}
+
+// A host entry named "other" is accepted; config check warns that it
+// shares the metrics label of the unlisted hosts.
+func TestConfigCheckWarnsOnHostNamedOther(t *testing.T) {
+	t.Setenv("ANGELIA_PLUGINS_DIR", filepath.Join(t.TempDir(), "absent"))
+	out, errb, err := runCheck(t, "--config", writeCfg(t, "http:\n  host_limits:\n    hosts:\n      other: {rps: 2}\n"))
+	if err != nil {
+		t.Fatalf("err = %v, stderr %q", err, errb)
+	}
+	if !strings.Contains(errb, `warning: http.host_limits.hosts.other: the netguard metrics report this host as host="other"`) {
+		t.Errorf("stderr = %q", errb)
+	}
+	if !strings.Contains(out, "  other                    2 rps, burst 2 (config)\n") {
+		t.Errorf("out = %q", out)
+	}
+}

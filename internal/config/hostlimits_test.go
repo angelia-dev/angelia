@@ -140,7 +140,7 @@ func TestHostLimitsTypesAndUnknownKeys(t *testing.T) {
 // ADR 0027 §3: exact host names; scheme, port, path, brackets, upper case
 // and wildcards are refused with the expected spelling.
 func TestHostLimitsHostSpelling(t *testing.T) {
-	for _, h := range []string{"pypi.org", "pypi.org.", "127.0.0.1", "::1", "fd00::5", "default", "xn--bcher-kva.example", "a-b.c"} {
+	for _, h := range []string{"pypi.org", "pypi.org.", "127.0.0.1", "::1", "fd00::5", "::ffff:192.0.2.1", "default", "other", "xn--bcher-kva.example", "a-b.c"} {
 		if _, err := loadLimits(t, "    hosts: {\""+h+"\": {rps: 1}}\n"); err != nil {
 			t.Errorf("%q refused: %v", h, err)
 		}
@@ -160,6 +160,9 @@ func TestHostLimitsHostSpelling(t *testing.T) {
 		"under_score.example":  "must be a host name",
 		"-bad.example":         "must be a host name",
 		"http://127.0.0.1:500": "such as 127.0.0.1",
+		"0:0::1":               "in its canonical form, such as ::1",
+		"fd00:0:0::5":          "in its canonical form, such as fd00::5",
+		".":                    "must be a host name",
 	} {
 		_, err := loadLimits(t, "    hosts: {\""+h+"\": {rps: 1}}\n")
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "http.host_limits.hosts") {
@@ -262,5 +265,19 @@ func TestFormatRate(t *testing.T) {
 		if got := FormatRate(v); got != want {
 			t.Errorf("FormatRate(%v) = %q, want %q", v, got, want)
 		}
+	}
+}
+
+// A host named "other" is accepted, with a warning: it shares the metrics
+// label of every unlisted host.
+func TestHostLimitsOtherHostWarns(t *testing.T) {
+	cfg, err := loadLimits(t, "    hosts:\n      other: {rps: 2}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.HTTP.HostLimits.Warnings(nil, []string{"other"})
+	want := []string{`http.host_limits.hosts.other: the netguard metrics report this host as host="other", the label of every unlisted host; its series cannot be told apart from theirs`}
+	if !slices.Equal(got, want) {
+		t.Errorf("warnings = %v, want %v", got, want)
 	}
 }

@@ -146,6 +146,9 @@ func (r RateLimit) validate(key string, maxRPS float64, maxBurst int) []error {
 // address or an IPv6 address without brackets (as url.URL.Hostname reports
 // it), lower case, optionally with a trailing dot (ADR 0027 §3).
 func hostLimitHostProblem(h string) string {
+	if h == "" || h == "." {
+		return "must be a host name, an IPv4 address or an IPv6 address without brackets"
+	}
 	if strings.Contains(h, "*") || strings.HasPrefix(h, ".") {
 		return "wildcards are not supported; list each host name exactly, such as pypi.org"
 	}
@@ -155,6 +158,10 @@ func hostLimitHostProblem(h string) string {
 			return "write the IPv6 address without a zone, such as " + a.WithZone("").String()
 		case h != strings.ToLower(h):
 			return "write the host in lower case, such as " + strings.ToLower(h)
+		case a.String() != h:
+			// Matching is by the exact spelling of url.URL.Hostname, so a
+			// non-canonical spelling would rarely match (ADR 0027 §3).
+			return "write the IPv6 address in its canonical form, such as " + a.String()
 		}
 		return ""
 	}
@@ -205,9 +212,10 @@ var builtinBudgets = map[string]string{
 // Warnings returns the findings of ADR 0027 §6 on a valid h: values above a
 // built-in budget (capped), a rate above 20 on a host of publicHosts (the
 // hosts of the built-in sources' default base URLs), a default above the
-// built-in fallback, and hosts that are not in usedHosts (the hosts of the
+// built-in fallback, hosts that are not in usedHosts (the hosts of the
 // configured sources, the built-in sources' defaults and the plugins'
-// allowed hosts).
+// allowed hosts), and a host named "other", which shares the metrics label
+// of the unlisted hosts.
 func (h HostLimits) Warnings(publicHosts, usedHosts []string) []string {
 	var out []string
 	builtins := netguard.DefaultHostLimits()
@@ -232,6 +240,9 @@ func (h HostLimits) Warnings(publicHosts, usedHosts []string) []string {
 		}
 		if !slices.Contains(usedHosts, host) {
 			out = append(out, key+": no configured source uses this host")
+		}
+		if host == netguard.OtherHost {
+			out = append(out, fmt.Sprintf("%s: the netguard metrics report this host as host=%q, the label of every unlisted host; its series cannot be told apart from theirs", key, netguard.OtherHost))
 		}
 	}
 	if h.Default != nil {
