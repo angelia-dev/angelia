@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,19 +154,32 @@ type angeliaConfig struct {
 	Sources  map[string]map[string]string `yaml:"sources"`
 }
 
-// The per-host rate limit of the fake registry's host (ADR 0027 §9): 1.5
-// times the 33.3 rps demand of 10,000 targets at the 5-minute interval, all
-// on one host, under the fake GitHub limit of 80 rps. The result of a run
-// holds only with this limit.
-const (
-	registryHostRPS   = 50
-	registryHostBurst = 50
-)
+// HostLimit is the per-host rate limit of the fake registry's host
+// (http.host_limits, ADR 0027 §9).
+type HostLimit struct {
+	RPS   float64
+	Burst int // 0: ceil(RPS), as angelia defaults it
+}
+
+// DefaultHostLimit is 1.5 times the 33.3 rps demand of 10,000 targets at
+// the 5-minute interval, all on one host, under the fake GitHub limit of
+// 80 rps. The result of a run holds only with this limit; BENCH_HOST_RPS=5
+// runs at angelia's default limit to show the cap.
+var DefaultHostLimit = HostLimit{RPS: 50, Burst: 50}
+
+// effective fills in the default burst.
+func (l HostLimit) effective() HostLimit {
+	if l.Burst == 0 {
+		l.Burst = max(1, int(math.Ceil(l.RPS)))
+	}
+	return l
+}
 
 // registryHostLimit describes the limit WriteAngeliaConfig sets for the
 // registry's host, for the report: the host the instance's requests go to.
-func registryHostLimit(registry string) string {
-	return fmt.Sprintf("%s %d rps, burst %d (http.host_limits)", registryHost(registry), registryHostRPS, registryHostBurst)
+func registryHostLimit(registry string, l HostLimit) string {
+	l = l.effective()
+	return fmt.Sprintf("%s %s rps, burst %d (http.host_limits)", registryHost(registry), strconv.FormatFloat(l.RPS, 'f', -1, 64), l.Burst)
 }
 
 // registryHost is the host name of the registry URL: the key of the
@@ -182,8 +197,9 @@ func registryHost(registry string) string {
 // ("http://host:port"), and the database lives in dataDir. allowNetwork
 // is the one prefix the SSRF guard accepts although it is loopback or
 // private (http.allow_networks): the fake registry's address and no other.
-// The registry's host gets registryHostRPS (http.host_limits).
-func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string) error {
+// The registry's host gets the rate limit limit (http.host_limits).
+func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string, limit HostLimit) error {
+	limit = limit.effective()
 	c := angeliaConfig{
 		Listen:   listen,
 		Roles:    []string{"all"},
@@ -192,7 +208,7 @@ func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string) er
 		HTTP: map[string]any{
 			"allow_networks": []string{allowNetwork},
 			"host_limits": map[string]any{"hosts": map[string]any{
-				registryHost(registry): map[string]int{"rps": registryHostRPS, "burst": registryHostBurst},
+				registryHost(registry): map[string]any{"rps": limit.RPS, "burst": limit.Burst},
 			}},
 		},
 		Sources: map[string]map[string]string{},

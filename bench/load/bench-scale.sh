@@ -11,6 +11,9 @@
 #   BENCH_CPUS        container CPU limit (default 1)
 #   BENCH_OUT         output directory (default bin/bench/scale-$BENCH_N)
 #   BENCH_FAKEREG     fake registry behaviour (default bench/fakereg/fakereg.yaml)
+#   BENCH_HOST_RPS    rate limit of the fake registry host, http.host_limits (default 50;
+#                     5 is angelia's default limit)
+#   BENCH_HOST_BURST  its burst (default ceil(BENCH_HOST_RPS))
 set -eu
 
 BENCH_N=${BENCH_N:-10000}
@@ -34,9 +37,13 @@ else
 	set -- -container=false
 fi
 
+if [ -n "${BENCH_HOST_BURST:-}" ]; then
+	set -- "$@" -host-burst "$BENCH_HOST_BURST"
+fi
+
 if [ -n "${BENCH_ALLOW_NETWORK:-}" ]; then
 	set -- "$@" -allow-network "$BENCH_ALLOW_NETWORK"
 fi
 
 exec go run ./bench/load -n "$BENCH_N" -duration "$BENCH_DURATION" -check-interval "$BENCH_CHECK_INTERVAL" \
-	-angelia "$bin" -out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" "$@"
+	-angelia "$bin" -out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" -host-rps "${BENCH_HOST_RPS:-50}" "$@"

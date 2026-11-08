@@ -49,6 +49,8 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (no mea
 | `BENCH_MEMORY`, `BENCH_CPUS` | `256m`, `1` | container limits |
 | `BENCH_OUT` | `bin/bench/scale-$BENCH_N` | output directory |
 | `BENCH_FAKEREG` | `bench/fakereg/fakereg.yaml` | registry behaviour |
+| `BENCH_HOST_RPS` | `50` | rate limit of the fake registry's host, `http.host_limits` (below); `5` is angelia's default limit |
+| `BENCH_HOST_BURST` | `ceil(BENCH_HOST_RPS)` | its burst |
 
 `go run ./bench/load -h` lists the underlying flags.
 
@@ -67,6 +69,27 @@ Check lag counts only releases published between **ready + warm-up** and **end �
   few lag samples. Keep at least **3 intervals** in it: `BENCH_DURATION` ≥ 4.1 × interval +
   2 min, which is 22.5m with the default 5m interval. The 30m default leaves 22.5m (4.5
   intervals). The enforced minimum (8m at 5m intervals) only checks that the run works.
+
+### Rate limit of the fake registry
+
+Every fake ecosystem is served from one host, so all checks share one netguard bucket. Without
+configuration that bucket allows 5 requests per second, far below the demand of 10,000 watches at
+the 5-minute interval (33.3 rps). The harness therefore sets, next to `http.allow_networks`, a
+limit for that host in `http.host_limits` ([ADR 0027](../../docs/adr/0027-configurable-per-host-rate-limits.md)
+§9, [Per-host rate limits](../../docs/configuration.md#per-host-rate-limits)):
+
+```yaml
+http:
+  host_limits:
+    hosts:
+      127.0.0.1: {rps: 50, burst: 50}
+```
+
+50 rps is 1.5 times the demand, under the fake GitHub limit (80 rps) and under angelia's 100 rps
+ceiling. The key is the host name of the registry URL, which the limiter keys its buckets on:
+`127.0.0.1` in process mode, `host.docker.internal` in container mode. **The result holds only
+with this limit**, and the report prints it under the verdict. `BENCH_HOST_RPS=5` runs at
+angelia's default limit, to show the cap.
 
 ### Reaching the registry past the SSRF guard
 
