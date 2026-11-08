@@ -5,8 +5,9 @@ story angelia-dev/angelia#62): 10,000 watches over 5 ecosystems on 1 vCPU / 256 
 P95 check lag < 2 min, memory < 100 MB (95.4 MiB) and CPU < 20%.
 
 ```
-make bench-scale BENCH_N=10000                                   # Docker, --cpus 1 --memory 256m
-BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # quick smoke: plain process, Linux only
+make bench-scale BENCH_N=10000                                   # Docker Engine on Linux, --cpus 1 --memory 256m
+BENCH_ALLOW_NETWORK=192.168.65.254/32 make bench-scale BENCH_N=10000 # Docker Desktop (see below)
+BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (no meaningful lag): plain process, Linux only
 ```
 
 `make bench-scale N=10000` works too.
@@ -34,7 +35,7 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # quick smoke: 
    - process mode (`BENCH_CONTAINER=0`): a child process without limits, sampled from `/proc`.
      It needs Linux and fails at once elsewhere.
 5. Waits for `/readyz`, then samples memory and CPU every 5 s for `BENCH_DURATION` (default
-   15m).
+   30m).
 6. Reads the registry's statistics for the lag window (below) and writes `report.json` and
    `report.md`, with the logs and config, into `BENCH_OUT` (default `bin/bench/scale-N`).
 
@@ -42,7 +43,7 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # quick smoke: 
 |---|---|---|
 | `BENCH_N` | `10000` | watches (`N` is accepted by `make`) |
 | `BENCH_CONTAINER` | `1` | `0`: plain process |
-| `BENCH_DURATION` | `15m` | measuring time after `/readyz`; must exceed the warm-up plus 2 minutes (8m with the default interval) |
+| `BENCH_DURATION` | `30m` | measuring time after `/readyz`; must exceed the warm-up plus 2 minutes (7.5m with the default interval, so at least 8m). For a meaningful lag reading, keep at least 3 check intervals in the lag window: 22.5m with the default interval (see below) |
 | `BENCH_CHECK_INTERVAL` | `5m` | per-watch check interval; sets the warm-up. The watch file accepts 5m to 720h |
 | `BENCH_ALLOW_NETWORK` | picked per mode | the `http.allow_networks` entry for the registry (below) |
 | `BENCH_MEMORY`, `BENCH_CPUS` | `256m`, `1` | container limits |
@@ -61,6 +62,11 @@ Check lag counts only releases published between **ready + warm-up** and **end �
   before the end and not yet seen would count with a lag of 10 s. With the cut-off, every
   unseen release in the window counts with a lag of at least 2 minutes, so it fails the
   target instead of flattering it.
+- the window is therefore `BENCH_DURATION` − 1.1 × interval − 2 min long. Each package is
+  checked once per interval, so a window shorter than a few intervals holds few releases and
+  few lag samples. Keep at least **3 intervals** in it: `BENCH_DURATION` ≥ 4.1 × interval +
+  2 min, which is 22.5m with the default 5m interval. The 30m default leaves 22.5m (4.5
+  intervals). The enforced minimum (8m at 5m intervals) only checks that the run works.
 
 ### Reaching the registry past the SSRF guard
 
@@ -71,8 +77,12 @@ opt-in an operator uses for a homelab registry; netguard itself is unchanged:
 
 - process mode: `127.0.0.1/32`;
 - container mode on Linux Docker Engine: the bridge gateway, for example `172.17.0.1/32`;
-- container mode on Docker Desktop: `192.168.65.0/24`, Desktop's default VM network, where
-  `host.docker.internal` lives. Set `BENCH_ALLOW_NETWORK` if your Desktop uses another one.
+- container mode on Docker Desktop: no default. The address `host.docker.internal` has inside
+  the container cannot be told from the host, so the run stops and asks for
+  `BENCH_ALLOW_NETWORK` (`-allow-network`). The usual value is `192.168.65.254/32`; check it with
+  `docker run --rm alpine getent hosts host.docker.internal`.
+- container mode when the Linux bridge gateway cannot be found: the same; set
+  `BENCH_ALLOW_NETWORK` to the address `host.docker.internal` has in the container.
 
 ### Where the registry listens (container mode)
 

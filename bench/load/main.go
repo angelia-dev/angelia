@@ -64,7 +64,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	o := options{newTarget: newTarget, probe: probe{readFile: os.ReadFile, run: runCmd, goos: runtime.GOOS}}
 	fs.IntVar(&o.n, "n", 10000, "number of watches, spread over the ecosystems with a built-in source")
-	fs.DurationVar(&o.duration, "duration", 15*time.Minute, "how long to measure after angelia is ready")
+	fs.DurationVar(&o.duration, "duration", 30*time.Minute, "how long to measure after angelia is ready; must exceed the warm-up plus 2m")
 	fs.DurationVar(&o.interval, "sample-interval", 5*time.Second, "time between memory/CPU samples")
 	fs.StringVar(&o.fakeregConfig, "fakereg-config", "bench/fakereg/fakereg.yaml", "fake registry behaviour YAML")
 	fs.StringVar(&o.bin, "angelia", "bin/angelia", "angelia binary (linux build for -container)")
@@ -280,18 +280,18 @@ func bindHost(ctx context.Context, run runFunc, goos string, log *slog.Logger) s
 
 // registryNetwork is the one prefix the instance needs in
 // http.allow_networks to reach the fake registry listening on host: the
-// loopback address in process mode, the bridge gateway in a container on
-// Linux Docker Engine, and Docker Desktop's VM network (where
-// host.docker.internal is 192.168.65.254 by default) when the registry
-// listens on the host's loopback in container mode.
+// loopback address in process mode and the bridge gateway in a container on
+// Linux Docker Engine. On Docker Desktop (the registry listens on the
+// host's loopback in container mode) and when the gateway is unknown, the
+// address of host.docker.internal inside the container cannot be told from
+// the host, so the operator must give it with -allow-network.
 func registryNetwork(container bool, host string) (string, error) {
 	switch {
 	case !container:
 		return host + "/32", nil
-	case host == "127.0.0.1":
-		return "192.168.65.0/24", nil
-	case host == "0.0.0.0":
-		return "", errors.New("cannot tell which address host.docker.internal has in the container: set -allow-network (BENCH_ALLOW_NETWORK)")
+	case host == "127.0.0.1" || host == "0.0.0.0":
+		return "", errors.New("cannot tell which address host.docker.internal has in the container: " +
+			"set -allow-network (BENCH_ALLOW_NETWORK), on Docker Desktop usually 192.168.65.254/32 (see bench/load/README.md)")
 	}
 	return host + "/32", nil
 }

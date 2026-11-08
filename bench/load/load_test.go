@@ -166,14 +166,17 @@ func TestRegistryNetwork(t *testing.T) {
 	}{
 		{false, "127.0.0.1", "127.0.0.1/32"},
 		{true, "172.17.0.1", "172.17.0.1/32"},
-		{true, "127.0.0.1", "192.168.65.0/24"},
 	} {
 		if got, err := registryNetwork(tc.container, tc.host); err != nil || got != tc.want {
 			t.Errorf("registryNetwork(%v, %s) = %q, %v; want %q", tc.container, tc.host, got, err, tc.want)
 		}
 	}
-	if _, err := registryNetwork(true, "0.0.0.0"); err == nil || !strings.Contains(err.Error(), "-allow-network") {
-		t.Errorf("all interfaces: err = %v", err)
+	// Docker Desktop (registry on the host's loopback) and an unknown
+	// gateway: no guess, the operator names the address.
+	for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
+		if _, err := registryNetwork(true, host); err == nil || !strings.Contains(err.Error(), "-allow-network") {
+			t.Errorf("container, registry on %s: err = %v", host, err)
+		}
 	}
 }
 

@@ -4,7 +4,7 @@
 #   BENCH_N           watches (default 10000)
 #   BENCH_CONTAINER   1 (default): angelia in Docker with --memory/--cpus;
 #                     0: angelia as a plain process (Linux, no limits)
-#   BENCH_DURATION    measuring time after angelia is ready (default 15m)
+#   BENCH_DURATION    measuring time after angelia is ready (default 30m)
 #   BENCH_CHECK_INTERVAL  per-watch check interval (default 5m, the watch file minimum)
 #   BENCH_ALLOW_NETWORK   CIDR angelia may dial for the fake registry (default: picked per mode)
 #   BENCH_MEMORY      container memory limit (default 256m)
@@ -15,7 +15,7 @@ set -eu
 
 BENCH_N=${BENCH_N:-10000}
 BENCH_CONTAINER=${BENCH_CONTAINER:-1}
-BENCH_DURATION=${BENCH_DURATION:-15m}
+BENCH_DURATION=${BENCH_DURATION:-30m}
 BENCH_CHECK_INTERVAL=${BENCH_CHECK_INTERVAL:-5m}
 BENCH_OUT=${BENCH_OUT:-bin/bench/scale-$BENCH_N}
 BENCH_FAKEREG=${BENCH_FAKEREG:-bench/fakereg/fakereg.yaml}
