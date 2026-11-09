@@ -89,7 +89,7 @@ func New(log *slog.Logger) *Metrics {
 	m := &Metrics{reg: prometheus.NewRegistry(), log: log}
 	m.dueTargets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "angelia_scheduler_due_targets",
-		Help: "Targets due for a check and not leased, as seen by the last scheduler poll.",
+		Help: "Targets due for a check and not leased, as last counted by the scheduler (at most once per poll interval).",
 	})
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",

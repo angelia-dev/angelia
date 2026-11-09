@@ -130,7 +130,7 @@ func TestWorkerPoolBound(t *testing.T) {
 		t.Fatalf("poll with a full pool started %d", n)
 	}
 	gate <- struct{}{}
-	<-s.freed // the pool was full, so the finished check signals
+	<-s.freed // a finished check wakes the poll loop
 	if n := s.poll(ctx); n != 1 {
 		t.Fatalf("poll after one finished started %d, want 1", n)
 	}
@@ -397,13 +397,15 @@ func TestMetricsHooks(t *testing.T) {
 	s := newTestScheduler(t, st, newCounter(), clk, func(o *Options) { o.Metrics = m; o.Workers = 1 })
 	clk.Advance(30 * time.Second)
 	pollAndWait(t.Context(), s)
+	clk.Advance(time.Second) // the backlog is counted at most once per poll interval
 	pollAndWait(t.Context(), s)
+	clk.Advance(time.Second)
 	pollAndWait(t.Context(), s)
 	want := []int64{2, 1, 0}
 	if fmt.Sprint(m.backlog) != fmt.Sprint(want) {
 		t.Errorf("backlog = %v, want %v", m.backlog, want)
 	}
-	if wantLag := []time.Duration{30 * time.Second, 20 * time.Second}; fmt.Sprint(m.lag) != fmt.Sprint(wantLag) {
+	if wantLag := []time.Duration{30 * time.Second, 21 * time.Second}; fmt.Sprint(m.lag) != fmt.Sprint(wantLag) {
 		t.Errorf("lag = %v, want %v", m.lag, wantLag)
 	}
 }
@@ -421,8 +423,8 @@ func TestRun(t *testing.T) {
 	})
 	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.PollInterval = 10 * time.Second })
 	idle, resume := make(chan struct{}), make(chan struct{})
-	s.testHookIdle = func() { idle <- struct{}{}; <-resume }
 	ctx, cancel := context.WithCancel(t.Context())
+	s.testHookIdle = func() { idle <- struct{}{}; <-resume }
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
@@ -431,6 +433,12 @@ func TestRun(t *testing.T) {
 		t.Fatalf("checked %s", id)
 	}
 	s.wg.Wait() // Run is parked in the hook, so no poll adds work
+	// Drop the wake-up of the finished check, so only the timer can wake
+	// the loop below.
+	select {
+	case <-s.freed:
+	default:
+	}
 	clk.Advance(time.Hour)
 	resume <- struct{}{}
 	<-idle // the poll timer fired and the target was due again
@@ -625,6 +633,7 @@ type spyStore struct {
 	Store
 	mu          sync.Mutex
 	leaseCalls  int
+	countCalls  int
 	renewErr    error // returned by AcquireLease (renewals) when set
 	leaseErr    error // returned by HasDueTargets and LeaseDueTargets when set
 	pruned      []int64
@@ -641,6 +650,13 @@ func (s *spyStore) LeaseDueTargets(ctx context.Context, holder string, now, unti
 		return nil, err
 	}
 	return s.Store.LeaseDueTargets(ctx, holder, now, until, limit)
+}
+
+func (s *spyStore) CountDueTargets(ctx context.Context, now time.Time) (int64, error) {
+	s.mu.Lock()
+	s.countCalls++
+	s.mu.Unlock()
+	return s.Store.CountDueTargets(ctx, now)
 }
 
 func (s *spyStore) HasDueTargets(ctx context.Context, now time.Time) (bool, error) {
@@ -949,5 +965,141 @@ func TestCheckLogsCarrySourceAndKind(t *testing.T) {
 	pollAndWait(ctx, s)
 	if out := buf.String(); !strings.Contains(out, `"source":"npm-internal"`) || !strings.Contains(out, `"kind":"npm"`) {
 		t.Fatalf("log = %s", out)
+	}
+}
+
+// Story #224: every finished check wakes the poll loop, also when the pool
+// was not full. Before, only a check that finished while every slot was busy
+// did, so once a poll leased fewer targets than it had free slots (a check
+// finished while it ran, or fewer targets were due), the free slots waited
+// for the poll timer: in benchmark 1 the workers stood idle 64% of the time.
+func TestFinishedCheckWakesPollLoop(t *testing.T) {
+	st := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, st, "t1", "a", t0)
+	release := make(chan struct{})
+	checked := make(chan string, 4)
+	c := CheckerFunc(func(_ context.Context, tg store.Target) (Outcome, error) {
+		checked <- tg.ID
+		if tg.ID == "t1" {
+			<-release
+		}
+		return Outcome{}, nil
+	})
+	// The poll timer never fires: the clock does not move.
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.Workers = 2; o.PollInterval = time.Hour })
+	idle := make(chan struct{}, 16)
+	s.testHookIdle = func() {
+		select {
+		case idle <- struct{}{}:
+		default:
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	<-idle // the first poll leased t1, one of two slots
+	if id := <-checked; id != "t1" {
+		t.Fatalf("checked %s", id)
+	}
+	addTarget(t, st, "t2", "b", t0) // due now, while t1 runs
+	close(release)                  // t1 finishes with the pool not full
+	select {
+	case id := <-checked:
+		if id != "t2" {
+			t.Fatalf("checked %s, want t2", id)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("t2 was not checked: the finished check did not wake the poll loop")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+}
+
+// Story #224: counting the due backlog reads every due row, which costs
+// milliseconds per poll at a backlog of thousands, and the loop polls after
+// every finished check. So the count runs at most once per poll interval;
+// polls in between only ask whether anything is due.
+func TestDueBacklogCountedOncePerPollInterval(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	for i := range 6 {
+		addTarget(t, base, fmt.Sprint("t", i), fmt.Sprint("pkg", i), t0)
+	}
+	st := &spyStore{Store: base}
+	m := &fakeMetrics{}
+	c := newCounter()
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.Metrics = m; o.Workers = 1; o.PollInterval = 10 * time.Second })
+	for range 3 {
+		pollAndWait(t.Context(), s)
+	}
+	if st.countCalls != 1 || st.leaseCalls != 3 || c.total() != 3 {
+		t.Fatalf("within one poll interval: %d counts, %d leases, %d checks; want 1, 3, 3", st.countCalls, st.leaseCalls, c.total())
+	}
+	clk.Advance(10 * time.Second)
+	pollAndWait(t.Context(), s)
+	if st.countCalls != 2 {
+		t.Fatalf("after the poll interval: %d counts, want 2", st.countCalls)
+	}
+	if want := []int64{6, 3}; fmt.Sprint(m.backlog) != fmt.Sprint(want) {
+		t.Fatalf("backlog = %v, want %v", m.backlog, want)
+	}
+}
+
+// Story #224: a poll that leases nothing starts no check, so nothing wakes
+// the loop again before the poll timer; the loop does not spin.
+func TestEmptyPollDoesNotWakeTheLoop(t *testing.T) {
+	base := openStore(t)
+	clk := newFakeClock(t0)
+	addTarget(t, base, "t1", "a", t0)
+	st := &spyStore{Store: base}
+	checked := make(chan struct{}, 4)
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) {
+		checked <- struct{}{}
+		return Outcome{}, nil
+	})
+	// The clock never moves, so the poll timer never fires.
+	s := newTestScheduler(t, st, c, clk, func(o *Options) { o.PollInterval = time.Hour })
+	idle := make(chan struct{}, 16)
+	s.testHookIdle = func() { idle <- struct{}{} }
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	<-idle    // the first poll leased t1
+	<-checked // t1 was checked; its next check is an hour away
+	<-idle    // its wake-up ran a poll that found nothing due
+	select {
+	case <-idle:
+		t.Fatal("the loop polled again without a finished check or the timer")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if len(s.freed) != 0 {
+		t.Fatal("a wake-up is pending after a poll that leased nothing")
+	}
+	st.mu.Lock()
+	calls := st.leaseCalls
+	st.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("%d leasing transactions, want 1", calls)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+
+	// The same for a poll whose store fails: no check, no wake-up.
+	st.mu.Lock()
+	st.leaseErr = errors.New("database is locked")
+	st.mu.Unlock()
+	addTarget(t, base, "t2", "b", t0)
+	if n := s.poll(t.Context()); n != 0 {
+		t.Fatalf("failing poll started %d checks", n)
+	}
+	if len(s.freed) != 0 {
+		t.Fatal("a failing poll left a wake-up")
 	}
 }
