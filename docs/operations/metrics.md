@@ -31,7 +31,7 @@ A Grafana dashboard is in [`deploy/grafana/angelia.json`](../../deploy/grafana/a
 | `angelia_netguard_host_limit_burst` | gauge | `host`, `bucket`, `origin` | Effective burst (bucket size) of a host, with the same labels. |
 | `angelia_host_demand_rps` | gauge | `host` | Estimated request demand per host in requests per second: the sum over the stored targets of the host of 1 request ÷ the target's check interval (a target without an interval counts with the scheduler default, 1 hour). It is a floor: a check that finds news, or pages through a long listing, sends more than one request. `host` is a host of the rate-limit table, or `other`, which sums every unlisted host (each of them is judged against its own bucket for the warning). Hosts without targets have no series, and so do targets of a source whose host is unknown, such as a plugin. Refreshed by the scheduler at start and every minute. Comparing it with `angelia_netguard_host_limit_rate` is sound only for a listed host whose sources all use one bucket (all with a credential, or all without); for `host="other"` (a sum over unlisted hosts, whose limit applies to each host on its own) and for a host with both kinds of source, rely on the warning log instead. The scheduler logs a warning when a host is above 80% of its limit: see [Per-host rate limits](../configuration.md#per-host-rate-limits). |
 | `angelia_netguard_server_pauses_total` | counter | `host`, `reason` | Pauses of a host's bucket set by the server: `reason` is `retry_after` (a `Retry-After` header) or `ratelimit_reset` (an `X-RateLimit-*` or `RateLimit-*` pair with `Remaining` at 0). |
-| `angelia_netguard_responses_total` | counter | `host`, `class` | Outgoing attempts by outcome, each retry and redirect hop counted: `class` is `2xx`, `304`, `3xx`, `4xx`, `429`, `5xx`, or `error` when the attempt got no response (a transport error or a timeout). |
+| `angelia_netguard_responses_total` | counter | `host`, `class` | Outgoing attempts by outcome, each retry and redirect hop counted: `class` is `2xx`, `304`, `3xx`, `403`, `4xx` (every other 4xx), `429`, `5xx`, or `error` when the attempt got no response (a transport error or a timeout). |
 | `angelia_netguard_deadline_refusals_total` | counter | `host` | Requests refused at once because the host's next rate-limit slot came after the caller's deadline (a check has 3 minutes). It is the direct sign that a host's limit is too low for the demand. |
 | `angelia_delivery_attempts_total` | counter | `outcome` | Delivery attempts by outcome: `delivered`, `retry` (failed, due again later) or `dead` (gave up, including a delivery whose earlier attempt never finished and that is given up on without being sent again). Counted by the dispatcher process that made the attempt. |
 | `angelia_deliveries` | gauge | `status` | Delivery rows in the store: `pending`, `in_flight`, `delivered`, `dead`. Read from the store at scrape time (cached for 10 s), so it is the same on every process that shares the database. Delivered and dead rows disappear with their event when history is pruned. |
@@ -65,6 +65,13 @@ Share of requests that waited for a rate limit, per host:
 ```
 
 `angelia_deliveries` and `angelia_dlq_size` come from the shared database, so every process reports the same value: aggregate with `max`, never `sum`. If the database cannot be counted, they are missing from the scrape (a warning is logged) and the failure is remembered for 10 s.
+
+403 and 429 from GitHub, the two answers to a used-up rate limit (Phase 0 benchmark 3 counts both; a 403
+was part of `4xx` before it got its own class):
+
+```promql
+sum by (class) (increase(angelia_netguard_responses_total{host="api.github.com",class=~"403|429"}[24h]))
+```
 
 Requests refused because a host's limit is too low for the demand, and the 429 rate, per host:
 

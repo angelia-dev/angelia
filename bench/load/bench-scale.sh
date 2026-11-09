@@ -1,9 +1,10 @@
 #!/bin/sh
-# Phase 0 benchmarks 1 (scale) and 2 (idle). Called by `make bench-scale`
-# and `make bench-idle`; see bench/README.md and bench/load/README.md.
+# Phase 0 benchmarks 1 (scale), 2 (idle) and 3 (github). Called by
+# `make bench-scale`, `make bench-idle` and `make bench-github`; see
+# bench/README.md and bench/load/README.md.
 # Environment:
-#   BENCH_KIND        scale (default) or idle
-#   BENCH_N           watches (default 10000)
+#   BENCH_KIND        scale (default), idle or github
+#   BENCH_N           watches (default 10000; github: 2000)
 #   BENCH_CONTAINER   1 (default): angelia in Docker with --memory/--cpus;
 #                     0: angelia as a plain process (Linux, no limits)
 #   BENCH_DURATION    measuring time after angelia is ready (default 30m, idle 20m)
@@ -24,20 +25,36 @@
 #   BENCH_HOST_RPS    rate limit of the fake registry host, http.host_limits (default 50;
 #                     5 is angelia's default limit)
 #   BENCH_HOST_BURST  its burst (default ceil(BENCH_HOST_RPS))
+# Benchmark 3 (github; defaults: 24h, interval 1h, the watch file default):
+#   ANGELIA_BENCH_GITHUB_TOKEN  the token (live run); read by the harness only,
+#                     never written or printed
+#   BENCH_GITHUB_REPOS  watch list (default bench/github/repos.txt)
+#   BENCH_GITHUB_FAKE   1: dry run against the fake registry's github endpoint
+#                     (BENCH_FAKEREG default bench/fakereg/github.yaml, host limit
+#                     GitHub's 5,000/h: BENCH_HOST_RPS 1.3888889, burst 10)
 set -eu
 
 BENCH_KIND=${BENCH_KIND:-scale}
+n=10000 interval=5m fakereg=bench/fakereg/fakereg.yaml rps=50 burst= out=$BENCH_KIND
 case $BENCH_KIND in
 scale) profile=1 duration=30m ;;
 idle) profile=0 duration=20m ;;
-*) echo "bench: BENCH_KIND must be scale or idle" >&2; exit 2 ;;
+github)
+	profile=0 duration=24h n=2000 interval=1h
+	if [ "${BENCH_GITHUB_FAKE:-0}" = 1 ]; then
+		fakereg=bench/fakereg/github.yaml rps=1.3888889 burst=10 out=github-fake
+	fi
+	;;
+*) echo "bench: BENCH_KIND must be scale, idle or github" >&2; exit 2 ;;
 esac
-BENCH_N=${BENCH_N:-10000}
+BENCH_N=${BENCH_N:-$n}
 BENCH_CONTAINER=${BENCH_CONTAINER:-1}
 BENCH_DURATION=${BENCH_DURATION:-$duration}
-BENCH_CHECK_INTERVAL=${BENCH_CHECK_INTERVAL:-5m}
-BENCH_OUT=${BENCH_OUT:-bin/bench/$BENCH_KIND-$BENCH_N}
-BENCH_FAKEREG=${BENCH_FAKEREG:-bench/fakereg/fakereg.yaml}
+BENCH_CHECK_INTERVAL=${BENCH_CHECK_INTERVAL:-$interval}
+BENCH_OUT=${BENCH_OUT:-bin/bench/$out-$BENCH_N}
+BENCH_FAKEREG=${BENCH_FAKEREG:-$fakereg}
+BENCH_HOST_RPS=${BENCH_HOST_RPS:-$rps}
+BENCH_HOST_BURST=${BENCH_HOST_BURST:-$burst}
 BENCH_PROFILE=${BENCH_PROFILE:-$profile}
 MAKE=${MAKE:-make}
 
@@ -89,6 +106,11 @@ if [ -n "${BENCH_HOST_BURST:-}" ]; then
 	set -- "$@" -host-burst "$BENCH_HOST_BURST"
 fi
 
+if [ "$BENCH_KIND" = github ]; then
+	[ "${BENCH_GITHUB_FAKE:-0}" != 1 ] || set -- "$@" -github-fake
+	set -- "$@" -github-repos "${BENCH_GITHUB_REPOS:-bench/github/repos.txt}"
+fi
+
 if [ -n "${BENCH_ALLOW_NETWORK:-}" ]; then
 	set -- "$@" -allow-network "$BENCH_ALLOW_NETWORK"
 fi
@@ -123,4 +145,4 @@ if [ "$BENCH_KIND" = idle ]; then
 fi
 
 go run ./bench/load -benchmark "$BENCH_KIND" -n "$BENCH_N" -duration "$BENCH_DURATION" -check-interval "$BENCH_CHECK_INTERVAL" \
-	-angelia "$bin" -out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" -host-rps "${BENCH_HOST_RPS:-50}" "$@"
+	-angelia "$bin" -out "$BENCH_OUT" -fakereg-config "$BENCH_FAKEREG" -host-rps "$BENCH_HOST_RPS" "$@"

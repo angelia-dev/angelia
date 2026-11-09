@@ -286,6 +286,46 @@ func TestPrimaryLimit(t *testing.T) {
 	}
 }
 
+// GET /github/rate_limit answers like GitHub's endpoint and is free.
+func TestRateLimitEndpoint(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if w := get(t, New(fastConfig(nil), WithClock(clk.now)), "/github/rate_limit"); w.Code != 404 {
+		t.Errorf("without primary_limit: %d", w.Code)
+	}
+	s := New(fastConfig(func(b *Behaviour) { b.PrimaryLimit = PrimaryLimit{Requests: 5, Window: time.Hour} }), WithClock(clk.now))
+	type core struct{ Limit, Remaining, Used, Reset int64 }
+	read := func() core {
+		t.Helper()
+		w := get(t, s, "/github/rate_limit")
+		var body struct {
+			Resources struct{ Core core }
+			Rate      core
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Rate != body.Resources.Core {
+			t.Fatalf("rate_limit = %d %s", w.Code, w.Body)
+		}
+		return body.Resources.Core
+	}
+	if c := read(); c.Limit != 5 || c.Remaining != 5 || c.Used != 0 {
+		t.Errorf("fresh = %+v", c)
+	}
+	get(t, s, "/github/repos/bench/pkg-00000/releases")
+	get(t, s, "/github/repos/bench/pkg-00001/releases")
+	if c := read(); c.Remaining != 3 || c.Used != 2 || c.Reset != clk.now().Add(time.Hour).Unix() {
+		t.Errorf("after two = %+v", c)
+	}
+	if c := read(); c.Used != 2 {
+		t.Errorf("rate_limit itself counted: %+v", c)
+	}
+	clk.add(time.Hour)
+	if c := read(); c.Remaining != 5 || c.Used != 0 {
+		t.Errorf("next window = %+v", c)
+	}
+	if st := s.Stats().Ecosystems["github"]; st.Requests != 2 {
+		t.Errorf("rate_limit counted as a request: %+v", st)
+	}
+}
+
 // A random 429 is decided before the token bucket and takes no token.
 func TestRandom429TakesNoToken(t *testing.T) {
 	s := New(fastConfig(func(b *Behaviour) {

@@ -72,12 +72,24 @@ type options struct {
 	measureImage string
 	// measureBinary is the release-flag build whose size benchmark 2 checks.
 	measureBinary string
+	// Benchmark 3 (-benchmark github): githubRepos is the watch list,
+	// githubFake runs against the fake registry instead of api.github.com,
+	// GitHubToken comes from ANGELIA_BENCH_GITHUB_TOKEN (live only; exported
+	// so that fmt prints the field through secretString.String),
+	// githubAPI is where GET /rate_limit goes, waitBudget waits for a fresh
+	// rate-limit window first, metricsEvery is the scrape period.
+	githubRepos  string
+	githubFake   bool
+	GitHubToken  secretString
+	githubAPI    string
+	waitBudget   bool
+	metricsEvery time.Duration
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	o := options{newTarget: newTarget, probe: probe{readFile: os.ReadFile, run: runCmd, goos: runtime.GOOS}}
+	o := options{newTarget: newTarget, probe: probe{readFile: os.ReadFile, run: runCmd, goos: runtime.GOOS}, githubAPI: githubAPI, metricsEvery: time.Minute}
 	fs.IntVar(&o.n, "n", 10000, "number of watches, spread over the ecosystems with a built-in source")
 	fs.DurationVar(&o.duration, "duration", 30*time.Minute, "how long to measure after angelia is ready; must exceed the warm-up plus 2m")
 	fs.DurationVar(&o.interval, "sample-interval", 5*time.Second, "time between memory/CPU samples")
@@ -93,7 +105,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDRs, comma-separated, the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the addresses of host.docker.internal")
 	fs.Float64Var(&o.hostLimit.RPS, "host-rps", DefaultHostLimit.RPS, "rate limit of the fake registry's host in requests per second (http.host_limits, 1/3600 to 100); 5 is angelia's default")
 	fs.IntVar(&o.hostLimit.Burst, "host-burst", 0, "burst of the fake registry's host (1 to 200); default ceil(-host-rps)")
-	fs.StringVar(&o.kind, "benchmark", "scale", "scale (benchmark 1) or idle (benchmark 2: idle memory, binary and image size)")
+	fs.StringVar(&o.kind, "benchmark", "scale", "scale (benchmark 1), idle (benchmark 2: idle memory, binary and image size) or github (benchmark 3: one token, api.github.com)")
+	fs.StringVar(&o.githubRepos, "github-repos", "bench/github/repos.txt", "benchmark 3: watch list, one owner/name per line; the first -n are watched")
+	fs.BoolVar(&o.githubFake, "github-fake", false, "benchmark 3: dry run against the fake registry's github endpoint instead of api.github.com")
+	fs.BoolVar(&o.waitBudget, "github-wait-budget", true, "benchmark 3: before starting, wait for the token's rate-limit window to reset if more than 1% of it is used")
 	fs.BoolVar(&o.profile, "profile", false, "collect cpu.pprof and heap.pprof at the end of the run (needs a -tags benchprof binary)")
 	fs.DurationVar(&o.profileCPU, "profile-cpu", 30*time.Second, "length of the CPU profile, which ends with the run")
 	fs.StringVar(&o.measureImage, "measure-image", "", "benchmark 2: container image whose size is checked; empty: not measured")
@@ -102,9 +117,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if o.kind != "scale" && o.kind != "idle" {
-		_, _ = fmt.Fprintln(stderr, "load: -benchmark must be scale or idle")
+	if o.kind != "scale" && o.kind != "idle" && o.kind != "github" {
+		_, _ = fmt.Fprintln(stderr, "load: -benchmark must be scale, idle or github")
 		return 2
+	}
+	if o.kind == "github" && !o.githubFake {
+		// Read here, kept in memory, handed to angelia through its
+		// environment only: never on a command line, in a file or a log.
+		if o.GitHubToken = secretString(strings.TrimSpace(os.Getenv(githubTokenEnv))); o.GitHubToken == "" {
+			_, _ = fmt.Fprintf(stderr, "load: -benchmark github needs a GitHub token in %s (or -github-fake for the dry run)\n", githubTokenEnv)
+			return 2
+		}
 	}
 	if o.profile {
 		if o.profileCPU <= 0 {
@@ -138,7 +161,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
-	rep, err := bench(ctx, o, log)
+	runBench := bench
+	if o.kind == "github" {
+		runBench = benchGitHub
+	}
+	rep, err := runBench(ctx, o, log)
 	if err != nil {
 		log.Error("benchmark failed", "err", err)
 		return 2
@@ -150,14 +177,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func newTarget(o options, workdir string) Target {
 	if o.container {
 		return &dockerTarget{
-			run: runCmd, name: fmt.Sprintf("%s-%d", benchLabel, os.Getpid()), image: o.image, bin: o.bin,
+			run: runCmd, runEnv: runCmdEnv, name: fmt.Sprintf("%s-%d", benchLabel, os.Getpid()), image: o.image, bin: o.bin,
 			workdir: workdir, memory: o.memory, cpus: o.cpus, logPath: filepath.Join(workdir, "angelia.log"),
-			env: profileEnv(o, "/work"),
+			env: profileEnv(o, "/work"), secretEnv: secretEnv(o),
 		}
 	}
 	p := newProcessTarget(o.bin, freeAddr(), filepath.Join(workdir, "angelia.log"))
-	p.env = profileEnv(o, workdir)
+	p.env, p.secretEnv = profileEnv(o, workdir), secretEnv(o)
 	return p
+}
+
+// secretEnv is the token for angelia, under the name its configuration
+// reads (benchmark 3, live only).
+func secretEnv(o options) []string {
+	if o.GitHubToken == "" {
+		return nil
+	}
+	return []string{githubTokenChildEnv + "=" + string(o.GitHubToken)}
 }
 
 func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {

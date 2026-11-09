@@ -40,6 +40,8 @@ type Report struct {
 	Registry fakereg.Stats `json:"registry"`
 	// Idle is benchmark 2's measurement; nil for benchmark 1.
 	Idle *Idle `json:"idle,omitempty"`
+	// GitHub is benchmark 3's measurement; nil for the others.
+	GitHub *GitHubResult `json:"github,omitempty"`
 	// Profiles are the pprof files next to the report (-profile).
 	Profiles []string `json:"profiles,omitempty"`
 	Checks   []Check  `json:"checks"`
@@ -68,7 +70,7 @@ type Environment struct {
 
 // Params are the inputs of the run.
 type Params struct {
-	Kind             string         `json:"benchmark"` // scale or idle
+	Kind             string         `json:"benchmark"` // scale, idle or github
 	Watches          int            `json:"watches"`
 	PerEcosystem     map[string]int `json:"watches_per_ecosystem"`
 	Loader           string         `json:"watch_loader"`
@@ -221,7 +223,7 @@ func (r *Report) Markdown(w io.Writer) error {
 	p := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	e := r.Environment
 	p("# %s\n\n**Verdict: %s**\n", r.Benchmark, r.Verdict)
-	if r.Params.HostLimit != "" {
+	if r.Params.HostLimit != "" && r.GitHub == nil {
 		p("Fake registry host limit: %s. The result holds only with this limit.\n", r.Params.HostLimit)
 	}
 	for _, n := range r.Notes {
@@ -233,6 +235,12 @@ func (r *Report) Markdown(w io.Writer) error {
 	}
 	if r.Idle != nil {
 		p("%s", r.Idle.markdown())
+	}
+	if r.GitHub != nil {
+		p("%s", r.GitHub.markdown(r.Params.CheckInterval, r.Params.Watches))
+		if r.Params.HostLimit != "" {
+			p("Fake registry host limit: %s; `make bench-github` defaults it to GitHub's 5,000 per hour (1.39 rps, burst 10).\n", r.Params.HostLimit)
+		}
 	}
 	if len(r.Profiles) > 0 {
 		p("\n## Profiles\n\nCPU profile for %s from %s, heap profile after a GC at its end (`go tool pprof -http=: <file>`):\n", r.Params.ProfileCPU, r.Params.ProfileFrom)
@@ -273,6 +281,15 @@ func (r *Report) Markdown(w io.Writer) error {
 	rs := r.Resources
 	p("\n%s max %.1f MiB, P95 %.1f MiB; CPU mean %.1f%%, P95 %.1f%% of one CPU (%d samples).",
 		rs.MemorySource, rs.MemMaxMiB, rs.MemP95MiB, rs.CPUMeanPct, rs.CPUP95Pct, len(r.Samples))
+	if r.GitHub != nil {
+		if r.GitHub.Mode == "fake" {
+			p("\n## Fake registry (github)\n\n| Requests | 200 | 304 | 429 | 403 | 404 | Cancelled |\n|---|---|---|---|---|---|---|")
+			s := r.Registry.Ecosystems["github"]
+			p("| %d | %d | %d | %d | %d | %d | %d |", s.Requests, s.OK, s.NotModified, s.Throttled, s.Forbidden, s.NotFound, s.Cancelled)
+		}
+		_, err := io.WriteString(w, b.String())
+		return err
+	}
 	d := r.DueDelay
 	p("\n## Due-to-check delay\n\nHow late each check started compared with its due time (`%s`, lease time minus due time), %d checks started between %s (ready + warm-up) and %s: P50 %s, P95 %s, P99 %s, with %d scheduler workers.",
 		delayMetric, d.Samples, pr.DelayFrom.Format(time.RFC3339), pr.DelayTo.Format(time.RFC3339), qs(d.P50Seconds, d.P50Open), qs(d.P95Seconds, d.P95Open), qs(d.P99Seconds, d.P99Open), pr.SchedulerWorkers)

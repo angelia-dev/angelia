@@ -31,7 +31,7 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle clean
+.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle bench-github bench-github-repos clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -85,6 +85,14 @@ bench-scale: ## Benchmark 1: BENCH_N watches (default 10000) against the fake re
 
 bench-idle: ## Benchmark 2: idle memory, binary and image size with 100 watches (N=…), report in bin/bench
 	BENCH_KIND=idle BENCH_N=$(or $(N),100) MAKE="$(MAKE)" bench/load/bench-scale.sh
+
+# Benchmark 3 needs ANGELIA_BENCH_GITHUB_TOKEN (bench/README.md); BENCH_GITHUB_FAKE=1
+# is the dry run against the fake registry. 24 hours by default (BENCH_DURATION).
+bench-github: ## Benchmark 3: 2,000 GitHub repos (N=…) on one token for 24 h, report in bin/bench
+	BENCH_KIND=github BENCH_N=$(or $(N),2000) MAKE="$(MAKE)" bench/load/bench-scale.sh
+
+bench-github-repos: ## Rebuild bench/github/repos.txt from GitHub search (needs ANGELIA_BENCH_GITHUB_TOKEN)
+	go run ./bench/github/genrepos -out bench/github/repos.txt
 
 clean: ## Remove build output
 	rm -rf bin

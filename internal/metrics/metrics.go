@@ -130,7 +130,7 @@ func New(log *slog.Logger) *Metrics {
 	}, []string{"host", "reason"})
 	m.responses = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "angelia_netguard_responses_total",
-		Help: "Outgoing HTTP attempts by host and outcome class: 2xx, 304, 3xx, 4xx, 429, 5xx or error.",
+		Help: "Outgoing HTTP attempts by host and outcome class: 2xx, 304, 3xx, 403, 4xx (other than 403 and 429), 429, 5xx or error.",
 	}, []string{"host", "class"})
 	m.deadlineRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "angelia_netguard_deadline_refusals_total",
@@ -205,7 +205,7 @@ func (m *Metrics) ServerPause(host, reason string) {
 // "other" so that the label set stays closed.
 func (m *Metrics) Response(host, class string) {
 	switch class {
-	case netguard.ClassOK, netguard.ClassNotModified, netguard.ClassRedirect, netguard.ClassClientError,
+	case netguard.ClassOK, netguard.ClassNotModified, netguard.ClassRedirect, netguard.ClassForbidden, netguard.ClassClientError,
 		netguard.ClassTooManyRequests, netguard.ClassServerError, netguard.ClassError:
 	default:
 		class = "other"

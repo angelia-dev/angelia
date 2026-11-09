@@ -115,7 +115,7 @@ type watchFileWatch struct {
 	Name        string            `yaml:"name"`
 	Source      string            `yaml:"source"`
 	Coordinates map[string]string `yaml:"coordinates"`
-	Interval    string            `yaml:"interval"`
+	Interval    string            `yaml:"interval,omitempty"` // omitted: the watch file default
 }
 
 func (l watchFileLoader) Prepare(_ context.Context, watches []source.Target, dir, angeliaDir string) ([]string, error) {
@@ -123,12 +123,24 @@ func (l watchFileLoader) Prepare(_ context.Context, watches []source.Target, dir
 		return nil, fmt.Errorf("check interval %v: the watch file accepts %v to %v", l.interval, watchfile.MinInterval, watchfile.MaxInterval)
 	}
 	doc := watchFileDoc{Version: watchfile.Version, Watches: make([]watchFileWatch, len(watches))}
+	interval := l.interval.String()
+	if l.interval == watchfile.DefaultInterval {
+		interval = "" // the default interval, as an operator who sets none gets it
+	}
+	names := make(map[string]bool, len(watches))
 	for i, t := range watches {
 		id := t.Coordinates["name"]
 		if id == "" {
 			_, id, _ = strings.Cut(t.Coordinates["repo"], "/")
 		}
-		doc.Watches[i] = watchFileWatch{Name: t.Kind + "-" + id, Source: t.Kind, Coordinates: t.Coordinates, Interval: l.interval.String()}
+		// Real repositories can share a name, use upper case or be long:
+		// those get a numbered name.
+		name := t.Kind + "-" + id
+		if !watchfile.ValidName(name) || names[name] {
+			name = fmt.Sprintf("%s-%05d", t.Kind, i)
+		}
+		names[name] = true
+		doc.Watches[i] = watchFileWatch{Name: name, Source: t.Kind, Coordinates: t.Coordinates, Interval: interval}
 	}
 	data, err := yaml.Marshal(doc)
 	if err != nil {
@@ -150,7 +162,7 @@ type angeliaConfig struct {
 	Roles    []string                     `yaml:"roles"`
 	Database map[string]string            `yaml:"database"`
 	Log      map[string]string            `yaml:"log"`
-	HTTP     map[string]any               `yaml:"http"`
+	HTTP     map[string]any               `yaml:"http,omitempty"`
 	Sources  map[string]map[string]string `yaml:"sources"`
 }
 
@@ -217,6 +229,11 @@ func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string, li
 	for _, eco := range watchedEcosystems() {
 		c.Sources[sourceKinds()[eco]] = map[string]string{"base_url": registry + "/" + eco}
 	}
+	return writeYAML(path, c)
+}
+
+// writeYAML writes the instance configuration c to path.
+func writeYAML(path string, c angeliaConfig) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
