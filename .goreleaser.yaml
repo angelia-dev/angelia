@@ -75,40 +75,41 @@ dockers_v2:
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"
 
-# Changelog from Conventional Commits, grouped by type. Squash-merged PR titles
-# are Conventional Commits, so each entry is one change. Breaking changes
-# (`feat!:`, `fix(scope)!:`) get their own group at the top.
+# Changelog from Conventional Commits, grouped by type. Commit subjects (squash
+# titles or rebased commits) are Conventional Commits. Breaking changes
+# (`feat!:`, `fix(scope)!:`) get their own group at the top. Reverts stay in
+# "Other changes".
 changelog:
   use: github
   sort: asc
   groups:
     - title: Breaking changes
-      regexp: '^.*?(\([[:word:]/-]+\))?!:.+$'
+      regexp: '^[a-z]+(\([^)]+\))?!:.+$'
       order: 0
     - title: Features
-      regexp: '^.*?feat(\([[:word:]/-]+\))?:.+$'
+      regexp: '^feat(\([^)]+\))?:.+$'
       order: 1
     - title: Bug fixes
-      regexp: '^.*?fix(\([[:word:]/-]+\))?:.+$'
+      regexp: '^fix(\([^)]+\))?:.+$'
       order: 2
     - title: Performance
-      regexp: '^.*?perf(\([[:word:]/-]+\))?:.+$'
+      regexp: '^perf(\([^)]+\))?:.+$'
       order: 3
     - title: Security
-      regexp: '^.*?sec(urity)?(\([[:word:]/-]+\))?:.+$'
+      regexp: '^sec(urity)?(\([^)]+\))?:.+$'
       order: 4
     - title: Other changes
       order: 999
   filters:
     exclude:
-      - "^docs(\\(.+\\))?:"
-      - "^test(\\(.+\\))?:"
-      - "^chore(\\(.+\\))?:"
-      - "^ci(\\(.+\\))?:"
-      - "^style(\\(.+\\))?:"
-      - "^Merge (pull request|branch)"
+      - '^docs(\([^)]+\))?!?:'
+      - '^test(\([^)]+\))?!?:'
+      - '^chore(\([^)]+\))?!?:'
+      - '^ci(\([^)]+\))?!?:'
+      - '^style(\([^)]+\))?!?:'
+      - '^Merge (pull request|branch)'
 
 release:
-  # Created as a draft: publishing stays a human decision (H-publish).
+  # Created as a draft: publishing stays a human decision (see docs/operations/release.md).
   draft: true
   prerelease: auto
