@@ -68,8 +68,10 @@ Each command builds what it measures, runs once and prints the verdict. Exit sta
 
 Target (story angelia-dev/angelia#64, [architecture.md §6](../docs/architecture.md#6-language-and-framework-phase-0-assumptions)):
 2,000 real public repositories at the default interval for 24 hours on one token, with **zero 403
-and zero 429** responses from `api.github.com` and an **ETag hit rate above 90%** after the first
-cycle.
+and zero 429** responses from `api.github.com`, and charged requests under the token's hourly limit.
+The ETag hit rate after the first cycle is reported as information against the original 90% goal:
+the first live run (2026-11-09, 6.5 h) measured 60% with the budget well inside the limit, and the
+maintainer chose to judge the benchmark by the budget and to raise the hit rate in a follow-up story.
 
 ```
 export ANGELIA_BENCH_GITHUB_TOKEN=…        # public read-only; see "The benchmark machine"
@@ -119,7 +121,7 @@ says so in the report and is a smoke run, not a result for #64.
 |---|---|---|
 | 403 responses | `angelia_netguard_responses_total{host="api.github.com",class="403"}`, whole run | 0 |
 | 429 responses | same, `class="429"` | 0 |
-| ETag hit rate after the first cycle | `angelia_source_fetches_total{source="github-release"}`: `not_modified / (ok + not_modified)`, from the end of the first cycle to the end of the run | > 90% |
+| ETag hit rate after the first cycle | `angelia_source_fetches_total{source="github-release"}`: `not_modified / (ok + not_modified)`, from the end of the first cycle to the end of the run | > 90% (information) |
 | Requests charged to the token, busiest 60 minutes | every response but 304 (2xx, 3xx, 403, 4xx, 429, 5xx), from the per-minute scrapes | < the token's hourly limit: `limit` of `GET /rate_limit` (core), 5,000 if it cannot be read |
 | Rate limit remaining, low-water mark (optional) | GitHub's `GET /rate_limit`, core, sampled every minute | > 0 |
 
@@ -184,7 +186,8 @@ What can miss the target: a release listing whose ETag changes without a new rel
 carries counters (each asset's `download_count`, reactions); if GitHub's ETag follows them, a popular
 repository with downloads answers 200 on most checks and the hit rate drops while the budget still
 holds (2,000/h at worst). The report's checks by result and the 2xx/304 counts show it; if it happens,
-stop and report before changing the source (ADR needed for the `Source` contract).
+stop and report before changing the source (ADR needed for the `Source` contract). This is what
+the first live run showed (60%); the follow-up story tracks it.
 
 ### The watch list
 

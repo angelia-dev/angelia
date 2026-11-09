@@ -42,7 +42,8 @@ const (
 	githubHost = "api.github.com"
 	// githubBudget is GitHub's primary rate limit for one token, per hour.
 	githubBudget = 5000
-	// targetETagHitRate is benchmark 3's target: share of checks answered 304.
+	// targetETagHitRate is the share of checks answered 304 that #64 first
+	// asked for; since 2026-11-09 it is reported as information only.
 	targetETagHitRate = 0.90
 	// githubRunHours is how long #64 asks the run to last.
 	githubRunHours = 24
@@ -658,9 +659,6 @@ func (r *Report) evaluateGitHub(duration time.Duration) {
 	r.Checks = []Check{
 		check("403 responses from "+g.Host, "0", fmt.Sprintf("%.0f", g.Run.Responses["403"]), measured, g.Run.Responses["403"] == 0),
 		check("429 responses from "+g.Host, "0", fmt.Sprintf("%.0f", g.Run.Responses["429"]), measured, g.Run.Responses["429"] == 0),
-		check("ETag hit rate after the first cycle", fmt.Sprintf("> %.0f%%", targetETagHitRate*100),
-			fmt.Sprintf("%.2f%% of %.0f checks", g.ETagHitRate*100, g.Window.Fetches["ok"]+g.Window.Fetches["not_modified"]),
-			windowed, g.ETagHitRate > targetETagHitRate),
 		check("requests charged to the token, busiest 60 min", fmt.Sprintf("< %d (the token's limit per hour)", g.limit()),
 			fmt.Sprintf("%.0f", g.PeakHour), measured, g.PeakHour < float64(g.limit())),
 	}
@@ -670,7 +668,17 @@ func (r *Report) evaluateGitHub(duration time.Duration) {
 		low.Actual = fmt.Sprintf("%d of %d", g.RemainingLowWater.Remaining, g.RemainingLowWater.Limit)
 	}
 	low.Optional = true
-	r.Checks = append(r.Checks, low)
+	// The hit rate is information, not pass/fail: the maintainer's decision
+	// on 2026-11-09 (#64) judges benchmark 3 by the budget, because GitHub
+	// changes a releases listing's ETag without a new release (60% measured).
+	hit := check("ETag hit rate after the first cycle", fmt.Sprintf("> %.0f%% (information)", targetETagHitRate*100),
+		fmt.Sprintf("%.2f%% of %.0f checks", g.ETagHitRate*100, g.Window.Fetches["ok"]+g.Window.Fetches["not_modified"]),
+		windowed, g.ETagHitRate > targetETagHitRate)
+	hit.Optional = true
+	if hit.Result == "fail" {
+		hit.Result = "below (information)"
+	}
+	r.Checks = append(r.Checks, low, hit)
 	if g.Stopped != "" {
 		r.Notes = append(r.Notes, "the run stopped early, "+g.Stopped+": a partial report")
 	}

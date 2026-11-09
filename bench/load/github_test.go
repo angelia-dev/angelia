@@ -207,11 +207,10 @@ func TestEvaluateGitHub(t *testing.T) {
 		t.Fatalf("verdict %s, checks %+v, notes %v", r.Verdict, r.Checks, r.Notes)
 	}
 	for name, edit := range map[string]func(g *GitHubResult){
-		"403":      func(g *GitHubResult) { g.Run.Responses["403"] = 1 },
-		"429":      func(g *GitHubResult) { g.Run.Responses["429"] = 2 },
-		"hit rate": func(g *GitHubResult) { g.ETagHitRate = 0.9 },
-		"budget":   func(g *GitHubResult) { g.PeakHour = 5000 },
-		"low":      func(g *GitHubResult) { g.RemainingLowWater.Remaining = 0 },
+		"403":    func(g *GitHubResult) { g.Run.Responses["403"] = 1 },
+		"429":    func(g *GitHubResult) { g.Run.Responses["429"] = 2 },
+		"budget": func(g *GitHubResult) { g.PeakHour = 5000 },
+		"low":    func(g *GitHubResult) { g.RemainingLowWater.Remaining = 0 },
 	} {
 		r := base()
 		edit(r.GitHub)
@@ -219,13 +218,20 @@ func TestEvaluateGitHub(t *testing.T) {
 			t.Errorf("%s: verdict %s", name, r.Verdict)
 		}
 	}
-	// No window after the first cycle: incomplete. No /rate_limit: optional.
+	// A low hit rate is information only (maintainer's decision, #64).
+	r = base()
+	r.GitHub.ETagHitRate = 0.6
+	if r.evaluateGitHub(24 * time.Hour); r.Verdict != "pass" || r.Checks[4].Result != "below (information)" {
+		t.Errorf("low hit rate: verdict %s, checks %+v", r.Verdict, r.Checks)
+	}
+	// No window after the first cycle and no /rate_limit: both optional,
+	// so the budget checks decide; notes say what is missing.
 	r = base()
 	r.GitHub.CycleAt, r.GitHub.RemainingLowWater = time.Time{}, nil
 	r.GitHub.Run.Responses["4xx"] = 3
 	r.GitHub.Mode = "fake"
 	r.evaluateGitHub(time.Hour)
-	if r.Verdict != "incomplete" || len(r.Notes) != 4 {
+	if r.Verdict != "pass" || len(r.Notes) != 4 {
 		t.Errorf("verdict %s, notes %v", r.Verdict, r.Notes)
 	}
 }
@@ -537,7 +543,7 @@ func TestObservedTokenLimit(t *testing.T) {
 		t.Fatalf("limit %d from %q", r.GitHub.TokenLimit, r.GitHub.TokenLimitSource)
 	}
 	r.evaluateGitHub(24 * time.Hour)
-	if c := r.Checks[3]; c.Result != "pass" || !strings.Contains(c.Target, "15000") {
+	if c := r.Checks[2]; c.Result != "pass" || !strings.Contains(c.Target, "15000") {
 		t.Errorf("budget check %+v", c)
 	}
 	g := &GitHubResult{Samples: []GitHubSample{{}, {At: time.Now()}}}
