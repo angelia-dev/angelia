@@ -31,7 +31,7 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale clean
+.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -75,10 +75,15 @@ bench-ordering-snapshot: ## Rebuild the benchmark 6 snapshots from the live regi
 
 # BENCH_N watches against the fake registry; Docker by default, BENCH_CONTAINER=0
 # for a plain process. `make bench-scale N=100` works too. Other knobs:
-# bench/load/README.md. Exit status 3 means incomplete (deliberately an error).
+# bench/load/README.md; the benchmark machine and runs: bench/README.md.
+# Exit status 3 means incomplete (deliberately an error). bench-scale also
+# writes pprof CPU and heap profiles (BENCH_PROFILE=0 turns that off).
 BENCH_N ?= $(or $(N),10000)
 bench-scale: ## Benchmark 1: BENCH_N watches (default 10000) against the fake registry, report in bin/bench
 	BENCH_N=$(BENCH_N) MAKE="$(MAKE)" bench/load/bench-scale.sh
+
+bench-idle: ## Benchmark 2: idle memory, binary and image size with 100 watches (N=…), report in bin/bench
+	BENCH_KIND=idle BENCH_N=$(or $(N),100) MAKE="$(MAKE)" bench/load/bench-scale.sh
 
 clean: ## Remove build output
 	rm -rf bin

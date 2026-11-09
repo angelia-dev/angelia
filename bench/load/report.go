@@ -38,8 +38,12 @@ type Report struct {
 	// Registry holds the release lag (publish to first serve), information
 	// only: it cannot be below about 4.75 min at the 5 min minimum interval.
 	Registry fakereg.Stats `json:"registry"`
-	Checks   []Check       `json:"checks"`
-	Samples  []Sample      `json:"samples"`
+	// Idle is benchmark 2's measurement; nil for benchmark 1.
+	Idle *Idle `json:"idle,omitempty"`
+	// Profiles are the pprof files next to the report (-profile).
+	Profiles []string `json:"profiles,omitempty"`
+	Checks   []Check  `json:"checks"`
+	Samples  []Sample `json:"samples"`
 }
 
 // Environment is where the benchmark ran.
@@ -63,6 +67,7 @@ type Environment struct {
 
 // Params are the inputs of the run.
 type Params struct {
+	Kind             string         `json:"benchmark"` // scale or idle
 	Watches          int            `json:"watches"`
 	PerEcosystem     map[string]int `json:"watches_per_ecosystem"`
 	Loader           string         `json:"watch_loader"`
@@ -76,6 +81,9 @@ type Params struct {
 	SchedulerWorkers int            `json:"scheduler_workers"`
 	DelayFrom        time.Time      `json:"delay_window_from"`
 	DelayTo          time.Time      `json:"delay_window_to"`
+	// ProfileFrom is when the CPU profile (-profile) started; ProfileCPU its length.
+	ProfileFrom string `json:"profile_from,omitempty"`
+	ProfileCPU  string `json:"profile_cpu,omitempty"`
 }
 
 // Resources summarizes the samples. Memory is the process RSS (VmRSS) in
@@ -96,6 +104,8 @@ type Check struct {
 	Target string `json:"target"`
 	Actual string `json:"actual"`
 	Result string `json:"result"` // pass, fail, not measured
+	// Optional checks do not make the run incomplete when not measured.
+	Optional bool `json:"optional,omitempty"`
 }
 
 func summarizeSamples(s []Sample) Resources {
@@ -129,6 +139,11 @@ func p95(v []float64) float64 {
 // started in the delay window. The release lag is information and never
 // fails a run.
 func (r *Report) evaluate() {
+	if r.Idle != nil {
+		r.Checks = r.Idle.checks(r.Resources.MemorySource)
+		r.verdict()
+		return
+	}
 	d := r.DueDelay
 	actual := fmt.Sprintf("%.1fs over %d checks", d.P95Seconds, d.Samples)
 	if d.P95Open {
@@ -151,16 +166,38 @@ func (r *Report) evaluate() {
 	for _, e := range unmeasuredEcosystems() {
 		r.Notes = append(r.Notes, e+": not measured; angelia has no built-in "+e+" source yet, so it gets no watches")
 	}
+	r.verdict()
+}
+
+func (r *Report) verdict() {
 	r.Verdict = "pass"
 	for _, c := range r.Checks {
 		switch c.Result {
 		case "fail":
 			r.Verdict = "fail"
 		case "not measured":
-			if r.Verdict == "pass" {
+			if r.Verdict == "pass" && !c.Optional {
 				r.Verdict = "incomplete"
 			}
 		}
+	}
+}
+
+// checks are benchmark 2's targets; the image is optional, since it needs Docker.
+func (id *Idle) checks(memSource string) []Check {
+	mb := func(n int64) string { return fmt.Sprintf("%.1f MB", float64(n)/1e6) }
+	img := check("image size ("+id.Image+")", fmt.Sprintf("< %d MB", targetImageMB), mb(id.ImageBytes),
+		id.ImageBytes > 0, id.ImageBytes < targetImageMB*1e6)
+	img.Optional = true
+	if id.Image == "" {
+		img.Name = "image size (no Docker)"
+	}
+	return []Check{
+		check("idle "+memSource+" max after warm-up", fmt.Sprintf("< %.1f MiB (%d MB)", targetIdleMemMB*1e6/(1<<20), targetIdleMemMB),
+			fmt.Sprintf("%.1f MiB", id.MemMaxMiB), id.MemSamples > 0, id.MemMaxMiB < targetIdleMemMB*1e6/(1<<20)),
+		check("binary size ("+filepath.Base(id.Binary)+")", fmt.Sprintf("< %d MB", targetBinaryMB), mb(id.BinaryBytes),
+			id.BinaryBytes > 0, id.BinaryBytes < targetBinaryMB*1e6),
+		img,
 	}
 }
 
@@ -210,6 +247,12 @@ func (r *Report) Markdown(w io.Writer) error {
 	p("## Checks\n\n| Check | Target | Actual | Result |\n|---|---|---|---|")
 	for _, c := range r.Checks {
 		p("| %s | %s | %s | %s |", c.Name, c.Target, c.Actual, c.Result)
+	}
+	if len(r.Profiles) > 0 {
+		p("\n## Profiles\n\nCPU profile for %s from %s, heap profile after a GC at its end (`go tool pprof -http=: <file>`):\n", r.Params.ProfileCPU, r.Params.ProfileFrom)
+		for _, f := range r.Profiles {
+			p("- [%s](%s)", f, f)
+		}
 	}
 	p("\n## Environment\n\n| | |\n|---|---|")
 	for _, kv := range [][2]string{

@@ -258,6 +258,7 @@ func TestDockerTarget(t *testing.T) {
 	var calls [][]string
 	d := &dockerTarget{
 		name: "b", image: "img", bin: "/abs/angelia", workdir: "/w", memory: "256m", cpus: "1", logPath: filepath.Join(t.TempDir(), "log"),
+		env: []string{"ANGELIA_BENCH_PROFILE_DIR=/work"},
 		run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			calls = append(calls, append([]string{name}, args...))
 			switch args[0] {
@@ -278,7 +279,7 @@ func TestDockerTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := strings.Join(calls[2], " ") // after the labelled cleanup: ps, rm
-	for _, want := range []string{"--label angelia-bench=1", "--memory 256m", "--memory-swap 256m", "--cpus 1", "/abs/angelia:/angelia:ro", "img /angelia serve --config /work/angelia.yaml --extra"} {
+	for _, want := range []string{"--label angelia-bench=1", "--memory 256m", "--memory-swap 256m", "--cpus 1", "/abs/angelia:/angelia:ro", "-e ANGELIA_BENCH_PROFILE_DIR=/work img /angelia serve --config /work/angelia.yaml --extra"} {
 		if !strings.Contains(run, want) {
 			t.Errorf("docker run %q lacks %q", run, want)
 		}

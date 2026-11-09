@@ -46,6 +46,7 @@ func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
 // /proc, so it needs Linux. This is the BENCH_CONTAINER=0 mode.
 type processTarget struct {
 	bin, listen, logPath string
+	env                  []string // added to the harness's environment
 	readFile             func(string) ([]byte, error)
 	clkTck               float64 // USER_HZ; 100 on every mainstream Linux
 
@@ -68,6 +69,9 @@ func (p *processTarget) Start(_ context.Context, cfgPath string, args []string) 
 	// Not CommandContext: Stop sends SIGTERM for a graceful drain first.
 	p.cmd = exec.Command(p.bin, append([]string{"serve", "--config", cfgPath}, args...)...) //nolint:gosec // the binary under test
 	p.cmd.Stdout, p.cmd.Stderr = f, f
+	if p.env != nil {
+		p.cmd.Env = append(os.Environ(), p.env...)
+	}
 	if err := p.cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", p.bin, err)
 	}
@@ -162,6 +166,7 @@ type dockerTarget struct {
 	run                       runFunc
 	name, image, bin, workdir string
 	memory, cpus, logPath     string
+	env                       []string // KEY=value pairs for the container
 }
 
 func (d *dockerTarget) Start(ctx context.Context, cfgPath string, args []string) error {
@@ -173,8 +178,11 @@ func (d *dockerTarget) Start(ctx context.Context, cfgPath string, args []string)
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-v", d.bin + ":/angelia:ro", "-v", d.workdir + ":/work",
 		"-p", "127.0.0.1::8080",
-		d.image, "/angelia", "serve", "--config", cfgPath,
 	}
+	for _, e := range d.env {
+		a = append(a, "-e", e)
+	}
+	a = append(a, d.image, "/angelia", "serve", "--config", cfgPath)
 	_, err := d.run(ctx, "docker", append(a, args...)...)
 	return err
 }

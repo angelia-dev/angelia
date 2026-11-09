@@ -10,7 +10,9 @@ BENCH_ALLOW_NETWORK=192.168.65.254/32 make bench-scale BENCH_N=10000 # Docker De
 BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a short window): plain process, Linux only
 ```
 
-`make bench-scale N=10000` works too.
+`make bench-scale N=10000` works too. The same harness runs benchmark 2 (idle footprint,
+`make bench-idle`, below). The benchmark machine, where reports land and how to request a run:
+[bench/README.md](../README.md).
 
 ## What a run does
 
@@ -52,6 +54,10 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a shor
 | `BENCH_FAKEREG` | `bench/fakereg/fakereg.yaml` | registry behaviour |
 | `BENCH_HOST_RPS` | `50` | rate limit of the fake registry's host, `http.host_limits` (below); `5` is angelia's default limit |
 | `BENCH_HOST_BURST` | `ceil(BENCH_HOST_RPS)` | its burst |
+| `BENCH_KIND` | `scale` | `idle`: benchmark 2 (`make bench-idle` sets it) |
+| `BENCH_PROFILE` | `1` (scale), `0` (idle) | `1`: run a `-tags benchprof` build and write `cpu.pprof` and `heap.pprof` next to the report ([bench/README.md](../README.md#reports-and-profiles)) |
+| `BENCH_PROFILE_CPU` | `30s` | length of the CPU profile, which ends with the run |
+| `BENCH_IMAGE` | built from the Dockerfile | benchmark 2: the image whose size is checked |
 
 `go run ./bench/load -h` lists the underlying flags.
 
@@ -170,6 +176,15 @@ Exit status: 0 pass, 1 fail, 2 error, 3 **incomplete** (a target was not measure
 Incomplete is deliberately non-zero, so `make bench-scale` fails: a run that measured nothing
 must not look green.
 
+## Benchmark 2: idle footprint
+
+`make bench-idle` (`BENCH_KIND=idle`, `BENCH_N=100`, `BENCH_DURATION=10m`, output
+`bin/bench/idle-100`) runs the same setup with 100 watches and checks, instead of the three
+targets above: the highest memory sample after the warm-up < 40 MB (38.1 MiB), the size of the
+binary that ran < 40 MB and the size of the image < 50 MB. The image check is optional: without
+Docker it is *not measured* and the verdict ignores it. Details:
+[bench/README.md](../README.md#running-benchmarks-1-and-2).
+
 ## Known limits
 
 What a run on `main` measures, and what it cannot yet:
@@ -192,4 +207,5 @@ What a run on `main` measures, and what it cannot yet:
    versions have no publication time. The release lag is measured at the registry and does not need
    them.
 5. **Image**: the harness mounts the binary into a distroless base image instead of building
-   the repository's Dockerfile, so a run needs no image build.
+   the repository's Dockerfile, so a run needs no image build. Only benchmark 2 builds the
+   image, to measure its size.
