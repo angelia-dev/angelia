@@ -31,7 +31,7 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle bench-github bench-github-repos clean
+.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle bench-github bench-github-repos bench-crash clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -90,6 +90,13 @@ bench-idle: ## Benchmark 2: idle memory, binary and image size with 100 watches 
 # is the dry run against the fake registry. 24 hours by default (BENCH_DURATION).
 bench-github: ## Benchmark 3: 2,000 GitHub repos (N=…) on one token for 24 h, report in bin/bench
 	BENCH_KIND=github BENCH_N=$(or $(N),2000) MAKE="$(MAKE)" bench/load/bench-scale.sh
+
+# Benchmark 5 runs anywhere on Linux (process mode, no Docker), about 15 minutes.
+# BENCH_KILLS (default 100), BENCH_ENV_NOTE (the machine, for the report) and
+# BENCH_CRASH_FLAGS (more flags: go run ./bench/crash -h) change it.
+bench-crash: build ## Benchmark 5: SIGKILL angelia 100 times during dispatch, report in bin/bench/crash
+	go run ./bench/crash -angelia bin/$(BINARY) -kills $(or $(BENCH_KILLS),100) -out bin/bench/crash \
+		-env-note "$(BENCH_ENV_NOTE)" $(BENCH_CRASH_FLAGS)
 
 bench-github-repos: ## Rebuild bench/github/repos.txt from GitHub search (needs ANGELIA_BENCH_GITHUB_TOKEN)
 	go run ./bench/github/genrepos -out bench/github/repos.txt
