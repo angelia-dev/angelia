@@ -18,20 +18,21 @@ machine, H-bench-env. The others are deterministic and run anywhere, CI included
 
 Decided by the maintainer on 2026-11-09 (angelia-dev/angelia#38):
 
-- **Host**: the maintainer's (Marco's) Mac with Docker Desktop. The report records the CPU
-  model, memory, macOS version, Docker version and the CPUs and memory of Docker's VM.
+- **Host**: the maintainer's (Marco's) Mac with OrbStack as the Docker engine. The report
+  records the CPU model, memory, macOS version, Docker version and engine (`docker info`'s
+  OperatingSystem, "OrbStack") and the CPUs and memory of the engine's VM.
 - **Container mode**: angelia runs in a Linux container limited with `--cpus 1 --memory 256m
   --memory-swap 256m` (1 vCPU, 256 MB, no swap), the harness's default. The harness and the
   fake registry run on the Mac, outside the limits. Process mode (`BENCH_CONTAINER=0`) needs
   Linux and is for smoke runs only.
-- **Network**: Docker Desktop needs `BENCH_ALLOW_NETWORK=192.168.65.254/32` (the address of
-  `host.docker.internal` in the container; check it with
-  `docker run --rm alpine getent hosts host.docker.internal`). See
+- **Network**: nothing to set. On a Mac the harness asks a throwaway container which addresses
+  `host.docker.internal` has (OrbStack: usually `0.250.250.254`; Docker Desktop:
+  `192.168.65.254`) and allows exactly those; `BENCH_ALLOW_NETWORK` overrides it. See
   [load/README.md](load/README.md#reaching-the-registry-past-the-ssrf-guard).
 - **GitHub token** (benchmark 3): the runner's environment holds `ANGELIA_BENCH_GITHUB_TOKEN`, a
   token with public read-only access. It is never committed, written to a report or pasted
   into an issue.
-- Tools: Go (the version in `go.mod`), `make`, `git`, Docker Desktop. Close other heavy
+- Tools: Go (the version in `go.mod`), `make`, `git`, OrbStack. Close other heavy
   applications during a run and run one benchmark at a time.
 
 ## Running benchmarks 1 and 2
@@ -39,9 +40,8 @@ Decided by the maintainer on 2026-11-09 (angelia-dev/angelia#38):
 From a clean checkout of the commit to measure:
 
 ```
-export BENCH_ALLOW_NETWORK=192.168.65.254/32
 make bench-scale    # benchmark 1: 10,000 watches, 30 minutes after ready, with profiles
-make bench-idle     # benchmark 2: 100 watches, 10 minutes after ready
+make bench-idle     # benchmark 2: 100 watches, 20 minutes after ready
 ```
 
 Each command builds what it measures, runs once and prints the verdict. Exit status: 0 pass,
@@ -51,14 +51,18 @@ Each command builds what it measures, runs once and prints the verdict. Exit sta
 **Benchmark 2** checks, in MB as in the architecture (1 MB = 10⁶ bytes):
 
 - idle memory < 40 MB: the highest memory sample after the warm-up (1.1 × the check interval:
-  every watch has been checked once), container memory from `docker stats`;
-- binary < 40 MB: the binary that ran, built by `make build` (in container mode for Linux, the
-  release's target);
-- image < 50 MB: the release image is the [Dockerfile](../Dockerfile) (distroless) over a
-  stripped build, as in [.goreleaser.yaml](../.goreleaser.yaml). With Docker running, the
-  harness builds the same image as `angelia-bench:idle`, measures it (`docker image inspect`,
-  uncompressed) and removes it; `BENCH_IMAGE=<ref>` measures an existing image instead, such as
-  a snapshot. Without Docker the check says *not measured* and does not fail the run.
+  every watch has been checked once), container memory from `docker stats`. The report also
+  gives the memory at the start and the end of that window, to show a trend;
+- binary < 40 MB: a build with the release flags of [.goreleaser.yaml](../.goreleaser.yaml)
+  (`-trimpath -ldflags "-s -w"`, `bin/angelia-release-<os>-<arch>`) for the target, Linux in
+  container mode. The `make build` binary that ran (not stripped) is reported as information;
+  the benchprof binary is never measured;
+- image < 50 MB, uncompressed (`docker image inspect`, the stricter reading); the compressed
+  size (`docker save | gzip`) is information. The release image is the
+  [Dockerfile](../Dockerfile) (distroless) over the release-flag build. With Docker running, the
+  harness builds the same image as `angelia-bench:idle`, measures it and removes it;
+  `BENCH_IMAGE=<ref>` measures an existing image instead, such as a snapshot. Without Docker the
+  check says *not measured* and does not fail the run.
 
 ## Reports and profiles
 
@@ -75,8 +79,8 @@ committed: attach `report.md` and the profiles to the story's issue or PR.
 (`bin/angelia-benchprof-linux-<arch>`), and writes `cpu.pprof` (the last `BENCH_PROFILE_CPU`,
 default 30s, of the run) and `heap.pprof` (after a GC at the end) next to `report.md`, which
 links them. Open one with `go tool pprof -http=: bin/bench/scale-10000/cpu.pprof`.
-`BENCH_PROFILE=0` turns this off; `BENCH_PROFILE=1 make bench-idle` turns it on for benchmark 2,
-which then measures the size of that profiling binary.
+`BENCH_PROFILE=0` turns this off; `BENCH_PROFILE=1 make bench-idle` turns it on for benchmark 2
+(the binary check still measures the release-flag build).
 
 The hook is [cmd/angelia/benchprof.go](../cmd/angelia/benchprof.go). It is compiled only with
 the `benchprof` tag, so release binaries do not contain it, and it opens no port: with

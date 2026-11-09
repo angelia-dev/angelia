@@ -113,6 +113,16 @@ func TestAngeliaConfigIsValid(t *testing.T) {
 	if hosts, _ := cfg.HTTP.HostLimits.Netguard(); hosts["host.docker.internal"].Anonymous != (netguard.Limit{Rate: 5, Burst: 5}) {
 		t.Errorf("container host_limits = %+v", hosts)
 	}
+	// Discovered addresses: one allow_networks entry each.
+	if err := WriteAngeliaConfig(path, ":8080", "http://host.docker.internal:5000", dir, "0.250.250.254/32,fd07:b51a:cc66:f0::fe/128", DefaultHostLimit); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = config.Load(context.Background(), config.Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.HTTP.AllowPrefixes(); len(p) != 2 || p[1].String() != "fd07:b51a:cc66:f0::fe/128" {
+		t.Errorf("allow_networks = %v", p)
+	}
 	if got := registryHostLimit("http://127.0.0.1:5000", DefaultHostLimit); got != "127.0.0.1 50 rps, burst 50 (http.host_limits)" {
 		t.Errorf("registryHostLimit = %q", got)
 	}
@@ -205,6 +215,41 @@ func TestRegistryNetwork(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
 		if _, err := registryNetwork(true, host); err == nil || !strings.Contains(err.Error(), "-allow-network") {
 			t.Errorf("container, registry on %s: err = %v", host, err)
+		}
+	}
+}
+
+// On OrbStack, Docker Desktop or with an unknown gateway the harness asks
+// a container for host.docker.internal and allows each address it has.
+func TestDiscoverHostGateway(t *testing.T) {
+	hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost\n# 10.0.0.1 host.docker.internal\n" +
+		"0.250.250.254\thost.docker.internal\nfd07:b51a:cc66:f0::fe host.docker.internal other\n" +
+		"0.250.250.254 host.docker.internal\nbogus host.docker.internal\n172.17.0.5\tabc123\n"
+	if got := hostsAddresses(hosts, "host.docker.internal"); strings.Join(got, ",") != "0.250.250.254/32,fd07:b51a:cc66:f0::fe/128" {
+		t.Errorf("hostsAddresses = %v", got)
+	}
+	if got := hostsAddresses("::ffff:192.168.65.254 host.docker.internal\n", "host.docker.internal"); strings.Join(got, ",") != "192.168.65.254/32" {
+		t.Errorf("mapped IPv4 = %v", got)
+	}
+	var args []string
+	run := func(_ context.Context, name string, a ...string) ([]byte, error) {
+		args = append([]string{name}, a...)
+		return []byte(hosts), nil
+	}
+	got, err := discoverHostGateway(context.Background(), run)
+	if err != nil || got != "0.250.250.254/32,fd07:b51a:cc66:f0::fe/128" {
+		t.Errorf("discoverHostGateway = %q, %v", got, err)
+	}
+	if strings.Join(args, " ") != "docker run --rm --label angelia-bench=1 --add-host host.docker.internal:host-gateway busybox:1.37.0 cat /etc/hosts" {
+		t.Errorf("ran %v", args)
+	}
+	for name, run := range map[string]runFunc{
+		"no entry":      func(context.Context, string, ...string) ([]byte, error) { return []byte("127.0.0.1 localhost\n"), nil },
+		"docker failed": func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("no image") },
+	} {
+		if _, err := discoverHostGateway(context.Background(), run); err == nil ||
+			!strings.Contains(err.Error(), "OrbStack: usually 0.250.250.254/32; Docker Desktop: 192.168.65.254/32") {
+			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 }
@@ -405,12 +450,12 @@ func TestEnvironment(t *testing.T) {
 		"/proc/cpuinfo":              "processor\t: 0\nmodel name\t: Test CPU @ 3GHz\n",
 		"/proc/meminfo":              "MemTotal:       16777216 kB\n",
 		"/proc/sys/kernel/osrelease": "6.1.0\n",
-	}, map[string]string{"git rev-parse": "abc123\n", "git status": " M x.go\n", "docker version": "27.0 (linux/amd64)\n", "docker info": "8 8589934592\n"})
+	}, map[string]string{"git rev-parse": "abc123\n", "git status": " M x.go\n", "docker version": "27.0 (linux/amd64)\n", "docker info": "8 8589934592 OrbStack\n"})
 	d := &dockerTarget{memory: "256m", cpus: "1"}
 	e := pr.environment(context.Background(), "/does/not/exist", d, true)
 	for got, want := range map[string]string{
 		e.CPUModel: "Test CPU @ 3GHz", e.HostMemory: "16.0 GiB", e.Kernel: "6.1.0", e.Commit: "abc123",
-		e.Mode: "container", e.Docker: "27.0 (linux/amd64)", e.DockerCPUs: "8", e.DockerMemory: "8.0 GiB", e.MemoryLimit: "256m (docker --memory, no swap)",
+		e.Mode: "container", e.Docker: "27.0 (linux/amd64)", e.DockerCPUs: "8", e.DockerMemory: "8.0 GiB", e.DockerEngine: "OrbStack", e.MemoryLimit: "256m (docker --memory, no swap)",
 	} {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)

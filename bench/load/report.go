@@ -57,6 +57,7 @@ type Environment struct {
 	OS             string `json:"os"`
 	Kernel         string `json:"kernel,omitempty"`
 	Docker         string `json:"docker,omitempty"`
+	DockerEngine   string `json:"docker_engine,omitempty"` // docker info OperatingSystem: Docker Desktop, OrbStack, …
 	DockerCPUs     string `json:"docker_cpus,omitempty"`   // docker info NCPU: what the daemon's VM has
 	DockerMemory   string `json:"docker_memory,omitempty"` // docker info MemTotal
 	AngeliaGo      string `json:"angelia_go_version"`
@@ -183,24 +184,6 @@ func (r *Report) verdict() {
 	}
 }
 
-// checks are benchmark 2's targets; the image is optional, since it needs Docker.
-func (id *Idle) checks(memSource string) []Check {
-	mb := func(n int64) string { return fmt.Sprintf("%.1f MB", float64(n)/1e6) }
-	img := check("image size ("+id.Image+")", fmt.Sprintf("< %d MB", targetImageMB), mb(id.ImageBytes),
-		id.ImageBytes > 0, id.ImageBytes < targetImageMB*1e6)
-	img.Optional = true
-	if id.Image == "" {
-		img.Name = "image size (no Docker)"
-	}
-	return []Check{
-		check("idle "+memSource+" max after warm-up", fmt.Sprintf("< %.1f MiB (%d MB)", targetIdleMemMB*1e6/(1<<20), targetIdleMemMB),
-			fmt.Sprintf("%.1f MiB", id.MemMaxMiB), id.MemSamples > 0, id.MemMaxMiB < targetIdleMemMB*1e6/(1<<20)),
-		check("binary size ("+filepath.Base(id.Binary)+")", fmt.Sprintf("< %d MB", targetBinaryMB), mb(id.BinaryBytes),
-			id.BinaryBytes > 0, id.BinaryBytes < targetBinaryMB*1e6),
-		img,
-	}
-}
-
 func check(name, target, actual string, measured, ok bool) Check {
 	c := Check{Name: name, Target: target, Actual: actual, Result: "fail"}
 	switch {
@@ -248,6 +231,9 @@ func (r *Report) Markdown(w io.Writer) error {
 	for _, c := range r.Checks {
 		p("| %s | %s | %s | %s |", c.Name, c.Target, c.Actual, c.Result)
 	}
+	if r.Idle != nil {
+		p("%s", r.Idle.markdown())
+	}
 	if len(r.Profiles) > 0 {
 		p("\n## Profiles\n\nCPU profile for %s from %s, heap profile after a GC at its end (`go tool pprof -http=: <file>`):\n", r.Params.ProfileCPU, r.Params.ProfileFrom)
 		for _, f := range r.Profiles {
@@ -265,6 +251,7 @@ func (r *Report) Markdown(w io.Writer) error {
 		{"OS", e.OS},
 		{"Kernel", e.Kernel},
 		{"Docker", e.Docker},
+		{"Docker engine", e.DockerEngine},
 		{"Docker VM CPUs", e.DockerCPUs},
 		{"Docker VM memory", e.DockerMemory},
 		{"Go (angelia)", e.AngeliaGo},
@@ -322,9 +309,12 @@ func (pr probe) environment(ctx context.Context, bin string, t Target, container
 	if container {
 		e.Mode = "container"
 		e.Docker = pr.out(ctx, "docker", "version", "--format", "{{.Server.Version}} ({{.Server.Os}}/{{.Server.Arch}})")
-		if cpus, mem, ok := strings.Cut(pr.out(ctx, "docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"), " "); ok {
-			e.DockerCPUs = cpus
-			if n, err := strconv.ParseInt(mem, 10, 64); err == nil {
+		if f := strings.SplitN(pr.out(ctx, "docker", "info", "--format", "{{.NCPU}} {{.MemTotal}} {{.OperatingSystem}}"), " ", 3); len(f) >= 2 {
+			e.DockerCPUs = f[0]
+			if len(f) == 3 {
+				e.DockerEngine = f[2]
+			}
+			if n, err := strconv.ParseInt(f[1], 10, 64); err == nil {
 				e.DockerMemory = fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
 			}
 		}

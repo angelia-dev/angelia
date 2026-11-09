@@ -75,7 +75,7 @@ func testOptions(t *testing.T, out string) options {
 		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: 5 * time.Minute},
 		checkInterval: 5 * time.Millisecond, releaseCensor: 10 * time.Millisecond, hostLimit: DefaultHostLimit,
 		newTarget: func(options, string) Target { return ft },
-		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef", "docker image": "21000000\n"}),
+		probe:     fakeProbe(nil, map[string]string{"git rev-parse": "deadbeef", "docker image": "21000000\n", "sh -c": "9000000\n"}),
 	}
 }
 
@@ -84,26 +84,50 @@ func TestRunIdle(t *testing.T) {
 	out := t.TempDir()
 	o := testOptions(t, out)
 	o.kind, o.measureImage = "idle", "angelia-bench:idle"
-	o.bin = filepath.Join(out, "angelia")
-	if err := os.WriteFile(o.bin, make([]byte, 1000), 0o600); err != nil {
-		t.Fatal(err)
+	o.bin, o.measureBinary = filepath.Join(out, "angelia-benchprof"), filepath.Join(out, "angelia-release-linux-arm64")
+	for path, size := range map[string]int{o.bin: 3e6, o.measureBinary: 2e6} {
+		if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rep, err := bench(context.Background(), o, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := rep.Idle
-	if id == nil || id.MemSamples == 0 || id.MemSamples >= len(rep.Samples) || id.MemMaxMiB != 25 || id.BinaryBytes != 1000 || id.ImageBytes != 21e6 {
+	if id == nil || id.MemSamples == 0 || id.MemSamples >= len(rep.Samples) || id.MemMaxMiB != 25 || id.MemStartMiB != 25 || id.MemEndMiB != 25 ||
+		id.BinaryBytes != 2e6 || id.RunBinaryBytes != 3e6 || id.ImageBytes != 21e6 || id.ImageCompressedBytes != 9e6 {
 		t.Fatalf("idle = %+v (%d samples)", id, len(rep.Samples))
 	}
 	if rep.Verdict != "pass" || len(rep.Checks) != 3 || rep.Params.Kind != "idle" || !strings.Contains(rep.Benchmark, "benchmark 2") {
 		t.Errorf("verdict %s, checks %+v", rep.Verdict, rep.Checks)
 	}
 	md, _ := os.ReadFile(filepath.Join(out, "report.md")) //nolint:gosec // test temp dir
-	for _, want := range []string{"| idle RSS (VmRSS) max after warm-up | < 38.1 MiB (40 MB) | 25.0 MiB | pass |", "| binary size (angelia) | < 40 MB | 0.0 MB | pass |", "| image size (angelia-bench:idle) | < 50 MB | 21.0 MB | pass |"} {
+	for _, want := range []string{
+		"| idle RSS (VmRSS) max after warm-up | < 38.1 MiB (40 MB) | 25.0 MiB | pass |",
+		"| binary size, release flags (angelia-release-linux-arm64) | < 40 MB | 2.0 MB | pass |",
+		"| image size, uncompressed (angelia-bench:idle) | < 50 MB | 21.0 MB | pass |",
+		"25.0 MiB at the start, 25.0 MiB at the end, 25.0 MiB max",
+		"(`angelia-benchprof`, `make build`) is 3.0 MB", "9.0 MB compressed",
+	} {
 		if !bytes.Contains(md, []byte(want)) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
 		}
+	}
+}
+
+// What benchmark 2 cannot measure becomes a note: no -measure-binary, a
+// failing docker image inspect.
+func TestMeasureIdleNotes(t *testing.T) {
+	o := options{bin: "/does/not/exist", measureImage: "gone:1", probe: fakeProbe(nil, nil)}
+	at := time.Now()
+	samples := []Sample{{At: at.Add(-time.Second), MemoryBytes: 90 << 20}, {At: at, MemoryBytes: 20 << 20}, {At: at.Add(time.Second), MemoryBytes: 30 << 20}}
+	id, notes := measureIdle(context.Background(), o, samples, at)
+	if id.MemSamples != 2 || id.MemStartMiB != 20 || id.MemEndMiB != 30 || id.MemMaxMiB != 30 || id.BinaryBytes != 0 || id.ImageBytes != 0 {
+		t.Errorf("idle = %+v", id)
+	}
+	if len(notes) != 2 || !strings.Contains(notes[0], "-measure-binary") || !strings.Contains(notes[1], "image size not measured: not found") {
+		t.Errorf("notes = %q", notes)
 	}
 }
 

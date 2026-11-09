@@ -6,7 +6,7 @@
 // directory for the file profile.request. When the harness creates it, the
 // hook removes it, records a CPU profile for ANGELIA_BENCH_PROFILE_CPU
 // (default 30s) into cpu.pprof, then writes heap.pprof after a GC. Each file
-// is renamed into place only when complete.
+// is written to a new temporary file and renamed into place when complete.
 package main
 
 import (
@@ -77,18 +77,22 @@ func writeBenchProfiles(dir string, cpu time.Duration) error {
 	})
 }
 
-func writeAtomic(path string, write func(io.Writer) error) error {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp) //nolint:gosec // the benchmark harness names the directory
+func writeAtomic(path string, write func(io.Writer) error) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp") // O_EXCL
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name()) //nolint:gosec // G703: the temporary file just created
+		}
+	}()
 	if err := write(f); err != nil {
-		_ = f.Close()
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path) //nolint:gosec // G703: the operator's directory
+	return os.Rename(f.Name(), path) //nolint:gosec // G703: the operator's directory
 }

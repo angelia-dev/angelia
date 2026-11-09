@@ -1,6 +1,10 @@
 # golangci-lint v2 configuration. Run with: golangci-lint run
 version: "2"
 
+run:
+  # Lint the benchmark profiling hook too (cmd/angelia/benchprof.go).
+  build-tags: [benchprof]
+
 linters:
   default: none
   enable:

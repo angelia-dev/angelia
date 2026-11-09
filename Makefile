@@ -39,8 +39,9 @@ help: ## Show this help
 build: ## Build bin/angelia (CGO disabled, version info injected)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/angelia
 
-test: ## Run unit tests with the race detector
+test: ## Run unit tests with the race detector (and the benchprof hook's)
 	go test -race ./...
+	go test -race -tags benchprof -run TestBenchProfile ./cmd/angelia
 
 fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
 	@set -e; for t in $(FUZZ_TARGETS); do \

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -56,7 +55,7 @@ func clearProfiles(dir string) error {
 }
 
 func requestProfiles(dir string) error {
-	return os.WriteFile(filepath.Join(dir, profileRequest), nil, 0o666) //nolint:gosec // the container user may differ
+	return os.WriteFile(filepath.Join(dir, profileRequest), nil, 0o600)
 }
 
 // awaitProfiles waits until deadline for the profiles in dir and returns the
@@ -80,42 +79,4 @@ func awaitProfiles(ctx context.Context, dir string, deadline time.Time, notes []
 		}
 	}
 	return found, notes
-}
-
-// Targets of benchmark 2, architecture.md section 6, in MB as written there.
-const (
-	targetIdleMemMB = 40
-	targetBinaryMB  = 40
-	targetImageMB   = 50
-)
-
-// Idle is what benchmark 2 measures.
-type Idle struct {
-	MemMaxMiB   float64 `json:"memory_max_mib"` // over the samples after the warm-up
-	MemSamples  int     `json:"memory_samples"`
-	Binary      string  `json:"binary"`
-	BinaryBytes int64   `json:"binary_bytes"`
-	Image       string  `json:"image,omitempty"`
-	ImageBytes  int64   `json:"image_bytes,omitempty"`
-}
-
-// measureIdle takes the memory of the samples from after on, the size of
-// the binary that ran and, when one is named, the size of the image.
-func measureIdle(ctx context.Context, o options, samples []Sample, after time.Time) *Idle {
-	id := &Idle{Binary: o.bin, Image: o.measureImage}
-	for _, s := range samples {
-		if !s.At.Before(after) {
-			id.MemSamples++
-			id.MemMaxMiB = max(id.MemMaxMiB, float64(s.MemoryBytes)/(1<<20))
-		}
-	}
-	if fi, err := os.Stat(o.bin); err == nil {
-		id.BinaryBytes = fi.Size()
-	}
-	if o.measureImage != "" {
-		if out, err := o.probe.run(ctx, "docker", "image", "inspect", "--format", "{{.Size}}", o.measureImage); err == nil {
-			id.ImageBytes, _ = strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-		}
-	}
-	return id
 }
