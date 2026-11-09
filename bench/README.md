@@ -73,11 +73,18 @@ cycle.
 
 ```
 export ANGELIA_BENCH_GITHUB_TOKEN=…        # public read-only; see "The benchmark machine"
-make bench-github                          # 2,000 repos, 24 h, container (1 vCPU, 256 MB)
-BENCH_DURATION=2h make bench-github N=200  # a smoke run: a short window, fewer repos
-BENCH_GITHUB_FAKE=1 BENCH_CONTAINER=0 BENCH_CHECK_INTERVAL=5m BENCH_DURATION=12m BENCH_HOST_RPS=10 \
+caffeinate -i make bench-github            # 2,000 repos, 24 h, container (1 vCPU, 256 MB)
+BENCH_DURATION=3h make bench-github N=200  # a smoke run: a short window, fewer repos
+BENCH_GITHUB_FAKE=1 BENCH_CONTAINER=0 BENCH_CHECK_INTERVAL=5m BENCH_DURATION=15m BENCH_HOST_RPS=10 \
   make bench-github                        # the dry run against the fake registry (no token, no network)
 ```
+
+Keep the Mac awake for the whole day: `caffeinate -i` holds off idle sleep while the command runs (a
+sleeping Mac pauses OrbStack and the run). `BENCH_DURATION` must be above the warm-up plus one check
+interval, 2.1 × the interval (more than 2h6m at 1 hour, 10m30s at 5 minutes), so that one full round
+of checks follows the first cycle. A transient failure to sample or to scrape is logged and the run
+goes on; 10 in a row, or Ctrl-C (SIGINT, SIGTERM), end it with a partial report whose verdict is
+**incomplete** (exit status 3), holding the counters up to then.
 
 What a run does (the [load harness](load/README.md) with `-benchmark github`):
 
@@ -85,7 +92,10 @@ What a run does (the [load harness](load/README.md) with `-benchmark github`):
    environment as `BENCH_GITHUB_TOKEN` (a `token_env` may not start with `ANGELIA_`), passed to the
    container with `docker run -e BENCH_GITHUB_TOKEN` from the `docker` command's environment, so it is
    on no command line. `angelia.yaml` names the variable (`sources.github-release.token_env`), never
-   the token; nothing in the output directory and no log line holds it.
+   the token; nothing in the output directory and no log line holds it. While the container exists,
+   `docker inspect` shows its environment, the token included, to anyone who can use the Docker
+   socket; the run removes the container at its end, and a run that was killed leaves it for the next
+   run, which removes every `angelia-bench` container first (or `docker rm -f` it by hand).
 2. Calls `GET /rate_limit` (free, see below). If more than 1% of the token's hourly budget is already
    used, it waits for the window to reset (`-github-wait-budget=false` skips that), so that what
    another tool spent is not blamed on angelia.
@@ -93,7 +103,7 @@ What a run does (the [load harness](load/README.md) with `-benchmark github`):
    (`bench/github/repos.txt`, [below](#the-watch-list), the first `BENCH_N`) **without an interval**, so the watch
    file default (1 hour) applies, and an instance configuration with only that source: default base
    URL, no `allow_networks` and no `host_limits` (api.github.com is public and its built-in budget
-   applies: 5,000/h, burst 10). There is no fake registry.
+   applies: 4,990/h plus a burst of 10, so at most 5,000 in any hour). There is no fake registry.
 4. Starts angelia (container mode with the limits of benchmark 1, or `BENCH_CONTAINER=0`), samples
    memory and CPU every 5 s, and every minute scrapes `/metrics` and reads `GET /rate_limit`.
 5. Writes `report.md` and `report.json` to `bin/bench/github-<N>/` (dry run: `github-fake-<N>/`).
@@ -109,9 +119,16 @@ says so in the report and is a smoke run, not a result for #64.
 |---|---|---|
 | 403 responses | `angelia_netguard_responses_total{host="api.github.com",class="403"}`, whole run | 0 |
 | 429 responses | same, `class="429"` | 0 |
-| ETag hit rate after the first cycle | `angelia_source_fetches_total{source="github-release"}`: `not_modified / (ok + not_modified)`, from the first scrape after the warm-up (1.1 × interval) at which every watch has been fetched once, to the end | > 90% |
-| Requests charged to the token, busiest 60 minutes | every response but 304 (2xx, 3xx, 403, 4xx, 429, 5xx), from the per-minute scrapes | < 5,000 |
+| ETag hit rate after the first cycle | `angelia_source_fetches_total{source="github-release"}`: `not_modified / (ok + not_modified)`, from the end of the first cycle to the end of the run | > 90% |
+| Requests charged to the token, busiest 60 minutes | every response but 304 (2xx, 3xx, 403, 4xx, 429, 5xx), from the per-minute scrapes | < the token's hourly limit: `limit` of `GET /rate_limit` (core), 5,000 if it cannot be read |
 | Rate limit remaining, low-water mark (optional) | GitHub's `GET /rate_limit`, core, sampled every minute | > 0 |
+
+**The first cycle** ends at the first scrape after the warm-up (1.1 × interval) at which the
+successful checks (`ok` + `not_modified`) reach the number of watches. The counters cannot tell
+targets apart, so this is a count: a target checked twice could stand in for one not checked yet
+(failed checks are not counted, so a repository that answers 404 delays it until others make up for it).
+With every target due at once at the start and one interval between checks, that is rare, and the
+window is long (about 22 hours) next to it.
 
 Each attempt is counted (retries and redirect hops too); the report also gives the counts per class
 over the whole run and after the first cycle, the checks by result, the share of 304 among 2xx + 304
@@ -144,7 +161,7 @@ rate *h*:
   check that finds a change: 1, or 2 when the repository has 100 releases or more (a page holding a
   new release makes the source read the next page): at *h* = 0.9, 2,000 × 0.1 × 2 ≤ **400/h, 8% of
   5,000**. Even with no 304 at all, about 2,000 to 4,000 charged per hour stays under 5,000.
-- angelia's own limiter for api.github.com (1.39 rps, burst 10) takes a token for every request, 304
+- angelia's own limiter for api.github.com (4,990/h, 1.386 rps, burst 10: at most 5,000 in any hour) takes a token for every request, 304
   included, so it caps *sent* requests at 5,000/h whatever the hit rate: 2,000 watches at 1 hour use
   40% of it, and checks never queue for it in steady state (`angelia_host_demand_rps` shows 0.56).
   The ETags matter for GitHub's budget, not angelia's: they are what lets *R* grow, or *I* shrink,
@@ -154,10 +171,10 @@ Two phases cost more:
 
 - **The first cycle**: every target is due at once, and its first check is a full scan with no ETag:
   ceil(releases / 100) pages, at most 10. The watch list's header gives that total (*P* pages, from
-  the release counts the generator saw). All *P* are charged, paced at 1.39 rps, so the first cycle
-  takes *P* / 1.39 seconds (for *P* = 3,000, 36 minutes). If *P* came near 5,000, the first hour could
-  meet the limit: angelia's bucket allows at most 5,000 + 10 in any hour, which is why the harness
-  starts on a fresh window.
+  the release counts the generator saw). All *P* are charged, paced at 1.386 rps, so the first cycle
+  takes about *P* / 1.386 seconds (for *P* = 3,000, 36 minutes). If *P* came near 5,000, the first hour
+  could meet the limit: angelia's bucket allows exactly 5,000 in any hour (burst 10 plus 4,990 an hour),
+  all of GitHub's budget, which is why the harness starts on a fresh window.
 - **The daily rescan**: once every 24 hours, each repository's check ignores its ETag and walks all
   pages ([githubrelease](../internal/source/githubrelease/doc.go)), *P* pages a day, spread like the first
   cycle. In a 24-hour run they start at its end, so a run sees at most the first of them; they cost
@@ -175,11 +192,15 @@ stop and report before changing the source (ADR needed for the `Source` contract
 when and how it was made. It is generated with a token, so the first run on the benchmark machine
 starts with `make bench-github-repos` if the file is not committed yet. `make bench-github-repos` rebuilds it
 ([genrepos](github/genrepos/main.go), needs `ANGELIA_BENCH_GITHUB_TOKEN`): GitHub search, sorted by
-stars, forks excluded, in four buckets (35% very popular, ≥ 20,000 stars; 30% active, 2,000 to
+stars, forks excluded, in four buckets, written round robin (one of each bucket in turn, so the first
+`BENCH_N` lines are a mix too) (35% very popular, ≥ 20,000 stars; 30% active, 2,000 to
 19,999 stars, pushed in the last 90 days; 20% quiet, same stars, not pushed for a year, archived
 included; 15% smaller, 300 to 1,999 stars, pushed in the last 180 days), keeping a candidate only if
 `GET /repos/{repo}/releases?per_page=1` lists a release; a bucket that runs short passes the rest to the
-next. It sends about 40 searches and one request per candidate (about 3,000), so it uses most of an
+next. On a rate limit (429, or 403 with `X-RateLimit-Remaining: 0`) it waits for `Retry-After` or
+`X-RateLimit-Reset` and goes on, logging the remaining budget every 200 requests; on any other error
+it stops, exits non-zero and writes what it found to `bench/github/repos.txt.partial` (marked
+`INCOMPLETE`), leaving the list itself as it was. It sends about 40 searches and one request per candidate (about 3,000), so it uses most of an
 hour's budget: run it an hour before the benchmark, or let the harness wait. Commit the result: the
 list is public data.
 

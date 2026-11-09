@@ -31,7 +31,7 @@
 #   BENCH_GITHUB_REPOS  watch list (default bench/github/repos.txt)
 #   BENCH_GITHUB_FAKE   1: dry run against the fake registry's github endpoint
 #                     (BENCH_FAKEREG default bench/fakereg/github.yaml, host limit
-#                     GitHub's 5,000/h: BENCH_HOST_RPS 1.3888889, burst 10)
+#                     angelia's built-in api.github.com limit: BENCH_HOST_RPS 1.3861111 = 4,990/3,600, burst 10)
 set -eu
 
 BENCH_KIND=${BENCH_KIND:-scale}
@@ -42,7 +42,7 @@ idle) profile=0 duration=20m ;;
 github)
 	profile=0 duration=24h n=2000 interval=1h
 	if [ "${BENCH_GITHUB_FAKE:-0}" = 1 ]; then
-		fakereg=bench/fakereg/github.yaml rps=1.3888889 burst=10 out=github-fake
+		fakereg=bench/fakereg/github.yaml rps=1.3861111 burst=10 out=github-fake
 	fi
 	;;
 *) echo "bench: BENCH_KIND must be scale, idle or github" >&2; exit 2 ;;

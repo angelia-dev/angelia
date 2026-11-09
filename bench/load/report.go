@@ -239,7 +239,7 @@ func (r *Report) Markdown(w io.Writer) error {
 	if r.GitHub != nil {
 		p("%s", r.GitHub.markdown(r.Params.CheckInterval, r.Params.Watches))
 		if r.Params.HostLimit != "" {
-			p("Fake registry host limit: %s; `make bench-github` defaults it to GitHub's 5,000 per hour (1.39 rps, burst 10).\n", r.Params.HostLimit)
+			p("Fake registry host limit: %s; `make bench-github` defaults it to angelia's built-in api.github.com limit, 4,990 per hour plus a burst of 10 (1.386 rps): 5,000 in any hour.\n", r.Params.HostLimit)
 		}
 	}
 	if len(r.Profiles) > 0 {

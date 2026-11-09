@@ -48,10 +48,15 @@ const (
 	githubRunHours = 24
 )
 
-// GitHubBudgetLimit is api.github.com's built-in authenticated budget in
-// angelia (5,000/h, burst 10); the fake dry run gives the fake registry's
+// GitHubBudgetLimit is api.github.com's built-in authenticated limit in
+// angelia (netguard.DefaultHostLimits: (5,000 - 10) per hour, burst 10, so
+// at most 5,000 in any hour); the fake dry run gives the fake registry's
 // host the same, so it is paced like the live run.
-var GitHubBudgetLimit = HostLimit{RPS: githubBudget / 3600.0, Burst: 10}
+var GitHubBudgetLimit = HostLimit{RPS: (githubBudget - 10) / 3600.0, Burst: 10}
+
+// maxFailures is how many samples, or scrapes, in a row may fail before a
+// run gives up; fewer are logged and the run goes on.
+const maxFailures = 10
 
 // secretString hides a token from fmt and slog.
 type secretString string
@@ -183,7 +188,9 @@ type GitHubResult struct {
 	// WatchList is the list the watches come from (live).
 	WatchList string `json:"watch_list,omitempty"`
 	// CycleAt is the end of the first cycle: the first scrape after the
-	// warm-up at which every watch had been fetched at least once.
+	// warm-up at which the successful checks (ok + not_modified) reached
+	// the number of watches. Counters cannot tell targets apart, so a
+	// target checked twice can stand in for one not checked yet.
 	CycleAt time.Time `json:"first_cycle_done_at"`
 	// Run and Window are the counters over the whole run and after the
 	// first cycle (zero when the cycle did not end).
@@ -205,7 +212,13 @@ type GitHubResult struct {
 	RemainingStart    *RateLimitCore `json:"rate_limit_start,omitempty"`
 	RemainingLowWater *RateLimitCore `json:"rate_limit_low_water,omitempty"`
 	RemainingLowAt    time.Time      `json:"rate_limit_low_water_at"`
-	Samples           []GitHubSample `json:"samples"`
+	// TokenLimit is the token's hourly limit as GET /rate_limit reports it
+	// (core), else GitHub's documented 5,000; TokenLimitSource says which.
+	TokenLimit       int64  `json:"token_limit"`
+	TokenLimitSource string `json:"token_limit_source"`
+	// Stopped says why the run ended early ("" when it ran to the end).
+	Stopped string         `json:"stopped,omitempty"`
+	Samples []GitHubSample `json:"samples"`
 }
 
 // chargedClasses are the response classes GitHub charges to the primary
@@ -219,6 +232,11 @@ func (s GitHubSample) charged() float64 {
 		n += s.Responses[c]
 	}
 	return n
+}
+
+// successes are the checks that got an answer: ok and not_modified.
+func (s GitHubSample) successes() float64 {
+	return s.Fetches["ok"] + s.Fetches["not_modified"]
 }
 
 func (s GitHubSample) checks() float64 {
@@ -356,7 +374,7 @@ func readRateLimit(ctx context.Context, base string, tok secretString) (*RateLim
 // awaitFreshBudget waits, before the run, until the token's window has
 // (nearly) its whole budget: a run that starts on a budget another tool
 // used up would meet 403s that are not angelia's.
-func awaitFreshBudget(ctx context.Context, base string, tok secretString, log *slog.Logger, now func() time.Time) error {
+func awaitFreshBudget(ctx context.Context, base string, tok secretString, log *slog.Logger, now func() time.Time, sleep func(context.Context, time.Duration) error) error {
 	rl, err := readRateLimit(ctx, base, tok)
 	if err != nil {
 		return fmt.Errorf("cannot read the token's rate limit (is %s a valid token?): %w", githubTokenEnv, err)
@@ -369,10 +387,17 @@ func awaitFreshBudget(ctx context.Context, base string, tok secretString, log *s
 		return nil
 	}
 	log.Info("the token's rate-limit window is partly used; waiting for it to reset", "remaining", rl.Remaining, "limit", rl.Limit, "wait", wait.Round(time.Second))
+	return sleep(ctx, wait)
+}
+
+// sleepCtx waits for d or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(wait):
+	case <-t.C:
 		return nil
 	}
 }
@@ -465,18 +490,18 @@ func benchGitHub(ctx context.Context, o options, log *slog.Logger) (*Report, err
 	}
 	rep.Environment = o.probe.environment(ctx, o.bin, t, o.container)
 	if o.waitBudget && !o.githubFake {
-		if err := awaitFreshBudget(ctx, apiBase, o.GitHubToken, log, time.Now); err != nil {
+		if err := awaitFreshBudget(ctx, apiBase, o.GitHubToken, log, time.Now, sleepCtx); err != nil {
 			return nil, err
 		}
 	}
-	readLimit := func() *RateLimitCore {
+	readLimit := func(ctx context.Context) *RateLimitCore {
 		rl, err := readRateLimit(ctx, apiBase, o.GitHubToken)
 		if err != nil {
 			return nil
 		}
 		return rl
 	}
-	gh.RemainingStart = readLimit()
+	gh.RemainingStart = readLimit(ctx)
 	log.Info("starting angelia", "benchmark", "github", "mode", rep.Environment.Mode, "github", gh.Mode, "watches", len(watches), "duration", o.duration)
 	startedAt := time.Now()
 	if err := t.Start(ctx, filepath.Join(angeliaDir, "angelia.yaml"), serveArgs); err != nil {
@@ -496,16 +521,16 @@ func benchGitHub(ctx context.Context, o options, log *slog.Logger) (*Report, err
 	// The counters start at zero with the process.
 	gh.Samples = []GitHubSample{{At: startedAt.UTC(), Responses: map[string]float64{}, Fetches: map[string]float64{}}}
 	var cycle *GitHubSample
-	scrape := func() bool {
+	scrape := func(ctx context.Context) bool {
 		body, err := scrapeMetrics(ctx, base)
 		if err != nil {
 			log.Warn("cannot read angelia's metrics", "err", err)
 			return false
 		}
 		s := githubCounters(body, gh.Host, time.Now().UTC())
-		s.RateLimit = readLimit()
+		s.RateLimit = readLimit(ctx)
 		gh.Samples = append(gh.Samples, s)
-		if cycle == nil && !s.At.Before(readyAt.Add(warmup(o.checkInterval))) && s.checks() >= float64(len(watches)) {
+		if cycle == nil && !s.At.Before(readyAt.Add(warmup(o.checkInterval))) && s.successes() >= float64(len(watches)) {
 			c := s
 			cycle, gh.CycleAt = &c, s.At
 		}
@@ -514,26 +539,49 @@ func benchGitHub(ctx context.Context, o options, log *slog.Logger) (*Report, err
 	tick := time.NewTicker(o.interval)
 	defer tick.Stop()
 	var lastScrape time.Time
-	for {
-		s, err := t.Sample(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("sample: %w", err)
+	sampleFails, scrapeFails := 0, 0
+	for gh.Stopped == "" {
+		if s, err := t.Sample(ctx); err != nil {
+			sampleFails++
+			log.Warn("cannot sample angelia", "err", err, "failures_in_a_row", sampleFails)
+		} else {
+			sampleFails = 0
+			rep.Samples = append(rep.Samples, s)
 		}
-		rep.Samples = append(rep.Samples, s)
 		done := !time.Now().Before(end)
-		if done || time.Since(lastScrape) >= o.metricsEvery {
-			if scrape() {
-				lastScrape = time.Now()
+		if ctx.Err() == nil && (done || time.Since(lastScrape) >= o.metricsEvery) {
+			if scrape(ctx) {
+				lastScrape, scrapeFails = time.Now(), 0
+			} else {
+				scrapeFails++
 			}
 		}
-		if done {
-			break
+		switch {
+		case sampleFails >= maxFailures:
+			gh.Stopped = fmt.Sprintf("aborted after %d failed samples in a row (see the harness log)", sampleFails)
+		case scrapeFails >= maxFailures:
+			gh.Stopped = fmt.Sprintf("aborted after %d failed metrics scrapes in a row (see the harness log)", scrapeFails)
+		case done:
+			// The run ended.
+		default:
+			select {
+			case <-ctx.Done():
+				gh.Stopped = "interrupted: " + ctx.Err().Error()
+			case <-tick.C:
+			}
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-tick.C:
-		}
+		break
+	}
+	if gh.Stopped != "" {
+		// A last scrape, so the partial report has the counters up to now.
+		log.Warn("the run stopped early; writing a partial report", "reason", gh.Stopped)
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		scrape(fctx)
+		cancel()
+	}
+	if gh.Stopped != "" {
+		end = time.Now()
 	}
 	gh.finish(cycle)
 	if reg != nil {
@@ -559,6 +607,17 @@ func (g *GitHubResult) finish(cycle *GitHubSample) {
 	g.Charged = g.Run.charged()
 	if h := last.At.Sub(g.Samples[0].At).Hours(); h > 0 {
 		g.ChargedPerHour = g.Charged / h
+	}
+	g.TokenLimit, g.TokenLimitSource = githubBudget, "GitHub's documented limit (GET /rate_limit not read)"
+	seen := []*RateLimitCore{g.RemainingStart}
+	for _, s := range g.Samples {
+		seen = append(seen, s.RateLimit)
+	}
+	for _, rl := range seen {
+		if rl != nil && rl.Limit > 0 {
+			g.TokenLimit, g.TokenLimitSource = rl.Limit, "GET /rate_limit (core)"
+			break
+		}
 	}
 	for i, s := range g.Samples {
 		// The latest sample at least 60 minutes before s, else the start.
@@ -602,8 +661,8 @@ func (r *Report) evaluateGitHub(duration time.Duration) {
 		check("ETag hit rate after the first cycle", fmt.Sprintf("> %.0f%%", targetETagHitRate*100),
 			fmt.Sprintf("%.2f%% of %.0f checks", g.ETagHitRate*100, g.Window.Fetches["ok"]+g.Window.Fetches["not_modified"]),
 			windowed, g.ETagHitRate > targetETagHitRate),
-		check("requests charged to the token, busiest 60 min", fmt.Sprintf("< %d (GitHub's limit per hour)", githubBudget),
-			fmt.Sprintf("%.0f", g.PeakHour), measured, g.PeakHour < githubBudget),
+		check("requests charged to the token, busiest 60 min", fmt.Sprintf("< %d (the token's limit per hour)", g.limit()),
+			fmt.Sprintf("%.0f", g.PeakHour), measured, g.PeakHour < float64(g.limit())),
 	}
 	low := check("rate limit remaining, low-water (GET /rate_limit)", "> 0", "-", g.RemainingLowWater != nil,
 		g.RemainingLowWater != nil && g.RemainingLowWater.Remaining > 0)
@@ -612,6 +671,9 @@ func (r *Report) evaluateGitHub(duration time.Duration) {
 	}
 	low.Optional = true
 	r.Checks = append(r.Checks, low)
+	if g.Stopped != "" {
+		r.Notes = append(r.Notes, "the run stopped early, "+g.Stopped+": a partial report")
+	}
 	if g.Mode == "fake" {
 		r.Notes = append(r.Notes, "dry run against the fake registry's github endpoint: it tests the harness and angelia's pacing, not api.github.com")
 	}
@@ -619,12 +681,23 @@ func (r *Report) evaluateGitHub(duration time.Duration) {
 		r.Notes = append(r.Notes, fmt.Sprintf("measured for %v, less than the %d h of angelia-dev/angelia#64: a smoke run, not the benchmark", duration, githubRunHours))
 	}
 	if g.CycleAt.IsZero() && measured {
-		r.Notes = append(r.Notes, "the first cycle did not end (not every watch was fetched after the warm-up): the ETag hit rate is not measured; raise BENCH_DURATION")
+		r.Notes = append(r.Notes, "the first cycle did not end (successful checks did not reach the number of watches after the warm-up): the ETag hit rate is not measured; raise BENCH_DURATION")
 	}
 	if g.Run.Responses["4xx"] > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("%.0f other 4xx responses (404: a repository renamed away or deleted; see angelia.log)", g.Run.Responses["4xx"]))
 	}
 	r.verdict()
+	if g.Stopped != "" {
+		r.Verdict = "incomplete"
+	}
+}
+
+// limit is the token's hourly limit the budget is judged against.
+func (g *GitHubResult) limit() int64 {
+	if g.TokenLimit > 0 {
+		return g.TokenLimit
+	}
+	return githubBudget
 }
 
 // githubMarkdown renders benchmark 3's section.
@@ -643,7 +716,7 @@ func (g *GitHubResult) markdown(interval string, watches int) string {
 	if g.CycleAt.IsZero() {
 		p("The first cycle did not end, so there is no window after it.\n")
 	} else {
-		p("First cycle done at %s (every watch fetched at least once, after the warm-up).\n", g.CycleAt.Format(time.RFC3339))
+		p("First cycle done at %s: the first scrape after the warm-up at which successful checks (ok + not_modified) reached the number of watches (counters do not tell targets apart, so this is a count, not a per-target guarantee).\n", g.CycleAt.Format(time.RFC3339))
 	}
 	classes := []string{"2xx", "304", "3xx", "403", "4xx", "429", "5xx", "error"}
 	p("| Responses | %s |\n|---|%s", strings.Join(classes, " | "), strings.Repeat("---|", len(classes)))
@@ -681,8 +754,8 @@ func (g *GitHubResult) markdown(interval string, watches int) string {
 	if len(g.Samples) > 1 {
 		hours = g.Samples[len(g.Samples)-1].At.Sub(g.Samples[0].At).Hours()
 	}
-	p("Budget: %.0f requests charged to the token over the run's %.2f h (every response but 304; the first cycle included), %.0f per hour on average; busiest 60 minutes (the whole run if shorter) %.0f, ending %s, against GitHub's %d per hour. Server pauses: %s. Deadline refusals: %.0f.\n",
-		g.Charged, hours, g.ChargedPerHour, g.PeakHour, g.PeakHourEndedAt.Format(time.RFC3339), githubBudget, strings.Join(ps, ", "), g.Run.DeadlineRefusals)
+	p("Budget: %.0f requests charged to the token over the run's %.2f h (every response but 304; the first cycle included), %.0f per hour on average; busiest 60 minutes (the whole run if shorter) %.0f, ending %s, against the token's %d per hour (%s). Server pauses: %s. Deadline refusals: %.0f.\n",
+		g.Charged, hours, g.ChargedPerHour, g.PeakHour, g.PeakHourEndedAt.Format(time.RFC3339), g.limit(), g.TokenLimitSource, strings.Join(ps, ", "), g.Run.DeadlineRefusals)
 	if g.RemainingStart != nil || g.RemainingLowWater != nil {
 		p("GitHub's view (`GET /rate_limit`, core, free to call), sampled with the metrics:")
 		if s := g.RemainingStart; s != nil {

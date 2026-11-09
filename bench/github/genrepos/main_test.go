@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -67,7 +68,9 @@ func fakeGitHub(t *testing.T, search map[string][]string, releases map[string]in
 }
 
 func testGen(api string) *gen {
-	return &gen{api: api, token: "tok-for-test", hc: http.DefaultClient, log: slog.New(slog.DiscardHandler)}
+	g := &gen{api: api, token: "tok-for-test", hc: http.DefaultClient, log: slog.New(slog.DiscardHandler), now: time.Now}
+	g.pause = func(context.Context, time.Duration) error { return nil }
+	return g
 }
 
 func TestGenerateQuotasAndCarry(t *testing.T) {
@@ -100,7 +103,7 @@ func TestGenerateQuotasAndCarry(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out) //nolint:gosec // test temp dir
-	for _, want := range []string{"# Generated 2026-11-09", "#   b           1  qb\n", "#   a           4  qa | qa2", "8 repositories, 1769 releases", "\no/a0\n", "\no/c3\n"} {
+	for _, want := range []string{"\no/a0\no/b1\no/c0\no/a2\n", "# Generated 2026-11-09", "#   b           1  qb\n", "#   a           4  qa | qa2", "8 repositories, 1769 releases", "\no/a0\n", "\no/c3\n"} {
 		if !bytes.Contains(b, []byte(want)) {
 			t.Errorf("file lacks %q:\n%s", want, b)
 		}
@@ -110,11 +113,103 @@ func TestGenerateQuotasAndCarry(t *testing.T) {
 	}
 }
 
-func TestGenerateStopsWhenRateLimited(t *testing.T) {
+// A rate limit is waited out (Retry-After, else X-RateLimit-Reset) and the
+// request sent again; one that never lifts stops the run, and the list found
+// so far is written next to the real one.
+func TestRateLimitIsWaitedOut(t *testing.T) {
+	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	var calls atomic.Int32
+	answers := []func(w http.ResponseWriter){
+		func(w http.ResponseWriter) { // primary limit used up
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprint(now.Add(10*time.Minute).Unix()))
+			w.WriteHeader(http.StatusForbidden)
+		},
+		func(w http.ResponseWriter) { // secondary limit
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(http.StatusTooManyRequests)
+		},
+		func(w http.ResponseWriter) { // a plain 403 is not a rate limit: skipped
+			w.WriteHeader(http.StatusForbidden)
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if k := int(calls.Add(1)) - 1; k < len(answers) && strings.Contains(r.URL.Path, "/releases") {
+			answers[k](w)
+			return
+		}
+		if r.URL.Path == "/search/repositories" {
+			_, _ = w.Write([]byte(`{"items":[{"full_name":"o/a"},{"full_name":"o/b"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":1}]`))
+	}))
+	defer srv.Close()
+	g := testGen(srv.URL)
+	g.now = func() time.Time { return now }
+	var waits []time.Duration
+	g.pause = func(_ context.Context, d time.Duration) error { waits = append(waits, d); return nil }
+	calls.Store(-1) // the search comes first
+	l, err := g.generate(context.Background(), 1, []bucket{{"a", 100, []string{"q"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// o/a: 403 limit (wait 10m5s), 429 (wait 7s), plain 403 (skipped); o/b kept.
+	if len(waits) != 2 || waits[0] != 10*time.Minute+5*time.Second || waits[1] != 7*time.Second || strings.Join(l.repos, " ") != "o/b" {
+		t.Errorf("waits %v, repos %v", waits, l.repos)
+	}
+}
+
+func TestRateLimitThatNeverLifts(t *testing.T) {
 	limited := true
 	srv := fakeGitHub(t, map[string][]string{"q": {"o/a"}}, nil, &limited)
-	if _, err := testGen(srv.URL).generate(context.Background(), 1, []bucket{{"a", 100, []string{"q"}}}); err == nil || !strings.Contains(err.Error(), "rate limited") {
-		t.Errorf("err = %v", err)
+	g := testGen(srv.URL)
+	waits := 0
+	g.pause = func(context.Context, time.Duration) error { waits++; return nil }
+	if _, err := g.generate(context.Background(), 1, []bucket{{"a", 100, []string{"q"}}}); err == nil || !strings.Contains(err.Error(), "rate limited") || waits != maxRateWaits {
+		t.Errorf("err = %v after %d waits", err, waits)
+	}
+}
+
+// A fatal error keeps the list found so far in out.partial; out is untouched.
+func TestPartialListOnError(t *testing.T) {
+	search := map[string][]string{"qa": {"o/a0", "o/a1"}, "qb": {"o/b0"}}
+	rel := map[string]int{"o/a0": 1, "o/a1": 2, "o/b0": 1}
+	srv := fakeGitHub(t, search, rel, nil)
+	bs := []bucket{{"a", 50, []string{"qa"}}, {"b", 50, []string{"qb"}}}
+	out := filepath.Join(t.TempDir(), "repos.txt")
+	if err := os.WriteFile(out, []byte("good/list\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := testGen(srv.URL)
+	if code := g.write(context.Background(), 4, bs, out, time.Now()); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "good/list\n" { //nolint:gosec // test temp dir
+		t.Errorf("the list was replaced: %s", b)
+	}
+	b, err := os.ReadFile(out + ".partial") //nolint:gosec // test temp dir
+	if err != nil || !bytes.Contains(b, []byte("# INCOMPLETE: 3 of 4")) || !bytes.Contains(b, []byte("\no/a1\n")) {
+		t.Errorf("partial: %v\n%s", err, b)
+	}
+	// Success writes the list itself, readable by everyone (public data).
+	if code := g.write(context.Background(), 2, bs, out, time.Now()); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Mode().Perm()&0o044 == 0 {
+		t.Errorf("mode: %v %v", fi, err)
+	}
+}
+
+// Lines take the buckets in turn, so the first N are a mix.
+func TestInterleave(t *testing.T) {
+	l := &list{
+		repos:    []string{"a1", "a2", "a3", "b1", "c1", "c2"},
+		buckets:  []bucket{{name: "a"}, {name: "b"}, {name: "c"}},
+		byBucket: map[string][]string{"a": {"a1", "a2", "a3"}, "b": {"b1"}, "c": {"c1", "c2"}},
+	}
+	if got := strings.Join(interleave(l), " "); got != "a1 b1 c1 a2 c2 a3" {
+		t.Errorf("interleave = %s", got)
 	}
 }
 

@@ -156,6 +156,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "load: -duration must exceed the warm-up plus %v of censoring: more than %v\n", o.releaseCensor, least)
 		return 2
 	}
+	if least := warmup(o.checkInterval) + o.checkInterval; o.kind == "github" && o.duration <= least {
+		// The ETag hit rate needs a window after the first cycle that holds at
+		// least one more round of checks.
+		_, _ = fmt.Fprintf(stderr, "load: -benchmark github needs -duration above the warm-up plus one check interval (2.1 x interval): more than %v\n", least)
+		return 2
+	}
 	if err := checkMode(o.container, runtime.GOOS); err != nil {
 		_, _ = fmt.Fprintln(stderr, "load:", err)
 		return 2

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -255,23 +256,34 @@ func TestAwaitFreshBudget(t *testing.T) {
 	if _, err := readRateLimit(ctx, srv.URL, "wrong"); err == nil || strings.Contains(err.Error(), "wrong") {
 		t.Errorf("bad token: %v", err)
 	}
-	// Fresh: no wait.
-	if err := awaitFreshBudget(ctx, srv.URL, "sentinel-token-1234", log, time.Now); err != nil {
-		t.Fatal(err)
+	// The clock and the sleep are injected: nothing waits for real.
+	var slept []time.Duration
+	sleep := func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	clock := func() time.Time { return time.Unix(reset, 0).Add(-20 * time.Minute) }
+	// Fresh (99% or more left): no wait.
+	if err := awaitFreshBudget(ctx, srv.URL, "sentinel-token-1234", log, clock, sleep); err != nil || len(slept) != 0 {
+		t.Fatalf("fresh: slept %v, %v", slept, err)
 	}
-	// Used: waits until the reset plus 5 s (here the clock says that is 50 ms away).
+	// Used: waits until the reset plus 5 s.
 	remaining.Store(100)
-	now := func() time.Time { return time.Unix(reset, 0).Add(5*time.Second - 50*time.Millisecond) }
-	start := time.Now()
-	if err := awaitFreshBudget(ctx, srv.URL, "sentinel-token-1234", log, now); err != nil || time.Since(start) < 40*time.Millisecond {
-		t.Errorf("waited %v, %v", time.Since(start), err)
+	if err := awaitFreshBudget(ctx, srv.URL, "sentinel-token-1234", log, clock, sleep); err != nil || len(slept) != 1 || slept[0] != 20*time.Minute+5*time.Second {
+		t.Errorf("used: slept %v, %v", slept, err)
 	}
+	// A reset already past: no wait.
+	late := func() time.Time { return time.Unix(reset, 0).Add(time.Minute) }
+	if err := awaitFreshBudget(ctx, srv.URL, "sentinel-token-1234", log, late, sleep); err != nil || len(slept) != 1 {
+		t.Errorf("past reset: slept %v, %v", slept, err)
+	}
+	// The real sleep ends with the context.
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := awaitFreshBudget(cctx, srv.URL, "sentinel-token-1234", log, time.Now); err == nil {
-		t.Error("canceled wait: want error")
+	if err := sleepCtx(cctx, time.Hour); err == nil {
+		t.Error("canceled sleep: want error")
 	}
-	if err := awaitFreshBudget(ctx, srv.URL, "wrong", log, time.Now); err == nil || !strings.Contains(err.Error(), githubTokenEnv) {
+	if err := sleepCtx(ctx, time.Millisecond); err != nil {
+		t.Error(err)
+	}
+	if err := awaitFreshBudget(ctx, srv.URL, "wrong", log, clock, sleep); err == nil || !strings.Contains(err.Error(), githubTokenEnv) {
 		t.Errorf("bad token: %v", err)
 	}
 }
@@ -383,6 +395,11 @@ func TestRunGitHubFlags(t *testing.T) {
 		t.Errorf("no token: exit %d, %s", code, stderr.String())
 	}
 	stderr.Reset()
+	t.Setenv(githubTokenEnv, "tok-for-test")
+	if code := run(context.Background(), []string{"-benchmark", "github", "-check-interval", "1h", "-duration", "2h"}, &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "2.1 x interval") {
+		t.Errorf("duration below 2.1 x interval: exit %d, %s", code, stderr.String())
+	}
+	stderr.Reset()
 	if code := run(context.Background(), []string{"-benchmark", "nope"}, &bytes.Buffer{}, &stderr); code != 2 || !strings.Contains(stderr.String(), "github") {
 		t.Errorf("unknown benchmark: exit %d, %s", code, stderr.String())
 	}
@@ -398,5 +415,175 @@ func TestGitHubFakeregConfig(t *testing.T) {
 	b := c.Ecosystems["github"]
 	if b.PrimaryLimit.Requests != 5000 || b.PrimaryLimit.Window != time.Hour || b.ETag != fakereg.ETagWeak || b.RateLimit.RPS == 0 || b.ReleasesPerHour == 0 {
 		t.Errorf("github = %+v", b)
+	}
+}
+
+// flakyTarget is a fake angelia whose samples fail while failSample says so.
+type flakyTarget struct {
+	fakeTarget
+	failSample func() bool
+}
+
+func (f *flakyTarget) Sample(ctx context.Context) (Sample, error) {
+	if f.failSample() {
+		return Sample{}, errors.New("docker stats: daemon gone")
+	}
+	return f.fakeTarget.Sample(ctx)
+}
+
+func liveOptions(t *testing.T, target Target, out string, duration time.Duration) options {
+	t.Helper()
+	var remaining atomic.Int64
+	remaining.Store(5000)
+	api := rateLimitServer(t, &remaining, time.Now().Add(time.Hour).Unix())
+	return options{
+		kind: "github", n: 3, githubRepos: writeList(t, repoList), duration: duration, interval: 5 * time.Millisecond,
+		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: time.Hour},
+		checkInterval: 5 * time.Millisecond, githubAPI: api.URL, metricsEvery: time.Millisecond, GitHubToken: "sentinel-token-1234",
+		newTarget: func(options, string) Target { return target },
+		probe:     fakeProbe(nil, nil),
+	}
+}
+
+func countingMetrics(t *testing.T, fail func() bool) *httptest.Server {
+	t.Helper()
+	var scrapes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			return
+		}
+		if fail != nil && fail() {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+		k := int(scrapes.Add(1))
+		_, _ = io.WriteString(w, metrics(3, 100*(k-1), 0, 3, 100*(k-1), 0))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Transient failures are logged and the run goes on; maxFailures in a row
+// end it with a partial report whose verdict is incomplete.
+func TestRunGitHubSurvivesAndAborts(t *testing.T) {
+	// Every other sample and scrape fails: the run reaches its end.
+	flipper := func() func() bool {
+		var n atomic.Int32
+		return func() bool { return n.Add(1)%2 == 0 }
+	}
+	ft := &flakyTarget{fakeTarget: fakeTarget{srv: countingMetrics(t, flipper())}, failSample: flipper()}
+	out := t.TempDir()
+	rep, err := benchGitHub(context.Background(), liveOptions(t, ft, out, 100*time.Millisecond), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.GitHub.Stopped != "" || rep.Verdict != "pass" || len(rep.Samples) == 0 {
+		t.Errorf("flaky run: stopped %q, verdict %s, checks %+v", rep.GitHub.Stopped, rep.Verdict, rep.Checks)
+	}
+	// Samples fail for good after a while: aborted, partial report written.
+	var calls atomic.Int32
+	ft = &flakyTarget{fakeTarget: fakeTarget{srv: countingMetrics(t, nil)}, failSample: func() bool { return calls.Add(1) > 3 }}
+	out = t.TempDir()
+	rep, err = benchGitHub(context.Background(), liveOptions(t, ft, out, time.Hour), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rep.GitHub.Stopped, "10 failed samples") || rep.Verdict != "incomplete" {
+		t.Errorf("aborted run: stopped %q, verdict %s", rep.GitHub.Stopped, rep.Verdict)
+	}
+	md, err := os.ReadFile(filepath.Join(out, "report.md")) //nolint:gosec // test temp dir
+	if err != nil || !bytes.Contains(md, []byte("a partial report")) || !bytes.Contains(md, []byte("**Verdict: incomplete**")) {
+		t.Errorf("partial report: %v\n%s", err, md)
+	}
+	// Scrapes fail for good: aborted too.
+	ft = &flakyTarget{fakeTarget: fakeTarget{srv: countingMetrics(t, func() bool { return true })}, failSample: func() bool { return false }}
+	rep, err = benchGitHub(context.Background(), liveOptions(t, ft, t.TempDir(), time.Hour), slog.New(slog.DiscardHandler))
+	if err != nil || !strings.Contains(rep.GitHub.Stopped, "scrapes") || rep.Verdict != "incomplete" {
+		t.Errorf("scrapes failing: %v, stopped %q, verdict %s", err, rep.GitHub.Stopped, rep.Verdict)
+	}
+}
+
+// SIGINT or SIGTERM (a canceled context) writes the partial report.
+func TestRunGitHubInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var samples atomic.Int32
+	ft := &flakyTarget{fakeTarget: fakeTarget{srv: countingMetrics(t, nil)}, failSample: func() bool {
+		if samples.Add(1) == 5 {
+			cancel()
+		}
+		return false
+	}}
+	out := t.TempDir()
+	rep, err := benchGitHub(ctx, liveOptions(t, ft, out, time.Hour), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(rep.GitHub.Stopped, "interrupted") || rep.Verdict != "incomplete" || len(rep.GitHub.Samples) < 2 {
+		t.Errorf("stopped %q, verdict %s, %d scrapes", rep.GitHub.Stopped, rep.Verdict, len(rep.GitHub.Samples))
+	}
+	if _, err := os.Stat(filepath.Join(out, "report.json")); err != nil {
+		t.Error(err)
+	}
+}
+
+// The busiest hour is judged against the limit GitHub reports for the token.
+func TestObservedTokenLimit(t *testing.T) {
+	r := &Report{GitHub: &GitHubResult{Mode: "live", Host: githubHost, PeakHour: 6000, Samples: []GitHubSample{
+		{Responses: map[string]float64{}, Fetches: map[string]float64{}},
+		{At: time.Now(), Responses: map[string]float64{"2xx": 6000}, Fetches: map[string]float64{"ok": 6000}, RateLimit: &RateLimitCore{Limit: 15000, Remaining: 9000}},
+	}}}
+	r.GitHub.finish(nil)
+	if r.GitHub.TokenLimit != 15000 || !strings.Contains(r.GitHub.TokenLimitSource, "rate_limit") {
+		t.Fatalf("limit %d from %q", r.GitHub.TokenLimit, r.GitHub.TokenLimitSource)
+	}
+	r.evaluateGitHub(24 * time.Hour)
+	if c := r.Checks[3]; c.Result != "pass" || !strings.Contains(c.Target, "15000") {
+		t.Errorf("budget check %+v", c)
+	}
+	g := &GitHubResult{Samples: []GitHubSample{{}, {At: time.Now()}}}
+	if g.finish(nil); g.TokenLimit != githubBudget || g.limit() != githubBudget {
+		t.Errorf("fallback limit %d", g.TokenLimit)
+	}
+}
+
+// The dry run: the fake registry's github endpoint, paced like GitHub, read
+// back through GET /github/rate_limit; no token.
+func TestRunGitHubFake(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "github.yaml")
+	if err := os.WriteFile(cfgPath, []byte("ecosystems:\n  github: {latency: 0s, latency_jitter: 0s, primary_limit: {requests: 5000, window: 1h}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var scrapes atomic.Int32
+	ft := &fakeTarget{srv: httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			k := int(scrapes.Add(1))
+			_, _ = io.WriteString(w, strings.ReplaceAll(metrics(4, 50*(k-1), 0, 4, 50*(k-1), 0), "api.github.com", "127.0.0.1"))
+		}
+	}))}
+	defer ft.srv.Close()
+	out := t.TempDir()
+	var secret []string
+	o := options{
+		kind: "github", githubFake: true, n: 4, fakeregConfig: cfgPath, duration: 60 * time.Millisecond, interval: 5 * time.Millisecond,
+		bin: "bin/angelia", out: out, readyTimeout: 5 * time.Second, loader: watchFileLoader{interval: 5 * time.Minute},
+		checkInterval: 5 * time.Millisecond, metricsEvery: time.Millisecond, hostLimit: GitHubBudgetLimit,
+		newTarget: func(o options, _ string) Target { secret = secretEnv(o); return ft },
+		probe:     fakeProbe(nil, nil),
+	}
+	rep, err := benchGitHub(context.Background(), o, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := rep.GitHub
+	if g.Mode != "fake" || g.Host != "127.0.0.1" || secret != nil || rep.Verdict != "pass" || g.RemainingStart == nil || g.RemainingStart.Limit != 5000 {
+		t.Errorf("fake run: verdict %s, github %+v, secret %v", rep.Verdict, g, secret)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(out, "angelia.yaml")) //nolint:gosec // test temp dir
+	if !bytes.Contains(cfg, []byte("/github")) || !bytes.Contains(cfg, []byte("127.0.0.1/32")) || bytes.Contains(cfg, []byte("token_env")) {
+		t.Errorf("angelia.yaml:\n%s", cfg)
+	}
+	md, _ := os.ReadFile(filepath.Join(out, "report.md")) //nolint:gosec // test temp dir
+	if !bytes.Contains(md, []byte("dry run against the fake registry")) || !bytes.Contains(md, []byte("## Fake registry (github)")) {
+		t.Errorf("report.md:\n%s", md)
 	}
 }
