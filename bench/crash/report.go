@@ -272,7 +272,7 @@ func (r *Report) Markdown(w io.Writer) error {
 		slices.Sort(st)
 		p("\n## Kills\n\n| | |\n|---|---|\n")
 		p("| Kills | %d |\n", len(r.Kills))
-		p("| Kills from the process start, before /readyz | %d |\n", early)
+		p("| Kills timed from the process start, not waiting for /readyz (startup to ready: see below) | %d |\n", early)
 		if len(up) > 0 {
 			p("| Uptime after ready (drawn) | %s to %s, median %s |\n", secs(up[0]), secs(up[len(up)-1]), secs(up[len(up)/2]))
 		}

@@ -5,7 +5,7 @@ story angelia-dev/angelia#109): **zero lost deliveries, duplicates only within t
 while angelia is killed with SIGKILL 100 times during heavy dispatch.
 
 ```
-make bench-crash                                    # 100 kills, about 17 minutes, Linux, no Docker
+make bench-crash                                    # 100 kills, about 14 minutes, Linux, no Docker
 BENCH_KILLS=10 make bench-crash                     # a short smoke run
 BENCH_ENV_NOTE="CI runner, 4 vCPU" make bench-crash  # describe the machine in the report
 ```
@@ -34,8 +34,8 @@ Exit status: 0 pass, 1 fail, 2 error, 3 incomplete.
 4. **Kill loop.** 100 times: start angelia (except for the first kill), then
    - for about `-from-start` (10%) of the kills, chosen at random when the previous kill left at least
      `-min-pending` deliveries pending: kill a random time after the **start of the process**, uniform
-     in 0 to `-from-start-max` (300 ms), before or around `/readyz`: in the migrations, the watch file
-     apply and the first leases;
+     in 0 to `-from-start-max` (300 ms), without waiting for `/readyz`: in the migrations, the watch
+     file apply and the first leases, or just after (a restart is ready in about 0.1 s);
    - for the others: wait for `/readyz` and for `-min-pending` (500) pending deliveries, then kill a
      random time later, uniform in 0.2 s to 3 s. angelia's rate limit for the receiver's host
      (`http.host_limits`: 100 rps, burst 200) cannot send 500 deliveries within 3 s, so the kill lands
@@ -55,7 +55,7 @@ Exit status: 0 pass, 1 fail, 2 error, 3 incomplete.
    wait for that lease (5 minutes), deliveries in flight at a kill for theirs (2 minutes,
    [ADR 0017](../../docs/adr/0017-dispatcher-delivery-leases-and-retries.md)); neither lease can be
    shortened by configuration, and a target is checked again only at its interval, so the drain takes
-   5 to 7 minutes. Then it stops angelia with SIGTERM.
+   5 to 6 minutes. Then it stops angelia with SIGTERM.
 6. **Verify.** Compares three sources: the fake registry (the versions of each package at the freeze
    and in the first response angelia got, its baseline), angelia's database (read after the stop, with
    `PRAGMA integrity_check` and `foreign_key_check`) and every request the receiver recorded (with the
@@ -63,7 +63,7 @@ Exit status: 0 pass, 1 fail, 2 error, 3 incomplete.
    next to `angelia.log` (every process, appended), the configuration and the database. Commit the
    report to [bench/results/](../results/); delete the rest.
 
-A run takes about 17 minutes: 5 of warm-up, 4 to 5 of kills, 6 to 7 of drain.
+A run takes about 14 minutes: 4.5 of warm-up, about 4 of kills, 5 to 6 of drain.
 
 ## What is checked
 

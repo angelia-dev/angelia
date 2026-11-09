@@ -72,7 +72,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.DurationVar(&o.busyTimeout, "busy-timeout", 6*time.Minute, "before each kill, how long to wait for a pending delivery (the next check cycle) before giving up")
 	fs.DurationVar(&o.warmTimeout, "warmup-timeout", 12*time.Minute, "how long to wait for min-flow (the first events come one check interval, 5m, after the baseline)")
 	fs.DurationVar(&o.drainTimeout, "drain-timeout", 15*time.Minute, "how long the final run may take to check every target after the freeze and finish every delivery")
-	fs.Float64Var(&o.fromStart, "from-start", 0.1, "share of the kills timed from the start of the process, before /readyz")
+	fs.Float64Var(&o.fromStart, "from-start", 0.1, "share of the kills timed from the start of the process, without waiting for /readyz")
 	fs.DurationVar(&o.fromStartMax, "from-start-max", 300*time.Millisecond, "a kill from the start lands uniformly in [0, this) after the process started")
 	fs.IntVar(&o.stages, "stages", 8, "the watches are added in this many groups during the warm-up, so that their checks spread over the kill loop")
 	fs.DurationVar(&o.stageEvery, "stage-every", 30*time.Second, "time between two groups of watches")
