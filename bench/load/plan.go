@@ -195,8 +195,9 @@ func registryHost(registry string) string {
 // WriteAngeliaConfig writes the instance configuration to path: every
 // source's base_url points at the fake registry at registry
 // ("http://host:port"), and the database lives in dataDir. allowNetwork
-// is the one prefix the SSRF guard accepts although it is loopback or
-// private (http.allow_networks): the fake registry's address and no other.
+// holds, comma-separated, the prefixes the SSRF guard accepts although
+// they are loopback or private (http.allow_networks): the fake registry's
+// addresses and no other.
 // The registry's host gets the rate limit limit (http.host_limits).
 func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string, limit HostLimit) error {
 	limit = limit.effective()
@@ -206,7 +207,7 @@ func WriteAngeliaConfig(path, listen, registry, dataDir, allowNetwork string, li
 		Database: map[string]string{"dsn": "sqlite://" + filepath.ToSlash(filepath.Join(dataDir, "angelia.db"))},
 		Log:      map[string]string{"level": "info", "format": "json"},
 		HTTP: map[string]any{
-			"allow_networks": []string{allowNetwork},
+			"allow_networks": strings.Split(allowNetwork, ","),
 			"host_limits": map[string]any{"hosts": map[string]any{
 				registryHost(registry): map[string]any{"rps": limit.RPS, "burst": limit.Burst},
 			}},

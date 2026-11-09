@@ -38,8 +38,12 @@ type Report struct {
 	// Registry holds the release lag (publish to first serve), information
 	// only: it cannot be below about 4.75 min at the 5 min minimum interval.
 	Registry fakereg.Stats `json:"registry"`
-	Checks   []Check       `json:"checks"`
-	Samples  []Sample      `json:"samples"`
+	// Idle is benchmark 2's measurement; nil for benchmark 1.
+	Idle *Idle `json:"idle,omitempty"`
+	// Profiles are the pprof files next to the report (-profile).
+	Profiles []string `json:"profiles,omitempty"`
+	Checks   []Check  `json:"checks"`
+	Samples  []Sample `json:"samples"`
 }
 
 // Environment is where the benchmark ran.
@@ -53,6 +57,7 @@ type Environment struct {
 	OS             string `json:"os"`
 	Kernel         string `json:"kernel,omitempty"`
 	Docker         string `json:"docker,omitempty"`
+	DockerEngine   string `json:"docker_engine,omitempty"` // docker info OperatingSystem: Docker Desktop, OrbStack, …
 	DockerCPUs     string `json:"docker_cpus,omitempty"`   // docker info NCPU: what the daemon's VM has
 	DockerMemory   string `json:"docker_memory,omitempty"` // docker info MemTotal
 	AngeliaGo      string `json:"angelia_go_version"`
@@ -63,6 +68,7 @@ type Environment struct {
 
 // Params are the inputs of the run.
 type Params struct {
+	Kind             string         `json:"benchmark"` // scale or idle
 	Watches          int            `json:"watches"`
 	PerEcosystem     map[string]int `json:"watches_per_ecosystem"`
 	Loader           string         `json:"watch_loader"`
@@ -76,6 +82,9 @@ type Params struct {
 	SchedulerWorkers int            `json:"scheduler_workers"`
 	DelayFrom        time.Time      `json:"delay_window_from"`
 	DelayTo          time.Time      `json:"delay_window_to"`
+	// ProfileFrom is when the CPU profile (-profile) started; ProfileCPU its length.
+	ProfileFrom string `json:"profile_from,omitempty"`
+	ProfileCPU  string `json:"profile_cpu,omitempty"`
 }
 
 // Resources summarizes the samples. Memory is the process RSS (VmRSS) in
@@ -96,6 +105,8 @@ type Check struct {
 	Target string `json:"target"`
 	Actual string `json:"actual"`
 	Result string `json:"result"` // pass, fail, not measured
+	// Optional checks do not make the run incomplete when not measured.
+	Optional bool `json:"optional,omitempty"`
 }
 
 func summarizeSamples(s []Sample) Resources {
@@ -129,6 +140,11 @@ func p95(v []float64) float64 {
 // started in the delay window. The release lag is information and never
 // fails a run.
 func (r *Report) evaluate() {
+	if r.Idle != nil {
+		r.Checks = r.Idle.checks(r.Resources.MemorySource)
+		r.verdict()
+		return
+	}
 	d := r.DueDelay
 	actual := fmt.Sprintf("%.1fs over %d checks", d.P95Seconds, d.Samples)
 	if d.P95Open {
@@ -151,13 +167,17 @@ func (r *Report) evaluate() {
 	for _, e := range unmeasuredEcosystems() {
 		r.Notes = append(r.Notes, e+": not measured; angelia has no built-in "+e+" source yet, so it gets no watches")
 	}
+	r.verdict()
+}
+
+func (r *Report) verdict() {
 	r.Verdict = "pass"
 	for _, c := range r.Checks {
 		switch c.Result {
 		case "fail":
 			r.Verdict = "fail"
 		case "not measured":
-			if r.Verdict == "pass" {
+			if r.Verdict == "pass" && !c.Optional {
 				r.Verdict = "incomplete"
 			}
 		}
@@ -211,6 +231,15 @@ func (r *Report) Markdown(w io.Writer) error {
 	for _, c := range r.Checks {
 		p("| %s | %s | %s | %s |", c.Name, c.Target, c.Actual, c.Result)
 	}
+	if r.Idle != nil {
+		p("%s", r.Idle.markdown())
+	}
+	if len(r.Profiles) > 0 {
+		p("\n## Profiles\n\nCPU profile for %s from %s, heap profile after a GC at its end (`go tool pprof -http=: <file>`):\n", r.Params.ProfileCPU, r.Params.ProfileFrom)
+		for _, f := range r.Profiles {
+			p("- [%s](%s)", f, f)
+		}
+	}
 	p("\n## Environment\n\n| | |\n|---|---|")
 	for _, kv := range [][2]string{
 		{"Mode", e.Mode},
@@ -222,6 +251,7 @@ func (r *Report) Markdown(w io.Writer) error {
 		{"OS", e.OS},
 		{"Kernel", e.Kernel},
 		{"Docker", e.Docker},
+		{"Docker engine", e.DockerEngine},
 		{"Docker VM CPUs", e.DockerCPUs},
 		{"Docker VM memory", e.DockerMemory},
 		{"Go (angelia)", e.AngeliaGo},
@@ -279,9 +309,12 @@ func (pr probe) environment(ctx context.Context, bin string, t Target, container
 	if container {
 		e.Mode = "container"
 		e.Docker = pr.out(ctx, "docker", "version", "--format", "{{.Server.Version}} ({{.Server.Os}}/{{.Server.Arch}})")
-		if cpus, mem, ok := strings.Cut(pr.out(ctx, "docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"), " "); ok {
-			e.DockerCPUs = cpus
-			if n, err := strconv.ParseInt(mem, 10, 64); err == nil {
+		if f := strings.SplitN(pr.out(ctx, "docker", "info", "--format", "{{.NCPU}} {{.MemTotal}} {{.OperatingSystem}}"), " ", 3); len(f) >= 2 {
+			e.DockerCPUs = f[0]
+			if len(f) == 3 {
+				e.DockerEngine = f[2]
+			}
+			if n, err := strconv.ParseInt(f[1], 10, 64); err == nil {
 				e.DockerMemory = fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
 			}
 		}

@@ -6,11 +6,12 @@ P95 **due-to-check delay** < 2 min (see below), memory < 100 MB (95.4 MiB) and C
 
 ```
 make bench-scale BENCH_N=10000                                   # Docker Engine on Linux, --cpus 1 --memory 256m
-BENCH_ALLOW_NETWORK=192.168.65.254/32 make bench-scale BENCH_N=10000 # Docker Desktop (see below)
 BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a short window): plain process, Linux only
 ```
 
-`make bench-scale N=10000` works too.
+`make bench-scale N=10000` works too. The same harness runs benchmark 2 (idle footprint,
+`make bench-idle`, below). The benchmark machine, where reports land and how to request a run:
+[bench/README.md](../README.md).
 
 ## What a run does
 
@@ -46,12 +47,16 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a shor
 | `BENCH_CONTAINER` | `1` | `0`: plain process |
 | `BENCH_DURATION` | `30m` | measuring time after `/readyz`; must exceed the warm-up plus 2 minutes (7.5m with the default interval, so at least 8m). For a meaningful release lag, keep at least 3 check intervals in its window: 22.5m with the default interval (see below) |
 | `BENCH_CHECK_INTERVAL` | `5m` | per-watch check interval; sets the warm-up. The watch file accepts 5m to 720h |
-| `BENCH_ALLOW_NETWORK` | picked per mode | the `http.allow_networks` entry for the registry (below) |
+| `BENCH_ALLOW_NETWORK` | picked per mode | the `http.allow_networks` entries for the registry, comma-separated (below) |
 | `BENCH_MEMORY`, `BENCH_CPUS` | `256m`, `1` | container limits |
 | `BENCH_OUT` | `bin/bench/scale-$BENCH_N` | output directory |
 | `BENCH_FAKEREG` | `bench/fakereg/fakereg.yaml` | registry behaviour |
 | `BENCH_HOST_RPS` | `50` | rate limit of the fake registry's host, `http.host_limits` (below); `5` is angelia's default limit |
 | `BENCH_HOST_BURST` | `ceil(BENCH_HOST_RPS)` | its burst |
+| `BENCH_KIND` | `scale` | `idle`: benchmark 2 (`make bench-idle` sets it) |
+| `BENCH_PROFILE` | `1` (scale), `0` (idle) | `1`: run a `-tags benchprof` build and write `cpu.pprof` and `heap.pprof` next to the report ([bench/README.md](../README.md#reports-and-profiles)) |
+| `BENCH_PROFILE_CPU` | `30s` | length of the CPU profile, which ends with the run |
+| `BENCH_IMAGE` | built from the Dockerfile | benchmark 2: the image whose size is checked |
 
 `go run ./bench/load -h` lists the underlying flags.
 
@@ -129,17 +134,19 @@ opt-in an operator uses for a homelab registry; netguard itself is unchanged:
 
 - process mode: `127.0.0.1/32`;
 - container mode on Linux Docker Engine: the bridge gateway, for example `172.17.0.1/32`;
-- container mode on Docker Desktop: no default. The address `host.docker.internal` has inside
-  the container cannot be told from the host, so the run stops and asks for
-  `BENCH_ALLOW_NETWORK` (`-allow-network`). The usual value is `192.168.65.254/32`; check it with
-  `docker run --rm alpine getent hosts host.docker.internal`.
-- container mode when the Linux bridge gateway cannot be found: the same; set
-  `BENCH_ALLOW_NETWORK` to the address `host.docker.internal` has in the container.
+- container mode on OrbStack, Docker Desktop, or when the Linux bridge gateway cannot be
+  found: the address `host.docker.internal` has inside the container cannot be told from the
+  host, so the harness asks a container started like angelia's: `docker run --rm --add-host
+  host.docker.internal:host-gateway busybox:1.37.0 cat /etc/hosts`. It allows every address
+  listed there for `host.docker.internal` as a `/32` or `/128` (OrbStack: usually
+  `0.250.250.254`; Docker Desktop: `192.168.65.254`). `/etc/hosts` is where Go's resolver in the
+  static image finds the name. If that fails, the run stops and asks for `BENCH_ALLOW_NETWORK`
+  (`-allow-network`), which always takes precedence.
 
 ### Where the registry listens (container mode)
 
 `host.docker.internal` is the host's loopback on Docker Desktop (macOS, Windows, Desktop for
-Linux), so the registry listens on `127.0.0.1` there. On Linux Docker Engine it is the bridge
+Linux) and OrbStack, so the registry listens on `127.0.0.1` there. On Linux Docker Engine it is the bridge
 gateway (`--add-host host.docker.internal:host-gateway`), so the registry listens on that
 address (`docker network inspect bridge`, usually `172.17.0.1`). Only when the gateway cannot
 be found does it listen on all interfaces, with a warning. With `ufw` or another firewall that
@@ -170,6 +177,16 @@ Exit status: 0 pass, 1 fail, 2 error, 3 **incomplete** (a target was not measure
 Incomplete is deliberately non-zero, so `make bench-scale` fails: a run that measured nothing
 must not look green.
 
+## Benchmark 2: idle footprint
+
+`make bench-idle` (`BENCH_KIND=idle`, `BENCH_N=100`, `BENCH_DURATION=20m`, output
+`bin/bench/idle-100`) runs the same setup with 100 watches and checks, instead of the three
+targets above: the highest memory sample after the warm-up < 40 MB (38.1 MiB), the size of a
+build with the release flags (`-measure-binary`) < 40 MB and the uncompressed size of the
+image (`-measure-image`) < 50 MB. The image check is optional: without
+Docker it is *not measured* and the verdict ignores it. Details:
+[bench/README.md](../README.md#running-benchmarks-1-and-2).
+
 ## Known limits
 
 What a run on `main` measures, and what it cannot yet:
@@ -192,4 +209,5 @@ What a run on `main` measures, and what it cannot yet:
    versions have no publication time. The release lag is measured at the registry and does not need
    them.
 5. **Image**: the harness mounts the binary into a distroless base image instead of building
-   the repository's Dockerfile, so a run needs no image build.
+   the repository's Dockerfile, so a run needs no image build. Only benchmark 2 builds the
+   image, to measure its size.

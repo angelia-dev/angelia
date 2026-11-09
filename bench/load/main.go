@@ -22,10 +22,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -48,7 +50,7 @@ type options struct {
 	fakeregConfig, bin, out string
 	container               bool
 	memory, cpus, image     string
-	allowNetwork            string // http.allow_networks entry for the registry; "" picks it
+	allowNetwork            string // http.allow_networks entries for the registry, comma-separated; "" picks them
 	hostLimit               HostLimit
 	readyTimeout            time.Duration
 	// checkInterval is the per-watch check interval the loader asks for;
@@ -59,6 +61,17 @@ type options struct {
 	loader                       WatchLoader
 	newTarget                    func(o options, workdir string) Target // tests replace it
 	probe                        probe
+	// kind is "scale" (benchmark 1) or "idle" (benchmark 2).
+	kind string
+	// profile asks a -tags benchprof binary for cpu.pprof and heap.pprof
+	// over the last profileCPU of the run (cmd/angelia/benchprof.go).
+	profile    bool
+	profileCPU time.Duration
+	// measureImage is the image whose size benchmark 2 checks; "" leaves it
+	// not measured.
+	measureImage string
+	// measureBinary is the release-flag build whose size benchmark 2 checks.
+	measureBinary string
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -77,12 +90,31 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.image, "image", "gcr.io/distroless/static-debian12:nonroot", "base image the binary is mounted into")
 	fs.DurationVar(&o.readyTimeout, "ready-timeout", 5*time.Minute, "how long to wait for /readyz (it includes applying the watch file)")
 	fs.DurationVar(&o.checkInterval, "check-interval", watchfile.MinInterval, "per-watch check interval (the watch file accepts 5m to 720h); the warm-up is 1.1 times this")
-	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDR the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the address of host.docker.internal")
+	fs.StringVar(&o.allowNetwork, "allow-network", "", "CIDRs, comma-separated, the instance may dial for the fake registry (http.allow_networks); default 127.0.0.1/32, in a container the addresses of host.docker.internal")
 	fs.Float64Var(&o.hostLimit.RPS, "host-rps", DefaultHostLimit.RPS, "rate limit of the fake registry's host in requests per second (http.host_limits, 1/3600 to 100); 5 is angelia's default")
 	fs.IntVar(&o.hostLimit.Burst, "host-burst", 0, "burst of the fake registry's host (1 to 200); default ceil(-host-rps)")
+	fs.StringVar(&o.kind, "benchmark", "scale", "scale (benchmark 1) or idle (benchmark 2: idle memory, binary and image size)")
+	fs.BoolVar(&o.profile, "profile", false, "collect cpu.pprof and heap.pprof at the end of the run (needs a -tags benchprof binary)")
+	fs.DurationVar(&o.profileCPU, "profile-cpu", 30*time.Second, "length of the CPU profile, which ends with the run")
+	fs.StringVar(&o.measureImage, "measure-image", "", "benchmark 2: container image whose size is checked; empty: not measured")
+	fs.StringVar(&o.measureBinary, "measure-binary", "", "benchmark 2: binary built with the release flags whose size is checked")
 	o.releaseCensor = targetDelayP95
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if o.kind != "scale" && o.kind != "idle" {
+		_, _ = fmt.Fprintln(stderr, "load: -benchmark must be scale or idle")
+		return 2
+	}
+	if o.profile {
+		if o.profileCPU <= 0 {
+			_, _ = fmt.Fprintln(stderr, "load: -profile-cpu must be positive")
+			return 2
+		}
+		if !hasBuildTag(o.bin, profileTag) {
+			_, _ = fmt.Fprintf(stderr, "load: -profile needs %s built with -tags %s (GOFLAGS=-tags=%s make build)\n", o.bin, profileTag, profileTag)
+			return 2
+		}
 	}
 	if !(o.hostLimit.RPS >= 1.0/3600 && o.hostLimit.RPS <= 100) || o.hostLimit.Burst < 0 || o.hostLimit.Burst > 200 {
 		_, _ = fmt.Fprintln(stderr, "load: -host-rps must be 1/3600 to 100 and -host-burst 1 to 200 (http.host_limits bounds)")
@@ -120,9 +152,12 @@ func newTarget(o options, workdir string) Target {
 		return &dockerTarget{
 			run: runCmd, name: fmt.Sprintf("%s-%d", benchLabel, os.Getpid()), image: o.image, bin: o.bin,
 			workdir: workdir, memory: o.memory, cpus: o.cpus, logPath: filepath.Join(workdir, "angelia.log"),
+			env: profileEnv(o, "/work"),
 		}
 	}
-	return newProcessTarget(o.bin, freeAddr(), filepath.Join(workdir, "angelia.log"))
+	p := newProcessTarget(o.bin, freeAddr(), filepath.Join(workdir, "angelia.log"))
+	p.env = profileEnv(o, workdir)
+	return p
 }
 
 func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
@@ -165,7 +200,11 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	allow := o.allowNetwork
 	if allow == "" {
 		if allow, err = registryNetwork(o.container, host); err != nil {
-			return nil, err
+			// Docker Desktop, OrbStack, unknown gateway: ask a container.
+			if allow, err = discoverHostGateway(ctx, o.probe.run); err != nil {
+				return nil, err
+			}
+			log.Info("allowing host.docker.internal as a container resolves it", "networks", allow)
 		}
 	}
 
@@ -181,10 +220,17 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		return nil, err
 	}
 
+	if err := clearProfiles(workdir); err != nil {
+		return nil, err
+	}
+	title := "Phase 0 benchmark 1: scale"
+	if o.kind == "idle" {
+		title = "Phase 0 benchmark 2: idle footprint"
+	}
 	rep := &Report{
-		Benchmark: "Phase 0 benchmark 1: scale",
+		Benchmark: title,
 		Params: Params{
-			Watches: o.n, PerEcosystem: perEco, Loader: o.loader.Name(), Duration: o.duration.String(),
+			Kind: o.kind, Watches: o.n, PerEcosystem: perEco, Loader: o.loader.Name(), Duration: o.duration.String(),
 			SampleInterval: o.interval.String(), FakeregConfig: o.fakeregConfig, StartedAt: time.Now().UTC(),
 			HostLimit: registryHostLimit(registry, o.hostLimit),
 		},
@@ -224,6 +270,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 
 	tick := time.NewTicker(o.interval)
 	defer tick.Stop()
+	var profileAt time.Time // when the profiles were requested
 	for {
 		s, err := t.Sample(ctx)
 		if err != nil {
@@ -234,6 +281,11 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 			// Only a successful scrape starts the window; a failed one is retried on the next tick.
 			if h, at := scrape(); len(h.buckets) > 0 {
 				delayStarted, delayStart, rep.Params.DelayFrom = true, h, at
+			}
+		}
+		if o.profile && profileAt.IsZero() && !time.Now().Before(end.Add(-o.profileCPU)) {
+			if profileAt, err = time.Now(), requestProfiles(workdir); err != nil {
+				return nil, err
 			}
 		}
 		if !time.Now().Before(end) {
@@ -255,6 +307,15 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 				rep.DueDelay = w.summary()
 			}
 		}
+	}
+	if o.profile {
+		rep.Params.ProfileFrom, rep.Params.ProfileCPU = profileAt.UTC().Format(time.RFC3339), o.profileCPU.String()
+		rep.Profiles, rep.Notes = awaitProfiles(ctx, workdir, profileAt.Add(o.profileCPU+time.Minute), rep.Notes)
+	}
+	if o.kind == "idle" {
+		var notes []string
+		rep.Idle, notes = measureIdle(ctx, o, rep.Samples, readyAt.Add(warmup(o.checkInterval)))
+		rep.Notes = append(rep.Notes, notes...)
 	}
 	rep.Resources = summarizeSamples(rep.Samples)
 	rep.Resources.MemorySource = "RSS (VmRSS)"
@@ -325,17 +386,17 @@ func bindHost(ctx context.Context, run runFunc, goos string, log *slog.Logger) s
 // registryNetwork is the one prefix the instance needs in
 // http.allow_networks to reach the fake registry listening on host: the
 // loopback address in process mode and the bridge gateway in a container on
-// Linux Docker Engine. On Docker Desktop (the registry listens on the
-// host's loopback in container mode) and when the gateway is unknown, the
-// address of host.docker.internal inside the container cannot be told from
-// the host, so the operator must give it with -allow-network.
+// Linux Docker Engine. On Docker Desktop and OrbStack (the registry listens
+// on the host's loopback in container mode) and when the gateway is
+// unknown, the address of host.docker.internal inside the container cannot
+// be told from the host: discoverHostGateway asks a container, and the
+// operator can give it with -allow-network.
 func registryNetwork(container bool, host string) (string, error) {
 	switch {
 	case !container:
 		return host + "/32", nil
 	case host == "127.0.0.1" || host == "0.0.0.0":
-		return "", errors.New("cannot tell which address host.docker.internal has in the container: " +
-			"set -allow-network (BENCH_ALLOW_NETWORK), on Docker Desktop usually 192.168.65.254/32 (see bench/load/README.md)")
+		return "", errors.New(allowNetworkHint)
 	}
 	return host + "/32", nil
 }
@@ -348,4 +409,48 @@ func freeAddr() string {
 	}
 	defer func() { _ = ln.Close() }()
 	return ln.Addr().String()
+}
+
+const allowNetworkHint = "cannot tell which address host.docker.internal has in the container: " +
+	"set -allow-network (BENCH_ALLOW_NETWORK); OrbStack: usually 0.250.250.254/32; Docker Desktop: 192.168.65.254/32 (see bench/load/README.md)"
+
+// gatewayProbeImage is the small image that reads /etc/hosts in a container.
+const gatewayProbeImage = "busybox:1.37.0"
+
+// discoverHostGateway returns, comma-separated, every address
+// host.docker.internal has in a container started like angelia's
+// (--add-host host.docker.internal:host-gateway), as /32 or /128. It reads
+// /etc/hosts, which is where Go's resolver in the static image finds the name.
+func discoverHostGateway(ctx context.Context, run runFunc) (string, error) {
+	out, err := run(ctx, "docker", "run", "--rm", "--label", benchLabel+"=1",
+		"--add-host", "host.docker.internal:host-gateway", gatewayProbeImage, "cat", "/etc/hosts")
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", allowNetworkHint, err)
+	}
+	nets := hostsAddresses(string(out), "host.docker.internal")
+	if len(nets) == 0 {
+		return "", errors.New(allowNetworkHint)
+	}
+	return strings.Join(nets, ","), nil
+}
+
+// hostsAddresses returns the addresses that an /etc/hosts file gives name,
+// as single-address prefixes, without duplicates.
+func hostsAddresses(hosts, name string) []string {
+	var nets []string
+	for line := range strings.SplitSeq(hosts, "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		f := strings.Fields(line)
+		if len(f) < 2 || !slices.Contains(f[1:], name) {
+			continue
+		}
+		ip, err := netip.ParseAddr(f[0])
+		if err != nil {
+			continue
+		}
+		if p := netip.PrefixFrom(ip.Unmap(), ip.Unmap().BitLen()).String(); !slices.Contains(nets, p) {
+			nets = append(nets, p)
+		}
+	}
+	return nets
 }
