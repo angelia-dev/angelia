@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,11 +36,37 @@ type Target interface {
 type runFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput() //nolint:gosec // fixed tools: docker, sysctl, the VCS
+	return runCmdEnv(ctx, nil, name, args...)
+}
+
+// runEnvFunc is runFunc with variables ("KEY=value") added to the command's
+// environment, where a secret stays out of the argument list (ps, errors).
+type runEnvFunc func(ctx context.Context, env []string, name string, args ...string) ([]byte, error)
+
+func runCmdEnv(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // fixed tools: docker, sysctl, the VCS
+	if env != nil {
+		cmd.Env = childEnv(os.Environ(), env)
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
+}
+
+// childEnv is base without the harness's own GitHub token variable, plus
+// extra. angelia gets the token only under the name its configuration
+// names (githubTokenChildEnv): names starting with ANGELIA_ are refused as
+// token_env.
+func childEnv(base, extra []string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	for _, kv := range base {
+		if !strings.HasPrefix(kv, githubTokenEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, extra...)
 }
 
 // processTarget runs angelia as a child process, without limits. It reads
@@ -47,6 +74,7 @@ func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
 type processTarget struct {
 	bin, listen, logPath string
 	env                  []string // added to the harness's environment
+	secretEnv            []string // the same, holding secrets: never logged
 	readFile             func(string) ([]byte, error)
 	clkTck               float64 // USER_HZ; 100 on every mainstream Linux
 
@@ -69,9 +97,7 @@ func (p *processTarget) Start(_ context.Context, cfgPath string, args []string) 
 	// Not CommandContext: Stop sends SIGTERM for a graceful drain first.
 	p.cmd = exec.Command(p.bin, append([]string{"serve", "--config", cfgPath}, args...)...) //nolint:gosec // the binary under test
 	p.cmd.Stdout, p.cmd.Stderr = f, f
-	if p.env != nil {
-		p.cmd.Env = append(os.Environ(), p.env...)
-	}
+	p.cmd.Env = childEnv(os.Environ(), append(slices.Clone(p.env), p.secretEnv...))
 	if err := p.cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", p.bin, err)
 	}
@@ -167,6 +193,10 @@ type dockerTarget struct {
 	name, image, bin, workdir string
 	memory, cpus, logPath     string
 	env                       []string // KEY=value pairs for the container
+	// secretEnv are KEY=value pairs passed as "-e KEY" from the docker
+	// command's environment, so the value is in no argument list.
+	secretEnv []string
+	runEnv    runEnvFunc
 }
 
 func (d *dockerTarget) Start(ctx context.Context, cfgPath string, args []string) error {
@@ -182,8 +212,17 @@ func (d *dockerTarget) Start(ctx context.Context, cfgPath string, args []string)
 	for _, e := range d.env {
 		a = append(a, "-e", e)
 	}
+	for _, e := range d.secretEnv {
+		k, _, _ := strings.Cut(e, "=")
+		a = append(a, "-e", k)
+	}
 	a = append(a, d.image, "/angelia", "serve", "--config", cfgPath)
-	_, err := d.run(ctx, "docker", append(a, args...)...)
+	a = append(a, args...)
+	if len(d.secretEnv) > 0 {
+		_, err := d.runEnv(ctx, d.secretEnv, "docker", a...)
+		return err
+	}
+	_, err := d.run(ctx, "docker", a...)
 	return err
 }
 

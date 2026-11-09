@@ -25,13 +25,16 @@ Each ecosystem lives under its own prefix, which is the source's base URL
 Package names are `pkg-00000` to `pkg-<packages-1>`. GitHub and OCI repositories are
 `{owner}/pkg-NNNNN`; any owner is accepted. Unknown names get 404.
 Version *k* (from 0) of every package is `1.k.0` (`v1.k.0` as a GitHub tag).
-`GET /_fakereg/stats` returns the statistics below as JSON.
+`GET /_fakereg/stats` returns the statistics below as JSON. With `primary_limit` set,
+`GET /github/rate_limit` answers like GitHub's `GET /rate_limit` (`resources.core` and `rate`: limit,
+remaining, used, reset), without counting as a request; without it, 404.
 
 ## Behaviour file
 
 YAML, every key optional. `defaults` applies to every ecosystem; `ecosystems.<name>` overrides
 keys for one ecosystem (nested maps such as `rate_limit` are merged key by key). Unknown keys and
-unknown ecosystems are errors. [fakereg.yaml](fakereg.yaml) is the file `make bench-scale` uses.
+unknown ecosystems are errors. [fakereg.yaml](fakereg.yaml) is the file `make bench-scale` uses; [github.yaml](github.yaml) the one of the
+benchmark 3 dry run (`BENCH_GITHUB_FAKE=1 make bench-github`), with GitHub's primary limit on.
 
 | Key | Default | Meaning |
 |---|---|---|

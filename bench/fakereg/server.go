@@ -61,6 +61,7 @@ func New(c *Config, opts ...Option) *Server {
 	s.mux.HandleFunc("GET /crates/api/v1/crates/{name}/versions", s.handle("crates", renderCrates))
 	s.mux.HandleFunc("GET /crates/{a}/{b}/{name}", s.cratesIndex())
 	s.mux.HandleFunc("GET /github/repos/{owner}/{name}/releases", s.handle("github", renderGitHub))
+	s.mux.HandleFunc("GET /github/rate_limit", s.rateLimit)
 	s.mux.HandleFunc("GET /oci/v2/{owner}/{name}/tags/list", s.handle("oci", renderOCI))
 	s.mux.HandleFunc("GET /oci/v2/{$}", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{}) })
 	s.mux.HandleFunc("GET "+StatsPath, func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, s.Stats()) })
@@ -175,6 +176,28 @@ func (e *eco) primaryHeaders(h http.Header) {
 	h.Set("X-RateLimit-Used", strconv.Itoa(used))
 	h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 	h.Set("X-RateLimit-Resource", "core")
+}
+
+// rateLimit answers GET /github/rate_limit like GitHub (core and the
+// deprecated rate, the same object) when primary_limit is set, else 404.
+// Like on GitHub it does not count against the limit, and it is not a
+// request in the statistics.
+func (s *Server) rateLimit(w http.ResponseWriter, _ *http.Request) {
+	e := s.ecos["github"]
+	pl := e.b.PrimaryLimit
+	if pl.Requests <= 0 {
+		http.NotFound(w, nil)
+		return
+	}
+	now := s.now()
+	e.mu.Lock()
+	used, reset := e.pUsed, e.pStart.Add(pl.Window)
+	if e.pStart.IsZero() || !now.Before(reset) {
+		used, reset = 0, now.Add(pl.Window)
+	}
+	e.mu.Unlock()
+	c := map[string]int64{"limit": int64(pl.Requests), "remaining": int64(pl.Requests - used), "used": int64(used), "reset": reset.Unix()}
+	writeJSON(w, http.StatusOK, map[string]any{"resources": map[string]any{"core": c}, "rate": c})
 }
 
 // count is the number of versions package i has at t.

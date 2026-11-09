@@ -413,7 +413,7 @@ func TestObserverNewHooksFoldUnlistedHosts(t *testing.T) {
 func TestResponseClass(t *testing.T) {
 	for code, want := range map[int]string{
 		101: ClassError, 200: ClassOK, 204: ClassOK, 301: ClassRedirect, 304: ClassNotModified,
-		404: ClassClientError, 403: ClassClientError, 429: ClassTooManyRequests,
+		404: ClassClientError, 400: ClassClientError, 403: ClassForbidden, 429: ClassTooManyRequests,
 		500: ClassServerError, 503: ClassServerError, 600: ClassError,
 	} {
 		if got := responseClass(&http.Response{StatusCode: code}, nil); got != want {

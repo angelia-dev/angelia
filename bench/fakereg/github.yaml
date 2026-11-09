@@ -1,0 +1,20 @@
+# Fake registry behaviour for the dry run of benchmark 3 (BENCH_KIND=github
+# BENCH_GITHUB_FAKE=1, bench/README.md): only the github endpoint gets
+# watches. Keys: bench/fakereg/README.md.
+
+seed: 1
+
+ecosystems:
+  github:
+    history: 20               # one page per repository on the first (full) scan
+    # 2,000 repositories releasing about every 8 days each: ~10 releases an hour.
+    releases_per_hour: 10
+    latency: 80ms
+    latency_jitter: 70ms
+    etag: weak                # api.github.com sends weak ETags
+    last_modified: true
+    # GitHub's secondary limits, roughly: requests beyond this get 429.
+    rate_limit: {rps: 80, burst: 200, retry_after: 60s}
+    # GitHub's primary limit for one token: 403 when used up; 304s are free.
+    # GET /github/rate_limit reports it like GET /rate_limit.
+    primary_limit: {requests: 5000, window: 1h}

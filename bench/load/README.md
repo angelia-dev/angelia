@@ -10,7 +10,9 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a shor
 ```
 
 `make bench-scale N=10000` works too. The same harness runs benchmark 2 (idle footprint,
-`make bench-idle`, below). The benchmark machine, where reports land and how to request a run:
+`make bench-idle`, below) and benchmark 3 (GitHub on one token, `make bench-github`,
+`-benchmark github`: real repositories against api.github.com, or `-github-fake` against the fake
+registry; see [bench/README.md](../README.md#benchmark-3-github-on-one-token)). The benchmark machine, where reports land and how to request a run:
 [bench/README.md](../README.md).
 
 ## What a run does
@@ -53,7 +55,7 @@ BENCH_CONTAINER=0 BENCH_DURATION=8m make bench-scale BENCH_N=200 # smoke (a shor
 | `BENCH_FAKEREG` | `bench/fakereg/fakereg.yaml` | registry behaviour |
 | `BENCH_HOST_RPS` | `50` | rate limit of the fake registry's host, `http.host_limits` (below); `5` is angelia's default limit |
 | `BENCH_HOST_BURST` | `ceil(BENCH_HOST_RPS)` | its burst |
-| `BENCH_KIND` | `scale` | `idle`: benchmark 2 (`make bench-idle` sets it) |
+| `BENCH_KIND` | `scale` | `idle`: benchmark 2 (`make bench-idle` sets it); `github`: benchmark 3 (`make bench-github`) |
 | `BENCH_PROFILE` | `1` (scale), `0` (idle) | `1`: run a `-tags benchprof` build and write `cpu.pprof` and `heap.pprof` next to the report ([bench/README.md](../README.md#reports-and-profiles)) |
 | `BENCH_PROFILE_CPU` | `30s` | length of the CPU profile, which ends with the run |
 | `BENCH_IMAGE` | built from the Dockerfile | benchmark 2: the image whose size is checked |

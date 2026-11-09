@@ -458,3 +458,12 @@ the request demand per host from the stored targets and their intervals, exposes
 `angelia_host_demand_rps{host}` and logs a warning when a host's demand is above 80% of its effective limit.
 See [Per-host rate limits](../configuration.md#per-host-rate-limits) and
 [metrics](../operations/metrics.md).
+
+## Amendment 2026-11-09: 403 response class (#64)
+
+The decision is unchanged. For Phase 0 benchmark 3 (angelia-dev/angelia#64), which must show zero 403
+and zero 429 responses from `api.github.com`, `angelia_netguard_responses_total` gains the class `403`
+(`netguard.ClassForbidden`): GitHub answers a used-up primary rate limit, and some secondary limits, with
+403. The class list of §8 becomes `2xx`, `304`, `3xx`, `403`, `4xx`, `429`, `5xx`, `error`, and `4xx` now
+counts every 4xx other than 403 and 429 (429 already had its own class). A query that wants every client
+error sums `class=~"403|4xx|429"`. See [metrics](../operations/metrics.md).

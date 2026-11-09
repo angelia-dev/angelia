@@ -447,7 +447,7 @@ func TestNetguardCounters(t *testing.T) {
 	m.ServerPause("pypi.org", netguard.PauseRetryAfter)
 	m.ServerPause("pypi.org", netguard.PauseRateLimitReset)
 	m.ServerPause("pypi.org", "surprise")
-	for _, c := range []string{"2xx", "304", "3xx", "4xx", "429", "5xx", "error", "1xx"} {
+	for _, c := range []string{"2xx", "304", "3xx", "403", "4xx", "429", "5xx", "error", "1xx"} {
 		m.Response("API.GitHub.com", c)
 	}
 	m.DeadlineRefusal("other")
@@ -457,6 +457,8 @@ func TestNetguardCounters(t *testing.T) {
 		`angelia_netguard_server_pauses_total{host="pypi.org",reason="ratelimit_reset"} 1`,
 		`angelia_netguard_server_pauses_total{host="pypi.org",reason="other"} 1`,
 		`angelia_netguard_responses_total{class="304",host="api.github.com"} 1`,
+		`angelia_netguard_responses_total{class="403",host="api.github.com"} 1`,
+		`angelia_netguard_responses_total{class="4xx",host="api.github.com"} 1`,
 		`angelia_netguard_responses_total{class="429",host="api.github.com"} 1`,
 		`angelia_netguard_responses_total{class="error",host="api.github.com"} 1`,
 		`angelia_netguard_responses_total{class="other",host="api.github.com"} 1`,

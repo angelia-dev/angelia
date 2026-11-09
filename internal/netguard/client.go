@@ -137,7 +137,8 @@ type Observer interface {
 	// Remaining at 0). host is reported as for RateLimitWait.
 	ServerPause(host, reason string)
 	// Response is called once per attempt that was sent, with the class of
-	// its outcome: ClassOK ("2xx"), ClassNotModified ("304"), "3xx", "4xx",
+	// its outcome: ClassOK ("2xx"), ClassNotModified ("304"), "3xx",
+	// ClassForbidden ("403"), "4xx" (every other 4xx),
 	// ClassTooManyRequests ("429"), "5xx", or ClassError when the attempt
 	// got no response (a transport error or a timeout). host is reported as
 	// for RateLimitWait.
@@ -155,11 +156,14 @@ const (
 	PauseRateLimitReset = "ratelimit_reset"
 )
 
-// Classes of Observer.Response.
+// Classes of Observer.Response. ClassForbidden has its own class because
+// GitHub answers a used-up primary rate limit, and some secondary limits,
+// with 403 (Phase 0 benchmark 3); ClassClientError is every other 4xx.
 const (
 	ClassOK              = "2xx"
 	ClassNotModified     = "304"
 	ClassRedirect        = "3xx"
+	ClassForbidden       = "403"
 	ClassClientError     = "4xx"
 	ClassTooManyRequests = "429"
 	ClassServerError     = "5xx"
@@ -178,6 +182,8 @@ func responseClass(resp *http.Response, err error) string {
 		return ClassNotModified
 	case code == http.StatusTooManyRequests:
 		return ClassTooManyRequests
+	case code == http.StatusForbidden:
+		return ClassForbidden
 	case code >= 200 && code < 300:
 		return ClassOK
 	case code >= 300 && code < 400:
