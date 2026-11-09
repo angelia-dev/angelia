@@ -40,6 +40,8 @@ type Params struct {
 	ReceiverWait time.Duration `json:"receiver_delay_max_ns"`
 	Seed         uint64        `json:"seed"`
 	MinFlow      int           `json:"min_flow"`
+	MinPending   int           `json:"min_pending"`
+	Stages       string        `json:"stages"`
 }
 
 // Phases are the times the run spent in each phase.
@@ -112,9 +114,10 @@ func procField(path, key string) string {
 
 // setupChecks are the checks that the run did what the benchmark asks:
 // the number of kills, each by SIGKILL, each while deliveries were waiting,
-// and a drain that finished every delivery.
-func setupChecks(want int, kills []Kill, t Tally) []Check {
-	var busy, open int
+// enough of them while detection was running, and a drain that checked
+// every target after the freeze and finished every delivery.
+func setupChecks(want, minDetection int, kills []Kill, t Tally, drained bool) []Check {
+	var busy, open, detecting int
 	var idle []string
 	for _, k := range kills {
 		if k.Backlog.Pending+k.Backlog.InFlight > 0 {
@@ -125,6 +128,9 @@ func setupChecks(want int, kills []Kill, t Tally) []Check {
 		if k.Open > 0 {
 			open++
 		}
+		if k.Checks > 0 {
+			detecting++
+		}
 	}
 	c := []Check{{
 		Name: "SIGKILLs during the run", OK: len(kills) == want,
@@ -134,27 +140,40 @@ func setupChecks(want int, kills []Kill, t Tally) []Check {
 	ch.add("every kill during dispatch (deliveries pending or in flight)",
 		fmt.Sprintf("%d of %d kills; %d cut requests off at the receiver", busy, len(kills), open), idle)
 	c = append(c, ch.checks...)
+	c = append(c, Check{
+		Name: "kills during detection", OK: detecting >= minDetection,
+		Detail: fmt.Sprintf("%d kills found checks committed since the previous kill (want at least %d)", detecting, minDetection),
+	})
 	return append(c, Check{
-		Name: "drain finished every delivery", OK: t.Unfinished == 0,
+		Name: drainCheck, OK: drained && t.Unfinished == 0,
 		Detail: fmt.Sprintf("%d deliveries pending or in flight at the end", t.Unfinished),
 	})
 }
 
+// drainCheck names the setup check that the drain finished.
+const drainCheck = "drain finished (every target checked after the freeze, every delivery finished)"
+
 // decide sets the verdict: fail when a delivery check fails, incomplete
-// when the run did not do what the benchmark asks, pass otherwise.
+// when the run did not do what the benchmark asks, pass otherwise. When the
+// drain did not finish, the registry checks can fail for versions angelia
+// had no chance to fetch, so the run is incomplete whatever they say.
 func (r *Report) decide(verify, setup []Check) {
 	r.Checks = append(slices.Clone(setup), verify...)
 	r.Verdict = "pass"
+	drained := true
 	for _, c := range setup {
 		if !c.OK {
 			r.Verdict = "incomplete"
+		}
+		if c.Name == drainCheck && !c.OK {
+			drained = false
 		}
 	}
 	if len(verify) == 0 {
 		r.Verdict = "incomplete"
 	}
 	for _, c := range verify {
-		if !c.OK {
+		if !c.OK && drained {
 			r.Verdict = "fail"
 		}
 	}
@@ -222,33 +241,54 @@ func (r *Report) Markdown(w io.Writer) error {
 	p("| Requests received | %d |\n| Distinct deliveries received | %d |\n", t.Received, t.Distinct)
 	p("| Duplicate requests (deliveries received twice or more) | %d (%d) |\n", t.Duplicates, t.DuplicatedPairs)
 	p("| Received before the first kill | %d |\n", r.Phases.ReceivedBeforeKills)
+	p("| Expected from the registry: new versions, deliveries | %d, %d |\n", t.ExpectedVersions, t.Expected)
 	if len(r.Kills) > 0 {
 		var up, st []time.Duration
 		var rec []int
-		open, cut := 0, 0
+		open, cut, early, detecting, withEvents := 0, 0, 0, 0, 0
 		for _, k := range r.Kills {
-			up, rec = append(up, k.Uptime), append(rec, k.Received)
-			if k.Index > 1 {
-				st = append(st, k.Startup)
+			rec = append(rec, k.Received)
+			if k.FromStart {
+				early++
+			} else {
+				up = append(up, k.Uptime)
+				if k.Startup > 0 {
+					st = append(st, k.Startup)
+				}
 			}
 			if k.Open > 0 {
 				open++
 				cut += k.Open
+			}
+			if k.Checks > 0 {
+				detecting++
+			}
+			if k.Events > 0 {
+				withEvents++
 			}
 		}
 		slices.Sort(up)
 		slices.Sort(rec)
 		slices.Sort(st)
 		p("\n## Kills\n\n| | |\n|---|---|\n")
-		p("| Kills | %d |\n| Uptime after ready (drawn) | %s to %s, median %s |\n", len(r.Kills), secs(up[0]), secs(up[len(up)-1]), secs(up[len(up)/2]))
+		p("| Kills | %d |\n", len(r.Kills))
+		p("| Kills from the process start, before /readyz | %d |\n", early)
+		if len(up) > 0 {
+			p("| Uptime after ready (drawn) | %s to %s, median %s |\n", secs(up[0]), secs(up[len(up)-1]), secs(up[len(up)/2]))
+		}
 		if len(st) > 0 {
 			p("| Restart to ready | median %s, max %s |\n", secs(st[len(st)/2]), secs(st[len(st)-1]))
 		}
+		p("| Kills during detection (checks committed since the previous kill) | %d (%d with new events) |\n", detecting, withEvents)
 		p("| Requests received per life | min %d, median %d, max %d |\n", rec[0], rec[len(rec)/2], rec[len(rec)-1])
 		p("| Kills that cut requests off at the receiver | %d (%d requests) |\n", open, cut)
-		p("\n<details><summary>Every kill</summary>\n\n| # | Restart to ready | Uptime | Received | Open at kill | Pending after | In flight after |\n|---|---|---|---|---|---|---|\n")
+		p("\n<details><summary>Every kill</summary>\n\n| # | Timed from | Restart to ready | Uptime | Checks | Events | Received | Open at kill | Pending after | In flight after |\n|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, k := range r.Kills {
-			p("| %d | %s | %s | %d | %d | %d | %d |\n", k.Index, secs(k.Startup), secs(k.Uptime), k.Received, k.Open, k.Backlog.Pending, k.Backlog.InFlight)
+			from := "ready"
+			if k.FromStart {
+				from = "start"
+			}
+			p("| %d | %s | %s | %s | %d | %d | %d | %d | %d | %d |\n", k.Index, from, secs(k.Startup), secs(k.Uptime), k.Checks, k.Events, k.Received, k.Open, k.Backlog.Pending, k.Backlog.InFlight)
 		}
 		p("\n</details>\n")
 	}
@@ -258,7 +298,8 @@ func (r *Report) Markdown(w io.Writer) error {
 	p("| Releases | %.0f per hour over all packages (one every %s per package) |\n", w2.ReleasesPerH,
 		secs(time.Duration(float64(w2.Packages)/w2.ReleasesPerH*float64(time.Hour))))
 	p("| Webhook sinks and subscriptions | %d, each matching every event |\n", w2.Subscriptions)
-	p("| Kills | %d, uptime after ready %s |\n", r.Params.Kills, r.Params.Uptime)
+	p("| Kills | %d, uptime %s |\n", r.Params.Kills, r.Params.Uptime)
+	p("| Warm-up | watches added in %s; a kill waits for %d pending deliveries |\n", r.Params.Stages, r.Params.MinPending)
 	p("| Receiver delay | uniform in [0, %s) per request |\n", r.Params.ReceiverWait)
 	p("| Dispatch starts the kills | after %d requests received |\n", r.Params.MinFlow)
 	p("| Seed | %d |\n", r.Params.Seed)

@@ -19,6 +19,8 @@ type Receipt struct {
 	Sink      string    `json:"sink"`       // last element of the URL path
 	WebhookID string    `json:"webhook_id"` // the idempotency key
 	EventID   string    `json:"event_id"`   // the CloudEvents id in the body
+	Package   string    `json:"package"`    // data.package in the body
+	Version   string    `json:"version"`    // data.version in the body
 	BodyHash  [32]byte  `json:"-"`
 	SigError  string    `json:"sig_error,omitempty"` // empty: the Standard Webhooks signature verified
 	At        time.Time `json:"at"`
@@ -66,10 +68,14 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		rc.SigError = err.Error()
 	}
 	var ev struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Data struct {
+			Package string `json:"package"`
+			Version string `json:"version"`
+		} `json:"data"`
 	}
 	_ = json.Unmarshal(body, &ev) // an empty id is reported as unexpected
-	rc.EventID = ev.ID
+	rc.EventID, rc.Package, rc.Version = ev.ID, ev.Data.Package, ev.Data.Version
 	if r.maxDelay > 0 {
 		time.Sleep(rand.N(r.maxDelay)) //nolint:gosec // timing jitter, not security
 	}

@@ -143,6 +143,37 @@ func TestReleasesAppearAndLagIsMeasured(t *testing.T) {
 	}
 }
 
+// Versions follows the server's clock and FirstServed keeps the count of
+// the first 200, which is how a harness reconciles a client's state.
+func TestVersionsAndFirstServed(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	s := New(fastConfig(func(b *Behaviour) { b.ReleasesPerHour = 36000 }), WithClock(clk.now))
+	if n, ok := s.Versions("pypi", 0); !ok || n != 3 {
+		t.Fatalf("Versions at start = %d, %v", n, ok)
+	}
+	if got := s.FirstServed("pypi", 0); got != 0 {
+		t.Fatalf("FirstServed before any request = %d", got)
+	}
+	clk.add(2 * time.Second)
+	get(t, s, "/pypi/pypi/pkg-00000/json")
+	clk.add(5 * time.Second)
+	get(t, s, "/pypi/pypi/pkg-00000/json")
+	if got := s.FirstServed("pypi", 0); got != 5 {
+		t.Errorf("FirstServed = %d, want 5 (3 + 2 releases at the first request)", got)
+	}
+	if n, _ := s.Versions("pypi", 0); n != 10 {
+		t.Errorf("Versions after 7s = %d, want 10", n)
+	}
+	for _, bad := range []struct {
+		eco string
+		i   int
+	}{{"nope", 0}, {"pypi", -1}, {"pypi", 10}} {
+		if _, ok := s.Versions(bad.eco, bad.i); ok || s.FirstServed(bad.eco, bad.i) != 0 {
+			t.Errorf("Versions(%q, %d) accepted", bad.eco, bad.i)
+		}
+	}
+}
+
 func TestETagModes(t *testing.T) {
 	for _, mode := range []string{ETagStrong, ETagWeak, ETagNone, ETagIgnore} {
 		t.Run(mode, func(t *testing.T) {

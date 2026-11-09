@@ -64,21 +64,30 @@ func (f *fakeInstance) kill() error {
 	return f.killErr
 }
 
+// fakeState is a database that reports a fixed backlog and one more
+// check and two more events at every read.
+func fakeState(pending int, reads *int) func(time.Time) (State, error) {
+	return func(time.Time) (State, error) {
+		*reads++
+		return State{Backlog: Backlog{Pending: pending, InFlight: 3}, MaxSeq: int64(2 * *reads), Checks: 1}, nil
+	}
+}
+
 // Acceptance criterion 1: the loop kills the requested number of
-// processes, each after an uptime drawn in [MinUp, MaxUp), restarting
-// after each kill, and records the receiver and the backlog at each kill.
+// processes, each after an uptime drawn in [MinUp, MaxUp) after /readyz or,
+// for about FromStart of them, in [0, FromStartMax) after the start;
+// it restarts after each kill and records the receiver, the backlog and
+// detection at each kill.
 func TestKillLoopKillsAndRestarts(t *testing.T) {
 	var started []*fakeInstance
 	var slept []time.Duration
-	received, backlogReads := 0, 0
+	received, reads := 0, 0
 	cfg := loopConfig{
 		Kills: 100, MinUp: 500 * time.Millisecond, MaxUp: 4 * time.Second,
+		FromStart: 0.1, FromStartMax: 300 * time.Millisecond, MinPending: 5,
 		Received: func() int { received += 7; return received },
 		Open:     func() int { return 2 },
-		Backlog: func() (Backlog, error) {
-			backlogReads++
-			return Backlog{Pending: 10, InFlight: 3}, nil
-		},
+		State:    fakeState(10, &reads),
 		Start: func() (instance, error) {
 			f := &fakeInstance{}
 			started = append(started, f)
@@ -88,43 +97,77 @@ func TestKillLoopKillsAndRestarts(t *testing.T) {
 			slept = append(slept, d)
 			return nil
 		},
+		Now: time.Now,
 	}
 	first := &fakeInstance{}
-	kills, last, err := killLoop(context.Background(), cfg, seeded(), first)
+	kills, err := killLoop(context.Background(), cfg, seeded(), first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kills) != 100 || len(started) != 100 || backlogReads != 100 || !first.killed {
-		t.Fatalf("kills %d, starts %d, backlog reads %d, first killed %v", len(kills), len(started), backlogReads, first.killed)
+	if len(kills) != 100 || len(started) != 99 || reads != 101 || !first.killed {
+		t.Fatalf("kills %d, starts %d, state reads %d, first killed %v", len(kills), len(started), reads, first.killed)
 	}
-	for i, f := range started[:99] {
+	for i, f := range started {
 		if !f.killed {
-			t.Errorf("process %d not killed", i+1)
+			t.Errorf("process %d not killed", i+2)
 		}
 	}
-	if last != started[99] || started[99].killed {
-		t.Error("the process started after the last kill should be returned alive")
-	}
+	early := 0
 	for i, k := range kills {
-		if k.Index != i+1 || k.Uptime < cfg.MinUp || k.Uptime >= cfg.MaxUp || k.Uptime != slept[i] ||
-			k.Received != 7 || k.Open != 2 || k.Backlog.Pending != 10 {
+		if k.FromStart {
+			early++
+			if k.Index == 1 || k.Uptime >= cfg.FromStartMax || k.Startup != 0 {
+				t.Errorf("kill from the start %+v", k)
+			}
+		} else if k.Uptime < cfg.MinUp || k.Uptime >= cfg.MaxUp {
+			t.Errorf("kill %+v", k)
+		}
+		if k.Index != i+1 || k.Received != 7 || k.Open != 2 || k.Backlog.Pending != 10 || k.Checks != 1 || k.Events != 2 {
 			t.Fatalf("kill %+v", k)
 		}
+	}
+	if early < 3 || early > 25 {
+		t.Errorf("%d kills from the start, want about 10", early)
 	}
 	if slices.Min(slept) == slices.Max(slept) {
 		t.Error("uptimes are not random")
 	}
 }
 
+// A kill from the start is drawn only when the previous kill left enough
+// work, so that it lands during dispatch too.
+func TestKillLoopFromStartNeedsBacklog(t *testing.T) {
+	reads := 0
+	cfg := loopConfig{
+		Kills: 50, MinUp: time.Millisecond, MaxUp: 2 * time.Millisecond,
+		FromStart: 1, FromStartMax: time.Millisecond, MinPending: 500,
+		Received: func() int { return 0 }, Open: func() int { return 0 },
+		State: fakeState(10, &reads),
+		Start: func() (instance, error) { return &fakeInstance{}, nil },
+		Sleep: func(context.Context, time.Duration) error { return nil },
+		Now:   time.Now,
+	}
+	kills, err := killLoop(context.Background(), cfg, seeded(), &fakeInstance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range kills {
+		if k.FromStart {
+			t.Fatalf("kill %d from the start with 10 pending", k.Index)
+		}
+	}
+}
+
 // The loop waits for work before each kill and stops when none comes.
 func TestKillLoopWaitsForDispatch(t *testing.T) {
-	waits := 0
+	waits, reads := 0, 0
 	cfg := loopConfig{
 		Kills: 5, MinUp: time.Millisecond, MaxUp: time.Millisecond,
 		Received: func() int { return 0 }, Open: func() int { return 0 },
-		Backlog: func() (Backlog, error) { return Backlog{Pending: 1}, nil },
-		Start:   func() (instance, error) { return &fakeInstance{}, nil },
-		Sleep:   func(context.Context, time.Duration) error { return nil },
+		State: fakeState(1, &reads),
+		Start: func() (instance, error) { return &fakeInstance{}, nil },
+		Sleep: func(context.Context, time.Duration) error { return nil },
+		Now:   time.Now,
 		WaitBusy: func(context.Context) error {
 			if waits++; waits == 4 {
 				return context.DeadlineExceeded
@@ -132,32 +175,39 @@ func TestKillLoopWaitsForDispatch(t *testing.T) {
 			return nil
 		},
 	}
-	kills, _, err := killLoop(context.Background(), cfg, seeded(), &fakeInstance{})
+	kills, err := killLoop(context.Background(), cfg, seeded(), &fakeInstance{})
 	if !errors.Is(err, context.DeadlineExceeded) || len(kills) != 3 {
 		t.Fatalf("kills %d, err %v", len(kills), err)
 	}
 }
 
 func TestKillLoopStopsWhenAKillFails(t *testing.T) {
+	reads := 0
 	cfg := loopConfig{
 		Kills: 5, MinUp: time.Millisecond, MaxUp: time.Millisecond,
 		Received: func() int { return 0 }, Open: func() int { return 0 },
-		Backlog: func() (Backlog, error) { return Backlog{}, nil },
-		Start:   func() (instance, error) { return &fakeInstance{killErr: errExited}, nil },
-		Sleep:   func(context.Context, time.Duration) error { return nil },
+		State: fakeState(0, &reads),
+		Start: func() (instance, error) { return &fakeInstance{killErr: errExited}, nil },
+		Sleep: func(context.Context, time.Duration) error { return nil },
+		Now:   time.Now,
 	}
-	kills, _, err := killLoop(context.Background(), cfg, seeded(), &fakeInstance{})
+	kills, err := killLoop(context.Background(), cfg, seeded(), &fakeInstance{})
 	if !errors.Is(err, errExited) || len(kills) != 1 {
 		t.Fatalf("kills %d, err %v", len(kills), err)
 	}
 }
 
-// Acceptance criterion 1 with real processes: SIGKILL ends each one, the
-// loop restarts it, and stop drains the last one with SIGTERM.
+// Acceptance criterion 1 with real processes: SIGKILL ends each one, from
+// the start or after /readyz, and the loop restarts it.
 func TestKillLoopRealProcesses(t *testing.T) {
 	l := helperLauncher(t, "serve")
 	ctx := context.Background()
-	start := func() (instance, error) { return l.start() }
+	var procs []*proc
+	start := func() (instance, error) {
+		p, err := l.start()
+		procs = append(procs, p)
+		return p, err
+	}
 	first, err := l.start()
 	if err != nil {
 		t.Fatal(err)
@@ -165,25 +215,46 @@ func TestKillLoopRealProcesses(t *testing.T) {
 	if err := first.waitReady(ctx, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	reads := 0
 	cfg := loopConfig{
-		Kills: 3, MinUp: 10 * time.Millisecond, MaxUp: 50 * time.Millisecond, ReadyTimeout: 10 * time.Second,
+		Kills: 6, MinUp: 10 * time.Millisecond, MaxUp: 50 * time.Millisecond, ReadyTimeout: 10 * time.Second,
+		FromStart: 0.5, FromStartMax: 20 * time.Millisecond, MinPending: 1,
 		Received: func() int { return 0 }, Open: func() int { return 0 },
-		Backlog: func() (Backlog, error) { return Backlog{}, nil },
-		Start:   start, Sleep: sleepCtx,
+		State: fakeState(1, &reads),
+		Start: start, Sleep: sleepCtx, Now: time.Now,
 	}
-	kills, last, err := killLoop(ctx, cfg, seeded(), first)
+	kills, err := killLoop(ctx, cfg, seeded(), first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kills) != 3 || !first.exited() {
+	if len(kills) != 6 || !first.exited() {
 		t.Fatalf("kills %d, first exited %v", len(kills), first.exited())
 	}
-	for _, k := range kills[1:] {
-		if k.Startup <= 0 {
+	for _, p := range procs {
+		if !p.exited() {
+			t.Error("a process is still running after the loop")
+		}
+	}
+	early := 0
+	for _, k := range kills {
+		if k.FromStart {
+			early++
+		} else if k.Index > 1 && k.Startup <= 0 {
 			t.Errorf("kill %d: no startup time", k.Index)
 		}
 	}
-	if err := last.(*proc).stop(10 * time.Second); err != nil {
+	if early == 0 || early == 6 {
+		t.Errorf("%d of 6 kills from the start with share 0.5 (seeded)", early)
+	}
+	// stop drains a process with SIGTERM.
+	p, err := l.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.waitReady(ctx, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.stop(10 * time.Second); err != nil {
 		t.Fatal(err)
 	}
 }

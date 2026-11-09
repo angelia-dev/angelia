@@ -17,7 +17,7 @@ import (
 func busyKills(n int) []Kill {
 	ks := make([]Kill, n)
 	for i := range ks {
-		ks[i] = Kill{Index: i + 1, Uptime: time.Second, Received: 50, Open: i % 2, Backlog: Backlog{Pending: 100}}
+		ks[i] = Kill{Index: i + 1, Uptime: time.Second, Received: 50, Open: i % 2, Backlog: Backlog{Pending: 100}, Checks: i % 2, Events: 3}
 	}
 	return ks
 }
@@ -36,11 +36,11 @@ func TestVerdict(t *testing.T) {
 		{"a lost delivery fails", bad, busyKills(100), "fail", false},
 		{"too few kills is incomplete", ok, busyKills(99), "incomplete", true},
 		{"no verification is incomplete", nil, busyKills(100), "incomplete", false},
-		{"a fault wins over an incomplete run", bad, busyKills(10), "fail", true},
+		{"a fault wins over too few kills", bad, busyKills(10), "fail", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var r Report
-			r.decide(tc.verify, setupChecks(100, tc.kills, Tally{}))
+			r.decide(tc.verify, setupChecks(100, 30, tc.kills, Tally{}, true))
 			if r.Verdict != tc.want {
 				t.Errorf("verdict %s, want %s", r.Verdict, tc.want)
 			}
@@ -51,10 +51,27 @@ func TestVerdict(t *testing.T) {
 	}
 }
 
+// An unfinished drain makes the run incomplete even when a registry check
+// fails: angelia had no chance to fetch what the registry published.
+func TestVerdictUndrained(t *testing.T) {
+	var r Report
+	r.decide([]Check{{Name: "a", OK: false}}, setupChecks(100, 30, busyKills(100), Tally{}, false))
+	if r.Verdict != "incomplete" {
+		t.Errorf("verdict %s", r.Verdict)
+	}
+}
+
+func TestSetupChecksNeedDetection(t *testing.T) {
+	c := setupChecks(100, 51, busyKills(100), Tally{}, true)
+	if c[2].Name != "kills during detection" || c[2].OK || !strings.Contains(c[2].Detail, "50 kills") {
+		t.Errorf("detection check %+v", c[2])
+	}
+}
+
 func TestSetupChecksNeedDispatchAtEveryKill(t *testing.T) {
 	ks := busyKills(100)
 	ks[41].Backlog = Backlog{}
-	c := setupChecks(100, ks, Tally{})
+	c := setupChecks(100, 30, ks, Tally{}, true)
 	if !c[0].OK || c[1].OK || !strings.Contains(c[1].Examples[0], "kill 42") {
 		t.Errorf("checks %+v", c)
 	}
@@ -71,7 +88,7 @@ func TestReportWrite(t *testing.T) {
 		Kills:       busyKills(100),
 		Tally:       Tally{Events: 10, Deliveries: 50, Received: 52, Distinct: 50, Duplicates: 2, DuplicatedPairs: 1},
 	}
-	r.decide([]Check{{Name: "every delivery received at least once (zero lost)", OK: true, Detail: "50 of 50"}}, setupChecks(100, r.Kills, r.Tally))
+	r.decide([]Check{{Name: "every delivery received at least once (zero lost)", OK: true, Detail: "50 of 50"}}, setupChecks(100, 30, r.Kills, r.Tally, true))
 	if err := r.Write(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +96,7 @@ func TestReportWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"**Verdict: PASS.**", "zero lost", "| Kills | 100 |", "test machine", "| 100 | 0.0s | 1.0s | 50 | 1 | 100 | 0 |", "one every 10.0s per package"} {
+	for _, want := range []string{"**Verdict: PASS.**", "zero lost", "| Kills | 100 |", "test machine", "| 100 | ready | 0.0s | 1.0s | 1 | 3 | 50 | 1 | 100 | 0 |", "| Kills during detection (checks committed since the previous kill) | 50 (100 with new events) |", "one every 10.0s per package"} {
 		if !strings.Contains(string(md), want) {
 			t.Errorf("report.md lacks %q:\n%s", want, md)
 		}
@@ -95,7 +112,7 @@ func TestGeneratedConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	w := workload{Packages: 3, Subscriptions: 2, ReleasesPerH: 100, History: 3}
 	wf, cf := filepath.Join(dir, "watches.yaml"), filepath.Join(dir, "angelia.yaml")
-	if err := writeWatchFile(wf, "http://127.0.0.2:4000", w); err != nil {
+	if err := writeWatchFile(wf, "http://127.0.0.2:4000", w, 99); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeInstanceConfig(cf, "127.0.0.1:8080", dir, "http://127.0.0.1:5000", "http://127.0.0.2:4000"); err != nil {
@@ -111,6 +128,14 @@ func TestGeneratedConfiguration(t *testing.T) {
 	}
 	if len(f.Watches) != 3 || len(f.Sinks) != 2 || len(f.Subscriptions) != 2 {
 		t.Errorf("watch file: %d watches, %d sinks, %d subscriptions", len(f.Watches), len(f.Sinks), len(f.Subscriptions))
+	}
+	// A warm-up group: only the first n watches, every sink.
+	if err := writeWatchFile(wf, "http://127.0.0.2:4000", w, 2); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := watchfile.Load(wf, watchfile.Options{Sources: reg, AllowHTTPHosts: []string{"127.0.0.2"}, LookupEnv: func(string) (string, bool) { return "x", true }}); err != nil ||
+		len(g.Watches) != 2 || len(g.Subscriptions) != 2 {
+		t.Errorf("group of 2: %v", err)
 	}
 	c, err := config.Load(context.Background(), config.Options{Path: cf})
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ type Tally struct {
 	DuplicatedPairs   int `json:"duplicated_pairs"`   // pairs received more than once
 	RetriedDeliveries int `json:"retried_deliveries"` // delivery rows with attempts > 1
 	BaselineVersions  int `json:"baseline_versions"`
+	ExpectedVersions  int `json:"expected_versions"` // from the registry: published after the baseline, before the freeze
+	Expected          int `json:"expected"`          // ExpectedVersions x subscriptions
 	NewVersions       int `json:"new_versions"`
 	// Unfinished are the deliveries still pending or in flight at the end:
 	// the drain did not finish, so they are neither delivered nor lost.
@@ -48,65 +51,120 @@ func (c *checker) add(name, okDetail string, bad []string) {
 	c.checks = append(c.checks, ch)
 }
 
-// Verify compares the database with what the receiver got. The checks, in
-// the order of the pipeline:
+// Truth is what the fake registry says about the run, independent of
+// angelia's database.
+type Truth struct {
+	// Packages is every watched package with its version count in the
+	// first response angelia got (its baseline) and at the freeze.
+	Packages []PackageTruth
+	// Sinks are the sink names of the workload, one subscription each.
+	Sinks []string
+}
+
+// PackageTruth is one package as the registry served it.
+type PackageTruth struct {
+	Name         string
+	First, Final int
+}
+
+// Verify compares the registry, the database and what the receiver got.
+// The checks, in the order of the pipeline:
 //
-//  1. every package's versions are 1.0.0 to 1.k.0 with no gap (no version
+//  1. the database is sound (PRAGMA integrity_check, foreign_key_check);
+//  2. it holds the workload's watches and subscriptions;
+//  3. every package's recorded versions are exactly the registry's at the
+//     freeze, and its baseline the registry's first response (no version
 //     lost before it was recorded);
-//  2. every version first seen after the package's baseline check has
-//     exactly one release.published event, and no other version has one
-//     (the transactional outbox: no state change without its event);
-//  3. every event has exactly one delivery per subscription;
-//  4. no delivery is dead (given up: lost for its consumer);
-//  5. every finished delivery was received at least once (no delivery
-//     lost); deliveries still pending or in flight are counted in
+//  4. every version first seen after the baseline has exactly one
+//     release.published event, and no other version has one (the
+//     transactional outbox: no state change without its event);
+//  5. every event has exactly one delivery per subscription;
+//  6. no delivery is dead (given up: lost for its consumer);
+//  7. every new version the registry published before the freeze reached
+//     every sink, judged from the registry and the requests alone;
+//  8. every finished delivery of the database was received at least once;
+//     deliveries still pending or in flight are counted in
 //     Tally.Unfinished, which the drain check judges;
-//  6. every request carries the idempotency key of its event and
+//  9. every request carries the idempotency key of its event and
 //     subscription, so duplicates share it, and duplicates have the same
 //     body;
-//  7. every request was signed with the run's secret;
-//  8. every request belongs to a delivery of the database.
-func Verify(s *Snapshot, receipts []Receipt) ([]Check, Tally) {
+//  10. every request was signed with the run's secret;
+//  11. every request belongs to a delivery of the database.
+func Verify(s *Snapshot, receipts []Receipt, truth Truth) ([]Check, Tally) {
 	var c checker
 	var t Tally
 
-	// 1 and 2: versions and events.
+	c.add("database integrity (integrity_check, foreign_key_check)", "ok", slices.Clone(s.Integrity))
+
+	var wl []string
+	byName := map[string]bool{}
+	for _, p := range s.Packages {
+		byName[p] = true
+	}
+	for _, p := range truth.Packages {
+		if !byName[p.Name] {
+			wl = append(wl, "no watch for "+p.Name)
+		}
+	}
+	if len(s.Packages) != len(truth.Packages) {
+		wl = append(wl, fmt.Sprintf("%d watches, want %d", len(s.Packages), len(truth.Packages)))
+	}
+	sinks := map[string]bool{}
+	for _, name := range s.Subscriptions {
+		sinks[name] = true
+	}
+	for _, name := range truth.Sinks {
+		if !sinks[name] {
+			wl = append(wl, "no subscription for sink "+name)
+		}
+	}
+	if len(s.Subscriptions) != len(truth.Sinks) {
+		wl = append(wl, fmt.Sprintf("%d subscriptions, want %d", len(s.Subscriptions), len(truth.Sinks)))
+	}
+	c.add("watches and subscriptions match the workload", fmt.Sprintf("%d watches, %d subscriptions", len(truth.Packages), len(truth.Sinks)), wl)
+
+	// 3 and 4: versions and events.
 	type pv struct{ pkg, ver string }
 	newVersions := map[pv]bool{}
-	var gaps []string
-	pkgs := make([]string, 0, len(s.Versions))
-	for p := range s.Versions {
-		pkgs = append(pkgs, p)
-	}
-	sort.Strings(pkgs)
-	for _, p := range pkgs {
-		vs := s.Versions[p]
-		seen := map[int]bool{}
-		maxK, base := -1, vs[0].FirstSeen
+	var vBad []string
+	for _, p := range truth.Packages {
+		vs := s.Versions[p.Name]
+		if len(vs) == 0 {
+			vBad = append(vBad, p.Name+": no versions recorded")
+			continue
+		}
+		base := vs[0].FirstSeen
 		for _, v := range vs {
 			base = min(base, v.FirstSeen)
 		}
+		seen, baseline := map[int]bool{}, 0
 		for _, v := range vs {
 			k, ok := minorOf(v.Raw)
-			if !ok {
-				gaps = append(gaps, fmt.Sprintf("%s: unexpected version %q", p, v.Raw))
+			if !ok || k >= p.Final {
+				vBad = append(vBad, fmt.Sprintf("%s: version %q not in the registry (%d versions at the freeze)", p.Name, v.Raw, p.Final))
 				continue
 			}
-			seen[k], maxK = true, max(maxK, k)
+			seen[k] = true
 			if v.FirstSeen > base {
-				newVersions[pv{p, v.Raw}] = true
+				newVersions[pv{p.Name, v.Raw}] = true
 				t.NewVersions++
 			} else {
-				t.BaselineVersions++
+				baseline++
 			}
 		}
-		for k := 0; k <= maxK; k++ {
+		for k := range p.Final {
 			if !seen[k] {
-				gaps = append(gaps, fmt.Sprintf("%s: version 1.%d.0 missing (have up to 1.%d.0)", p, k, maxK))
+				vBad = append(vBad, fmt.Sprintf("%s: version 1.%d.0 published before the freeze, not recorded", p.Name, k))
 			}
 		}
+		if baseline != p.First {
+			vBad = append(vBad, fmt.Sprintf("%s: baseline of %d versions, the registry's first response had %d", p.Name, baseline, p.First))
+		}
+		t.BaselineVersions += baseline
+		t.ExpectedVersions += max(0, p.Final-p.First)
 	}
-	c.add("versions recorded without gaps", fmt.Sprintf("%d packages", len(pkgs)), gaps)
+	c.add("versions recorded match the registry at the freeze",
+		fmt.Sprintf("%d packages: %d baseline and %d new versions, as published", len(truth.Packages), t.BaselineVersions, t.ExpectedVersions), vBad)
 
 	var evBad []string
 	evByID := map[string]StoredEvent{}
@@ -197,6 +255,33 @@ func Verify(s *Snapshot, receipts []Receipt) ([]Check, Tally) {
 			sigBad = append(sigBad, fmt.Sprintf("event %s sink %s: %s", r.EventID, r.Sink, r.SigError))
 		}
 	}
+	type ps struct{ pkg, ver, sink string }
+	gotReg := map[ps]bool{}
+	for _, r := range receipts {
+		gotReg[ps{r.Package, r.Version, r.Sink}] = true
+	}
+	// A delivery the drain left unfinished is not lost (yet): the drain
+	// check judges it.
+	for _, d := range s.Deliveries {
+		if d.Status == "pending" || d.Status == "in_flight" {
+			e := evByID[d.EventID]
+			gotReg[ps{e.Package, e.Version, s.Subscriptions[d.SubscriptionID]}] = true
+		}
+	}
+	var regLost []string
+	for _, p := range truth.Packages {
+		for k := p.First; k < p.Final; k++ {
+			for _, sk := range truth.Sinks {
+				t.Expected++
+				if v := fmt.Sprintf("1.%d.0", k); !gotReg[ps{p.Name, v, sk}] {
+					regLost = append(regLost, fmt.Sprintf("%s %s to %s", p.Name, v, sk))
+				}
+			}
+		}
+	}
+	c.add("every release published before the freeze reached every sink (registry)",
+		fmt.Sprintf("%d of %d expected (%d new versions x %d sinks)", t.Expected-len(regLost), t.Expected, t.ExpectedVersions, len(truth.Sinks)), regLost)
+
 	var lost []string
 	for k, d := range rows {
 		if count[k] == 0 && (d.Status == "delivered" || d.Status == "dead") {
@@ -211,7 +296,7 @@ func Verify(s *Snapshot, receipts []Receipt) ([]Check, Tally) {
 			t.Duplicates += n - 1
 		}
 	}
-	c.add("every delivery received at least once (zero lost)", fmt.Sprintf("%d of %d finished deliveries received", len(rows)-t.Unfinished-len(lost), len(rows)-t.Unfinished), lost)
+	c.add("every delivery in the database received at least once (zero lost)", fmt.Sprintf("%d of %d finished deliveries received", len(rows)-t.Unfinished-len(lost), len(rows)-t.Unfinished), lost)
 	c.add("duplicates only within the idempotency key", fmt.Sprintf("%d duplicate requests over %d deliveries, each with its delivery's key and body", t.Duplicates, t.DuplicatedPairs), keyBad)
 	c.add("every request signed (Standard Webhooks)", fmt.Sprintf("%d requests verified", len(receipts)-len(sigBad)-len(unexpected)), sigBad)
 	c.add("no request outside the database's deliveries", "none", unexpected)

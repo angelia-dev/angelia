@@ -91,7 +91,7 @@ bench-idle: ## Benchmark 2: idle memory, binary and image size with 100 watches 
 bench-github: ## Benchmark 3: 2,000 GitHub repos (N=…) on one token for 24 h, report in bin/bench
 	BENCH_KIND=github BENCH_N=$(or $(N),2000) MAKE="$(MAKE)" bench/load/bench-scale.sh
 
-# Benchmark 5 runs anywhere on Linux (process mode, no Docker), about 15 minutes.
+# Benchmark 5 runs anywhere on Linux (process mode, no Docker), about 17 minutes.
 # BENCH_KILLS (default 100), BENCH_ENV_NOTE (the machine, for the report) and
 # BENCH_CRASH_FLAGS (more flags: go run ./bench/crash -h) change it.
 bench-crash: build ## Benchmark 5: SIGKILL angelia 100 times during dispatch, report in bin/bench/crash

@@ -74,11 +74,12 @@ type subscription struct {
 	Sink string `yaml:"sink"`
 }
 
-// writeWatchFile writes the watches, one webhook sink per subscription
-// pointing at receiver ("http://host:port"), and the subscriptions.
-func writeWatchFile(path, receiver string, w workload) error {
+// writeWatchFile writes the first n watches of the workload, one webhook
+// sink per subscription pointing at receiver ("http://host:port"), and the
+// subscriptions.
+func writeWatchFile(path, receiver string, w workload, n int) error {
 	f := watchFile{Version: 1}
-	for i := range w.Packages {
+	for i := range min(n, w.Packages) {
 		f.Watches = append(f.Watches, watchEntry{
 			Name: "pypi-" + packageName(i), Source: "pypi",
 			Coordinates: map[string]string{"name": packageName(i)}, Interval: "5m",
