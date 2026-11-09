@@ -1,5 +1,7 @@
 # Angelia
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/angelia-dev/angelia/badge)](https://scorecard.dev/viewer/?uri=github.com/angelia-dev/angelia)
+
 > *Angelia* (ἀγγελία): ancient Greek for "message, news". The spirit of announcements and a daughter of Hermes.
 
 **The self-hosted release event bus.** Angelia watches upstream artifacts (PyPI, npm, crates.io, GitHub/GitLab releases, OCI images, …), detects every new version, and delivers one clean, signed, machine-readable event (CloudEvents) to your CI, your chat, or your AI agents.

@@ -75,14 +75,38 @@ dockers_v2:
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"
 
+# Changelog from Conventional Commits, grouped by type. Squash-merged PR titles
+# are Conventional Commits, so each entry is one change. Breaking changes
+# (`feat!:`, `fix(scope)!:`) get their own group at the top.
 changelog:
   use: github
   sort: asc
+  groups:
+    - title: Breaking changes
+      regexp: '^.*?(\([[:word:]/-]+\))?!:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]/-]+\))?:.+$'
+      order: 1
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]/-]+\))?:.+$'
+      order: 2
+    - title: Performance
+      regexp: '^.*?perf(\([[:word:]/-]+\))?:.+$'
+      order: 3
+    - title: Security
+      regexp: '^.*?sec(urity)?(\([[:word:]/-]+\))?:.+$'
+      order: 4
+    - title: Other changes
+      order: 999
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+      - "^docs(\\(.+\\))?:"
+      - "^test(\\(.+\\))?:"
+      - "^chore(\\(.+\\))?:"
+      - "^ci(\\(.+\\))?:"
+      - "^style(\\(.+\\))?:"
+      - "^Merge (pull request|branch)"
 
 release:
   # Created as a draft: publishing stays a human decision (H-publish).

@@ -1,0 +1,45 @@
+name: Scorecard
+
+# OpenSSF Scorecard supply-chain checks. Results go to code scanning (SARIF)
+# and, because the repository is public, to the OpenSSF API that feeds the
+# README badge. See docs/operations/release.md.
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "23 5 * * 1" # Mondays, 05:23 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default; the job lists exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write # upload the SARIF results to code scanning
+      id-token: write # publish results to the OpenSSF API (badge); required by scorecard-action
+      contents: read # check out the repository
+      actions: read # read workflow run data for the Token-Permissions and Pinned-Dependencies checks
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      # ossf/scorecard-action v2.5.0, pinned by commit SHA.
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: results.sarif
