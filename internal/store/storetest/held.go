@@ -32,6 +32,17 @@ func testHeldDeliveryOperations(t *testing.T, open opener) {
 	until := t0.Add(72 * time.Hour)
 	must(t, s.AppendEvent(ctx, event("e1"), []store.Delivery{heldDelivery("d1", "s1", until), pending("s2")}))
 	must(t, s.AppendEvent(ctx, event("e2"), []store.Delivery{heldDelivery("d2", "s1", until), heldDelivery("d3", "s2", until)}))
+	// Held at t0+1h; no longer held (so due) once the hold has ended.
+	held, err := listHeld(t, s, "s1", t0.Add(time.Hour))
+	must(t, err)
+	if len(held) != 2 {
+		t.Fatalf("held deliveries of s1 = %+v, want d1 and d2", held)
+	}
+	held, err = listHeld(t, s, "s1", until)
+	must(t, err)
+	if len(held) != 0 {
+		t.Fatalf("held deliveries of s1 at the end = %+v", held)
+	}
 	get := func(ev, id string) store.Delivery {
 		t.Helper()
 		ds, err := s.ListDeliveries(ctx, ev)
@@ -99,4 +110,15 @@ func testSubscriptionPolicyRoundTrip(t *testing.T, open opener) {
 		}
 		return nil
 	}))
+}
+
+func listHeld(t *testing.T, s store.APIStore, sub string, now time.Time) ([]store.Delivery, error) {
+	t.Helper()
+	var out []store.Delivery
+	err := s.InConfigTx(t.Context(), func(tx store.ConfigTx) error {
+		var err error
+		out, err = tx.ListHeldDeliveries(t.Context(), sub, now)
+		return err
+	})
+	return out, err
 }

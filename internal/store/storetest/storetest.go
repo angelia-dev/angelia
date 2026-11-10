@@ -16,12 +16,25 @@ import (
 // opener opens an empty, migrated store and registers its cleanup on t.
 type opener func(t *testing.T) store.APIStore
 
-// Run runs every case of the suite as a subtest. open is called once per case
-// and must return an empty store on a database of its own.
-func Run(t *testing.T, open func(t *testing.T) store.APIStore) {
+// Engine describes the engine under test.
+type Engine struct {
+	// Open opens an empty, migrated store on a database of its own and
+	// registers its cleanup on t. It is called once per case.
+	Open func(t *testing.T) store.APIStore
+	// OpenSecond opens a second store value on the same database as first,
+	// the stand-in for a second process. It is required.
+	OpenSecond func(t *testing.T, first store.APIStore) store.APIStore
+}
+
+// Run runs every case of the suite as a subtest. It fails at once when the
+// engine description is incomplete, so no case is skipped silently.
+func Run(t *testing.T, e Engine) {
 	t.Helper()
-	for _, tc := range cases() {
-		t.Run(tc.name, func(t *testing.T) { tc.fn(t, open) })
+	if e.Open == nil || e.OpenSecond == nil {
+		t.Fatal("storetest.Run: Engine.Open and Engine.OpenSecond are both required")
+	}
+	for _, tc := range cases(e) {
+		t.Run(tc.name, func(t *testing.T) { tc.fn(t, e.Open) })
 	}
 }
 

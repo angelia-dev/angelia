@@ -1,15 +1,19 @@
 package storetest
 
+import "testing"
+
 // cases lists every case of the suite, in the order they run.
-func cases() []testCase {
+func cases(e Engine) []testCase {
 	return []testCase{
 		{"AppendEventAndDeliveryUniqueness", testAppendEventAndDeliveryUniqueness},
 		{"CancelHeldDeliveries", testCancelHeldDeliveries},
+		{"Close", testClose},
 		{"ConcurrentWriters", testConcurrentWriters},
 		{"ConfigTxOwnershipAndUniqueNames", testConfigTxOwnershipAndUniqueNames},
 		{"CountDeliveriesByStatus", testCountDeliveriesByStatus},
 		{"DeleteConfigKeepsHistory", testDeleteConfigKeepsHistory},
 		{"DeleteExpiredTargetLeases", testDeleteExpiredTargetLeases},
+		{"EventAndDeliveryReads", testEventAndDeliveryReads},
 		{"EventCursorFollowsCommitOrder", testEventCursorFollowsCommitOrder},
 		{"EventImmutable", testEventImmutable},
 		{"EventRefEventIDRoundTrip", testEventRefEventIDRoundTrip},
@@ -20,6 +24,7 @@ func cases() []testCase {
 		{"HeldDeliveryOperations", testHeldDeliveryOperations},
 		{"HeldDeliveryValidation", testHeldDeliveryValidation},
 		{"HighestPrunedSeq", testHighestPrunedSeq},
+		{"InAPITxLookupsAndSinkUpdate", testInAPITxLookupsAndSinkUpdate},
 		{"InTx", testInTx},
 		{"Lease", testLease},
 		{"LeaseDueDeliveries", testLeaseDueDeliveries},
@@ -27,8 +32,11 @@ func cases() []testCase {
 		{"LeaseDueDeliveriesTakesOverExpired", testLeaseDueDeliveriesTakesOverExpired},
 		{"LeaseDueTargets", testLeaseDueTargets},
 		{"LeaseDueTargetsConcurrent", testLeaseDueTargetsConcurrent},
+		{"LeasesExcludeAcrossStoreInstances", func(t *testing.T, _ opener) { testLeasesExcludeAcrossStoreInstances(t, e) }},
 		{"ListSubscriptions", testListSubscriptions},
+		{"NamedListsAndLookups", testNamedListsAndLookups},
 		{"NamesUniqueAcrossOwners", testNamesUniqueAcrossOwners},
+		{"NoSkippedEventUnderConcurrentWriters", testNoSkippedEventUnderConcurrentWriters},
 		{"PendingRelease", testPendingRelease},
 		{"PruneHistoryCursorNotReused", testPruneHistoryCursorNotReused},
 		{"PruneHistoryManyBatches", testPruneHistoryManyBatches},
