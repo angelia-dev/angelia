@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,6 +157,41 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 }
 
+// 00019 drops the redundant prefix index; its down recreates it exactly as
+// 00002 defined it, and leaves the 00018 index alone.
+func TestDropOldDeliveryIndexDownRecreatesIt(t *testing.T) {
+	ctx := t.Context()
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
+	must(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = migrate(ctx, db, discard(), 0)
+	must(t, err)
+	indexSQL := func(name string) string {
+		t.Helper()
+		var def string
+		err := db.QueryRowContext(ctx, `SELECT coalesce(sql, '') FROM sqlite_schema WHERE type = 'index' AND name = ?`, name).Scan(&def)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return def
+	}
+	if got := indexSQL("delivery_status_next_attempt_at"); got != "" {
+		t.Fatalf("old index present after up: %s", got)
+	}
+	p, err := newProvider(db)
+	must(t, err)
+	if _, err := p.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const want = "CREATE INDEX delivery_status_next_attempt_at ON delivery (status, next_attempt_at)"
+	if got := indexSQL("delivery_status_next_attempt_at"); got != want {
+		t.Fatalf("down recreated %q, want %q", got, want)
+	}
+	if indexSQL("delivery_status_next_attempt_at_id") == "" {
+		t.Fatal("down of 00019 removed the 00018 index")
+	}
+}
+
 func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 	ctx := t.Context()
 	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
@@ -183,13 +219,18 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 3 { // 00016 to 00018
-		t.Fatalf("applied %d migrations, want 3", applied)
+	if applied != 4 { // 00016 to 00019
+		t.Fatalf("applied %d migrations, want 4", applied)
 	}
 	var idx int // 00018 adds the lease order index (story #232)
 	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))
 	if idx != 1 {
 		t.Fatal("index delivery_status_next_attempt_at_id missing after upgrade")
+	}
+	// 00019 drops its prefix, the old index (story #234).
+	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at'`).Scan(&idx))
+	if idx != 0 {
+		t.Fatal("index delivery_status_next_attempt_at still present after upgrade")
 	}
 	s := &Store{db: db, q: New(db)}
 	if vs, err := s.ListVersions(ctx, "t1"); err != nil || len(vs) != 1 {
