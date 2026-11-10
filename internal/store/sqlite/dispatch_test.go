@@ -188,7 +188,7 @@ func TestFinishDeliveryFencesStaleAttemptOfSameHolder(t *testing.T) {
 	}
 }
 
-// The due-delivery queries must use delivery_status_next_attempt_at for
+// The due-delivery queries must use delivery_status_next_attempt_at_id for
 // every term, not scan the delivery table.
 func TestDueDeliveryQueriesUseTheIndex(t *testing.T) {
 	s, _ := openTest(t)
@@ -211,7 +211,9 @@ func TestDueDeliveryQueriesUseTheIndex(t *testing.T) {
 		joined := strings.Join(plan, "\n")
 		t.Logf("%s plan:\n%s", name, joined)
 		if strings.Contains(joined, "SCAN d\n") || strings.HasSuffix(joined, "SCAN d") ||
-			!strings.Contains(joined, "delivery_status_next_attempt_at") {
+			!strings.Contains(joined, "delivery_status_next_attempt_at_id") ||
+			strings.Contains(joined, "USING INDEX delivery_status_next_attempt_at ") ||
+			strings.Contains(joined, "USING COVERING INDEX delivery_status_next_attempt_at ") {
 			t.Errorf("%s does not use the index:\n%s", name, joined)
 		}
 	}

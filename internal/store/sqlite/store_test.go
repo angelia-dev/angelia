@@ -180,6 +180,7 @@ func TestDropOldDeliveryIndexDownRecreatesIt(t *testing.T) {
 	}
 	p, err := newProvider(db)
 	must(t, err)
+	// Down rolls back only the latest migration, 00019.
 	if _, err := p.Down(ctx); err != nil {
 		t.Fatal(err)
 	}
