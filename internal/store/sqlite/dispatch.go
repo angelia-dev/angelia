@@ -22,7 +22,7 @@ func (s *Store) LeaseDueDeliveries(ctx context.Context, holder string, now, unti
 	}
 	var out []store.LeasedDelivery
 	err := s.withTx(ctx, func(q *Queries) error {
-		ids, err := q.ListLeasableDueDeliveries(ctx, ListLeasableDueDeliveriesParams{Now: nullMillis(now), MaxRows: int64(limit)})
+		ids, err := q.ListLeasableDueDeliveries(ctx, ListLeasableDueDeliveriesParams{Now: millis(now), MaxRows: int64(limit)})
 		if err != nil {
 			return wrap(err, "list due deliveries", holder)
 		}

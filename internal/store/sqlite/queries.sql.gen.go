@@ -1169,29 +1169,60 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 }
 
 const listLeasableDueDeliveries = `-- name: ListLeasableDueDeliveries :many
-SELECT d.id FROM delivery d
-WHERE ((d.status = 'pending' AND d.next_attempt_at <= ?1)
-       OR (d.status = 'pending' AND d.next_attempt_at IS NULL)
-       OR d.status = 'in_flight')
-  AND NOT EXISTS (
-    SELECT 1 FROM lease
-    WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+SELECT id FROM (
+  SELECT id, next_attempt_at FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT ?2
   )
-ORDER BY d.next_attempt_at, d.id
+  UNION ALL
+  SELECT id, next_attempt_at FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'pending' AND d.next_attempt_at <= ?1
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT ?2
+  )
+  UNION ALL
+  SELECT id, next_attempt_at FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'in_flight'
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > ?1
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT ?2
+  )
+)
+ORDER BY next_attempt_at, id
 LIMIT ?2
 `
 
 type ListLeasableDueDeliveriesParams struct {
-	Now     sql.NullInt64
+	Now     int64
 	MaxRows int64
 }
 
 // Dispatcher (story #107, ADR 0017). A delivery is due when it is pending
 // and its next_attempt_at has passed (NULL counts as due), or when it is in
 // flight under no unexpired lease: its holder crashed or stalled, so it is
-// sent again (at-least-once). Oldest due first. Postgres will use
-// FOR UPDATE SKIP LOCKED here instead. The three OR terms are written apart
-// so that SQLite can use delivery_status_next_attempt_at for each.
+// sent again (at-least-once). Oldest due first: ORDER BY next_attempt_at, id,
+// NULLs first. Postgres will use FOR UPDATE SKIP LOCKED here instead.
+//
+// The three kinds of due row are three disjoint branches, each read in order
+// from delivery_status_next_attempt_at_id and cut at max_rows; the outer
+// ORDER BY merges at most 3 * max_rows rows. The rows it returns are the ones
+// a single ORDER BY over the OR of the branches would return, in the same
+// order, but a lease no longer sorts the whole due backlog (story #232).
 func (q *Queries) ListLeasableDueDeliveries(ctx context.Context, arg ListLeasableDueDeliveriesParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listLeasableDueDeliveries, arg.Now, arg.MaxRows)
 	if err != nil {
