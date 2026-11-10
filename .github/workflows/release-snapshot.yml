@@ -11,6 +11,8 @@ on:
       - ".github/workflows/release-snapshot.yml"
       - "scripts/check-image.sh"
       - "scripts/check-image_test.sh"
+      - "scripts/image-digest.sh"
+      - "scripts/image-digest_test.sh"
       - "scripts/install-release-tools.sh"
       - "cmd/**"
       - "internal/**"
@@ -46,6 +48,8 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Test the image check script
         run: scripts/check-image_test.sh
+      - name: Test the image digest script
+        run: scripts/image-digest_test.sh
       - name: Validate the GoReleaser config
         run: goreleaser check
       - name: Snapshot build (no publish)
@@ -56,6 +60,14 @@ jobs:
           # <version>-<arch>. Check the one that runs on this runner.
           ver="$(jq -r .version dist/metadata.json)"
           scripts/check-image.sh "ghcr.io/angelia-dev/angelia:${ver}-amd64" dist/angelia-image.spdx.json
+      # The release job reads the pushed image digest from the "Docker Image"
+      # artifacts (scripts/image-digest.sh). Snapshots push nothing, so there is
+      # no digest here, but the artifact type must still be present: a GoReleaser
+      # upgrade that renames it fails here instead of on a release tag.
+      - name: Image artifacts have the type the release job reads
+        run: |
+          n="$(jq '[.[] | select(.type == "Docker Image")] | length' dist/artifacts.json)"
+          [[ "$n" -gt 0 ]] || { echo "::error::no \"Docker Image\" artifact in dist/artifacts.json"; jq -r '[.[].type] | unique | .[]' dist/artifacts.json; exit 1; }
       - name: List snapshot artifacts and SBOMs
         run: |
           {
