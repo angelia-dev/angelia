@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"encoding/json"
@@ -10,8 +10,8 @@ import (
 
 var errRollback = errors.New("rollback")
 
-func TestSubscriptionGenerationCountsEverySubscriptionWrite(t *testing.T) {
-	s, _ := openTest(t)
+func testSubscriptionGenerationCountsEverySubscriptionWrite(t *testing.T, open opener) {
+	s := open(t)
 	ctx := t.Context()
 	gen := func() int64 {
 		t.Helper()

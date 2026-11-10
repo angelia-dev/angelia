@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"testing"
@@ -7,8 +7,8 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 )
 
-func TestUpdateVersionAndBaseline(t *testing.T) {
-	s, _ := openTest(t)
+func testUpdateVersionAndBaseline(t *testing.T, open opener) {
+	s := open(t)
 	seed(t, s)
 	ctx := t.Context()
 	must(t, s.CreateWatch(ctx, store.Watch{ID: "w0", TargetID: "t1", BaselineDone: true}))
