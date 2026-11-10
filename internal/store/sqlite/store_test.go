@@ -183,8 +183,13 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 2 { // 00016 and 00017
-		t.Fatalf("applied %d migrations, want 2", applied)
+	if applied != 3 { // 00016 to 00018
+		t.Fatalf("applied %d migrations, want 3", applied)
+	}
+	var idx int // 00018 adds the lease order index (story #232)
+	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))
+	if idx != 1 {
+		t.Fatal("index delivery_status_next_attempt_at_id missing after upgrade")
 	}
 	s := &Store{db: db, q: New(db)}
 	if vs, err := s.ListVersions(ctx, "t1"); err != nil || len(vs) != 1 {

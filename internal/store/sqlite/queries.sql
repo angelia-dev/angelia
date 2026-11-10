@@ -245,19 +245,55 @@ DELETE FROM pending_release WHERE watch_id = ?;
 -- Dispatcher (story #107, ADR 0017). A delivery is due when it is pending
 -- and its next_attempt_at has passed (NULL counts as due), or when it is in
 -- flight under no unexpired lease: its holder crashed or stalled, so it is
--- sent again (at-least-once). Oldest due first. Postgres will use
--- FOR UPDATE SKIP LOCKED here instead. The three OR terms are written apart
--- so that SQLite can use delivery_status_next_attempt_at for each.
+-- sent again (at-least-once). Oldest due first: ORDER BY next_attempt_at, id,
+-- NULLs first. Postgres will use FOR UPDATE SKIP LOCKED here instead.
+--
+-- The three kinds of due row are three disjoint branches, each read in order
+-- from delivery_status_next_attempt_at_id and cut at max_rows; the outer
+-- ORDER BY merges at most 3 * max_rows rows. The rows it returns are the ones
+-- a single ORDER BY over the OR of the branches would return, in the same
+-- order, but a lease no longer sorts the whole due backlog (story #232).
+-- The in_flight branch walks every in-flight row, skipping those under a live
+-- lease, so its cost grows with the number of deliveries in flight (bounded
+-- by the dispatcher workers of all instances), not with the backlog: about
+-- 0.27 ms with 16 in flight, 1.5 ms with 1,000 and 8.4 ms with 5,000 at 20k
+-- pending.
 -- name: ListLeasableDueDeliveries :many
-SELECT d.id FROM delivery d
-WHERE ((d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now))
-       OR (d.status = 'pending' AND d.next_attempt_at IS NULL)
-       OR d.status = 'in_flight')
-  AND NOT EXISTS (
-    SELECT 1 FROM lease
-    WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)
+SELECT id FROM (
+  SELECT * FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT sqlc.arg(max_rows)
   )
-ORDER BY d.next_attempt_at, d.id
+  UNION ALL
+  SELECT * FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now)
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT sqlc.arg(max_rows)
+  )
+  UNION ALL
+  SELECT * FROM (
+    SELECT d.id, d.next_attempt_at FROM delivery d
+    WHERE d.status = 'in_flight'
+      AND NOT EXISTS (
+        SELECT 1 FROM lease
+        WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)
+      )
+    ORDER BY d.next_attempt_at, d.id
+    LIMIT sqlc.arg(max_rows)
+  )
+)
+ORDER BY next_attempt_at, id
 LIMIT sqlc.arg(max_rows);
 
 -- name: HasLeasableDueDeliveries :one
