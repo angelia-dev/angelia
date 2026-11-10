@@ -27,7 +27,31 @@ func (s *Server) StreamEvents(ctx context.Context, req StreamEventsRequestObject
 	if err != nil {
 		return nil, err
 	}
+	if !s.acquireStream() {
+		return nil, problem(SlugUnavailable, "too many open event streams; retry later").
+			withHeader("Retry-After", fmt.Sprint(RetryAfterSeconds))
+	}
 	return &eventStream{s: s, ctx: ctx, after: after, filter: f, token: stateFrom(ctx).token}, nil
+}
+
+// acquireStream takes one of the MaxStreams slots; releaseStream gives it
+// back when the stream ends.
+func (s *Server) acquireStream() bool {
+	if s.streams.Add(1) > int64(s.opts.MaxStreams) {
+		s.streams.Add(-1)
+		return false
+	}
+	if s.opts.Metrics != nil {
+		s.opts.Metrics.EventStreamOpened()
+	}
+	return true
+}
+
+func (s *Server) releaseStream() {
+	s.streams.Add(-1)
+	if s.opts.Metrics != nil {
+		s.opts.Metrics.EventStreamClosed()
+	}
 }
 
 // eventStream writes the stream. It ends when the client goes away, the
@@ -59,31 +83,55 @@ func (e *eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	defer s.releaseStream()
 	e.nextAuth = time.Now().Add(s.opts.AuthRecheck)
 	if err := e.send([]byte("retry: 5000\n\n")); err != nil {
 		return nil //nolint:nilerr // the client went away: nothing to report
 	}
-	ticker := time.NewTicker(s.opts.StreamPoll)
-	defer ticker.Stop()
+	waiter := s.hub.newWaiter()
+	defer waiter.release()
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
 	cursor := e.after
+	woken := true // read the log once before waiting
 	for {
-		if err := e.flushNew(&cursor); err != nil {
-			if !errors.Is(err, errStreamClosed) && e.ctx.Err() == nil {
-				s.log.ErrorContext(e.ctx, "event stream", "request_id", stateFrom(e.ctx).id, "error", err)
+		if woken {
+			if err := e.flushNew(&cursor); err != nil {
+				if !errors.Is(err, errStreamClosed) && e.ctx.Err() == nil {
+					s.log.ErrorContext(e.ctx, "event stream", "request_id", stateFrom(e.ctx).id, "error", err)
+				}
+				return nil // the status is sent: close the stream
 			}
-			return nil // the status is sent: close the stream
 		}
+		// Caught up: the shared poller wakes the stream when the log goes
+		// on after the cursor; the timer is only for the keep-alive and
+		// the token recheck, and reads nothing.
+		waiter.arm(cursor)
+		timer.Reset(e.nextIdle())
+		woken = false
 		select {
 		case <-e.ctx.Done():
 			return nil
 		case <-s.stop:
 			return nil
-		case <-ticker.C:
+		case <-waiter.wake:
+			woken = true
+		case <-timer.C:
 		}
 		if err := e.idle(); err != nil {
 			return nil //nolint:nilerr // closed on purpose
 		}
 	}
+}
+
+// nextIdle is how long the stream may sleep before idle has work: the next
+// keep-alive or token recheck.
+func (e *eventStream) nextIdle() time.Duration {
+	next := e.nextAuth
+	if ka := e.lastWrite.Add(e.s.opts.KeepAlive); ka.Before(next) {
+		next = ka
+	}
+	return max(time.Until(next), time.Millisecond)
 }
 
 func (e *eventStream) send(b []byte) error {

@@ -514,3 +514,19 @@ func TestHostDemandKeepsLabelsThatStay(t *testing.T) {
 		t.Error("labels remain after an empty estimate")
 	}
 }
+
+func TestEventStreamsGauge(t *testing.T) {
+	m := New(nil)
+	m.EventStreamOpened()
+	m.EventStreamOpened()
+	m.EventStreamClosed()
+	for _, f := range gather(t, m) {
+		if f.GetName() == "angelia_api_event_streams" {
+			if got := f.GetMetric()[0].GetGauge().GetValue(); got != 1 || len(f.GetMetric()[0].GetLabel()) != 0 {
+				t.Fatalf("gauge = %v with labels %v", got, f.GetMetric()[0].GetLabel())
+			}
+			return
+		}
+	}
+	t.Fatal("angelia_api_event_streams is missing")
+}

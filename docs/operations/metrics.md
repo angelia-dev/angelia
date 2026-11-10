@@ -24,6 +24,7 @@ A Grafana dashboard is in [`deploy/grafana/angelia.json`](../../deploy/grafana/a
 |---|---|---|---|
 | `angelia_build_info` | gauge | `version` | Always 1. |
 | `angelia_scheduler_due_targets` | gauge | none | Targets due for a check and not leased, counted by the scheduler at most once per poll interval (1 s). A backlog that keeps growing means the scheduler cannot keep up. |
+| `angelia_api_event_streams` | gauge | none | Open event streams (`GET /v1/events/stream`) of this process. The api role refuses a stream above its limit (1,000) with `503 unavailable` and `Retry-After`; a value near the limit means agents hold many streams open. Per process: sum it across api instances. |
 | `angelia_check_lag_seconds` | histogram | none | How late each check started: lease time minus the time the target was due. This is the due-to-check delay of Phase 0 benchmark 1, whose target is P95 below 2 minutes; buckets at 0.5 s to 1 h, with 60, 90, 120, 180, 240 and 300 s around the target. |
 | `angelia_source_fetches_total` | counter | `source`, `result` | Source fetches. `source` is the source kind (`pypi`, `npm`, `github-release`, ...), never the name of a [named instance](../private-registries.md#several-registries-of-one-kind): instances of one kind share a series, which keeps the cardinality bounded. `result` is `ok` (new data), `not_modified` (the server answered 304), `rate_limited` (429, or a rate limit with a reset time), `canceled` (shutdown, not a failure of the source) or `error`. |
 | `angelia_netguard_rate_limit_wait_seconds` | histogram | `host` | Time an outgoing attempt waited for the per-host rate limit before it was sent; observed for every attempt (each retry and each redirect hop counts, not each request), zero when it did not wait. `host` is a host of the rate-limit table (the built-in hosts `api.github.com`, `crates.io` and `gitlab.com`, plus the hosts of [`http.host_limits.hosts`](../configuration.md#per-host-rate-limits)), lower case; every other host, including webhook and sink hosts, is `other`. The same rule applies to every `angelia_netguard_*` metric. |
@@ -37,7 +38,7 @@ A Grafana dashboard is in [`deploy/grafana/angelia.json`](../../deploy/grafana/a
 | `angelia_deliveries` | gauge | `status` | Delivery rows in the store: `pending`, `in_flight`, `delivered`, `dead`. Read from the store at scrape time (cached for 10 s), so it is the same on every process that shares the database. Delivered and dead rows disappear with their event when history is pruned. |
 | `angelia_dlq_size` | gauge | none | The dead-letter size: deliveries that gave up and are still in the store. Same value as `angelia_deliveries{status="dead"}`. |
 
-`angelia_deliveries` and `angelia_dlq_size` appear in a process that has a store; `angelia_host_demand_rps` in a process that runs the scheduler; the others in every process that runs the matching role.
+`angelia_deliveries` and `angelia_dlq_size` appear in a process that has a store; `angelia_host_demand_rps` in a process that runs the scheduler; `angelia_api_event_streams` in every process (0 without the api role); the others in every process that runs the matching role.
 
 ## Useful queries
 
