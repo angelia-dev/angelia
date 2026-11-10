@@ -61,8 +61,7 @@ jobs:
       - name: Read the pushed image digest
         id: digest
         run: |
-          digest="$(jq -r '[.[] | select(.type == "Docker Image V2") | .extra.Digest // empty] | unique | if length == 1 then .[0] else empty end' dist/artifacts.json)"
-          [[ "$digest" == sha256:* ]] || { echo "::error::no unique image digest in dist/artifacts.json"; exit 1; }
+          digest="$(scripts/image-digest.sh dist/artifacts.json)" || { echo "::error::no unique image digest in dist/artifacts.json"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Hand over the checksums to the sign job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

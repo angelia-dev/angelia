@@ -42,6 +42,16 @@ The pipeline never publishes on its own and agents never push release tags. Only
 5. Run the commands in [Verify a release](#verify-a-release) from a machine that is not logged in to ghcr.io. Expect: `cosign verify-blob`, `cosign verify`, `cosign verify-attestation` and `gh attestation verify` all succeed.
 6. Check the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/angelia-dev/angelia) after the first run of the Scorecard workflow (see below).
 
+## When a release run fails
+
+A tag never moves: `v*` tags are protected (ruleset `protect-release-tags`), and the sign job must sign what the tag built. If the **Release** workflow fails after GoReleaser has run, the draft release and the pushed image are left unsigned. Do not publish that draft. Instead:
+
+1. Fix the cause on `main` through a normal PR (the snapshot workflow runs on release files).
+2. Tag the next patch version (for example `v0.1.1`) and follow [Cut a release](#cut-a-release).
+3. Delete the unsigned draft release of the failed tag. Optionally delete the unsigned image version from the `angelia` package (organization Packages, `angelia`, Manage versions). The failed tag itself can stay; it has no published release.
+
+The v0.1.0 run failed this way: the digest step looked for the artifact type `Docker Image V2`, which GoReleaser v2 writes as `Docker Image` (#236). The step now uses `scripts/image-digest.sh`, tested offline by `scripts/image-digest_test.sh`, and the snapshot workflow checks that the artifact type still exists.
+
 ## OpenSSF Scorecard
 
 `.github/workflows/scorecard.yml` runs [ossf/scorecard-action](https://github.com/ossf/scorecard-action) (pinned by commit SHA) on pushes to `main`, on branch protection changes, weekly and on demand. It uploads SARIF to code scanning (Security tab) and publishes the score for the README badge. The target is a score of 7 or more (PRD §7); every check below 7 gets its own issue. This "score >= 7 or issues filed" check happens after the first Scorecard run on `main`. Checks that depend on organization or repository settings (Branch-Protection, Code-Review, Signed-Releases before the first release) are the maintainer's to fix.
