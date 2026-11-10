@@ -50,6 +50,9 @@ func (w *streamWaiter) arm(cursor int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	w.cursor = cursor
+	if len(w.wake) > 0 {
+		return // a wake-up is already pending: the stream reads at once, and an old cursor must not wake the others
+	}
 	if !w.set {
 		w.set = true
 		h.armed[w] = struct{}{}

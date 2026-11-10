@@ -41,7 +41,7 @@ func (s *countingStore) HasEventsAfter(ctx context.Context, seq int64) (bool, er
 	return s.APIStore.HasEventsAfter(ctx, seq)
 }
 
-func (s *countingStore) armed(t *testing.T, srv *Server, n int) {
+func armed(t *testing.T, srv *Server, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -71,7 +71,7 @@ func TestEventStreamSharedPoller(t *testing.T) {
 	for range streams {
 		openStream(t, ts.URL+"/v1/events/stream", tokRead).expect("retry: 5000")
 	}
-	cs.armed(t, e.srv, streams)
+	armed(t, e.srv, streams)
 	before := cs.reads.Load()
 	time.Sleep(10 * 50 * time.Millisecond) // 10 intervals
 	if got := cs.reads.Load() - before; got > 25 {
@@ -211,10 +211,10 @@ func TestEventStreamCatchUpJoinsSharedPoller(t *testing.T) {
 	c := openStream(t, ts.URL+"/v1/events/stream?after=0&type=release.yanked", tokRead)
 	c.expect("retry: 5000")
 	c.expect(": keep-alive") // while it catches up
+	armed(t, e.srv, 1)       // caught up: waiting on the shared poller
 	if got := cs.maxPage.Load(); got > 1000 {
 		t.Errorf("a page of %d events asked of the store, want at most 1000", got)
 	}
-	cs.armed(t, e.srv, 1) // caught up: waiting on the shared poller
 	y := e.appendEvent(wid, event.TypeYanked, "pypi", e.now)
 	for {
 		l, closed := c.next()
@@ -246,7 +246,7 @@ func TestEventStreamRevokedWhileWaiting(t *testing.T) {
 	})
 	c := openStream(t, ts.URL+"/v1/events/stream", tokRead)
 	c.expect("retry: 5000")
-	(&countingStore{}).armed(t, e.srv, 1)
+	armed(t, e.srv, 1)
 	e.auth.revoke(tokRead)
 	start := time.Now()
 	c.expectClosed()

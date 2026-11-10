@@ -35,11 +35,17 @@ func (s *Server) StreamEvents(ctx context.Context, req StreamEventsRequestObject
 }
 
 // acquireStream takes one of the MaxStreams slots; releaseStream gives it
-// back when the stream ends.
+// back when the stream ends. A caller that got a slot must hand it to an
+// eventStream, whose VisitStreamEventsResponse releases it first thing.
 func (s *Server) acquireStream() bool {
-	if s.streams.Add(1) > int64(s.opts.MaxStreams) {
-		s.streams.Add(-1)
-		return false
+	for {
+		n := s.streams.Load()
+		if n >= int64(s.opts.MaxStreams) {
+			return false
+		}
+		if s.streams.CompareAndSwap(n, n+1) {
+			break
+		}
 	}
 	if s.opts.Metrics != nil {
 		s.opts.Metrics.EventStreamOpened()
@@ -76,6 +82,7 @@ var errStreamClosed = errors.New("api: stream closed")
 // VisitStreamEventsResponse implements StreamEventsResponseObject.
 func (e *eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 	s := e.s
+	defer s.releaseStream()
 	e.w, e.rc = w, http.NewResponseController(w)
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -83,7 +90,6 @@ func (e *eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	defer s.releaseStream()
 	e.nextAuth = time.Now().Add(s.opts.AuthRecheck)
 	if err := e.send([]byte("retry: 5000\n\n")); err != nil {
 		return nil //nolint:nilerr // the client went away: nothing to report
