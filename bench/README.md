@@ -8,7 +8,7 @@ The Phase 0 benchmarks of [architecture.md §6](../docs/architecture.md#6-langua
 | 2 | Idle footprint: 100 watches; memory, binary, image | `make bench-idle` | [load](load/README.md), the benchmark machine |
 | 3 | GitHub: 2,000 repos on one token, 24 h | `make bench-github` | [below](#benchmark-3-github-on-one-token), the benchmark machine |
 | 4 | WASM plugin overhead | `go test ./bench/wasm` | anywhere |
-| 5 | Kill -9 during dispatch | (its story) | anywhere |
+| 5 | Kill -9 during dispatch: 100 SIGKILLs, zero lost deliveries | `make bench-crash` | [crash](crash/README.md), anywhere on Linux; [result](results/benchmark-5-kill9-2026-11-09.md) |
 | 6 | Version ordering | `make bench-ordering` | [ordering](ordering/README.md), anywhere |
 
 Benchmarks 1 to 3 measure time and resources, so their reported results come from one known
@@ -214,6 +214,7 @@ list is public data.
 | `make bench-scale` | `bin/bench/scale-<N>/` (`bin/bench/scale-10000/`) |
 | `make bench-idle` | `bin/bench/idle-<N>/` (`bin/bench/idle-100/`) |
 | `make bench-github` | `bin/bench/github-<N>/`; dry run `bin/bench/github-fake-<N>/` |
+| `make bench-crash` | `bin/bench/crash/`; the committed result is in [results/](results/) |
 
 Each holds `report.md` (verdict, checks, environment), `report.json` (the same with every
 sample), `angelia.log`, and the generated `angelia.yaml` and `watches.yaml`. `bin/` is not

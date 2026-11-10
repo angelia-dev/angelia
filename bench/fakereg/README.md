@@ -25,7 +25,10 @@ Each ecosystem lives under its own prefix, which is the source's base URL
 Package names are `pkg-00000` to `pkg-<packages-1>`. GitHub and OCI repositories are
 `{owner}/pkg-NNNNN`; any owner is accepted. Unknown names get 404.
 Version *k* (from 0) of every package is `1.k.0` (`v1.k.0` as a GitHub tag).
-`GET /_fakereg/stats` returns the statistics below as JSON. With `primary_limit` set,
+`GET /_fakereg/stats` returns the statistics below as JSON. In Go, `Server.Versions(eco, i)` gives a
+package's version count by the server's clock (with `WithClock` a harness can freeze it) and
+`Server.FirstServed(eco, i)` the count in the first 200 that listed it (a client's baseline);
+benchmark 5 ([crash](../crash/README.md)) reconciles angelia's database with them. With `primary_limit` set,
 `GET /github/rate_limit` answers like GitHub's `GET /rate_limit` (`resources.core` and `rate`: limit,
 remaining, used, reset), without counting as a request; without it, 404.
 

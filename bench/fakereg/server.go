@@ -44,7 +44,10 @@ func New(c *Config, opts ...Option) *Server {
 	s.start = s.now()
 	for _, name := range Ecosystems() {
 		b := c.Ecosystems[name]
-		e := &eco{name: name, b: b, start: s.start, served: make([]int, b.Packages), phases: make([]time.Duration, b.Packages)}
+		e := &eco{
+			name: name, b: b, start: s.start, served: make([]int, b.Packages), first: make([]int, b.Packages),
+			phases: make([]time.Duration, b.Packages),
+		}
 		if b.ReleasesPerHour > 0 {
 			e.interval = time.Duration(float64(b.Packages) / b.ReleasesPerHour * float64(time.Hour))
 		}
@@ -113,6 +116,7 @@ type eco struct {
 
 	mu     sync.Mutex
 	served []int // per package: highest version count sent in a 200
+	first  []int // per package: version count of the first 200; 0: none yet
 	seen   []seenRelease
 	tokens float64
 	last   time.Time
@@ -250,6 +254,36 @@ func (e *eco) recordServed(i, n int, now time.Time) {
 		e.seen = append(e.seen, seenRelease{pub: pub, lag: now.Sub(pub)})
 	}
 	e.served[i] = max(e.served[i], n)
+	if e.first[i] == 0 {
+		e.first[i] = n
+	}
+}
+
+// Versions returns how many versions package i of ecosystem eco has now
+// (by the server's clock), and false for an unknown ecosystem or package.
+// A harness that freezes the clock (WithClock) reads the final state of
+// every package here.
+func (s *Server) Versions(eco string, i int) (int, bool) {
+	e, ok := s.ecos[eco]
+	if !ok || i < 0 || i >= e.b.Packages {
+		return 0, false
+	}
+	return e.count(i, s.now()), true
+}
+
+// FirstServed returns the version count of the first 200 response that
+// listed package i of ecosystem eco, 0 if none was sent yet. For a client
+// that records its first response as a baseline, this is the baseline.
+// GitHub and OCI responses that do not hold the newest version (a later
+// page) do not count.
+func (s *Server) FirstServed(eco string, i int) int {
+	e, ok := s.ecos[eco]
+	if !ok || i < 0 || i >= e.b.Packages {
+		return 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.first[i]
 }
 
 // page is what a renderer gets: package index and name, version count,
