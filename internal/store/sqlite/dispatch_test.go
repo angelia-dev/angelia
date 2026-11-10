@@ -223,3 +223,23 @@ func okErr(ok bool, err error) error {
 	}
 	return err
 }
+
+// HasDueDeliveries and the lease query treat a zero now alike: a time, not
+// NULL. A NULL now made every in-flight row look unleased to the EXISTS
+// query while the lease query leased nothing.
+func TestHasDueDeliveriesZeroNowMatchesLease(t *testing.T) {
+	s, _ := openTest(t)
+	seedDeliveries(t, s)
+	ctx := t.Context()
+	if ids := leaseIDs(t, s, "a", t0, 1); len(ids) != 1 {
+		t.Fatalf("lease at t0 = %v", ids)
+	}
+	var zero time.Time
+	ok, err := s.HasDueDeliveries(ctx, zero)
+	must(t, err)
+	ids, err := s.q.ListLeasableDueDeliveries(ctx, ListLeasableDueDeliveriesParams{Now: millis(zero), MaxRows: 10})
+	must(t, err)
+	if ok || len(ids) != 0 {
+		t.Errorf("zero now: HasDueDeliveries = %v, lease query = %v; want false and none", ok, ids)
+	}
+}

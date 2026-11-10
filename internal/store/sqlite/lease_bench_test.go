@@ -53,7 +53,8 @@ func seedBacklog(tb testing.TB, s *Store, pendingN, leaseLimit int, now time.Tim
 
 // BenchmarkListLeasableDueDeliveries measures the dispatcher's lease query
 // (one poll for 16 free workers) against the size of the due backlog. Its
-// cost must not grow with the backlog (story #232).
+// cost must not grow with the backlog (story #232). The legacy sub-benchmark
+// runs the query before that story on the same data.
 func BenchmarkListLeasableDueDeliveries(b *testing.B) {
 	const limit = 16
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -66,13 +67,32 @@ func BenchmarkListLeasableDueDeliveries(b *testing.B) {
 			}
 			defer func() { _ = s.Close() }()
 			seedBacklog(b, s, n, limit, now)
-			p := ListLeasableDueDeliveriesParams{Now: millis(now), MaxRows: limit}
-			for b.Loop() {
-				ids, err := s.q.ListLeasableDueDeliveries(ctx, p)
-				if err != nil || len(ids) != limit {
-					b.Fatalf("list = %d rows, %v", len(ids), err)
+			b.Run("query=current", func(b *testing.B) {
+				p := ListLeasableDueDeliveriesParams{Now: millis(now), MaxRows: limit}
+				for b.Loop() {
+					ids, err := s.q.ListLeasableDueDeliveries(ctx, p)
+					if err != nil || len(ids) != limit {
+						b.Fatalf("list = %d rows, %v", len(ids), err)
+					}
 				}
-			}
+			})
+			// The query before story #232, for the before numbers.
+			b.Run("query=legacy", func(b *testing.B) {
+				for b.Loop() {
+					rows, err := s.db.QueryContext(ctx, legacyListLeasableDueDeliveries, millis(now), limit)
+					if err != nil {
+						b.Fatal(err)
+					}
+					n := 0
+					for rows.Next() {
+						n++
+					}
+					if err := rows.Err(); err != nil || n != limit {
+						b.Fatalf("legacy list = %d rows, %v", n, err)
+					}
+					_ = rows.Close()
+				}
+			})
 		})
 	}
 }

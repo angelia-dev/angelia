@@ -91,7 +91,9 @@ func startAttempt(ctx context.Context, q *Queries, id string) (store.LeasedDeliv
 
 // HasDueDeliveries implements [store.Store].
 func (s *Store) HasDueDeliveries(ctx context.Context, now time.Time) (bool, error) {
-	ok, err := s.q.HasLeasableDueDeliveries(ctx, nullMillis(now))
+	// Like the lease query, a zero now is a time (year 1), not NULL, so both
+	// queries agree on what is due.
+	ok, err := s.q.HasLeasableDueDeliveries(ctx, sql.NullInt64{Int64: millis(now), Valid: true})
 	return ok, wrap(err, "check due deliveries", "")
 }
 
