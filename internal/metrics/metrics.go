@@ -51,6 +51,7 @@ type Metrics struct {
 	reg *prometheus.Registry
 
 	dueTargets prometheus.Gauge
+	streams    prometheus.Gauge
 	checkLag   prometheus.Histogram
 	fetches    *prometheus.CounterVec
 	rateWait   *prometheus.HistogramVec
@@ -90,6 +91,10 @@ func New(log *slog.Logger) *Metrics {
 	m.dueTargets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "angelia_scheduler_due_targets",
 		Help: "Targets due for a check and not leased, as last counted by the scheduler (at most once per poll interval).",
+	})
+	m.streams = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "angelia_api_event_streams",
+		Help: "Open event streams (GET /v1/events/stream) of this process.",
 	})
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",
@@ -145,7 +150,7 @@ func New(log *slog.Logger) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		info, m.dueTargets, m.checkLag, m.fetches, m.rateWait, m.attempts,
+		info, m.dueTargets, m.streams, m.checkLag, m.fetches, m.rateWait, m.attempts,
 		m.hostLimitRate, m.hostLimitBurst, m.hostDemand, m.serverPauses, m.responses, m.deadlineRefusals,
 	)
 	return m
@@ -168,6 +173,12 @@ func (e errorLog) Println(v ...any) { e.log.Warn("metrics scrape", "error", fmt.
 
 // DueBacklog implements scheduler.Metrics.
 func (m *Metrics) DueBacklog(n int64) { m.dueTargets.Set(float64(n)) }
+
+// EventStreamOpened and EventStreamClosed implement api.StreamMetrics.
+func (m *Metrics) EventStreamOpened() { m.streams.Inc() }
+
+// EventStreamClosed implements api.StreamMetrics.
+func (m *Metrics) EventStreamClosed() { m.streams.Dec() }
 
 // CheckLag implements scheduler.Metrics. A negative lag counts as zero.
 func (m *Metrics) CheckLag(d time.Duration) { m.checkLag.Observe(max(0, d).Seconds()) }

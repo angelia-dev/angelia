@@ -32,6 +32,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0025](0025-plugin-folder-and-grants-file.md) | Each installed plugin has a folder in `plugins_dir`; the operator's grants live in its `grants.yaml` | Accepted | #184 |
 | [0026](0026-shoutrrr-sink-whole-url-secret.md) | The shoutrrr sink takes its whole service URL as a secret; the core checks the HTTP destinations derived from it, and every request goes through netguard | Accepted | #120 |
 | [0027](0027-configurable-per-host-rate-limits.md) | Operators can set per-host rate limits in the instance configuration (`http.host_limits`); built-in budgets and server signals still win | Accepted | #217 |
+| [0028](0028-postgres-event-cursor-and-write-concurrency.md) | On Postgres, event inserts take a transaction advisory lock so `event.seq` is in commit order; config, API and secret transactions share a second lock; the engine is `pgx` through `database/sql` | Accepted for D14–D22 (maintainer 2026-11-10); agent-decided items reviewed in the PR | #85 |
 
 ## Process
 

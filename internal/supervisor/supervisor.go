@@ -18,6 +18,9 @@ import (
 // Kubernetes terminationGracePeriodSeconds (30s by default).
 const DefaultDrainTimeout = 25 * time.Second
 
+// DefaultWriteTimeout is the HTTP server's write timeout.
+const DefaultWriteTimeout = 10 * time.Second
+
 // HTTPRole is implemented by roles that serve HTTP routes. The supervisor
 // owns the single listener and calls Mount before it starts serving, so
 // roles share the port with /healthz and /readyz.
@@ -50,6 +53,10 @@ type Supervisor struct {
 	Ready ReadyChecker
 	// DrainTimeout bounds shutdown; zero means DefaultDrainTimeout.
 	DrainTimeout time.Duration
+	// WriteTimeout is the HTTP server's write timeout; zero means
+	// DefaultWriteTimeout. A long-lived response (the event stream) moves its
+	// own deadline.
+	WriteTimeout time.Duration
 	// Logger; nil means slog.Default().
 	Logger *slog.Logger
 }
@@ -81,12 +88,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 
+	writeTimeout := s.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = DefaultWriteTimeout
+	}
 	var draining atomic.Bool
 	srv := &http.Server{
 		Handler:           s.handler(&draining, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       60 * time.Second,
 	}
 

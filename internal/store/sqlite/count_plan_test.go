@@ -21,7 +21,7 @@ func TestCountDeliveriesByStatusUsesTheIndex(t *testing.T) {
 	_ = rows.Close()
 	joined := strings.Join(plan, "\n")
 	t.Logf("plan:\n%s", joined)
-	if !strings.Contains(joined, "delivery_status_next_attempt_at") {
+	if !strings.Contains(joined, "USING COVERING INDEX delivery_status_next_attempt_at_id") {
 		t.Errorf("count does not use the status index:\n%s", joined)
 	}
 }
