@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"testing"
@@ -7,8 +7,8 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 )
 
-func TestCountDeliveriesByStatus(t *testing.T) {
-	s, _ := openTest(t)
+func testCountDeliveriesByStatus(t *testing.T, open opener) {
+	s := open(t)
 	ctx := t.Context()
 	got, err := s.CountDeliveriesByStatus(ctx)
 	if err != nil || len(got) != 0 {
