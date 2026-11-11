@@ -33,10 +33,12 @@ const RetryAfterSeconds = 5
 
 // Stream defaults (spec docs/api.md decision 15).
 const (
-	DefaultStreamPoll  = time.Second
-	DefaultKeepAlive   = 15 * time.Second
-	MaxAuthRecheck     = 60 * time.Second
-	DefaultEventScan   = 10000
+	DefaultStreamPoll = time.Second
+	DefaultKeepAlive  = 15 * time.Second
+	MaxAuthRecheck    = 60 * time.Second
+	DefaultEventScan  = 10000
+	// DefaultMaxStreams bounds the event streams one Server holds open.
+	DefaultMaxStreams  = 1000
 	streamWriteTimeout = 10 * time.Second
 	// StatusClientClosed is the status the access log records for a request
 	// whose client went away before anything was written (nginx's 499). It
@@ -77,6 +79,19 @@ type Options struct {
 	AuthRecheck time.Duration
 	// EventScan bounds the events one GET /v1/events request reads.
 	EventScan int
+	// MaxStreams bounds the open event streams: the next one gets 503
+	// unavailable with Retry-After. 0 means DefaultMaxStreams.
+	MaxStreams int
+	// Metrics, if set, observes the open event streams
+	// (angelia_api_event_streams). Pass a non-nil value or leave it nil.
+	Metrics StreamMetrics
+}
+
+// StreamMetrics observes the open event streams. metrics.Metrics implements
+// it.
+type StreamMetrics interface {
+	EventStreamOpened()
+	EventStreamClosed()
 }
 
 // Server serves the REST API of spec openapi/angelia.v1.yaml. It is an
@@ -89,6 +104,9 @@ type Server struct {
 	draining atomic.Bool
 	stop     chan struct{}
 	stopOnce atomic.Bool
+	hub      *streamHub
+	stopHub  context.CancelFunc
+	streams  atomic.Int64 // open event streams
 }
 
 // New builds a Server.
@@ -121,11 +139,19 @@ func New(opts Options) (*Server, error) {
 	if opts.EventScan <= 0 {
 		opts.EventScan = DefaultEventScan
 	}
+	if opts.MaxStreams <= 0 {
+		opts.MaxStreams = DefaultMaxStreams
+	}
 	spec, err := loadSpec()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{opts: opts, log: opts.Logger, spec: spec, stop: make(chan struct{})}
+	hubCtx, hubStop := context.WithCancel(context.Background())
+	s.hub = newStreamHub(hubCtx, opts.Store, opts.StreamPoll, func(ctx context.Context, err error) {
+		s.log.ErrorContext(ctx, "event stream poller", "error", err)
+	})
+	s.stopHub = hubStop
 	router := chi.NewRouter()
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		problem(SlugNotFound, "no such resource").write(w, r)
@@ -156,6 +182,7 @@ func (s *Server) Drain() {
 	s.draining.Store(true)
 	if s.stopOnce.CompareAndSwap(false, true) {
 		close(s.stop)
+		s.stopHub()
 	}
 }
 

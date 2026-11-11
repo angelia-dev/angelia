@@ -131,7 +131,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			m.RegisterDeliveryCounts(st)
 		}
 		if want["api"] {
-			srv, err := newAPIServer(cfg, st, sources, keys, log)
+			srv, err := newAPIServer(cfg, st, sources, keys, m, log)
 			if err != nil {
 				return err
 			}
