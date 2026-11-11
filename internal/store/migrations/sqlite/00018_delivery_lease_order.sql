@@ -7,7 +7,7 @@
 --
 -- Purely additive: one index. No row is read for rewrite, changed or dropped.
 -- delivery_status_next_attempt_at is a prefix of it and is kept here, so
--- that this migration only adds; dropping it is left to #234.
+-- that this migration only adds; 00019 (story #234) drops it.
 --
 -- TODO(postgres, #85): the Postgres twin runs the same CREATE INDEX (a btree
 -- on (status, next_attempt_at, id); Postgres sorts NULLs last by default, so
