@@ -49,6 +49,9 @@ func (s *Server) streamStart(ctx context.Context, p StreamEventsParams) (int64, 
 	}
 	after := c.AckedSeq
 	if p.LastEventID != nil {
+		// Last-Event-ID is checked as after is (spec docs/api.md decision
+		// 15), not as acked_seq: Last-Event-ID 0 follows the after=0 rule,
+		// so it gets no 410 and starts at the oldest event kept.
 		after = *p.LastEventID
 		err = s.cursorCheck(ctx, after)
 	} else {

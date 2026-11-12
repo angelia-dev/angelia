@@ -194,3 +194,17 @@ func TestBearerParsing(t *testing.T) {
 		t.Error("unknown scope")
 	}
 }
+
+// Reading through a consumer authenticates before it looks the consumer up
+// (decision 23): no token is 401, a read token on an unknown consumer 404.
+func TestConsumerReadAuthBeforeLookup(t *testing.T) {
+	e := newEnv(t)
+	for _, path := range []string{"/v1/events?consumer=nope", "/v1/events/stream?consumer=nope"} {
+		if r := e.do("GET", path, "", nil); r.Status != http.StatusUnauthorized || r.problemType(t) != SlugUnauthorized {
+			t.Errorf("%s, no token: %d %s", path, r.Status, r.Body)
+		}
+		if r := e.do("GET", path, tokRead, nil); r.Status != http.StatusNotFound || r.problemType(t) != SlugNotFound {
+			t.Errorf("%s, read token: %d %s", path, r.Status, r.Body)
+		}
+	}
+}
