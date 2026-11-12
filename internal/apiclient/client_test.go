@@ -301,3 +301,65 @@ func TestStreamSendsAfterAndFilters(t *testing.T) {
 		t.Errorf("uri = %s", uri)
 	}
 }
+
+// The generated consumer methods (story #79, 79-C): an ack sends exactly the
+// member it was given, and the event list and stream take consumer.
+func TestConsumerMethods(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, 256)
+		n, _ := r.Body.Read(b)
+		mu.Lock()
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(b[:n]))
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/stream") { // a refusal: no reconnect
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"` + problemPrefix + `bad-request","title":"Bad request","status":400}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	a, err := New(Options{Server: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	seq, id := int64(4190), "01JBXC4D5E6F7G8H9J0K1M2N3P"
+	consumer := "release-bot"
+	start := Earliest
+	for _, call := range []func() (*http.Response, error){
+		func() (*http.Response, error) { return a.AckConsumer(ctx, consumer, ConsumerAck{Seq: &seq}) },
+		func() (*http.Response, error) { return a.AckConsumer(ctx, consumer, ConsumerAck{EventId: &id}) },
+		func() (*http.Response, error) {
+			return a.PutConsumer(ctx, consumer, nil, ConsumerWrite{Filter: &ConsumerFilter{Source: &[]Kind{"pypi"}}, Start: &start})
+		},
+		func() (*http.Response, error) { return a.ListEvents(ctx, &ListEventsParams{Consumer: &consumer}) },
+	} {
+		resp, err := call()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("status %d", resp.StatusCode)
+		}
+	}
+	if err := a.Stream(ctx, StreamEventsParams{Consumer: &consumer}, StreamOptions{}, func(EventRecord) error { return nil }); err == nil {
+		t.Error("stream: no error for a refusal")
+	}
+	want := []string{
+		`POST /v1/consumers/release-bot/ack {"seq":4190}`,
+		`POST /v1/consumers/release-bot/ack {"event_id":"01JBXC4D5E6F7G8H9J0K1M2N3P"}`,
+		`PUT /v1/consumers/release-bot {"filter":{"source":["pypi"]},"start":"earliest"}`,
+		`GET /v1/events?consumer=release-bot `,
+		`GET /v1/events/stream?consumer=release-bot `,
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

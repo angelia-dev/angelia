@@ -33,6 +33,13 @@ func (s *Server) checkParams(r *http.Request, op *operation, vars map[string]str
 			return problem(SlugBadRequest, "unknown query parameter %q", truncate(k, 64))
 		}
 	}
+	if known["consumer"] && query.Has("consumer") {
+		for _, k := range consumerExclusive {
+			if query.Has(k) {
+				return problem(SlugBadRequest, "query parameter consumer: cannot be combined with after, watch, type or source")
+			}
+		}
+	}
 	for _, p := range op.Params {
 		var vals []string
 		switch p.In {
@@ -70,6 +77,11 @@ func (s *Server) checkParams(r *http.Request, op *operation, vars map[string]str
 	}
 	return nil
 }
+
+// consumerExclusive are the query parameters that cannot be present with
+// consumer, whatever their value: after=0 and an empty watch= too (spec
+// docs/api.md decision 16).
+var consumerExclusive = []string{"after", "watch", "type", "source"}
 
 // coerce turns the string values of a parameter into the JSON value its
 // schema describes, so that the schema validator can check it.

@@ -37,6 +37,24 @@ func (e Bump) Valid() bool {
 	}
 }
 
+// Defines values for ConsumerStart.
+const (
+	Earliest ConsumerStart = "earliest"
+	Latest   ConsumerStart = "latest"
+)
+
+// Valid indicates whether the value is a known member of the ConsumerStart enum.
+func (e ConsumerStart) Valid() bool {
+	switch e {
+	case Earliest:
+		return true
+	case Latest:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeliveryStatus.
 const (
 	DeliveryStatusDead      DeliveryStatus = "dead"
@@ -220,6 +238,101 @@ func (e ShortEventType) Valid() bool {
 // Bump defines model for Bump.
 type Bump string
 
+// Consumer A consumer as the server returns it, with its cursor.
+type Consumer struct {
+	// AckedAt When an ack last moved `acked_seq`, or `null` if none has.
+	AckedAt *Timestamp `json:"acked_at"`
+
+	// AckedSeq The cursor. Every event up to and including this `seq` is acknowledged; `?consumer=` reads the events after it. It only grows.
+	//
+	// Examples: 4182
+	AckedSeq Seq `json:"acked_seq"`
+
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Filter The stored filter, every key present.
+	Filter ConsumerFilter `json:"filter"`
+
+	// Id Generated when the consumer is created; kept across updates.
+	Id Ulid `json:"id"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// UpdatedAt When the filter was last changed by a `PUT`. An ack does not change it.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// ConsumerAck The body of `POST /v1/consumers/{name}/ack`: exactly one of `seq` and `event_id`.
+// Everything up to and including that position is acknowledged.
+type ConsumerAck struct {
+	// EventId An event's CloudEvents `id`; the server acknowledges up to that event's `seq`. The event must still be in the log.
+	EventId *Ulid `json:"event_id,omitempty"`
+
+	// Seq An event's `seq`, or a page's `next_after`. At most the highest `seq` ever committed (pruned events included), so `oldest_seq − 1` is accepted on a log whose every event was pruned.
+	//
+	// Examples: 4182
+	Seq   *Seq `json:"seq,omitempty"`
+	union json.RawMessage
+}
+
+// ConsumerAck0 defines model for ConsumerAck.0.
+type ConsumerAck0 = interface{}
+
+// ConsumerAck1 defines model for ConsumerAck.1.
+type ConsumerAck1 = interface{}
+
+// ConsumerFilter Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
+// given keys must match; an empty or absent key matches every event (so an empty `type`
+// means all types, unlike `SubscriptionFilter`, whose default is `release.published`).
+// Stored as written; watch names are resolved at each request, as the `watch` query
+// parameter is, and once per stream when a stream starts.
+type ConsumerFilter struct {
+	// Source Source kinds, matched against the event's `data.source` (always the base kind).
+	Source *[]Kind `json:"source,omitempty"`
+
+	// Type Short event types. Empty means every type.
+	Type *[]ShortEventType `json:"type,omitempty"`
+
+	// Watch Watches, each by name or by id. A name means the watch's current id; an id also matches events of a watch that was deleted or renamed.
+	Watch *[]NameOrId `json:"watch,omitempty"`
+}
+
+// ConsumerPage defines model for ConsumerPage.
+type ConsumerPage struct {
+	Items []Consumer `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// ConsumerStart Where a new consumer's cursor starts. `latest`: at the highest `seq` ever committed (pruned events included)
+// when the create commits, so it reads only events committed after its creation (an event
+// committed concurrently may or may not be included). `earliest`: at the highest pruned
+// `seq` (`0` on a log that was never pruned), so it reads from the oldest event kept.
+type ConsumerStart string
+
+// ConsumerWrite The body of `PUT /v1/consumers/{name}`. Omitted keys take their defaults.
+type ConsumerWrite struct {
+	// Filter Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
+	// given keys must match; an empty or absent key matches every event (so an empty `type`
+	// means all types, unlike `SubscriptionFilter`, whose default is `release.published`).
+	// Stored as written; watch names are resolved at each request, as the `watch` query
+	// parameter is, and once per stream when a stream starts.
+	Filter *ConsumerFilter `json:"filter,omitempty"`
+
+	// Name Optional; when given it must equal the name in the path.
+	Name *Name `json:"name,omitempty"`
+
+	// Start Applies only when the consumer is created; ignored on an existing consumer, whose cursor a `PUT` never moves.
+	Start *ConsumerStart `json:"start,omitempty"`
+}
+
 // Cursor An opaque page cursor. Clients pass it back unchanged and must not parse it.
 //
 // Examples: eyJuIjoicmVxdWVzdHMifQ
@@ -311,7 +424,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type Name = string
 
 // NameOrId A name (lower case) or a ULID id (upper case). The two never overlap.
@@ -491,7 +604,7 @@ type Secret struct {
 	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
 	KeyId string `json:"key_id"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
@@ -513,7 +626,7 @@ type SecretPage struct {
 
 // SecretReferrer defines model for SecretReferrer.
 type SecretReferrer struct {
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
@@ -604,7 +717,7 @@ type Sink struct {
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
 	MaskedFields []string `json:"masked_fields"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// UrlRedacted Whether the URLs in `config` were cut to `scheme://host` because the token's scope is below `admin`.
@@ -672,7 +785,7 @@ type Subscription struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Policy Narrows the watch's policy for this subscription only; it can never widen it.
@@ -808,7 +921,7 @@ type Watch struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
@@ -817,7 +930,7 @@ type Watch struct {
 	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
 	Scheme string `json:"scheme"`
 
-	// Source A registered source kind (`GET /v1/plugins?interface=source`).
+	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
 	Source Kind `json:"source"`
 
 	// Status Scheduling state of the watch and its target.
@@ -897,7 +1010,7 @@ type WatchWrite struct {
 	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
 	Scheme *string `json:"scheme,omitempty"`
 
-	// Source A registered source kind (`GET /v1/plugins?interface=source`).
+	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
 	Source Kind `json:"source"`
 }
 
@@ -905,6 +1018,12 @@ type WatchWrite struct {
 //
 // Examples: 4182
 type After = Seq
+
+// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+type ConsumerName = Name
+
+// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+type ConsumerParam = Name
 
 // DeliveryId ULID: 26 characters, Crockford base32, upper case.
 type DeliveryId = Ulid
@@ -921,16 +1040,16 @@ type LabelFilter = []string
 // Limit defines model for Limit.
 type Limit = int
 
-// SecretName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SecretName = Name
 
-// SinkName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SinkName = Name
 
 // SourceFilter defines model for SourceFilter.
 type SourceFilter = []Kind
 
-// SubscriptionName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SubscriptionName = Name
 
 // TypeFilter defines model for TypeFilter.
@@ -939,7 +1058,7 @@ type TypeFilter = []ShortEventType
 // WatchFilter defines model for WatchFilter.
 type WatchFilter = []NameOrId
 
-// WatchName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type WatchName = Name
 
 // BadRequest RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
@@ -997,6 +1116,27 @@ type UnsupportedMediaType = Problem
 // must be ignored.
 type ValidationFailed = Problem
 
+// ListConsumersParams defines parameters for ListConsumers.
+type ListConsumersParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteConsumerParams defines parameters for DeleteConsumer.
+type DeleteConsumerParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// PutConsumerParams defines parameters for PutConsumer.
+type PutConsumerParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
 // ListDeliveriesParams defines parameters for ListDeliveries.
 type ListDeliveriesParams struct {
 	// Limit Page size.
@@ -1034,8 +1174,14 @@ type ListEventsParams struct {
 	// Type Only events of these short types (as in a subscription filter).
 	Type *TypeFilter `form:"type,omitempty" json:"type,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
+
+	// Consumer Read through this consumer: start after its `acked_seq`, with its stored filter. Exclusive
+	// with `after`, `watch`, `type` and `source` by presence: sending any of them with `consumer`,
+	// even `after=0` or an empty value, gets `400`. Reading never moves
+	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
+	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
 }
 
 // StreamEventsParams defines parameters for StreamEvents.
@@ -1051,10 +1197,16 @@ type StreamEventsParams struct {
 	// Type Only events of these short types (as in a subscription filter).
 	Type *TypeFilter `form:"type,omitempty" json:"type,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
 
-	// LastEventID The `seq` of the last event the client received. Takes precedence over `after`.
+	// Consumer Read through this consumer: start after its `acked_seq`, with its stored filter. Exclusive
+	// with `after`, `watch`, `type` and `source` by presence: sending any of them with `consumer`,
+	// even `after=0` or an empty value, gets `400`. Reading never moves
+	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
+	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
+
+	// LastEventID The `seq` of the last event the client received. Takes precedence over `after` and over a consumer's `acked_seq`.
 	LastEventID *Seq `json:"Last-Event-ID,omitempty"`
 }
 
@@ -1147,7 +1299,7 @@ type ListWatchesParams struct {
 	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
 
 	// Label Only watches that carry this label with this value, as `key=value`. Repeat to require several.
@@ -1181,6 +1333,12 @@ type ListWatchVersionsParams struct {
 	Yanked *bool `form:"yanked,omitempty" json:"yanked,omitempty"`
 }
 
+// PutConsumerJSONRequestBody defines body for PutConsumer for application/json ContentType.
+type PutConsumerJSONRequestBody = ConsumerWrite
+
+// AckConsumerJSONRequestBody defines body for AckConsumer for application/json ContentType.
+type AckConsumerJSONRequestBody = ConsumerAck
+
 // ReplayDeliveryJSONRequestBody defines body for ReplayDelivery for application/json ContentType.
 type ReplayDeliveryJSONRequestBody = ReplayDeliveryJSONBody
 
@@ -1198,6 +1356,116 @@ type PutSubscriptionJSONRequestBody = SubscriptionWrite
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
+
+// AsConsumerAck0 returns the union data inside the ConsumerAck as a ConsumerAck0
+func (t ConsumerAck) AsConsumerAck0() (ConsumerAck0, error) {
+	var body ConsumerAck0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromConsumerAck0 overwrites any union data inside the ConsumerAck as the provided ConsumerAck0
+func (t *ConsumerAck) FromConsumerAck0(v ConsumerAck0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeConsumerAck0 performs a merge with any union data inside the ConsumerAck, using the provided ConsumerAck0
+func (t *ConsumerAck) MergeConsumerAck0(v ConsumerAck0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsConsumerAck1 returns the union data inside the ConsumerAck as a ConsumerAck1
+func (t ConsumerAck) AsConsumerAck1() (ConsumerAck1, error) {
+	var body ConsumerAck1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromConsumerAck1 overwrites any union data inside the ConsumerAck as the provided ConsumerAck1
+func (t *ConsumerAck) FromConsumerAck1(v ConsumerAck1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeConsumerAck1 performs a merge with any union data inside the ConsumerAck, using the provided ConsumerAck1
+func (t *ConsumerAck) MergeConsumerAck1(v ConsumerAck1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ConsumerAck) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	object := make(map[string]json.RawMessage)
+	if t.union != nil {
+		err = json.Unmarshal(b, &object)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if t.EventId != nil {
+		object["event_id"], err = json.Marshal(t.EventId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'event_id': %w", err)
+		}
+	}
+
+	if t.Seq != nil {
+		object["seq"], err = json.Marshal(t.Seq)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'seq': %w", err)
+		}
+	}
+	b, err = json.Marshal(object)
+	return b, err
+}
+
+func (t *ConsumerAck) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	if err != nil {
+		return err
+	}
+	object := make(map[string]json.RawMessage)
+	err = json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["event_id"]; found {
+		err = json.Unmarshal(raw, &t.EventId)
+		if err != nil {
+			return fmt.Errorf("error reading 'event_id': %w", err)
+		}
+	}
+
+	if raw, found := object["seq"]; found {
+		err = json.Unmarshal(raw, &t.Seq)
+		if err != nil {
+			return fmt.Errorf("error reading 'seq': %w", err)
+		}
+	}
+
+	return err
+}
 
 // AsReplayRequest0 returns the union data inside the ReplayRequest as a ReplayRequest0
 func (t ReplayRequest) AsReplayRequest0() (ReplayRequest0, error) {
@@ -1505,6 +1773,21 @@ func (t *SecretWrite) UnmarshalJSON(b []byte) error {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListConsumers List consumers
+	// (GET /v1/consumers)
+	ListConsumers(w http.ResponseWriter, r *http.Request, params ListConsumersParams)
+	// DeleteConsumer Delete a consumer
+	// (DELETE /v1/consumers/{name})
+	DeleteConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params DeleteConsumerParams)
+	// GetConsumer Get a consumer
+	// (GET /v1/consumers/{name})
+	GetConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName)
+	// PutConsumer Create or update a consumer
+	// (PUT /v1/consumers/{name})
+	PutConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params PutConsumerParams)
+	// AckConsumer Acknowledge events up to a position
+	// (POST /v1/consumers/{name}/ack)
+	AckConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName)
 	// ListDeliveries List deliveries
 	// (GET /v1/deliveries)
 	ListDeliveries(w http.ResponseWriter, r *http.Request, params ListDeliveriesParams)
@@ -1588,6 +1871,36 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListConsumers List consumers
+// (GET /v1/consumers)
+func (_ Unimplemented) ListConsumers(w http.ResponseWriter, r *http.Request, params ListConsumersParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteConsumer Delete a consumer
+// (DELETE /v1/consumers/{name})
+func (_ Unimplemented) DeleteConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params DeleteConsumerParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetConsumer Get a consumer
+// (GET /v1/consumers/{name})
+func (_ Unimplemented) GetConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutConsumer Create or update a consumer
+// (PUT /v1/consumers/{name})
+func (_ Unimplemented) PutConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params PutConsumerParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AckConsumer Acknowledge events up to a position
+// (POST /v1/consumers/{name}/ack)
+func (_ Unimplemented) AckConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // ListDeliveries List deliveries
 // (GET /v1/deliveries)
@@ -1753,6 +2066,188 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListConsumers operation middleware
+func (siw *ServerInterfaceWrapper) ListConsumers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListConsumersParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListConsumers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteConsumer operation middleware
+func (siw *ServerInterfaceWrapper) DeleteConsumer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name ConsumerName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteConsumerParams
+
+	// ------------- Optional query parameter "dry_run" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dry_run", r.URL.Query(), &params.DryRun, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "dry_run"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteConsumer(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetConsumer operation middleware
+func (siw *ServerInterfaceWrapper) GetConsumer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name ConsumerName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConsumer(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutConsumer operation middleware
+func (siw *ServerInterfaceWrapper) PutConsumer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name ConsumerName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutConsumerParams
+
+	// ------------- Optional query parameter "dry_run" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dry_run", r.URL.Query(), &params.DryRun, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "dry_run"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutConsumer(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AckConsumer operation middleware
+func (siw *ServerInterfaceWrapper) AckConsumer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name ConsumerName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AckConsumer(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListDeliveries operation middleware
 func (siw *ServerInterfaceWrapper) ListDeliveries(w http.ResponseWriter, r *http.Request) {
@@ -1965,6 +2460,19 @@ func (siw *ServerInterfaceWrapper) ListEvents(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// ------------- Optional query parameter "consumer" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "consumer", r.URL.Query(), &params.Consumer, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consumer"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consumer", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListEvents(w, r, params)
 	}))
@@ -2033,6 +2541,19 @@ func (siw *ServerInterfaceWrapper) StreamEvents(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "source"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "source", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "consumer" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "consumer", r.URL.Query(), &params.Consumer, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consumer"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consumer", Err: err})
 		}
 		return
 	}
@@ -3098,6 +3619,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/events/{id}", wrapper.GetEvent)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/consumers", wrapper.ListConsumers)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/consumers/{name}", wrapper.DeleteConsumer)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/consumers/{name}", wrapper.GetConsumer)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/consumers/{name}", wrapper.PutConsumer)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/consumers/{name}/ack", wrapper.AckConsumer)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/sinks", wrapper.ListSinks)
 	})
 	r.Group(func(r chi.Router) {
@@ -3190,6 +3726,50 @@ type UnavailableApplicationProblemPlusJSONResponse struct {
 type UnsupportedMediaTypeApplicationProblemPlusJSONResponse Problem
 
 type ValidationFailedApplicationProblemPlusJSONResponse Problem
+
+type ListConsumersRequestObject struct {
+	Params ListConsumersParams
+}
+
+type ListConsumersResponseObject interface {
+	VisitListConsumersResponse(w http.ResponseWriter) error
+}
+
+type DeleteConsumerRequestObject struct {
+	Name   ConsumerName `json:"name"`
+	Params DeleteConsumerParams
+}
+
+type DeleteConsumerResponseObject interface {
+	VisitDeleteConsumerResponse(w http.ResponseWriter) error
+}
+
+type GetConsumerRequestObject struct {
+	Name ConsumerName `json:"name"`
+}
+
+type GetConsumerResponseObject interface {
+	VisitGetConsumerResponse(w http.ResponseWriter) error
+}
+
+type PutConsumerRequestObject struct {
+	Name   ConsumerName `json:"name"`
+	Params PutConsumerParams
+	Body   *PutConsumerJSONRequestBody
+}
+
+type PutConsumerResponseObject interface {
+	VisitPutConsumerResponse(w http.ResponseWriter) error
+}
+
+type AckConsumerRequestObject struct {
+	Name ConsumerName `json:"name"`
+	Body *AckConsumerJSONRequestBody
+}
+
+type AckConsumerResponseObject interface {
+	VisitAckConsumerResponse(w http.ResponseWriter) error
+}
 
 type ListDeliveriesRequestObject struct {
 	Params ListDeliveriesParams
@@ -3416,6 +3996,21 @@ type ListWatchVersionsResponseObject interface {
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListConsumers List consumers
+	// (GET /v1/consumers)
+	ListConsumers(ctx context.Context, request ListConsumersRequestObject) (ListConsumersResponseObject, error)
+	// DeleteConsumer Delete a consumer
+	// (DELETE /v1/consumers/{name})
+	DeleteConsumer(ctx context.Context, request DeleteConsumerRequestObject) (DeleteConsumerResponseObject, error)
+	// GetConsumer Get a consumer
+	// (GET /v1/consumers/{name})
+	GetConsumer(ctx context.Context, request GetConsumerRequestObject) (GetConsumerResponseObject, error)
+	// PutConsumer Create or update a consumer
+	// (PUT /v1/consumers/{name})
+	PutConsumer(ctx context.Context, request PutConsumerRequestObject) (PutConsumerResponseObject, error)
+	// AckConsumer Acknowledge events up to a position
+	// (POST /v1/consumers/{name}/ack)
+	AckConsumer(ctx context.Context, request AckConsumerRequestObject) (AckConsumerResponseObject, error)
 	// ListDeliveries List deliveries
 	// (GET /v1/deliveries)
 	ListDeliveries(ctx context.Context, request ListDeliveriesRequestObject) (ListDeliveriesResponseObject, error)
@@ -3533,6 +4128,152 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListConsumers operation middleware
+func (sh *strictHandler) ListConsumers(w http.ResponseWriter, r *http.Request, params ListConsumersParams) {
+	var request ListConsumersRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListConsumers(ctx, request.(ListConsumersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListConsumers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListConsumersResponseObject); ok {
+		if err := validResponse.VisitListConsumersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteConsumer operation middleware
+func (sh *strictHandler) DeleteConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params DeleteConsumerParams) {
+	var request DeleteConsumerRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteConsumer(ctx, request.(DeleteConsumerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteConsumer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteConsumerResponseObject); ok {
+		if err := validResponse.VisitDeleteConsumerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetConsumer operation middleware
+func (sh *strictHandler) GetConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName) {
+	var request GetConsumerRequestObject
+
+	request.Name = name
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetConsumer(ctx, request.(GetConsumerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetConsumer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetConsumerResponseObject); ok {
+		if err := validResponse.VisitGetConsumerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutConsumer operation middleware
+func (sh *strictHandler) PutConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName, params PutConsumerParams) {
+	var request PutConsumerRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	var body PutConsumerJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutConsumer(ctx, request.(PutConsumerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutConsumer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutConsumerResponseObject); ok {
+		if err := validResponse.VisitPutConsumerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AckConsumer operation middleware
+func (sh *strictHandler) AckConsumer(w http.ResponseWriter, r *http.Request, name ConsumerName) {
+	var request AckConsumerRequestObject
+
+	request.Name = name
+
+	var body AckConsumerJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AckConsumer(ctx, request.(AckConsumerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AckConsumer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AckConsumerResponseObject); ok {
+		if err := validResponse.VisitAckConsumerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListDeliveries operation middleware

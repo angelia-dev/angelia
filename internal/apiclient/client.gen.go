@@ -38,6 +38,24 @@ func (e Bump) Valid() bool {
 	}
 }
 
+// Defines values for ConsumerStart.
+const (
+	Earliest ConsumerStart = "earliest"
+	Latest   ConsumerStart = "latest"
+)
+
+// Valid indicates whether the value is a known member of the ConsumerStart enum.
+func (e ConsumerStart) Valid() bool {
+	switch e {
+	case Earliest:
+		return true
+	case Latest:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeliveryStatus.
 const (
 	DeliveryStatusDead      DeliveryStatus = "dead"
@@ -221,6 +239,101 @@ func (e ShortEventType) Valid() bool {
 // Bump defines model for Bump.
 type Bump string
 
+// Consumer A consumer as the server returns it, with its cursor.
+type Consumer struct {
+	// AckedAt When an ack last moved `acked_seq`, or `null` if none has.
+	AckedAt *Timestamp `json:"acked_at"`
+
+	// AckedSeq The cursor. Every event up to and including this `seq` is acknowledged; `?consumer=` reads the events after it. It only grows.
+	//
+	// Examples: 4182
+	AckedSeq Seq `json:"acked_seq"`
+
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Filter The stored filter, every key present.
+	Filter ConsumerFilter `json:"filter"`
+
+	// Id Generated when the consumer is created; kept across updates.
+	Id Ulid `json:"id"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	Name Name `json:"name"`
+
+	// UpdatedAt When the filter was last changed by a `PUT`. An ack does not change it.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// ConsumerAck The body of `POST /v1/consumers/{name}/ack`: exactly one of `seq` and `event_id`.
+// Everything up to and including that position is acknowledged.
+type ConsumerAck struct {
+	// EventId An event's CloudEvents `id`; the server acknowledges up to that event's `seq`. The event must still be in the log.
+	EventId *Ulid `json:"event_id,omitempty"`
+
+	// Seq An event's `seq`, or a page's `next_after`. At most the highest `seq` ever committed (pruned events included), so `oldest_seq − 1` is accepted on a log whose every event was pruned.
+	//
+	// Examples: 4182
+	Seq   *Seq `json:"seq,omitempty"`
+	union json.RawMessage
+}
+
+// ConsumerAck0 defines model for ConsumerAck.0.
+type ConsumerAck0 = interface{}
+
+// ConsumerAck1 defines model for ConsumerAck.1.
+type ConsumerAck1 = interface{}
+
+// ConsumerFilter Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
+// given keys must match; an empty or absent key matches every event (so an empty `type`
+// means all types, unlike `SubscriptionFilter`, whose default is `release.published`).
+// Stored as written; watch names are resolved at each request, as the `watch` query
+// parameter is, and once per stream when a stream starts.
+type ConsumerFilter struct {
+	// Source Source kinds, matched against the event's `data.source` (always the base kind).
+	Source *[]Kind `json:"source,omitempty"`
+
+	// Type Short event types. Empty means every type.
+	Type *[]ShortEventType `json:"type,omitempty"`
+
+	// Watch Watches, each by name or by id. A name means the watch's current id; an id also matches events of a watch that was deleted or renamed.
+	Watch *[]NameOrId `json:"watch,omitempty"`
+}
+
+// ConsumerPage defines model for ConsumerPage.
+type ConsumerPage struct {
+	Items []Consumer `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// ConsumerStart Where a new consumer's cursor starts. `latest`: at the highest `seq` ever committed (pruned events included)
+// when the create commits, so it reads only events committed after its creation (an event
+// committed concurrently may or may not be included). `earliest`: at the highest pruned
+// `seq` (`0` on a log that was never pruned), so it reads from the oldest event kept.
+type ConsumerStart string
+
+// ConsumerWrite The body of `PUT /v1/consumers/{name}`. Omitted keys take their defaults.
+type ConsumerWrite struct {
+	// Filter Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
+	// given keys must match; an empty or absent key matches every event (so an empty `type`
+	// means all types, unlike `SubscriptionFilter`, whose default is `release.published`).
+	// Stored as written; watch names are resolved at each request, as the `watch` query
+	// parameter is, and once per stream when a stream starts.
+	Filter *ConsumerFilter `json:"filter,omitempty"`
+
+	// Name Optional; when given it must equal the name in the path.
+	Name *Name `json:"name,omitempty"`
+
+	// Start Applies only when the consumer is created; ignored on an existing consumer, whose cursor a `PUT` never moves.
+	Start *ConsumerStart `json:"start,omitempty"`
+}
+
 // Cursor An opaque page cursor. Clients pass it back unchanged and must not parse it.
 //
 // Examples: eyJuIjoicmVxdWVzdHMifQ
@@ -312,7 +425,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type Name = string
 
 // NameOrId A name (lower case) or a ULID id (upper case). The two never overlap.
@@ -492,7 +605,7 @@ type Secret struct {
 	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
 	KeyId string `json:"key_id"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
@@ -514,7 +627,7 @@ type SecretPage struct {
 
 // SecretReferrer defines model for SecretReferrer.
 type SecretReferrer struct {
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
@@ -605,7 +718,7 @@ type Sink struct {
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
 	MaskedFields []string `json:"masked_fields"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// UrlRedacted Whether the URLs in `config` were cut to `scheme://host` because the token's scope is below `admin`.
@@ -673,7 +786,7 @@ type Subscription struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Policy Narrows the watch's policy for this subscription only; it can never widen it.
@@ -809,7 +922,7 @@ type Watch struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 	Name Name `json:"name"`
 
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
@@ -818,7 +931,7 @@ type Watch struct {
 	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
 	Scheme string `json:"scheme"`
 
-	// Source A registered source kind (`GET /v1/plugins?interface=source`).
+	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
 	Source Kind `json:"source"`
 
 	// Status Scheduling state of the watch and its target.
@@ -898,7 +1011,7 @@ type WatchWrite struct {
 	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
 	Scheme *string `json:"scheme,omitempty"`
 
-	// Source A registered source kind (`GET /v1/plugins?interface=source`).
+	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
 	Source Kind `json:"source"`
 }
 
@@ -906,6 +1019,12 @@ type WatchWrite struct {
 //
 // Examples: 4182
 type After = Seq
+
+// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+type ConsumerName = Name
+
+// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+type ConsumerParam = Name
 
 // DeliveryId ULID: 26 characters, Crockford base32, upper case.
 type DeliveryId = Ulid
@@ -922,16 +1041,16 @@ type LabelFilter = []string
 // Limit defines model for Limit.
 type Limit = int
 
-// SecretName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SecretName = Name
 
-// SinkName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SinkName = Name
 
 // SourceFilter defines model for SourceFilter.
 type SourceFilter = []Kind
 
-// SubscriptionName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type SubscriptionName = Name
 
 // TypeFilter defines model for TypeFilter.
@@ -940,7 +1059,7 @@ type TypeFilter = []ShortEventType
 // WatchFilter defines model for WatchFilter.
 type WatchFilter = []NameOrId
 
-// WatchName The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
 type WatchName = Name
 
 // BadRequest RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
@@ -998,6 +1117,27 @@ type UnsupportedMediaType = Problem
 // must be ignored.
 type ValidationFailed = Problem
 
+// ListConsumersParams defines parameters for ListConsumers.
+type ListConsumersParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteConsumerParams defines parameters for DeleteConsumer.
+type DeleteConsumerParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// PutConsumerParams defines parameters for PutConsumer.
+type PutConsumerParams struct {
+	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
+	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
 // ListDeliveriesParams defines parameters for ListDeliveries.
 type ListDeliveriesParams struct {
 	// Limit Page size.
@@ -1035,8 +1175,14 @@ type ListEventsParams struct {
 	// Type Only events of these short types (as in a subscription filter).
 	Type *TypeFilter `form:"type,omitempty" json:"type,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
+
+	// Consumer Read through this consumer: start after its `acked_seq`, with its stored filter. Exclusive
+	// with `after`, `watch`, `type` and `source` by presence: sending any of them with `consumer`,
+	// even `after=0` or an empty value, gets `400`. Reading never moves
+	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
+	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
 }
 
 // StreamEventsParams defines parameters for StreamEvents.
@@ -1052,10 +1198,16 @@ type StreamEventsParams struct {
 	// Type Only events of these short types (as in a subscription filter).
 	Type *TypeFilter `form:"type,omitempty" json:"type,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
 
-	// LastEventID The `seq` of the last event the client received. Takes precedence over `after`.
+	// Consumer Read through this consumer: start after its `acked_seq`, with its stored filter. Exclusive
+	// with `after`, `watch`, `type` and `source` by presence: sending any of them with `consumer`,
+	// even `after=0` or an empty value, gets `400`. Reading never moves
+	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
+	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
+
+	// LastEventID The `seq` of the last event the client received. Takes precedence over `after` and over a consumer's `acked_seq`.
 	LastEventID *Seq `json:"Last-Event-ID,omitempty"`
 }
 
@@ -1148,7 +1300,7 @@ type ListWatchesParams struct {
 	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 
-	// Source Only watches (or events of watches) with these source kinds.
+	// Source Only watches (or events of watches) with these sources. On watches it matches the watch's `source` (a kind or a configured instance name); on events it matches `data.source`, which is always the base kind.
 	Source *SourceFilter `form:"source,omitempty" json:"source,omitempty"`
 
 	// Label Only watches that carry this label with this value, as `key=value`. Repeat to require several.
@@ -1182,6 +1334,12 @@ type ListWatchVersionsParams struct {
 	Yanked *bool `form:"yanked,omitempty" json:"yanked,omitempty"`
 }
 
+// PutConsumerJSONRequestBody defines body for PutConsumer for application/json ContentType.
+type PutConsumerJSONRequestBody = ConsumerWrite
+
+// AckConsumerJSONRequestBody defines body for AckConsumer for application/json ContentType.
+type AckConsumerJSONRequestBody = ConsumerAck
+
 // ReplayDeliveryJSONRequestBody defines body for ReplayDelivery for application/json ContentType.
 type ReplayDeliveryJSONRequestBody = ReplayDeliveryJSONBody
 
@@ -1199,6 +1357,116 @@ type PutSubscriptionJSONRequestBody = SubscriptionWrite
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
+
+// AsConsumerAck0 returns the union data inside the ConsumerAck as a ConsumerAck0
+func (t ConsumerAck) AsConsumerAck0() (ConsumerAck0, error) {
+	var body ConsumerAck0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromConsumerAck0 overwrites any union data inside the ConsumerAck as the provided ConsumerAck0
+func (t *ConsumerAck) FromConsumerAck0(v ConsumerAck0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeConsumerAck0 performs a merge with any union data inside the ConsumerAck, using the provided ConsumerAck0
+func (t *ConsumerAck) MergeConsumerAck0(v ConsumerAck0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsConsumerAck1 returns the union data inside the ConsumerAck as a ConsumerAck1
+func (t ConsumerAck) AsConsumerAck1() (ConsumerAck1, error) {
+	var body ConsumerAck1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromConsumerAck1 overwrites any union data inside the ConsumerAck as the provided ConsumerAck1
+func (t *ConsumerAck) FromConsumerAck1(v ConsumerAck1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeConsumerAck1 performs a merge with any union data inside the ConsumerAck, using the provided ConsumerAck1
+func (t *ConsumerAck) MergeConsumerAck1(v ConsumerAck1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ConsumerAck) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	object := make(map[string]json.RawMessage)
+	if t.union != nil {
+		err = json.Unmarshal(b, &object)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if t.EventId != nil {
+		object["event_id"], err = json.Marshal(t.EventId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'event_id': %w", err)
+		}
+	}
+
+	if t.Seq != nil {
+		object["seq"], err = json.Marshal(t.Seq)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'seq': %w", err)
+		}
+	}
+	b, err = json.Marshal(object)
+	return b, err
+}
+
+func (t *ConsumerAck) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	if err != nil {
+		return err
+	}
+	object := make(map[string]json.RawMessage)
+	err = json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["event_id"]; found {
+		err = json.Unmarshal(raw, &t.EventId)
+		if err != nil {
+			return fmt.Errorf("error reading 'event_id': %w", err)
+		}
+	}
+
+	if raw, found := object["seq"]; found {
+		err = json.Unmarshal(raw, &t.Seq)
+		if err != nil {
+			return fmt.Errorf("error reading 'seq': %w", err)
+		}
+	}
+
+	return err
+}
 
 // AsReplayRequest0 returns the union data inside the ReplayRequest as a ReplayRequest0
 func (t ReplayRequest) AsReplayRequest0() (ReplayRequest0, error) {
@@ -1578,6 +1846,117 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 
+	// ListConsumers List consumers
+	//
+	// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
+	//
+	// Corresponds with GET /v1/consumers (the `ListConsumers` operationId).
+	ListConsumers(ctx context.Context, params *ListConsumersParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteConsumer Delete a consumer
+	//
+	// Deletes the consumer and its cursor. Events are not affected; retention never waits for consumers.
+	//
+	// Corresponds with DELETE /v1/consumers/{name} (the `DeleteConsumer` operationId).
+	DeleteConsumer(ctx context.Context, name ConsumerName, params *DeleteConsumerParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetConsumer Get a consumer
+	//
+	// The consumer with its stored filter and its cursor (`acked_seq`, `acked_at`).
+	//
+	// Corresponds with GET /v1/consumers/{name} (the `GetConsumer` operationId).
+	GetConsumer(ctx context.Context, name ConsumerName, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutConsumerWithBody Create or update a consumer
+	//
+	// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+	// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+	// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+	// the cursor. Reading never acknowledges.
+	//
+	// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+	// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+	// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+	// receives only events committed after it (an event committed concurrently with the create
+	// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+	// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+	// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+	// after the current cursor only. Sending the same filter twice changes nothing the second
+	// time (`Angelia-Change: unchanged`).
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+	PutConsumerWithBody(ctx context.Context, name ConsumerName, params *PutConsumerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutConsumer Create or update a consumer
+	//
+	// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+	// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+	// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+	// the cursor. Reading never acknowledges.
+	//
+	// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+	// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+	// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+	// receives only events committed after it (an event committed concurrently with the create
+	// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+	// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+	// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+	// after the current cursor only. Sending the same filter twice changes nothing the second
+	// time (`Angelia-Change: unchanged`).
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+	PutConsumer(ctx context.Context, name ConsumerName, params *PutConsumerParams, body PutConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AckConsumerWithBody Acknowledge events up to a position
+	//
+	// Commits the consumer's cursor: everything up to and including the given position is
+	// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+	// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+	// server resolves to its `seq`).
+	//
+	// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+	// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+	// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+	// the cursor back. An acknowledged position does not have to match the consumer's filter:
+	// acknowledging a page's `next_after` skips the events the filter left out.
+	//
+	// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+	// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+	// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+	// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+	AckConsumerWithBody(ctx context.Context, name ConsumerName, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AckConsumer Acknowledge events up to a position
+	//
+	// Commits the consumer's cursor: everything up to and including the given position is
+	// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+	// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+	// server resolves to its `seq`).
+	//
+	// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+	// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+	// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+	// the cursor back. An acknowledged position does not have to match the consumer's filter:
+	// acknowledging a page's `next_after` skips the events the filter left out.
+	//
+	// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+	// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+	// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+	// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+	AckConsumer(ctx context.Context, name ConsumerName, body AckConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListDeliveries List deliveries
 	//
 	// Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
@@ -1637,6 +2016,16 @@ type ClientInterface interface {
 	// below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
 	// `after=0` always starts at the oldest event kept.
 	//
+	// With `consumer`, the server keeps the cursor: the page starts after the consumer's
+	// `acked_seq` and uses the consumer's stored filter, exactly as `after=<acked_seq>` with
+	// that filter would. `consumer` cannot be combined with `after`, `watch`, `type` or `source`:
+	// exclusivity is by presence, so `consumer` with `after=0` or an empty `watch=` also gets
+	// `400 bad-request`. An unknown consumer gets `404`, and a consumer whose `acked_seq` is
+	// below the highest pruned `seq` gets `410 cursor-expired`; unlike `after=0`, an `acked_seq`
+	// of `0` is checked like any other position. Reading never acknowledges: the
+	// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
+	// `next_after`) once it has processed the page.
+	//
 	// Corresponds with GET /v1/events (the `ListEvents` operationId).
 	ListEvents(ctx context.Context, params *ListEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1653,6 +2042,14 @@ type ClientInterface interface {
 	// - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
 	//   cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
 	//   not a stream).
+	// - With `consumer`, the stream starts after the consumer's `acked_seq` and uses its stored
+	//   filter; `Last-Event-ID` still takes precedence over `acked_seq`. As on `GET /v1/events`,
+	//   `consumer` cannot be present with `after`, `watch`, `type` or `source` (`400`), an
+	//   unknown consumer gets `404`, and an expired cursor gets `410` before the stream starts.
+	//   The consumer is read once, when the stream starts: an open stream keeps the filter as it
+	//   was then (watch names resolved once), and a later `PUT` or `DELETE` of the consumer
+	//   does not affect it. The stream never acknowledges: the client calls
+	//   `POST /v1/consumers/{name}/ack`.
 	// - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
 	// - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
 	//   cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
@@ -1949,6 +2346,187 @@ type ClientInterface interface {
 	ListWatchVersions(ctx context.Context, name WatchName, params *ListWatchVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
+// ListConsumers List consumers
+//
+// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
+//
+// Corresponds with GET /v1/consumers (the `ListConsumers` operationId).
+func (c *Client) ListConsumers(ctx context.Context, params *ListConsumersParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListConsumersRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteConsumer Delete a consumer
+//
+// Deletes the consumer and its cursor. Events are not affected; retention never waits for consumers.
+//
+// Corresponds with DELETE /v1/consumers/{name} (the `DeleteConsumer` operationId).
+func (c *Client) DeleteConsumer(ctx context.Context, name ConsumerName, params *DeleteConsumerParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteConsumerRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetConsumer Get a consumer
+//
+// The consumer with its stored filter and its cursor (`acked_seq`, `acked_at`).
+//
+// Corresponds with GET /v1/consumers/{name} (the `GetConsumer` operationId).
+func (c *Client) GetConsumer(ctx context.Context, name ConsumerName, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConsumerRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutConsumerWithBody Create or update a consumer
+//
+// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+// the cursor. Reading never acknowledges.
+//
+// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+// receives only events committed after it (an event committed concurrently with the create
+// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+// after the current cursor only. Sending the same filter twice changes nothing the second
+// time (`Angelia-Change: unchanged`).
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+func (c *Client) PutConsumerWithBody(ctx context.Context, name ConsumerName, params *PutConsumerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutConsumerRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutConsumer Create or update a consumer
+//
+// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+// the cursor. Reading never acknowledges.
+//
+// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+// receives only events committed after it (an event committed concurrently with the create
+// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+// after the current cursor only. Sending the same filter twice changes nothing the second
+// time (`Angelia-Change: unchanged`).
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+func (c *Client) PutConsumer(ctx context.Context, name ConsumerName, params *PutConsumerParams, body PutConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutConsumerRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AckConsumerWithBody Acknowledge events up to a position
+//
+// Commits the consumer's cursor: everything up to and including the given position is
+// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+// server resolves to its `seq`).
+//
+// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+// the cursor back. An acknowledged position does not have to match the consumer's filter:
+// acknowledging a page's `next_after` skips the events the filter left out.
+//
+// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+func (c *Client) AckConsumerWithBody(ctx context.Context, name ConsumerName, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAckConsumerRequestWithBody(c.Server, name, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AckConsumer Acknowledge events up to a position
+//
+// Commits the consumer's cursor: everything up to and including the given position is
+// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+// server resolves to its `seq`).
+//
+// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+// the cursor back. An acknowledged position does not have to match the consumer's filter:
+// acknowledging a page's `next_after` skips the events the filter left out.
+//
+// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+func (c *Client) AckConsumer(ctx context.Context, name ConsumerName, body AckConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAckConsumerRequest(c.Server, name, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListDeliveries List deliveries
 //
 // Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
@@ -2048,6 +2626,16 @@ func (c *Client) ReplayDelivery(ctx context.Context, id DeliveryId, body ReplayD
 // below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
 // `after=0` always starts at the oldest event kept.
 //
+// With `consumer`, the server keeps the cursor: the page starts after the consumer's
+// `acked_seq` and uses the consumer's stored filter, exactly as `after=<acked_seq>` with
+// that filter would. `consumer` cannot be combined with `after`, `watch`, `type` or `source`:
+// exclusivity is by presence, so `consumer` with `after=0` or an empty `watch=` also gets
+// `400 bad-request`. An unknown consumer gets `404`, and a consumer whose `acked_seq` is
+// below the highest pruned `seq` gets `410 cursor-expired`; unlike `after=0`, an `acked_seq`
+// of `0` is checked like any other position. Reading never acknowledges: the
+// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
+// `next_after`) once it has processed the page.
+//
 // Corresponds with GET /v1/events (the `ListEvents` operationId).
 func (c *Client) ListEvents(ctx context.Context, params *ListEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListEventsRequest(c.Server, params)
@@ -2074,6 +2662,14 @@ func (c *Client) ListEvents(ctx context.Context, params *ListEventsParams, reqEd
 //   - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
 //     cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
 //     not a stream).
+//   - With `consumer`, the stream starts after the consumer's `acked_seq` and uses its stored
+//     filter; `Last-Event-ID` still takes precedence over `acked_seq`. As on `GET /v1/events`,
+//     `consumer` cannot be present with `after`, `watch`, `type` or `source` (`400`), an
+//     unknown consumer gets `404`, and an expired cursor gets `410` before the stream starts.
+//     The consumer is read once, when the stream starts: an open stream keeps the filter as it
+//     was then (watch names resolved once), and a later `PUT` or `DELETE` of the consumer
+//     does not affect it. The stream never acknowledges: the client calls
+//     `POST /v1/consumers/{name}/ack`.
 //   - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
 //   - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
 //     cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
@@ -2639,6 +3235,288 @@ func (c *Client) ListWatchVersions(ctx context.Context, name WatchName, params *
 	return c.Client.Do(req)
 }
 
+// NewListConsumersRequest constructs an http.Request for the ListConsumers method
+func NewListConsumersRequest(server string, params *ListConsumersParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/consumers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteConsumerRequest constructs an http.Request for the DeleteConsumer method
+func NewDeleteConsumerRequest(server string, name ConsumerName, params *DeleteConsumerParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/consumers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.DryRun != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "dry_run", *params.DryRun, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetConsumerRequest constructs an http.Request for the GetConsumer method
+func NewGetConsumerRequest(server string, name ConsumerName) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/consumers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutConsumerRequest calls the generic PutConsumer builder with application/json body
+func NewPutConsumerRequest(server string, name ConsumerName, params *PutConsumerParams, body PutConsumerJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutConsumerRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutConsumerRequestWithBody constructs an http.Request for the PutConsumer method, with any body, and a specified content type
+func NewPutConsumerRequestWithBody(server string, name ConsumerName, params *PutConsumerParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/consumers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.DryRun != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "dry_run", *params.DryRun, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewAckConsumerRequest calls the generic AckConsumer builder with application/json body
+func NewAckConsumerRequest(server string, name ConsumerName, body AckConsumerJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAckConsumerRequestWithBody(server, name, "application/json", bodyReader)
+}
+
+// NewAckConsumerRequestWithBody constructs an http.Request for the AckConsumer method, with any body, and a specified content type
+func NewAckConsumerRequestWithBody(server string, name ConsumerName, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/consumers/%s/ack", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListDeliveriesRequest constructs an http.Request for the ListDeliveries method
 func NewListDeliveriesRequest(server string, params *ListDeliveriesParams) (*http.Request, error) {
 	var err error
@@ -2910,6 +3788,18 @@ func NewListEventsRequest(server string, params *ListEventsParams) (*http.Reques
 
 		}
 
+		if params.Consumer != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "consumer", *params.Consumer, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if encoded := queryValues.Encode(); encoded != "" {
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
@@ -2991,6 +3881,18 @@ func NewStreamEventsRequest(server string, params *StreamEventsParams) (*http.Re
 		if params.Source != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "source", *params.Source, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "array", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Consumer != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "consumer", *params.Consumer, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {
@@ -4351,6 +5253,123 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 
+	// ListConsumersWithResponse List consumers
+	//
+	// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/consumers (the `ListConsumers` operationId).
+	ListConsumersWithResponse(ctx context.Context, params *ListConsumersParams, reqEditors ...RequestEditorFn) (*ListConsumersResponse, error)
+
+	// DeleteConsumerWithResponse Delete a consumer
+	//
+	// Deletes the consumer and its cursor. Events are not affected; retention never waits for consumers.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /v1/consumers/{name} (the `DeleteConsumer` operationId).
+	DeleteConsumerWithResponse(ctx context.Context, name ConsumerName, params *DeleteConsumerParams, reqEditors ...RequestEditorFn) (*DeleteConsumerResponse, error)
+
+	// GetConsumerWithResponse Get a consumer
+	//
+	// The consumer with its stored filter and its cursor (`acked_seq`, `acked_at`).
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/consumers/{name} (the `GetConsumer` operationId).
+	GetConsumerWithResponse(ctx context.Context, name ConsumerName, reqEditors ...RequestEditorFn) (*GetConsumerResponse, error)
+
+	// PutConsumerWithBodyWithResponse Create or update a consumer
+	//
+	// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+	// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+	// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+	// the cursor. Reading never acknowledges.
+	//
+	// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+	// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+	// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+	// receives only events committed after it (an event committed concurrently with the create
+	// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+	// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+	// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+	// after the current cursor only. Sending the same filter twice changes nothing the second
+	// time (`Angelia-Change: unchanged`).
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+	PutConsumerWithBodyWithResponse(ctx context.Context, name ConsumerName, params *PutConsumerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutConsumerResponse, error)
+
+	// PutConsumerWithResponse Create or update a consumer
+	//
+	// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+	// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+	// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+	// the cursor. Reading never acknowledges.
+	//
+	// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+	// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+	// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+	// receives only events committed after it (an event committed concurrently with the create
+	// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+	// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+	// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+	// after the current cursor only. Sending the same filter twice changes nothing the second
+	// time (`Angelia-Change: unchanged`).
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+	PutConsumerWithResponse(ctx context.Context, name ConsumerName, params *PutConsumerParams, body PutConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*PutConsumerResponse, error)
+
+	// AckConsumerWithBodyWithResponse Acknowledge events up to a position
+	//
+	// Commits the consumer's cursor: everything up to and including the given position is
+	// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+	// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+	// server resolves to its `seq`).
+	//
+	// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+	// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+	// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+	// the cursor back. An acknowledged position does not have to match the consumer's filter:
+	// acknowledging a page's `next_after` skips the events the filter left out.
+	//
+	// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+	// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+	// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+	// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+	AckConsumerWithBodyWithResponse(ctx context.Context, name ConsumerName, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AckConsumerResponse, error)
+
+	// AckConsumerWithResponse Acknowledge events up to a position
+	//
+	// Commits the consumer's cursor: everything up to and including the given position is
+	// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+	// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+	// server resolves to its `seq`).
+	//
+	// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+	// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+	// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+	// the cursor back. An acknowledged position does not have to match the consumer's filter:
+	// acknowledging a page's `next_after` skips the events the filter left out.
+	//
+	// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+	// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+	// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+	// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+	AckConsumerWithResponse(ctx context.Context, name ConsumerName, body AckConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*AckConsumerResponse, error)
+
 	// ListDeliveriesWithResponse List deliveries
 	//
 	// Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
@@ -4414,6 +5433,16 @@ type ClientWithResponsesInterface interface {
 	// below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
 	// `after=0` always starts at the oldest event kept.
 	//
+	// With `consumer`, the server keeps the cursor: the page starts after the consumer's
+	// `acked_seq` and uses the consumer's stored filter, exactly as `after=<acked_seq>` with
+	// that filter would. `consumer` cannot be combined with `after`, `watch`, `type` or `source`:
+	// exclusivity is by presence, so `consumer` with `after=0` or an empty `watch=` also gets
+	// `400 bad-request`. An unknown consumer gets `404`, and a consumer whose `acked_seq` is
+	// below the highest pruned `seq` gets `410 cursor-expired`; unlike `after=0`, an `acked_seq`
+	// of `0` is checked like any other position. Reading never acknowledges: the
+	// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
+	// `next_after`) once it has processed the page.
+	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /v1/events (the `ListEvents` operationId).
@@ -4432,6 +5461,14 @@ type ClientWithResponsesInterface interface {
 	// - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
 	//   cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
 	//   not a stream).
+	// - With `consumer`, the stream starts after the consumer's `acked_seq` and uses its stored
+	//   filter; `Last-Event-ID` still takes precedence over `acked_seq`. As on `GET /v1/events`,
+	//   `consumer` cannot be present with `after`, `watch`, `type` or `source` (`400`), an
+	//   unknown consumer gets `404`, and an expired cursor gets `410` before the stream starts.
+	//   The consumer is read once, when the stream starts: an open stream keeps the filter as it
+	//   was then (watch names resolved once), and a later `PUT` or `DELETE` of the consumer
+	//   does not affect it. The stream never acknowledges: the client calls
+	//   `POST /v1/consumers/{name}/ack`.
 	// - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
 	// - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
 	//   cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
@@ -4762,6 +5799,527 @@ type ClientWithResponsesInterface interface {
 	ListWatchVersionsWithResponse(ctx context.Context, name WatchName, params *ListWatchVersionsParams, reqEditors ...RequestEditorFn) (*ListWatchVersionsResponse, error)
 }
 
+// ListConsumersResponse401Headers the declared response headers of an HTTP 401 response for ListConsumers
+type ListConsumersResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// ListConsumersResponse503Headers the declared response headers of an HTTP 503 response for ListConsumers
+type ListConsumersResponse503Headers struct {
+	RetryAfter *int
+}
+
+type ListConsumersResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConsumerPage
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *ListConsumersResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *ListConsumersResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListConsumersResponse) GetJSON200() *ConsumerPage {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r ListConsumersResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r ListConsumersResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r ListConsumersResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r ListConsumersResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r ListConsumersResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r ListConsumersResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListConsumersResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListConsumersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListConsumersResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// DeleteConsumerResponse204Headers the declared response headers of an HTTP 204 response for DeleteConsumer
+type DeleteConsumerResponse204Headers struct {
+	AngeliaChange *string
+}
+
+// DeleteConsumerResponse401Headers the declared response headers of an HTTP 401 response for DeleteConsumer
+type DeleteConsumerResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// DeleteConsumerResponse503Headers the declared response headers of an HTTP 503 response for DeleteConsumer
+type DeleteConsumerResponse503Headers struct {
+	RetryAfter *int
+}
+
+type DeleteConsumerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers204 the parsed response headers for an HTTP 204 response
+	Headers204 *DeleteConsumerResponse204Headers
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *DeleteConsumerResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *DeleteConsumerResponse503Headers
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r DeleteConsumerResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r DeleteConsumerResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r DeleteConsumerResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r DeleteConsumerResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r DeleteConsumerResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteConsumerResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteConsumerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteConsumerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteConsumerResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// GetConsumerResponse401Headers the declared response headers of an HTTP 401 response for GetConsumer
+type GetConsumerResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// GetConsumerResponse503Headers the declared response headers of an HTTP 503 response for GetConsumer
+type GetConsumerResponse503Headers struct {
+	RetryAfter *int
+}
+
+type GetConsumerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Consumer
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *GetConsumerResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *GetConsumerResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConsumerResponse) GetJSON200() *Consumer {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r GetConsumerResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r GetConsumerResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r GetConsumerResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r GetConsumerResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r GetConsumerResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r GetConsumerResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetConsumerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetConsumerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetConsumerResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// PutConsumerResponse200Headers the declared response headers of an HTTP 200 response for PutConsumer
+type PutConsumerResponse200Headers struct {
+	AngeliaChange *string
+}
+
+// PutConsumerResponse201Headers the declared response headers of an HTTP 201 response for PutConsumer
+type PutConsumerResponse201Headers struct {
+	AngeliaChange *string
+	Location      *string
+}
+
+// PutConsumerResponse401Headers the declared response headers of an HTTP 401 response for PutConsumer
+type PutConsumerResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// PutConsumerResponse503Headers the declared response headers of an HTTP 503 response for PutConsumer
+type PutConsumerResponse503Headers struct {
+	RetryAfter *int
+}
+
+type PutConsumerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Consumer
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *Consumer
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers200 the parsed response headers for an HTTP 200 response
+	Headers200 *PutConsumerResponse200Headers
+	// Headers201 the parsed response headers for an HTTP 201 response
+	Headers201 *PutConsumerResponse201Headers
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *PutConsumerResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *PutConsumerResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutConsumerResponse) GetJSON200() *Consumer {
+	return r.JSON200
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PutConsumerResponse) GetJSON201() *Consumer {
+	return r.JSON201
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r PutConsumerResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r PutConsumerResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PutConsumerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutConsumerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PutConsumerResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// AckConsumerResponse401Headers the declared response headers of an HTTP 401 response for AckConsumer
+type AckConsumerResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// AckConsumerResponse503Headers the declared response headers of an HTTP 503 response for AckConsumer
+type AckConsumerResponse503Headers struct {
+	RetryAfter *int
+}
+
+type AckConsumerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Consumer
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *AckConsumerResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *AckConsumerResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r AckConsumerResponse) GetJSON200() *Consumer {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r AckConsumerResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r AckConsumerResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AckConsumerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AckConsumerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AckConsumerResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // ListDeliveriesResponse401Headers the declared response headers of an HTTP 401 response for ListDeliveries
 type ListDeliveriesResponse401Headers struct {
 	WWWAuthenticate *string
@@ -5074,6 +6632,8 @@ type ListEventsResponse struct {
 	ApplicationproblemJSON401 *Unauthorized
 	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
 	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
 	// ApplicationproblemJSON410 the response for an HTTP 410 `application/problem+json` response
 	ApplicationproblemJSON410 *CursorExpired
 	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
@@ -5104,6 +6664,11 @@ func (r ListEventsResponse) GetApplicationproblemJSON401() *Unauthorized {
 // GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
 func (r ListEventsResponse) GetApplicationproblemJSON403() *Forbidden {
 	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r ListEventsResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
 }
 
 // GetApplicationproblemJSON410 returns the response for an HTTP 410 `application/problem+json` response
@@ -5169,6 +6734,8 @@ type StreamEventsResponse struct {
 	ApplicationproblemJSON401 *Unauthorized
 	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
 	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
 	// ApplicationproblemJSON410 the response for an HTTP 410 `application/problem+json` response
 	ApplicationproblemJSON410 *CursorExpired
 	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
@@ -5194,6 +6761,11 @@ func (r StreamEventsResponse) GetApplicationproblemJSON401() *Unauthorized {
 // GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
 func (r StreamEventsResponse) GetApplicationproblemJSON403() *Forbidden {
 	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r StreamEventsResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
 }
 
 // GetApplicationproblemJSON410 returns the response for an HTTP 410 `application/problem+json` response
@@ -7379,6 +8951,165 @@ func (r ListWatchVersionsResponse) ContentType() string {
 	return ""
 }
 
+// ListConsumersWithResponse List consumers
+//
+// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/consumers (the `ListConsumers` operationId).
+func (c *ClientWithResponses) ListConsumersWithResponse(ctx context.Context, params *ListConsumersParams, reqEditors ...RequestEditorFn) (*ListConsumersResponse, error) {
+	rsp, err := c.ListConsumers(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListConsumersResponse(rsp)
+}
+
+// DeleteConsumerWithResponse Delete a consumer
+//
+// Deletes the consumer and its cursor. Events are not affected; retention never waits for consumers.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /v1/consumers/{name} (the `DeleteConsumer` operationId).
+func (c *ClientWithResponses) DeleteConsumerWithResponse(ctx context.Context, name ConsumerName, params *DeleteConsumerParams, reqEditors ...RequestEditorFn) (*DeleteConsumerResponse, error) {
+	rsp, err := c.DeleteConsumer(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteConsumerResponse(rsp)
+}
+
+// GetConsumerWithResponse Get a consumer
+//
+// The consumer with its stored filter and its cursor (`acked_seq`, `acked_at`).
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/consumers/{name} (the `GetConsumer` operationId).
+func (c *ClientWithResponses) GetConsumerWithResponse(ctx context.Context, name ConsumerName, reqEditors ...RequestEditorFn) (*GetConsumerResponse, error) {
+	rsp, err := c.GetConsumer(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetConsumerResponse(rsp)
+}
+
+// PutConsumerWithBodyWithResponse Create or update a consumer
+//
+// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+// the cursor. Reading never acknowledges.
+//
+// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+// receives only events committed after it (an event committed concurrently with the create
+// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+// after the current cursor only. Sending the same filter twice changes nothing the second
+// time (`Angelia-Change: unchanged`).
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+func (c *ClientWithResponses) PutConsumerWithBodyWithResponse(ctx context.Context, name ConsumerName, params *PutConsumerParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutConsumerResponse, error) {
+	rsp, err := c.PutConsumerWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutConsumerResponse(rsp)
+}
+
+// PutConsumerWithResponse Create or update a consumer
+//
+// Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+// `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+// its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+// the cursor. Reading never acknowledges.
+//
+// The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+// applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+// the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+// receives only events committed after it (an event committed concurrently with the create
+// may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+// that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+// ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+// after the current cursor only. Sending the same filter twice changes nothing the second
+// time (`Angelia-Change: unchanged`).
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /v1/consumers/{name} (the `PutConsumer` operationId).
+func (c *ClientWithResponses) PutConsumerWithResponse(ctx context.Context, name ConsumerName, params *PutConsumerParams, body PutConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*PutConsumerResponse, error) {
+	rsp, err := c.PutConsumer(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutConsumerResponse(rsp)
+}
+
+// AckConsumerWithBodyWithResponse Acknowledge events up to a position
+//
+// Commits the consumer's cursor: everything up to and including the given position is
+// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+// server resolves to its `seq`).
+//
+// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+// the cursor back. An acknowledged position does not have to match the consumer's filter:
+// acknowledging a page's `next_after` skips the events the filter left out.
+//
+// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+func (c *ClientWithResponses) AckConsumerWithBodyWithResponse(ctx context.Context, name ConsumerName, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AckConsumerResponse, error) {
+	rsp, err := c.AckConsumerWithBody(ctx, name, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAckConsumerResponse(rsp)
+}
+
+// AckConsumerWithResponse Acknowledge events up to a position
+//
+// Commits the consumer's cursor: everything up to and including the given position is
+// acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+// `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+// server resolves to its `seq`).
+//
+// The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+// given `seq`, so acknowledging the same or an older position again is a no-op that returns
+// `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+// the cursor back. An acknowledged position does not have to match the consumer's filter:
+// acknowledging a page's `next_after` skips the events the filter left out.
+//
+// A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+// emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+// member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+// recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/consumers/{name}/ack (the `AckConsumer` operationId).
+func (c *ClientWithResponses) AckConsumerWithResponse(ctx context.Context, name ConsumerName, body AckConsumerJSONRequestBody, reqEditors ...RequestEditorFn) (*AckConsumerResponse, error) {
+	rsp, err := c.AckConsumer(ctx, name, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAckConsumerResponse(rsp)
+}
+
 // ListDeliveriesWithResponse List deliveries
 //
 // Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
@@ -7466,6 +9197,16 @@ func (c *ClientWithResponses) ReplayDeliveryWithResponse(ctx context.Context, id
 // below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
 // `after=0` always starts at the oldest event kept.
 //
+// With `consumer`, the server keeps the cursor: the page starts after the consumer's
+// `acked_seq` and uses the consumer's stored filter, exactly as `after=<acked_seq>` with
+// that filter would. `consumer` cannot be combined with `after`, `watch`, `type` or `source`:
+// exclusivity is by presence, so `consumer` with `after=0` or an empty `watch=` also gets
+// `400 bad-request`. An unknown consumer gets `404`, and a consumer whose `acked_seq` is
+// below the highest pruned `seq` gets `410 cursor-expired`; unlike `after=0`, an `acked_seq`
+// of `0` is checked like any other position. Reading never acknowledges: the
+// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
+// `next_after`) once it has processed the page.
+//
 // Returns a wrapper object for the known response body format(s).
 //
 // Corresponds with GET /v1/events (the `ListEvents` operationId).
@@ -7490,6 +9231,14 @@ func (c *ClientWithResponses) ListEventsWithResponse(ctx context.Context, params
 //   - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
 //     cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
 //     not a stream).
+//   - With `consumer`, the stream starts after the consumer's `acked_seq` and uses its stored
+//     filter; `Last-Event-ID` still takes precedence over `acked_seq`. As on `GET /v1/events`,
+//     `consumer` cannot be present with `after`, `watch`, `type` or `source` (`400`), an
+//     unknown consumer gets `404`, and an expired cursor gets `410` before the stream starts.
+//     The consumer is read once, when the stream starts: an open stream keeps the filter as it
+//     was then (watch names resolved once), and a later `PUT` or `DELETE` of the consumer
+//     does not affect it. The stream never acknowledges: the client calls
+//     `POST /v1/consumers/{name}/ack`.
 //   - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
 //   - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
 //     cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
@@ -7981,6 +9730,515 @@ func (c *ClientWithResponses) ListWatchVersionsWithResponse(ctx context.Context,
 	return ParseListWatchVersionsResponse(rsp)
 }
 
+// ParseListConsumersResponse parses an HTTP response from a ListConsumersWithResponse call
+func ParseListConsumersResponse(rsp *http.Response) (*ListConsumersResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListConsumersResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConsumerPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers ListConsumersResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers ListConsumersResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseDeleteConsumerResponse parses an HTTP response from a DeleteConsumerWithResponse call
+func ParseDeleteConsumerResponse(rsp *http.Response) (*DeleteConsumerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteConsumerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		var headers DeleteConsumerResponse204Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		response.Headers204 = &headers
+	case rsp.StatusCode == 401:
+		var headers DeleteConsumerResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers DeleteConsumerResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseGetConsumerResponse parses an HTTP response from a GetConsumerWithResponse call
+func ParseGetConsumerResponse(rsp *http.Response) (*GetConsumerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetConsumerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Consumer
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers GetConsumerResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers GetConsumerResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParsePutConsumerResponse parses an HTTP response from a PutConsumerWithResponse call
+func ParsePutConsumerResponse(rsp *http.Response) (*PutConsumerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutConsumerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Consumer
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Consumer
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 200:
+		var headers PutConsumerResponse200Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		response.Headers200 = &headers
+	case rsp.StatusCode == 201:
+		var headers PutConsumerResponse201Headers
+		if values := rsp.Header.Values("Angelia-Change"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Angelia-Change", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.AngeliaChange = &value
+		}
+		if values := rsp.Header.Values("Location"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Location", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: "uri-reference"}); err != nil {
+				return nil, err
+			}
+			headers.Location = &value
+		}
+		response.Headers201 = &headers
+	case rsp.StatusCode == 401:
+		var headers PutConsumerResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers PutConsumerResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseAckConsumerResponse parses an HTTP response from a AckConsumerWithResponse call
+func ParseAckConsumerResponse(rsp *http.Response) (*AckConsumerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AckConsumerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Consumer
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers AckConsumerResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers AckConsumerResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
 // ParseListDeliveriesResponse parses an HTTP response from a ListDeliveriesWithResponse call
 func ParseListDeliveriesResponse(rsp *http.Response) (*ListDeliveriesResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -8296,6 +10554,13 @@ func ParseListEventsResponse(rsp *http.Response) (*ListEventsResponse, error) {
 		}
 		response.ApplicationproblemJSON403 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 410:
 		var dest CursorExpired
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -8379,6 +10644,13 @@ func ParseStreamEventsResponse(rsp *http.Response) (*StreamEventsResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 410:
 		var dest CursorExpired

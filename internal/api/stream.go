@@ -13,25 +13,52 @@ import (
 // StreamEvents implements StrictServerInterface: GET /v1/events/stream as
 // server-sent events (spec docs/api.md decision 15).
 func (s *Server) StreamEvents(ctx context.Context, req StreamEventsRequestObject) (StreamEventsResponseObject, error) {
-	var after int64
-	if req.Params.After != nil {
-		after = *req.Params.After
-	}
-	if req.Params.LastEventID != nil { // takes precedence over after
-		after = *req.Params.LastEventID
-	}
-	if err := s.cursorCheck(ctx, after); err != nil {
-		return nil, err // 410 before any stream starts
-	}
-	f, err := s.newEventFilter(ctx, deref(req.Params.Watch), deref(req.Params.Type), deref(req.Params.Source))
+	after, f, err := s.streamStart(ctx, req.Params)
 	if err != nil {
-		return nil, err
+		return nil, err // 404 or 410 before any stream starts
 	}
 	if !s.acquireStream() {
 		return nil, problem(SlugUnavailable, "too many open event streams; retry later").
 			withHeader("Retry-After", fmt.Sprint(RetryAfterSeconds))
 	}
 	return &eventStream{s: s, ctx: ctx, after: after, filter: f, token: stateFrom(ctx).token}, nil
+}
+
+// streamStart returns where a stream starts and its filter. Last-Event-ID
+// takes precedence over after and over a consumer's acked_seq. A consumer is
+// read once, here: the open stream keeps its filter as it is now (spec
+// docs/api.md decision 16).
+func (s *Server) streamStart(ctx context.Context, p StreamEventsParams) (int64, *eventFilter, error) {
+	if p.Consumer == nil {
+		var after int64
+		if p.After != nil {
+			after = *p.After
+		}
+		if p.LastEventID != nil {
+			after = *p.LastEventID
+		}
+		if err := s.cursorCheck(ctx, after); err != nil {
+			return 0, nil, err
+		}
+		f, err := s.newEventFilter(ctx, deref(p.Watch), deref(p.Type), deref(p.Source))
+		return after, f, err
+	}
+	c, err := s.readConsumer(ctx, *p.Consumer)
+	if err != nil {
+		return 0, nil, err
+	}
+	after := c.AckedSeq
+	if p.LastEventID != nil {
+		after = *p.LastEventID
+		err = s.cursorCheck(ctx, after)
+	} else {
+		err = s.consumerCheck(ctx, c)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	f, err := s.consumerFilter(ctx, c)
+	return after, f, err
 }
 
 // acquireStream takes one of the MaxStreams slots; releaseStream gives it

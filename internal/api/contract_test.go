@@ -482,6 +482,50 @@ func TestContract(t *testing.T) {
 	_, v = nc.call("putSecret", 422, "/v1/secrets/ci-webhook-signing", tokAdmin, c.exampleBody("SecretPut"))
 	c.sameAsExample("ProblemSecretsKeyMissing", v)
 
+	// Consumers (spec 0.5.0), from the request examples. release-bot starts
+	// at the oldest event, so that the acks of the examples move it: first
+	// to the first event of EventPage, then by id to the second
+	// (TestConsumerStart checks start: latest).
+	e.now = time.Date(2026, 11, 10, 16, 20, 0, 0, time.UTC)
+	c.call("putConsumer", 201, "/v1/consumers/audit-agent", tokWrite, c.exampleBody("ConsumerPutEarliest"))
+	e.now = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+	botPut := c.exampleBody("ConsumerPut")
+	botPut["start"] = "earliest"
+	r, v = c.call("putConsumer", 201, "/v1/consumers/release-bot", tokWrite, botPut)
+	if r.Header.Get("Angelia-Change") != "created" || r.Header.Get("Location") != "/v1/consumers/release-bot" {
+		t.Errorf("putConsumer headers %v", r.Header)
+	}
+	c.sameAsExample("ConsumerCreated", v, "id", "acked_seq")
+	r, v = c.call("putConsumer", 200, "/v1/consumers/release-bot", tokWrite, c.exampleBody("ConsumerPut"))
+	if r.Header.Get("Angelia-Change") != "unchanged" {
+		t.Errorf("second putConsumer: %v", r.Header)
+	}
+	c.sameAsExample("ConsumerCreated", v, "id", "acked_seq")
+	firstSeq := e.eventPage("/v1/events?limit=1").Items[0].Seq
+	e.now = time.Date(2026, 11, 11, 8, 5, 12, 31e6, time.UTC)
+	_, v = c.call("ackConsumer", 200, "/v1/consumers/release-bot/ack", tokWrite, map[string]any{"seq": firstSeq})
+	c.sameAsExample("Consumer", v, "id", "acked_seq")
+	_, v = c.call("getConsumer", 200, "/v1/consumers/release-bot", tokRead, nil)
+	c.sameAsExample("Consumer", v, "id", "acked_seq")
+	_, v = c.call("listConsumers", 200, "/v1/consumers", tokRead, nil)
+	c.sameAsExample("ConsumerPage", v, "id", "acked_seq")
+	_, v = c.call("listEvents", 200, "/v1/events?consumer=release-bot", tokRead, nil)
+	if items := v.(map[string]any)["items"].([]any); len(items) != 1 {
+		t.Errorf("listEvents?consumer: %v", v)
+	}
+	e.now = time.Date(2026, 11, 11, 8, 10, 40, 418e6, time.UTC)
+	_, v = c.call("ackConsumer", 200, "/v1/consumers/release-bot/ack", tokWrite, c.exampleBody("ConsumerAckEventId"))
+	c.sameAsExample("ConsumerAcked", v, "id", "acked_seq")
+	_, _ = c.call("ackConsumer", 422, "/v1/consumers/release-bot/ack", tokWrite, c.exampleBody("ConsumerAckSeq")) // beyond the head
+	_, v = c.call("ackConsumer", 422, "/v1/consumers/release-bot/ack", tokWrite, map[string]any{"event_id": "01JBXC4D5E6F7G8H9J0K1M2N3Q"})
+	c.sameAsExample("ProblemAckUnknownEvent", v)
+	_, v = c.call("listEvents", 400, "/v1/events?consumer=release-bot&after=0", tokRead, nil)
+	c.sameAsExample("ProblemConsumerExclusive", v)
+	c.call("listEvents", 404, "/v1/events?consumer=nobody", tokRead, nil)
+	c.call("deleteConsumer", 204, "/v1/consumers/audit-agent?dry_run=true", tokWrite, nil)
+	c.call("deleteConsumer", 204, "/v1/consumers/audit-agent", tokWrite, nil)
+	c.call("getConsumer", 404, "/v1/consumers/audit-agent", tokRead, nil)
+
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)
 	if r.Header.Get("Angelia-Change") != "deleted" {

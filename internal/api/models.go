@@ -108,6 +108,24 @@ type eventPageJSON struct {
 	HasMore   bool              `json:"has_more"`
 }
 
+type consumerJSON struct {
+	Name      string             `json:"name"`
+	ID        string             `json:"id"`
+	Filter    consumerFilterJSON `json:"filter"`
+	AckedSeq  int64              `json:"acked_seq"`
+	AckedAt   *timestamp         `json:"acked_at"`
+	CreatedAt timestamp          `json:"created_at"`
+	UpdatedAt timestamp          `json:"updated_at"`
+}
+
+// consumerFilterJSON is a consumer's filter, stored and sent with every key
+// present.
+type consumerFilterJSON struct {
+	Watch  []string `json:"watch"`
+	Type   []string `json:"type"`
+	Source []string `json:"source"`
+}
+
 type sinkJSON struct {
 	Name         string         `json:"name"`
 	ID           string         `json:"id"`
@@ -233,6 +251,11 @@ func (r response) VisitDeleteWatchResponse(w http.ResponseWriter) error        {
 func (r response) VisitGetWatchResponse(w http.ResponseWriter) error           { return r.write(w) }
 func (r response) VisitPutWatchResponse(w http.ResponseWriter) error           { return r.write(w) }
 func (r response) VisitListWatchVersionsResponse(w http.ResponseWriter) error  { return r.write(w) }
+func (r response) VisitListConsumersResponse(w http.ResponseWriter) error      { return r.write(w) }
+func (r response) VisitGetConsumerResponse(w http.ResponseWriter) error        { return r.write(w) }
+func (r response) VisitPutConsumerResponse(w http.ResponseWriter) error        { return r.write(w) }
+func (r response) VisitDeleteConsumerResponse(w http.ResponseWriter) error     { return r.write(w) }
+func (r response) VisitAckConsumerResponse(w http.ResponseWriter) error        { return r.write(w) }
 
 // Change is the value of the Angelia-Change header (spec docs/api.md
 // decision 6).
