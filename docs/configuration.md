@@ -241,8 +241,9 @@ under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
   `503 unavailable` with `Retry-After: 5`, and open event streams are closed.
 - Each request writes one `api request` record to the log with its request id, method, path, route,
   status, size, duration, principal and scope. Headers, the query string and bodies are never
-  logged, and a path segment that looks like a credential is replaced with `[redacted]`. Replays
-  also write an `api audit` record.
+  logged, and a path segment that looks like a credential is replaced with `[redacted]`. Replays,
+  secret writes and consumer creates, filter changes and deletes also write an `api audit` record;
+  consumer acks are frequent and are only in the access log.
 
 ## Installed plugins
 

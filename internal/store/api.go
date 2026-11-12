@@ -101,10 +101,10 @@ type APITx interface {
 	// AckConsumer moves the cursor of the consumer called name to seq when
 	// that is higher than AckedSeq, in one statement (max(acked_seq, seq)),
 	// so concurrent acks never move it back. A lower or equal seq changes
-	// nothing, AckedAt and UpdatedAt included. It returns the consumer as it
-	// is afterwards; ErrNotFound when it does not exist, ErrInvalid for a
-	// negative seq. Whether seq exists in the log is the caller's check
-	// (against MaxEventSeq).
+	// nothing, AckedAt included; no ack changes UpdatedAt. It returns the
+	// consumer as it is afterwards; ErrNotFound when it does not exist,
+	// ErrInvalid for a negative seq. Whether seq exists in the log is the
+	// caller's check (against MaxEventSeq).
 	AckConsumer(ctx context.Context, name string, seq int64, now time.Time) (Consumer, error)
 	// ListReplayCandidates returns the deliveries a bulk replay selects,
 	// oldest event first; the caller filters on the event time.

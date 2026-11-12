@@ -14,7 +14,6 @@ import (
 const ackConsumer = `-- name: AckConsumer :one
 UPDATE consumer SET
     acked_at   = CASE WHEN ?1 > acked_seq THEN ?2 ELSE acked_at END,
-    updated_at = CASE WHEN ?1 > acked_seq THEN ?2 ELSE updated_at END,
     acked_seq  = max(acked_seq, ?1)
 WHERE name = ?3
 RETURNING id, name, filter_json, acked_seq, acked_at, created_at, updated_at
@@ -27,7 +26,8 @@ type AckConsumerParams struct {
 }
 
 // One statement, so concurrent acks never move the cursor back. A lower or
-// equal seq changes nothing, acked_at and updated_at included.
+// equal seq changes nothing, acked_at included. An ack never changes
+// updated_at, the time of the last filter change (spec schema Consumer).
 func (q *Queries) AckConsumer(ctx context.Context, arg AckConsumerParams) (Consumer, error) {
 	row := q.db.QueryRowContext(ctx, ackConsumer, arg.Seq, arg.Now, arg.Name)
 	var i Consumer

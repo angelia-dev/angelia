@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.4.1
+  version: 0.5.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
-    known versions of a watch, pull or stream release events, and inspect and replay deliveries.
+    known versions of a watch, pull or stream release events (optionally through a named
+    consumer that keeps the cursor on the server), and inspect and replay deliveries.
 
     **Draft (spec 0.x).** This document may still change, including in a breaking way, in any
     0.x minor release of the spec repository. The `/v1` path prefix names the major version that
@@ -39,6 +40,8 @@ tags:
     description: The known versions of a watch's target (read-only).
   - name: events
     description: The immutable release event log, by cursor or as a stream.
+  - name: consumers
+    description: Durable server-side event cursors, advanced only by an explicit ack.
   - name: sinks
     description: Where deliveries go. Mirrors `sinks[]` of the watch file.
   - name: secrets
@@ -287,6 +290,16 @@ paths:
         Events older than the retention period (90 days by default) are pruned. A non-zero `after`
         below the highest pruned `seq` is refused with `410 cursor-expired` and `oldest_seq`;
         `after=0` always starts at the oldest event kept.
+
+        With `consumer`, the server keeps the cursor: the page starts after the consumer's
+        `acked_seq` and uses the consumer's stored filter, exactly as `after=<acked_seq>` with
+        that filter would. `consumer` cannot be combined with `after`, `watch`, `type` or `source`:
+        exclusivity is by presence, so `consumer` with `after=0` or an empty `watch=` also gets
+        `400 bad-request`. An unknown consumer gets `404`, and a consumer whose `acked_seq` is
+        below the highest pruned `seq` gets `410 cursor-expired`; unlike `after=0`, an `acked_seq`
+        of `0` is checked like any other position. Reading never acknowledges: the
+        client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
+        `next_after`) once it has processed the page.
       tags: [events]
       security:
         - bearerAuth: [read]
@@ -296,6 +309,7 @@ paths:
         - $ref: '#/components/parameters/WatchFilter'
         - $ref: '#/components/parameters/TypeFilter'
         - $ref: '#/components/parameters/SourceFilter'
+        - $ref: '#/components/parameters/ConsumerParam'
       responses:
         '200':
           description: The events after the cursor, oldest first.
@@ -312,6 +326,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '410':
           $ref: '#/components/responses/CursorExpired'
         '500':
@@ -335,6 +351,14 @@ paths:
         - A reconnecting client sends `Last-Event-ID`; it takes precedence over `after`. An expired
           cursor is refused before the stream starts, with `410 cursor-expired` (problem details,
           not a stream).
+        - With `consumer`, the stream starts after the consumer's `acked_seq` and uses its stored
+          filter; `Last-Event-ID` still takes precedence over `acked_seq`. As on `GET /v1/events`,
+          `consumer` cannot be present with `after`, `watch`, `type` or `source` (`400`), an
+          unknown consumer gets `404`, and an expired cursor gets `410` before the stream starts.
+          The consumer is read once, when the stream starts: an open stream keeps the filter as it
+          was then (watch names resolved once), and a later `PUT` or `DELETE` of the consumer
+          does not affect it. The stream never acknowledges: the client calls
+          `POST /v1/consumers/{name}/ack`.
         - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
         - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
           cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
@@ -348,9 +372,10 @@ paths:
         - $ref: '#/components/parameters/WatchFilter'
         - $ref: '#/components/parameters/TypeFilter'
         - $ref: '#/components/parameters/SourceFilter'
+        - $ref: '#/components/parameters/ConsumerParam'
         - name: Last-Event-ID
           in: header
-          description: The `seq` of the last event the client received. Takes precedence over `after`.
+          description: The `seq` of the last event the client received. Takes precedence over `after` and over a consumer's `acked_seq`.
           schema:
             $ref: '#/components/schemas/Seq'
           example: 4182
@@ -371,6 +396,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '410':
           $ref: '#/components/responses/CursorExpired'
         '500':
@@ -410,6 +437,236 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/consumers:
+    get:
+      operationId: listConsumers
+      summary: List consumers
+      description: Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
+      tags: [consumers]
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of consumers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumerPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/ConsumerPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/consumers/{name}:
+    parameters:
+      - $ref: '#/components/parameters/ConsumerName'
+    get:
+      operationId: getConsumer
+      summary: Get a consumer
+      description: The consumer with its stored filter and its cursor (`acked_seq`, `acked_at`).
+      tags: [consumers]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The consumer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consumer'
+              examples:
+                consumer:
+                  $ref: '#/components/examples/Consumer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: putConsumer
+      summary: Create or update a consumer
+      description: |
+        Idempotent upsert keyed by `name`. A consumer is a durable, server-side event cursor:
+        `GET /v1/events?consumer=` and `GET /v1/events/stream?consumer=` read the events after
+        its `acked_seq` with its stored `filter`, and only `POST /v1/consumers/{name}/ack` moves
+        the cursor. Reading never acknowledges.
+
+        The body replaces the whole `filter` (an omitted `filter` matches every event). `start`
+        applies only when the consumer is created: `latest` (the default) sets `acked_seq` to
+        the highest `seq` ever committed (pruned events included) when the create commits, so the consumer
+        receives only events committed after it (an event committed concurrently with the create
+        may or may not be included); `earliest` sets it to the highest pruned `seq` (`0` on a log
+        that was never pruned), so the consumer starts at the oldest event kept. On an existing consumer `start` is
+        ignored, and no `PUT` ever moves `acked_seq`: changing the filter applies to the events
+        after the current cursor only. Sending the same filter twice changes nothing the second
+        time (`Angelia-Change: unchanged`).
+      tags: [consumers]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumerWrite'
+            examples:
+              consumer:
+                $ref: '#/components/examples/ConsumerPut'
+              fromEarliest:
+                $ref: '#/components/examples/ConsumerPutEarliest'
+      responses:
+        '200':
+          description: The consumer existed; its filter was updated, or was already identical. Its cursor is unchanged.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consumer'
+              examples:
+                consumer:
+                  $ref: '#/components/examples/Consumer'
+        '201':
+          description: The consumer was created, with its cursor at the `start` position.
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consumer'
+              examples:
+                created:
+                  $ref: '#/components/examples/ConsumerCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteConsumer
+      summary: Delete a consumer
+      description: Deletes the consumer and its cursor. Events are not affected; retention never waits for consumers.
+      tags: [consumers]
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - $ref: '#/components/parameters/DryRun'
+      responses:
+        '204':
+          description: The consumer was deleted (or, with `dry_run=true`, would be).
+          headers:
+            Angelia-Change:
+              $ref: '#/components/headers/AngeliaChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/consumers/{name}/ack:
+    parameters:
+      - $ref: '#/components/parameters/ConsumerName'
+    post:
+      operationId: ackConsumer
+      summary: Acknowledge events up to a position
+      description: |
+        Commits the consumer's cursor: everything up to and including the given position is
+        acknowledged. The body is `ConsumerAck`, exactly one of `seq` (an event's `seq`, as in
+        `next_after` or an `EventRecord`) and `event_id` (an event's CloudEvents `id`, which the
+        server resolves to its `seq`).
+
+        The commit is monotonic: `acked_seq` becomes the larger of its current value and the
+        given `seq`, so acknowledging the same or an older position again is a no-op that returns
+        `200` with the consumer unchanged (`acked_at` included), and concurrent acks never move
+        the cursor back. An acknowledged position does not have to match the consumer's filter:
+        acknowledging a page's `next_after` skips the events the filter left out.
+
+        A `seq` above the highest `seq` ever committed (pruned events included), or an `event_id` the log does not hold (never
+        emitted, or already pruned), is refused with `422 validation-failed` and a pointer to the
+        member. A consumer whose cursor fell behind retention (`410 cursor-expired` on read)
+        recovers by acknowledging `oldest_seq − 1`, accepting the gap.
+      tags: [consumers]
+      security:
+        - bearerAuth: [write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumerAck'
+            examples:
+              bySeq:
+                $ref: '#/components/examples/ConsumerAckSeq'
+              byEventId:
+                $ref: '#/components/examples/ConsumerAckEventId'
+      responses:
+        '200':
+          description: The consumer after the commit; unchanged when the position was not beyond its cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consumer'
+              examples:
+                acked:
+                  $ref: '#/components/examples/ConsumerAcked'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1211,7 +1468,7 @@ components:
       description: |
         An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
         ordered, and a token satisfies an operation whose scope is at or below its own:
-        `read` (every `GET`), `write` (watches, subscriptions, replays), `admin` (sinks, secrets,
+        `read` (every `GET`), `write` (watches, subscriptions, replays, consumers and their acks), `admin` (sinks, secrets,
         any change to a `*_ref` key, and everything else). The scope an operation needs is listed in its `security` requirement.
         The token and its scope are checked before anything else, so a `401` or `403` never
         reveals whether a resource exists.
@@ -1268,6 +1525,14 @@ components:
       schema:
         $ref: '#/components/schemas/Name'
       example: platform-ci
+    ConsumerName:
+      name: name
+      in: path
+      required: true
+      description: The consumer's name.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: release-bot
     DeliveryId:
       name: id
       in: path
@@ -1308,6 +1573,17 @@ components:
       schema:
         $ref: '#/components/schemas/Seq'
       example: 4180
+    ConsumerParam:
+      name: consumer
+      in: query
+      description: |
+        Read through this consumer: start after its `acked_seq`, with its stored filter. Exclusive
+        with `after`, `watch`, `type` and `source` by presence: sending any of them with `consumer`,
+        even `after=0` or an empty value, gets `400`. Reading never moves
+        the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
+      schema:
+        $ref: '#/components/schemas/Name'
+      example: release-bot
     EventLimit:
       name: limit
       in: query
@@ -1369,7 +1645,7 @@ components:
 
   responses:
     BadRequest:
-      description: The request is malformed (bad JSON, an unknown query parameter, an invalid cursor).
+      description: The request is malformed (bad JSON, an unknown query parameter, an invalid cursor, `consumer` combined with `after` or a filter).
       content:
         application/problem+json:
           schema:
@@ -1377,6 +1653,8 @@ components:
           examples:
             badCursor:
               $ref: '#/components/examples/ProblemBadRequest'
+            consumerExclusive:
+              $ref: '#/components/examples/ProblemConsumerExclusive'
     Unauthorized:
       description: No token, or a token that is unknown, revoked or malformed.
       headers:
@@ -1442,6 +1720,8 @@ components:
           examples:
             validation:
               $ref: '#/components/examples/ProblemValidation'
+            ackUnknownEvent:
+              $ref: '#/components/examples/ProblemAckUnknownEvent'
             envNotAllowed:
               $ref: '#/components/examples/ProblemEnvNotAllowed'
             secretsKeyMissing:
@@ -1466,6 +1746,8 @@ components:
           examples:
             cursorExpired:
               $ref: '#/components/examples/ProblemCursorExpired'
+            consumerCursorExpired:
+              $ref: '#/components/examples/ProblemConsumerCursorExpired'
     PayloadTooLarge:
       description: The request body is larger than the server accepts (1 MiB).
       content:
@@ -1494,7 +1776,7 @@ components:
 
   schemas:
     Name:
-      description: The stable key of a watch, sink or subscription, as in the watch file. Unique per resource type, whoever manages the resource.
+      description: The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
       type: string
       pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
     Ulid:
@@ -1785,6 +2067,115 @@ components:
         has_more:
           description: Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`.
           type: boolean
+
+    ConsumerFilter:
+      description: |
+        Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
+        given keys must match; an empty or absent key matches every event (so an empty `type`
+        means all types, unlike `SubscriptionFilter`, whose default is `release.published`).
+        Stored as written; watch names are resolved at each request, as the `watch` query
+        parameter is, and once per stream when a stream starts.
+      type: object
+      additionalProperties: false
+      properties:
+        watch:
+          description: Watches, each by name or by id. A name means the watch's current id; an id also matches events of a watch that was deleted or renamed.
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/NameOrId'
+          default: []
+        type:
+          description: Short event types. Empty means every type.
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ShortEventType'
+          default: []
+        source:
+          description: Source kinds, matched against the event's `data.source` (always the base kind).
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Kind'
+          default: []
+    ConsumerStart:
+      description: |
+        Where a new consumer's cursor starts. `latest`: at the highest `seq` ever committed (pruned events included)
+        when the create commits, so it reads only events committed after its creation (an event
+        committed concurrently may or may not be included). `earliest`: at the highest pruned
+        `seq` (`0` on a log that was never pruned), so it reads from the oldest event kept.
+      type: string
+      enum: [latest, earliest]
+    ConsumerWrite:
+      description: The body of `PUT /v1/consumers/{name}`. Omitted keys take their defaults.
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: Optional; when given it must equal the name in the path.
+        filter:
+          $ref: '#/components/schemas/ConsumerFilter'
+        start:
+          $ref: '#/components/schemas/ConsumerStart'
+          description: Applies only when the consumer is created; ignored on an existing consumer, whose cursor a `PUT` never moves.
+          default: latest
+    Consumer:
+      description: A consumer as the server returns it, with its cursor.
+      type: object
+      required: [name, id, filter, acked_seq, acked_at, created_at, updated_at]
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated when the consumer is created; kept across updates.
+        filter:
+          $ref: '#/components/schemas/ConsumerFilter'
+          description: The stored filter, every key present.
+        acked_seq:
+          $ref: '#/components/schemas/Seq'
+          description: The cursor. Every event up to and including this `seq` is acknowledged; `?consumer=` reads the events after it. It only grows.
+        acked_at:
+          description: When an ack last moved `acked_seq`, or `null` if none has.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the filter was last changed by a `PUT`. An ack does not change it.
+    ConsumerAck:
+      description: |
+        The body of `POST /v1/consumers/{name}/ack`: exactly one of `seq` and `event_id`.
+        Everything up to and including that position is acknowledged.
+      type: object
+      additionalProperties: false
+      properties:
+        seq:
+          $ref: '#/components/schemas/Seq'
+          description: An event's `seq`, or a page's `next_after`. At most the highest `seq` ever committed (pruned events included), so `oldest_seq − 1` is accepted on a log whose every event was pruned.
+        event_id:
+          $ref: '#/components/schemas/Ulid'
+          description: An event's CloudEvents `id`; the server acknowledges up to that event's `seq`. The event must still be in the log.
+      oneOf:
+        - required: [seq]
+        - required: [event_id]
+    ConsumerPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Consumer'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
 
     SinkWrite:
       description: |
@@ -2757,6 +3148,90 @@ components:
 
         : keep-alive
 
+    ConsumerPut:
+      summary: A consumer of the platform team's PyPI releases, from now on
+      value:
+        filter:
+          watch: [requests]
+          type: [release.published, release.yanked]
+    ConsumerPutEarliest:
+      summary: A consumer of every event still kept, from the oldest one
+      value:
+        filter:
+          source: [pypi, npm]
+        start: earliest
+    ConsumerCreated:
+      summary: A consumer just created with `start` latest, not acknowledged yet
+      value:
+        name: release-bot
+        id: 01JC0F3K4M5N6P7Q8R9S0T1V2W
+        filter:
+          watch: [requests]
+          type: [release.published, release.yanked]
+          source: []
+        acked_seq: 4180
+        acked_at: null
+        created_at: '2026-11-11T08:00:00.000Z'
+        updated_at: '2026-11-11T08:00:00.000Z'
+    Consumer:
+      summary: A consumer that acknowledged a page
+      value:
+        name: release-bot
+        id: 01JC0F3K4M5N6P7Q8R9S0T1V2W
+        filter:
+          watch: [requests]
+          type: [release.published, release.yanked]
+          source: []
+        acked_seq: 4182
+        acked_at: '2026-11-11T08:05:12.031Z'
+        created_at: '2026-11-11T08:00:00.000Z'
+        updated_at: '2026-11-11T08:00:00.000Z'
+    ConsumerAcked:
+      summary: The consumer after acknowledging the page's next_after
+      value:
+        name: release-bot
+        id: 01JC0F3K4M5N6P7Q8R9S0T1V2W
+        filter:
+          watch: [requests]
+          type: [release.published, release.yanked]
+          source: []
+        acked_seq: 4190
+        acked_at: '2026-11-11T08:10:40.418Z'
+        created_at: '2026-11-11T08:00:00.000Z'
+        updated_at: '2026-11-11T08:00:00.000Z'
+    ConsumerPage:
+      summary: A page with two consumers
+      value:
+        items:
+          - name: audit-agent
+            id: 01JC0E1A2B3C4D5E6F7G8H9J0K
+            filter:
+              watch: []
+              type: []
+              source: [pypi, npm]
+            acked_seq: 3050
+            acked_at: null
+            created_at: '2026-11-10T16:20:00.000Z'
+            updated_at: '2026-11-10T16:20:00.000Z'
+          - name: release-bot
+            id: 01JC0F3K4M5N6P7Q8R9S0T1V2W
+            filter:
+              watch: [requests]
+              type: [release.published, release.yanked]
+              source: []
+            acked_seq: 4182
+            acked_at: '2026-11-11T08:05:12.031Z'
+            created_at: '2026-11-11T08:00:00.000Z'
+            updated_at: '2026-11-11T08:00:00.000Z'
+        next_cursor: null
+    ConsumerAckSeq:
+      summary: Acknowledge up to a page's next_after
+      value:
+        seq: 4190
+    ConsumerAckEventId:
+      summary: Acknowledge up to an event, by its CloudEvents id
+      value:
+        event_id: 01JBXC4D5E6F7G8H9J0K1M2N3P
     SinkPut:
       summary: A webhook signed with a secret from the instance environment (as in the watch file)
       value:
@@ -3182,4 +3657,31 @@ components:
         errors:
           - pointer: /auth/token_ref
             detail: secret registry-token has no hosts
-
+    ProblemConsumerExclusive:
+      summary: A consumer combined with an explicit cursor or filter
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-bad-request
+        title: Bad request
+        status: 400
+        detail: 'query parameter consumer: cannot be combined with after, watch, type or source'
+        instance: /v1/events
+    ProblemConsumerCursorExpired:
+      summary: A consumer whose cursor fell behind retention
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-cursor-expired
+        title: Cursor expired
+        status: 410
+        detail: consumer release-bot is at 1200, but events after 1200 were pruned; acknowledge oldest_seq - 1 to resume
+        instance: /v1/events
+        oldest_seq: 3051
+    ProblemAckUnknownEvent:
+      summary: An ack of an event the log does not hold
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-validation-failed
+        title: Validation failed
+        status: 422
+        detail: the ack has 1 error
+        instance: /v1/consumers/release-bot/ack
+        errors:
+          - pointer: /event_id
+            detail: no event with this id in the log

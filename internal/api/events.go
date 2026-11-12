@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"github.com/angelia-dev/angelia/internal/event"
@@ -117,15 +118,22 @@ func eventRecordOf(e store.Event) eventRecordJSON {
 
 // cursorCheck refuses a cursor into pruned events: a non-zero after below
 // the highest pruned seq gets 410 cursor-expired (spec docs/api.md decision
-// 12). Its oldest_seq is max(oldest kept seq, highest pruned seq + 1): an
-// event older than the highest pruned one can be kept while a delivery of it
-// is pending, and a client resuming from that one would get 410 again.
+// 12).
 func (s *Server) cursorCheck(ctx context.Context, after int64) error {
 	if after <= 0 {
 		return nil // after=0 starts at the oldest event kept
 	}
+	return s.expiredCheck(ctx, after, fmt.Sprintf("events after %d were pruned; resume from oldest_seq", after))
+}
+
+// expiredCheck gets 410 cursor-expired, with detail, when pos is below the
+// highest pruned seq. Its oldest_seq is max(oldest kept seq, highest pruned
+// seq + 1): an event older than the highest pruned one can be kept while a
+// delivery of it is pending, and a client resuming from that one would get
+// 410 again.
+func (s *Server) expiredCheck(ctx context.Context, pos int64, detail string) error {
 	pruned, err := s.opts.Store.HighestPrunedSeq(ctx)
-	if err != nil || after >= pruned {
+	if err != nil || pos >= pruned {
 		return err
 	}
 	oldest := pruned + 1
@@ -136,7 +144,7 @@ func (s *Server) cursorCheck(ctx context.Context, after int64) error {
 	if len(first) > 0 && first[0].Seq > oldest {
 		oldest = first[0].Seq
 	}
-	p := problem(SlugCursorExpired, "events after %d were pruned; resume from oldest_seq", after)
+	p := problem(SlugCursorExpired, "%s", detail)
 	p.OldestSeq = &oldest
 	return p
 }
@@ -144,19 +152,38 @@ func (s *Server) cursorCheck(ctx context.Context, after int64) error {
 // ListEvents implements StrictServerInterface.
 func (s *Server) ListEvents(ctx context.Context, req ListEventsRequestObject) (ListEventsResponseObject, error) {
 	var after int64
-	if req.Params.After != nil {
-		after = *req.Params.After
-	}
-	if err := s.cursorCheck(ctx, after); err != nil {
-		return nil, err
+	var f *eventFilter
+	if req.Params.Consumer != nil {
+		// Exclusive with after and the filters (checkParams): the
+		// consumer's cursor and stored filter, as after=<acked_seq> with
+		// that filter (spec docs/api.md decision 16).
+		c, err := s.readConsumer(ctx, *req.Params.Consumer)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.consumerCheck(ctx, c); err != nil {
+			return nil, err
+		}
+		after = c.AckedSeq
+		if f, err = s.consumerFilter(ctx, c); err != nil {
+			return nil, err
+		}
+	} else {
+		if req.Params.After != nil {
+			after = *req.Params.After
+		}
+		if err := s.cursorCheck(ctx, after); err != nil {
+			return nil, err
+		}
+		var err error
+		f, err = s.newEventFilter(ctx, deref(req.Params.Watch), deref(req.Params.Type), deref(req.Params.Source))
+		if err != nil {
+			return nil, err
+		}
 	}
 	limit := 100
 	if req.Params.Limit != nil {
 		limit = *req.Params.Limit
-	}
-	f, err := s.newEventFilter(ctx, deref(req.Params.Watch), deref(req.Params.Type), deref(req.Params.Source))
-	if err != nil {
-		return nil, err
 	}
 	items, next, more, err := s.scanEvents(ctx, after, limit, max(s.opts.EventScan, limit), f)
 	if err != nil {

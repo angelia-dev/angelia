@@ -469,11 +469,11 @@ ORDER BY name, id
 LIMIT sqlc.arg(max_rows);
 
 -- One statement, so concurrent acks never move the cursor back. A lower or
--- equal seq changes nothing, acked_at and updated_at included.
+-- equal seq changes nothing, acked_at included. An ack never changes
+-- updated_at, the time of the last filter change (spec schema Consumer).
 -- name: AckConsumer :one
 UPDATE consumer SET
     acked_at   = CASE WHEN sqlc.arg(seq) > acked_seq THEN sqlc.arg(now) ELSE acked_at END,
-    updated_at = CASE WHEN sqlc.arg(seq) > acked_seq THEN sqlc.arg(now) ELSE updated_at END,
     acked_seq  = max(acked_seq, sqlc.arg(seq))
 WHERE name = sqlc.arg(name)
 RETURNING *;

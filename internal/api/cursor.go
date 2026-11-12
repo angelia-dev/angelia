@@ -24,6 +24,7 @@ const (
 	cursorVersions      = "v"
 	cursorDeliveries    = "d"
 	cursorPlugins       = "p"
+	cursorConsumers     = "c"
 )
 
 func encodeCursor(c pageCursor) *string {

@@ -136,8 +136,9 @@ func testConsumerCRUD(t *testing.T, open opener) {
 	wantErr(t, err, store.ErrNotFound, "second delete")
 }
 
-// Story #79-B: an ack of a lower or equal seq is a no-op that keeps acked_at
-// (and updated_at); a higher one moves both.
+// Story #79-B: an ack of a lower or equal seq is a no-op that keeps acked_at;
+// a higher one moves it. No ack changes updated_at (spec: the time of the
+// last filter change).
 func testAckConsumer(t *testing.T, open opener) {
 	s := open(t)
 	ctx := t.Context()
@@ -154,11 +155,11 @@ func testAckConsumer(t *testing.T, open opener) {
 	if c := ack(0, t1); c.AckedSeq != 0 || !c.AckedAt.IsZero() || !c.UpdatedAt.Equal(t0) {
 		t.Fatalf("ack 0 = %+v", c)
 	}
-	if c := ack(10, t1); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t1) || !jsonEqual(c.Filter, json.RawMessage(`{"type":["release"]}`)) {
+	if c := ack(10, t1); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t0) || !jsonEqual(c.Filter, json.RawMessage(`{"type":["release"]}`)) {
 		t.Fatalf("ack 10 = %+v", c)
 	}
 	for _, seq := range []int64{3, 10} {
-		if c := ack(seq, t2); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t1) {
+		if c := ack(seq, t2); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t0) {
 			t.Fatalf("ack %d = %+v, want the consumer unchanged", seq, c)
 		}
 	}
