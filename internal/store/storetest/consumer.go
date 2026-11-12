@@ -3,6 +3,7 @@ package storetest
 import (
 	"encoding/json"
 	"math/rand/v2"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,16 @@ import (
 
 func consumer(id, name string) store.Consumer {
 	return store.Consumer{ID: id, Name: name, Filter: json.RawMessage(`{"type":["release"]}`), CreatedAt: t0, UpdatedAt: t0}
+}
+
+// jsonEqual compares two JSON documents by value, so an engine that stores
+// JSONB and reformats the text still passes.
+func jsonEqual(a, b json.RawMessage) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 func createConsumer(t *testing.T, s store.APIStore, c store.Consumer) {
@@ -49,7 +60,7 @@ func testConsumerCRUD(t *testing.T, open opener) {
 	got, err := s.ConsumerByName(ctx, "b")
 	must(t, err)
 	want := consumer("id-b", "b")
-	if got.ID != want.ID || got.Name != "b" || string(got.Filter) != string(want.Filter) || got.AckedSeq != 0 ||
+	if got.ID != want.ID || got.Name != "b" || !jsonEqual(got.Filter, want.Filter) || got.AckedSeq != 0 ||
 		!got.AckedAt.IsZero() || !got.CreatedAt.Equal(t0) || !got.UpdatedAt.Equal(t0) {
 		t.Fatalf("ConsumerByName = %+v", got)
 	}
@@ -61,7 +72,7 @@ func testConsumerCRUD(t *testing.T, open opener) {
 	createConsumer(t, s, empty)
 	got, err = s.ConsumerByName(ctx, "e")
 	must(t, err)
-	if string(got.Filter) != "{}" || got.AckedSeq != 7 || !got.AckedAt.IsZero() {
+	if !jsonEqual(got.Filter, json.RawMessage(`{}`)) || got.AckedSeq != 7 || !got.AckedAt.IsZero() {
 		t.Fatalf("empty consumer = %+v", got)
 	}
 
@@ -96,12 +107,26 @@ func testConsumerCRUD(t *testing.T, open opener) {
 	}))
 	got, err = s.ConsumerByName(ctx, "b")
 	must(t, err)
-	if string(got.Filter) != `{"watch":["w"]}` || got.AckedSeq != 5 || got.Name != "b" ||
+	if !jsonEqual(got.Filter, json.RawMessage(`{"watch":["w"]}`)) || got.AckedSeq != 5 || got.Name != "b" ||
 		!got.UpdatedAt.Equal(later) || !got.CreatedAt.Equal(t0) {
 		t.Fatalf("after update = %+v", got)
 	}
 	err = s.InAPITx(ctx, func(tx store.APITx) error { return tx.UpdateConsumer(ctx, consumer("nope", "x")) })
 	wantErr(t, err, store.ErrNotFound, "update unknown")
+
+	// UpdateConsumer validates like create.
+	for _, bad := range []store.Consumer{
+		{ID: "id-a", Name: "a", Filter: json.RawMessage(`{bad`), UpdatedAt: later},
+		{ID: "id-a", Name: "a", Filter: json.RawMessage(`{}`)},
+	} {
+		err = s.InAPITx(ctx, func(tx store.APITx) error { return tx.UpdateConsumer(ctx, bad) })
+		wantErr(t, err, store.ErrInvalid, "invalid update")
+	}
+	// A limit that is not positive is refused.
+	for _, limit := range []int{0, -1} {
+		_, err = s.ListConsumers(ctx, "", "", limit)
+		wantErr(t, err, store.ErrInvalid, "ListConsumers limit")
+	}
 
 	// Delete.
 	must(t, s.InAPITx(ctx, func(tx store.APITx) error { return tx.DeleteConsumer(ctx, "id-b") }))
@@ -129,7 +154,7 @@ func testAckConsumer(t *testing.T, open opener) {
 	if c := ack(0, t1); c.AckedSeq != 0 || !c.AckedAt.IsZero() || !c.UpdatedAt.Equal(t0) {
 		t.Fatalf("ack 0 = %+v", c)
 	}
-	if c := ack(10, t1); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t1) || string(c.Filter) != `{"type":["release"]}` {
+	if c := ack(10, t1); c.AckedSeq != 10 || !c.AckedAt.Equal(t1) || !c.UpdatedAt.Equal(t1) || !jsonEqual(c.Filter, json.RawMessage(`{"type":["release"]}`)) {
 		t.Fatalf("ack 10 = %+v", c)
 	}
 	for _, seq := range []int64{3, 10} {
@@ -198,13 +223,14 @@ func testDeleteWatchKeepsConsumers(t *testing.T, open opener) {
 	must(t, s.InConfigTx(ctx, func(tx store.ConfigTx) error { return tx.DeleteWatch(ctx, "w1") }))
 	got, err := s.ConsumerByName(ctx, "agent")
 	must(t, err)
-	if string(got.Filter) != `{"watch":["w1"]}` || got.AckedSeq != 4 || !got.UpdatedAt.Equal(t0) {
+	if !jsonEqual(got.Filter, json.RawMessage(`{"watch":["w1"]}`)) || got.AckedSeq != 4 || !got.UpdatedAt.Equal(t0) {
 		t.Fatalf("consumer after watch delete = %+v", got)
 	}
 }
 
 // MaxEventSeq is the head of the log, pruned events included: the highest
-// seq ever committed, also when pruning removed every event.
+// seq ever committed, also when pruning removed every event. The same reads
+// inside a transaction agree with the store's.
 func testMaxEventSeq(t *testing.T, open opener) {
 	s := open(t)
 	seed(t, s)
@@ -213,16 +239,35 @@ func testMaxEventSeq(t *testing.T, open opener) {
 		t.Helper()
 		n, err := s.MaxEventSeq(ctx)
 		must(t, err)
+		var inTx, pruned int64
+		must(t, s.InAPITx(ctx, func(tx store.APITx) (err error) {
+			if inTx, err = tx.MaxEventSeq(ctx); err != nil {
+				return err
+			}
+			pruned, err = tx.HighestPrunedSeq(ctx)
+			return err
+		}))
+		want, err := s.HighestPrunedSeq(ctx)
+		must(t, err)
+		if inTx != n || pruned != want {
+			t.Fatalf("in transaction MaxEventSeq = %d, HighestPrunedSeq = %d; store says %d and %d", inTx, pruned, n, want)
+		}
 		return n
 	}
 	if n := head(); n != 0 {
 		t.Fatalf("empty log = %d, want 0", n)
 	}
-	must(t, s.AppendEvent(ctx, eventAt("e1", pruneOld), nil))
-	must(t, s.AppendEvent(ctx, eventAt("e2", pruneOld), nil))
-	must(t, s.AppendEvent(ctx, eventAt("e3", pruneOld), nil))
-	if n := head(); n != 3 {
-		t.Fatalf("three events = %d, want 3", n)
+	for _, id := range []string{"e1", "e2", "e3"} {
+		must(t, s.AppendEvent(ctx, eventAt(id, pruneOld), nil))
+	}
+	evs, err := s.ListEventsAfter(ctx, 0, 10)
+	must(t, err)
+	if len(evs) != 3 {
+		t.Fatalf("events = %+v", evs)
+	}
+	last := evs[2].Seq
+	if n := head(); n != last {
+		t.Fatalf("three events = %d, want the seq of e3 (%d)", n, last)
 	}
 	// Fully pruned: the log is empty but the head stays at the last seq.
 	res, err := s.PruneHistory(ctx, pruneBefore, 0)
@@ -230,15 +275,20 @@ func testMaxEventSeq(t *testing.T, open opener) {
 	if left := listEventIDs(t, s); res.Events != 3 || len(left) != 0 {
 		t.Fatalf("prune = %+v, retained %v", res, left)
 	}
-	if n := head(); n != 3 {
-		t.Fatalf("fully pruned log = %d, want 3 (HighestPrunedSeq)", n)
+	if n := head(); n != last {
+		t.Fatalf("fully pruned log = %d, want %d (HighestPrunedSeq)", n, last)
 	}
-	if n, err := s.HighestPrunedSeq(ctx); err != nil || n != 3 {
+	if n, err := s.HighestPrunedSeq(ctx); err != nil || n != last {
 		t.Fatalf("HighestPrunedSeq = %d, %v", n, err)
 	}
 	// A new event continues after the pruned ones.
 	must(t, s.AppendEvent(ctx, eventAt("e4", t0), nil))
-	if n := head(); n != 4 {
-		t.Fatalf("after e4 = %d, want 4", n)
+	evs, err = s.ListEventsAfter(ctx, 0, 10)
+	must(t, err)
+	if len(evs) != 1 || evs[0].Seq <= last {
+		t.Fatalf("after e4 = %+v, want one event above %d", evs, last)
+	}
+	if n := head(); n != evs[0].Seq {
+		t.Fatalf("after e4 = %d, want %d", n, evs[0].Seq)
 	}
 }

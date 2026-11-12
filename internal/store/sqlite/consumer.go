@@ -14,6 +14,9 @@ import (
 
 // ListConsumers implements [store.APIReader].
 func (s *Store) ListConsumers(ctx context.Context, afterName, afterID string, limit int) ([]store.Consumer, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: list consumers: limit %d: %w", limit, store.ErrInvalid)
+	}
 	rows, err := s.q.ListConsumersPage(ctx, ListConsumersPageParams{
 		AfterName: afterName, AfterID: afterID, MaxRows: int64(limit),
 	})
@@ -35,9 +38,23 @@ func (s *Store) ConsumerByName(ctx context.Context, name string) (store.Consumer
 // MaxEventSeq implements [store.APIReader]: the larger of the newest event in
 // the log and the highest pruned seq (event_prune, migration 00013).
 func (s *Store) MaxEventSeq(ctx context.Context) (int64, error) {
-	n, err := s.q.MaxEventSeq(ctx)
+	return txOps{q: s.q}.MaxEventSeq(ctx)
+}
+
+// MaxEventSeq implements [store.APITx].
+func (o txOps) MaxEventSeq(ctx context.Context) (int64, error) {
+	n, err := o.q.MaxEventSeq(ctx)
 	if err != nil {
 		return 0, wrap(err, "max event seq", "")
+	}
+	return n, nil
+}
+
+// HighestPrunedSeq implements [store.APITx].
+func (o txOps) HighestPrunedSeq(ctx context.Context) (int64, error) {
+	n, err := o.q.HighestPrunedSeq(ctx)
+	if err != nil {
+		return 0, wrap(err, "highest pruned seq", "")
 	}
 	return n, nil
 }

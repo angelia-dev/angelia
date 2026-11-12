@@ -53,7 +53,7 @@ type APIReader interface {
 	ListDeliveryPage(ctx context.Context, q DeliveryQuery) ([]DeliveryRow, error)
 	// ListConsumers returns up to limit consumers ordered by (Name, ID),
 	// after the position (afterName, afterID); "" and "" start at the
-	// beginning.
+	// beginning. ErrInvalid when limit is not positive.
 	ListConsumers(ctx context.Context, afterName, afterID string, limit int) ([]Consumer, error)
 	// ConsumerByName returns the consumer with the name, or ErrNotFound.
 	ConsumerByName(ctx context.Context, name string) (Consumer, error)
@@ -80,6 +80,12 @@ type APITx interface {
 	GetSubscription(ctx context.Context, id string) (Subscription, error)
 	GetDelivery(ctx context.Context, id string) (Delivery, error)
 	ConsumerByName(ctx context.Context, name string) (Consumer, error)
+	// MaxEventSeq and HighestPrunedSeq are the reads of [APIReader] and
+	// [Store] inside the transaction, so a create reads its start position
+	// (`latest` is MaxEventSeq, `earliest` is HighestPrunedSeq) in the
+	// transaction that inserts the consumer and cannot race a prune.
+	MaxEventSeq(ctx context.Context) (int64, error)
+	HighestPrunedSeq(ctx context.Context) (int64, error)
 	// CreateConsumer inserts c, with the AckedSeq and AckedAt it carries
 	// (the API sets the start position there). ErrConflict when the name or
 	// id exists, ErrInvalid for an empty id or name, a zero CreatedAt or a

@@ -190,7 +190,7 @@ func TestConsumerMigrationDown(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
 	must(t, err)
 	defer func() { _ = db.Close() }()
-	_, err = migrate(ctx, db, discard(), 0)
+	_, err = migrate(ctx, db, discard(), 20)
 	must(t, err)
 	tables := func() (n int) {
 		t.Helper()
@@ -211,7 +211,8 @@ func TestConsumerMigrationDown(t *testing.T) {
 	}
 	p, err := newProvider(db)
 	must(t, err)
-	if _, err := p.Down(ctx); err != nil {
+	// Down to 19 rolls back 00020 only, whatever migrations come later.
+	if _, err := p.DownTo(ctx, 19); err != nil {
 		t.Fatal(err)
 	}
 	if tables() != 0 {
