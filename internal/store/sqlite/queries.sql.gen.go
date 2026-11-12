@@ -11,6 +11,38 @@ import (
 	"strings"
 )
 
+const ackConsumer = `-- name: AckConsumer :one
+UPDATE consumer SET
+    acked_at   = CASE WHEN ?1 > acked_seq THEN ?2 ELSE acked_at END,
+    updated_at = CASE WHEN ?1 > acked_seq THEN ?2 ELSE updated_at END,
+    acked_seq  = max(acked_seq, ?1)
+WHERE name = ?3
+RETURNING id, name, filter_json, acked_seq, acked_at, created_at, updated_at
+`
+
+type AckConsumerParams struct {
+	Seq  int64
+	Now  sql.NullInt64
+	Name string
+}
+
+// One statement, so concurrent acks never move the cursor back. A lower or
+// equal seq changes nothing, acked_at and updated_at included.
+func (q *Queries) AckConsumer(ctx context.Context, arg AckConsumerParams) (Consumer, error) {
+	row := q.db.QueryRowContext(ctx, ackConsumer, arg.Seq, arg.Now, arg.Name)
+	var i Consumer
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.FilterJson,
+		&i.AckedSeq,
+		&i.AckedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const acquireLease = `-- name: AcquireLease :execrows
 INSERT INTO lease (name, holder, expires_at) VALUES (?, ?, ?)
 ON CONFLICT (name) DO UPDATE SET expires_at = excluded.expires_at
@@ -171,6 +203,36 @@ func (q *Queries) CountSecretsByKeyID(ctx context.Context) ([]CountSecretsByKeyI
 		return nil, err
 	}
 	return items, nil
+}
+
+const createConsumer = `-- name: CreateConsumer :exec
+
+INSERT INTO consumer (id, name, filter_json, acked_seq, acked_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+type CreateConsumerParams struct {
+	ID         string
+	Name       string
+	FilterJson string
+	AckedSeq   int64
+	AckedAt    sql.NullInt64
+	CreatedAt  int64
+	UpdatedAt  int64
+}
+
+// Named consumers (story #79-B).
+func (q *Queries) CreateConsumer(ctx context.Context, arg CreateConsumerParams) error {
+	_, err := q.db.ExecContext(ctx, createConsumer,
+		arg.ID,
+		arg.Name,
+		arg.FilterJson,
+		arg.AckedSeq,
+		arg.AckedAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
 }
 
 const createDelivery = `-- name: CreateDelivery :exec
@@ -384,6 +446,18 @@ func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error 
 		arg.IntervalMs,
 	)
 	return err
+}
+
+const deleteConsumer = `-- name: DeleteConsumer :execrows
+DELETE FROM consumer WHERE id = ?
+`
+
+func (q *Queries) DeleteConsumer(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteConsumer, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteExpiredLease = `-- name: DeleteExpiredLease :exec
@@ -606,6 +680,25 @@ func (q *Queries) FinishLeasedDelivery(ctx context.Context, arg FinishLeasedDeli
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getConsumerByName = `-- name: GetConsumerByName :one
+SELECT id, name, filter_json, acked_seq, acked_at, created_at, updated_at FROM consumer WHERE name = ?
+`
+
+func (q *Queries) GetConsumerByName(ctx context.Context, name string) (Consumer, error) {
+	row := q.db.QueryRowContext(ctx, getConsumerByName, name)
+	var i Consumer
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.FilterJson,
+		&i.AckedSeq,
+		&i.AckedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getDelivery = `-- name: GetDelivery :one
@@ -954,6 +1047,50 @@ func (q *Queries) HighestPrunedSeq(ctx context.Context) (int64, error) {
 	var highest_pruned_seq int64
 	err := row.Scan(&highest_pruned_seq)
 	return highest_pruned_seq, err
+}
+
+const listConsumersPage = `-- name: ListConsumersPage :many
+SELECT id, name, filter_json, acked_seq, acked_at, created_at, updated_at FROM consumer
+WHERE name > ?1 OR (name = ?1 AND id > ?2)
+ORDER BY name, id
+LIMIT ?3
+`
+
+type ListConsumersPageParams struct {
+	AfterName string
+	AfterID   string
+	MaxRows   int64
+}
+
+func (q *Queries) ListConsumersPage(ctx context.Context, arg ListConsumersPageParams) ([]Consumer, error) {
+	rows, err := q.db.QueryContext(ctx, listConsumersPage, arg.AfterName, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Consumer
+	for rows.Next() {
+		var i Consumer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.FilterJson,
+			&i.AckedSeq,
+			&i.AckedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
@@ -1915,6 +2052,20 @@ func (q *Queries) MarkBaselineDone(ctx context.Context, id string) (int64, error
 	return result.RowsAffected()
 }
 
+const maxEventSeq = `-- name: MaxEventSeq :one
+SELECT CAST(max(coalesce((SELECT max(seq) FROM event), 0),
+                coalesce((SELECT highest_pruned_seq FROM event_prune WHERE id = 1), 0)) AS INTEGER)
+`
+
+// The highest seq ever committed: the log's newest event or, when pruning
+// removed it, the highest pruned seq.
+func (q *Queries) MaxEventSeq(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, maxEventSeq)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const pruneBatchEnd = `-- name: PruneBatchEnd :many
 SELECT seq FROM event WHERE seq > ?1 AND created_at < ?2 ORDER BY seq LIMIT ?3
 `
@@ -2151,6 +2302,24 @@ func (q *Queries) TargetExists(ctx context.Context, id string) (bool, error) {
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const updateConsumerFilter = `-- name: UpdateConsumerFilter :execrows
+UPDATE consumer SET filter_json = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdateConsumerFilterParams struct {
+	FilterJson string
+	UpdatedAt  int64
+	ID         string
+}
+
+func (q *Queries) UpdateConsumerFilter(ctx context.Context, arg UpdateConsumerFilterParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateConsumerFilter, arg.FilterJson, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateSecret = `-- name: UpdateSecret :execrows

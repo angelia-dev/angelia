@@ -446,3 +446,40 @@ SELECT kind, source_kind, count(*) AS targets FROM target GROUP BY kind, source_
 
 -- name: ListTargetDemand :many
 SELECT kind, interval_ms, count(*) AS targets FROM target GROUP BY kind, interval_ms ORDER BY kind, interval_ms;
+
+-- Named consumers (story #79-B).
+
+-- name: CreateConsumer :exec
+INSERT INTO consumer (id, name, filter_json, acked_seq, acked_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- name: UpdateConsumerFilter :execrows
+UPDATE consumer SET filter_json = ?, updated_at = ? WHERE id = ?;
+
+-- name: DeleteConsumer :execrows
+DELETE FROM consumer WHERE id = ?;
+
+-- name: GetConsumerByName :one
+SELECT * FROM consumer WHERE name = ?;
+
+-- name: ListConsumersPage :many
+SELECT * FROM consumer
+WHERE name > sqlc.arg(after_name) OR (name = sqlc.arg(after_name) AND id > sqlc.arg(after_id))
+ORDER BY name, id
+LIMIT sqlc.arg(max_rows);
+
+-- One statement, so concurrent acks never move the cursor back. A lower or
+-- equal seq changes nothing, acked_at and updated_at included.
+-- name: AckConsumer :one
+UPDATE consumer SET
+    acked_at   = CASE WHEN sqlc.arg(seq) > acked_seq THEN sqlc.arg(now) ELSE acked_at END,
+    updated_at = CASE WHEN sqlc.arg(seq) > acked_seq THEN sqlc.arg(now) ELSE updated_at END,
+    acked_seq  = max(acked_seq, sqlc.arg(seq))
+WHERE name = sqlc.arg(name)
+RETURNING *;
+
+-- The highest seq ever committed: the log's newest event or, when pruning
+-- removed it, the highest pruned seq.
+-- name: MaxEventSeq :one
+SELECT CAST(max(coalesce((SELECT max(seq) FROM event), 0),
+                coalesce((SELECT highest_pruned_seq FROM event_prune WHERE id = 1), 0)) AS INTEGER);

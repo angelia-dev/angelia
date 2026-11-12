@@ -8,6 +8,16 @@ import (
 	"database/sql"
 )
 
+type Consumer struct {
+	ID         string
+	Name       string
+	FilterJson string
+	AckedSeq   int64
+	AckedAt    sql.NullInt64
+	CreatedAt  int64
+	UpdatedAt  int64
+}
+
 type Delivery struct {
 	ID                  string
 	EventID             string

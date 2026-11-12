@@ -154,7 +154,8 @@ func TestDropOldDeliveryIndexDownRecreatesIt(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
 	must(t, err)
 	defer func() { _ = db.Close() }()
-	_, err = migrate(ctx, db, discard(), 0)
+	// Stop at 00019: later migrations have their own tests.
+	_, err = migrate(ctx, db, discard(), 19)
 	must(t, err)
 	indexSQL := func(name string) string {
 		t.Helper()
@@ -180,6 +181,42 @@ func TestDropOldDeliveryIndexDownRecreatesIt(t *testing.T) {
 	}
 	if indexSQL("delivery_status_next_attempt_at_id") == "" {
 		t.Fatal("down of 00019 removed the 00018 index")
+	}
+}
+
+// 00020 only adds the consumer table (story #79-B); its down drops it.
+func TestConsumerMigrationDown(t *testing.T) {
+	ctx := t.Context()
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
+	must(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = migrate(ctx, db, discard(), 20)
+	must(t, err)
+	tables := func() (n int) {
+		t.Helper()
+		must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'consumer'`).Scan(&n))
+		return n
+	}
+	if tables() != 1 {
+		t.Fatal("consumer table missing after up")
+	}
+	// The checks of the table: a negative cursor and a non-JSON filter are refused.
+	for _, q := range []string{
+		`INSERT INTO consumer (id, name, acked_seq, created_at, updated_at) VALUES ('c1','a',-1,1,1)`,
+		`INSERT INTO consumer (id, name, filter_json, created_at, updated_at) VALUES ('c2','b','{bad',1,1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err == nil {
+			t.Fatalf("%s: accepted", q)
+		}
+	}
+	p, err := newProvider(db)
+	must(t, err)
+	// Down to 19 rolls back 00020 only, whatever migrations come later.
+	if _, err := p.DownTo(ctx, 19); err != nil {
+		t.Fatal(err)
+	}
+	if tables() != 0 {
+		t.Fatal("consumer table present after down")
 	}
 }
 
@@ -210,8 +247,8 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 4 { // 00016 to 00019
-		t.Fatalf("applied %d migrations, want 4", applied)
+	if applied != 5 { // 00016 to 00020
+		t.Fatalf("applied %d migrations, want 5", applied)
 	}
 	var idx int // 00018 adds the lease order index (story #232)
 	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -50,6 +51,19 @@ type APIReader interface {
 	HasEventsAfter(ctx context.Context, seq int64) (bool, error)
 	// ListDeliveryPage returns one page of deliveries, newest event first.
 	ListDeliveryPage(ctx context.Context, q DeliveryQuery) ([]DeliveryRow, error)
+	// ListConsumers returns up to limit consumers ordered by (Name, ID),
+	// after the position (afterName, afterID); "" and "" start at the
+	// beginning. ErrInvalid when limit is not positive.
+	ListConsumers(ctx context.Context, afterName, afterID string, limit int) ([]Consumer, error)
+	// ConsumerByName returns the consumer with the name, or ErrNotFound.
+	ConsumerByName(ctx context.Context, name string) (Consumer, error)
+	// MaxEventSeq returns the head of the event log: the highest Seq ever
+	// committed, pruned events included, that is
+	// max(highest Seq in the log, HighestPrunedSeq). It is 0 on a store that
+	// never held an event, and it never goes down, so a fully pruned log
+	// still reports the Seq of its last event. `start: latest` of a consumer
+	// and the upper limit of an ack are measured against it.
+	MaxEventSeq(ctx context.Context) (int64, error)
 }
 
 // APITx is the unit of work of one API write.
@@ -65,6 +79,33 @@ type APITx interface {
 	GetSink(ctx context.Context, id string) (Sink, error)
 	GetSubscription(ctx context.Context, id string) (Subscription, error)
 	GetDelivery(ctx context.Context, id string) (Delivery, error)
+	ConsumerByName(ctx context.Context, name string) (Consumer, error)
+	// MaxEventSeq and HighestPrunedSeq are the reads of [APIReader] and
+	// [Store] inside the transaction, so a create reads its start position
+	// (`latest` is MaxEventSeq, `earliest` is HighestPrunedSeq) in the
+	// transaction that inserts the consumer and cannot race a prune.
+	MaxEventSeq(ctx context.Context) (int64, error)
+	HighestPrunedSeq(ctx context.Context) (int64, error)
+	// CreateConsumer inserts c, with the AckedSeq and AckedAt it carries
+	// (the API sets the start position there). ErrConflict when the name or
+	// id exists, ErrInvalid for an empty id or name, a zero CreatedAt or a
+	// Filter that is not JSON.
+	CreateConsumer(ctx context.Context, c Consumer) error
+	// UpdateConsumer replaces the filter of the consumer c.ID and sets its
+	// UpdatedAt; every other field, AckedSeq included, is kept. ErrNotFound
+	// when the consumer does not exist.
+	UpdateConsumer(ctx context.Context, c Consumer) error
+	// DeleteConsumer removes the consumer; ErrNotFound when it does not
+	// exist.
+	DeleteConsumer(ctx context.Context, id string) error
+	// AckConsumer moves the cursor of the consumer called name to seq when
+	// that is higher than AckedSeq, in one statement (max(acked_seq, seq)),
+	// so concurrent acks never move it back. A lower or equal seq changes
+	// nothing, AckedAt and UpdatedAt included. It returns the consumer as it
+	// is afterwards; ErrNotFound when it does not exist, ErrInvalid for a
+	// negative seq. Whether seq exists in the log is the caller's check
+	// (against MaxEventSeq).
+	AckConsumer(ctx context.Context, name string, seq int64, now time.Time) (Consumer, error)
 	// ListReplayCandidates returns the deliveries a bulk replay selects,
 	// oldest event first; the caller filters on the event time.
 	ListReplayCandidates(ctx context.Context, q ReplayQuery) ([]DeliveryRow, error)
@@ -74,6 +115,27 @@ type APITx interface {
 	// retry budget starts again (spec docs/api.md decision 28). ErrNotFound when the
 	// delivery does not exist or is neither dead nor delivered.
 	ReplayDelivery(ctx context.Context, id string, now time.Time) error
+}
+
+// Consumer is a named server-side cursor over the event log (spec
+// docs/api.md, story #79).
+type Consumer struct {
+	// ID is a ULID, immutable.
+	ID string
+	// Name is unique.
+	Name string
+	// Filter is the stored event filter ({watch, type, source}) as JSON;
+	// empty means "{}" (no filter).
+	Filter json.RawMessage
+	// AckedSeq is the highest acknowledged event Seq. It is 0 only on a log
+	// that never lost an event: `start: earliest` stores the highest pruned
+	// Seq (oldest Seq - 1), the position just before the oldest event.
+	AckedSeq int64
+	// AckedAt is the time of the last ack that moved AckedSeq; zero when no
+	// ack did.
+	AckedAt   time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // DeliveryQuery selects a page of deliveries. Zero values select everything.
