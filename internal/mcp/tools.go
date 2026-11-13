@@ -16,11 +16,11 @@ const (
 	jsonContentType   = "application/json"
 )
 
-// decodeArgs decodes arguments that passed the input schema. It fails only
-// for what the schema cannot say, such as an integer beyond int64.
+// decodeArgs decodes arguments that passed the input schema and
+// normalizeNumbers. It should not fail; if it does, the detail stays plain.
 func decodeArgs(raw json.RawMessage, dst any) *toolError {
 	if err := json.Unmarshal(raw, dst); err != nil {
-		return invalidArguments(fieldError{Pointer: "", Detail: err.Error()})
+		return invalidArguments(fieldError{Pointer: "", Detail: "the arguments do not have the expected types"})
 	}
 	return nil
 }
@@ -201,7 +201,7 @@ func addWatch(ctx context.Context, a *apiclient.API, raw json.RawMessage) (any, 
 	delete(in, "name")
 	body, err := json.Marshal(in)
 	if err != nil {
-		return nil, invalidArguments(fieldError{Pointer: "", Detail: err.Error()})
+		return nil, invalidArguments(fieldError{Pointer: "", Detail: "the arguments cannot be encoded as a watch"})
 	}
 	exists := func() *toolError {
 		return newProblem(slugWatchExists, "a different watch named %s already exists; nothing was written", name)
@@ -222,16 +222,23 @@ func addWatch(ctx context.Context, a *apiclient.API, raw json.RawMessage) (any, 
 			return addWatchResult{Watch: current, Change: change}, nil
 		case change == "updated":
 			return nil, exists()
+		case change != "created":
+			return nil, newProblem(slugAPIUnreachable, "the API answered the dry run with the change %q; nothing was written", change)
 		}
-		return nil, newProblem(slugAPIUnreachable, "the API answered the dry run with the change %q", change)
+		// created: the watch was deleted since the GET. Take the create
+		// path once; its PUT tells again what happened.
 	case e.status != 404 || e.slug != restProblemNotFound:
 		return nil, e
 	}
+	return createWatch(ctx, a, name, body, exists)
+}
 
-	// Free. Another client may create the watch between the GET and this
-	// PUT; the Angelia-Change header tells (spec docs/mcp.md, add_watch).
+// createWatch writes a watch whose name was free. Another client may create
+// the watch between the GET and this PUT; the Angelia-Change header tells
+// (spec docs/mcp.md, add_watch).
+func createWatch(ctx context.Context, a *apiclient.API, name string, body []byte, exists func() *toolError) (any, *toolError) {
 	var written json.RawMessage
-	resp, err = a.PutWatchWithBody(ctx, name, &apiclient.PutWatchParams{}, jsonContentType, bytes.NewReader(body)) //nolint:bodyclose // call closes it
+	resp, err := a.PutWatchWithBody(ctx, name, &apiclient.PutWatchParams{}, jsonContentType, bytes.NewReader(body)) //nolint:bodyclose // call closes it
 	change, e := call(resp, err, &written)
 	switch {
 	case e != nil:
@@ -241,7 +248,7 @@ func addWatch(ctx context.Context, a *apiclient.API, raw json.RawMessage) (any, 
 	case change == "updated":
 		return nil, exists()
 	}
-	return nil, newProblem(slugAPIUnreachable, "the API answered the write with the change %q", change)
+	return nil, newProblem(slugAPIUnreachable, "the API accepted the write of watch %s but answered with the change %q, so the watch may have been written; read it with list_watches", name, change)
 }
 
 type ackResult struct {
@@ -263,7 +270,7 @@ func ackEvent(ctx context.Context, a *apiclient.API, raw json.RawMessage) (any, 
 		EventID *string `json:"event_id,omitempty"`
 	}{in.Seq, in.EventID})
 	if err != nil {
-		return nil, invalidArguments(fieldError{Pointer: "", Detail: err.Error()})
+		return nil, invalidArguments(fieldError{Pointer: "", Detail: "the arguments cannot be encoded"})
 	}
 	var c struct {
 		AckedSeq int64 `json:"acked_seq"`

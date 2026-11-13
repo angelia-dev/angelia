@@ -30,12 +30,10 @@ type cliEnv struct {
 	Err    io.Writer
 }
 
-// addClientFlags adds --server, --token and -o to a command group.
+// addClientFlags adds the connection flags and -o to a command group.
 func addClientFlags(cmd *cobra.Command) {
+	addConnectionFlags(cmd, true)
 	pf := cmd.PersistentFlags()
-	pf.String("server", "", "base URL of the instance; env "+envServer+", then the client config file, default "+DefaultServer)
-	pf.String("token", "", "API token; env "+envToken+", then the client config file (a flag is visible in process lists)")
-	pf.Bool("insecure-http", false, "allow sending the token over plain http to a host that is not loopback")
 	pf.StringP("output", "o", formatTable, "output format: table or json")
 	_ = cmd.RegisterFlagCompletionFunc("output", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{formatTable, formatJSON}, cobra.ShellCompDirectiveNoFileComp
@@ -45,16 +43,7 @@ func addClientFlags(cmd *cobra.Command) {
 // newCLIEnv resolves the connection (flags, environment, client config file)
 // and builds the API client for a command added with addClientFlags.
 func newCLIEnv(cmd *cobra.Command) (*cliEnv, error) {
-	fl := cmd.Flags()
-	server, err := fl.GetString("server")
-	if err != nil {
-		return nil, err
-	}
-	token, err := fl.GetString("token")
-	if err != nil {
-		return nil, err
-	}
-	of, err := fl.GetString("output")
+	of, err := cmd.Flags().GetString("output")
 	if err != nil {
 		return nil, err
 	}
@@ -62,22 +51,54 @@ func newCLIEnv(cmd *cobra.Command) (*cliEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	insecure, err := fl.GetBool("insecure-http")
-	if err != nil {
-		return nil, err
-	}
-	conn, err := resolveConnection(server, token, os.Getenv)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkTokenTransport(conn, insecure); err != nil {
-		return nil, err
-	}
-	a, err := apiclient.New(apiclient.Options{Server: conn.Server, Token: conn.Token, UserAgent: "angelia-cli"})
+	a, _, err := connectFromFlags(cmd, "angelia-cli")
 	if err != nil {
 		return nil, err
 	}
 	return &cliEnv{API: a, Format: format, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}, nil
+}
+
+// addConnectionFlags adds --server, --token and --insecure-http, inherited
+// by subcommands when persistent.
+func addConnectionFlags(cmd *cobra.Command, persistent bool) {
+	fs := cmd.Flags()
+	if persistent {
+		fs = cmd.PersistentFlags()
+	}
+	fs.String("server", "", "base URL of the instance; env "+envServer+", then the client config file, default "+DefaultServer)
+	fs.String("token", "", "API token; env "+envToken+", then the client config file (a flag is visible in process lists)")
+	fs.Bool("insecure-http", false, "allow sending the token over plain http to a host that is not loopback")
+}
+
+// connectFromFlags resolves the connection of addConnectionFlags (flags,
+// environment, client config file), applies the plain-http token rule and
+// builds the API client.
+func connectFromFlags(cmd *cobra.Command, userAgent string) (*apiclient.API, Connection, error) {
+	fl := cmd.Flags()
+	server, err := fl.GetString("server")
+	if err != nil {
+		return nil, Connection{}, err
+	}
+	token, err := fl.GetString("token")
+	if err != nil {
+		return nil, Connection{}, err
+	}
+	insecure, err := fl.GetBool("insecure-http")
+	if err != nil {
+		return nil, Connection{}, err
+	}
+	conn, err := resolveConnection(server, token, os.Getenv)
+	if err != nil {
+		return nil, Connection{}, err
+	}
+	if err := checkTokenTransport(conn, insecure); err != nil {
+		return nil, Connection{}, err
+	}
+	a, err := apiclient.New(apiclient.Options{Server: conn.Server, Token: conn.Token, UserAgent: userAgent})
+	if err != nil {
+		return nil, Connection{}, err
+	}
+	return a, conn, nil
 }
 
 // fetchPage gets one page: its items and next cursor.

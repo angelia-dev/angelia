@@ -3,11 +3,9 @@ package main
 import (
 	"io"
 	"log/slog"
-	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/angelia-dev/angelia/internal/apiclient"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/mcp"
 )
@@ -28,35 +26,12 @@ stderr.`,
 		Args: cobra.NoArgs,
 		RunE: runMCP,
 	}
-	pf := cmd.Flags()
-	pf.String("server", "", "base URL of the instance; env "+envServer+", then the client config file, default "+DefaultServer)
-	pf.String("token", "", "API token; env "+envToken+", then the client config file (a flag is visible in process lists)")
-	pf.Bool("insecure-http", false, "allow sending the token over plain http to a host that is not loopback")
+	addConnectionFlags(cmd, false)
 	return cmd
 }
 
 func runMCP(cmd *cobra.Command, _ []string) error {
-	fl := cmd.Flags()
-	server, err := fl.GetString("server")
-	if err != nil {
-		return err
-	}
-	token, err := fl.GetString("token")
-	if err != nil {
-		return err
-	}
-	insecure, err := fl.GetBool("insecure-http")
-	if err != nil {
-		return err
-	}
-	conn, err := resolveConnection(server, token, os.Getenv)
-	if err != nil {
-		return err
-	}
-	if err := checkTokenTransport(conn, insecure); err != nil {
-		return err
-	}
-	a, err := apiclient.New(apiclient.Options{Server: conn.Server, Token: conn.Token, UserAgent: "angelia-mcp"})
+	a, conn, err := connectFromFlags(cmd, "angelia-mcp")
 	if err != nil {
 		return err
 	}

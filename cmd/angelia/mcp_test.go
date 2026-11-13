@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	contract "github.com/angelia-dev/angelia/api/mcp"
 	"github.com/angelia-dev/angelia/internal/apiclient"
 	"github.com/angelia-dev/angelia/internal/store"
 )
@@ -133,6 +134,23 @@ func TestMCPStdio(t *testing.T) {
 	p.send(map[string]any{"method": "notifications/initialized"})
 
 	list := p.request("tools/list", map[string]any{})
+	// The wire-level golden check (spec D11): the raw tools member of the
+	// tools/list result, as read from stdout, must equal the tools member of
+	// the vendored contract. The contract is that member only: protocol
+	// members of the result (nextCursor, cacheScope, ttlMs, ...) stay outside
+	// it. internal/mcp's TestToolsListMatchesContract checks the same through
+	// the SDK client's types.
+	var contractFile struct {
+		Tools any `json:"tools"`
+	}
+	if err := json.Unmarshal(contract.Tools, &contractFile); err != nil {
+		t.Fatal(err)
+	}
+	gotTools, _ := json.Marshal(list["tools"])
+	wantTools, _ := json.Marshal(contractFile.Tools)
+	if string(gotTools) != string(wantTools) {
+		t.Errorf("tools/list on the wire differs from api/mcp/tools.v1.json:\ngot  %s\nwant %s", gotTools, wantTools)
+	}
 	var names []string
 	for _, tl := range list["tools"].([]any) {
 		names = append(names, tl.(map[string]any)["name"].(string))

@@ -306,8 +306,12 @@ func TestAddWatchRace(t *testing.T) {
 			cs := connect(t, fakeAPI(t, rc.ServeHTTP).URL, tokWrite)
 			res := callTool(t, cs, "add_watch", map[string]any{"name": "x", "source": "pypi", "coordinates": map[string]string{"name": "x"}})
 			if res.IsError {
-				if p := failure(t, res); p["type"] != mcpProblem+want {
+				p := failure(t, res)
+				if p["type"] != mcpProblem+want {
 					t.Errorf("problem %v, want %s", p, want)
+				}
+				if d, _ := p["detail"].(string); want == "api-unreachable" && !strings.Contains(d, "may have been written") {
+					t.Errorf("detail %q does not say the write may have happened", d)
 				}
 			} else if b, _ := json.Marshal(res.StructuredContent); string(b) != `{"change":"`+want+`","watch":{"name":"x"}}` {
 				t.Errorf("result %s, want %s", b, want)
@@ -340,5 +344,55 @@ func TestAckEvent(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/consumers/bot/ack" || body != c.body {
 			t.Errorf("%s %s %s, want body %s", r.Method, r.URL, body, c.body)
 		}
+	}
+}
+
+// TestIntegralNumberForms: 5.0 and 1e1 are integers to the schema, and the
+// tools decode them as such; an integer beyond int64 is invalid-arguments at
+// its pointer.
+func TestIntegralNumberForms(t *testing.T) {
+	rc := &recorder{answer: func(*http.Request, int) (int, http.Header, string) {
+		return 200, nil, `{"items":[],"next_after":5,"has_more":false}`
+	}}
+	cs := connect(t, fakeAPI(t, rc.ServeHTTP).URL, tokRead)
+	success(t, "events_since", callTool(t, cs, "events_since", json.RawMessage(`{"after":5.0,"limit":1e1}`)))
+	if r, _ := rc.request(0); r.URL.RawQuery != "after=5&limit=10" {
+		t.Errorf("query %s", r.URL.RawQuery)
+	}
+	p := failure(t, callTool(t, cs, "ack_event", json.RawMessage(`{"consumer":"bot","seq":1e30}`)))
+	errs, _ := p["errors"].([]any)
+	if len(errs) != 1 {
+		t.Fatalf("problem %v", p)
+	}
+	e := errs[0].(map[string]any)
+	if e["pointer"] != "/seq" || !strings.HasPrefix(e["detail"].(string), "is out of range") || goInternals.MatchString(e["detail"].(string)) {
+		t.Errorf("error %v", e)
+	}
+	if rc.count() != 1 {
+		t.Errorf("%d REST calls", rc.count())
+	}
+}
+
+// TestAddWatchVanished: the watch is deleted between the GET and the dry
+// run (which answers created); the tool takes the create path once.
+func TestAddWatchVanished(t *testing.T) {
+	rc := &recorder{answer: func(r *http.Request, _ int) (int, http.Header, string) {
+		if r.Method == http.MethodGet {
+			return 200, nil, `{"name":"x","interval":"1h"}`
+		}
+		return 200, http.Header{"Angelia-Change": {"created"}}, `{"name":"x","interval":"2h"}`
+	}}
+	cs := connect(t, fakeAPI(t, rc.ServeHTTP).URL, tokWrite)
+	res := callTool(t, cs, "add_watch", map[string]any{"name": "x", "source": "pypi", "coordinates": map[string]string{"name": "x"}, "interval": "2h"})
+	if b, _ := json.Marshal(res.StructuredContent); res.IsError || string(b) != `{"change":"created","watch":{"interval":"2h","name":"x"}}` {
+		t.Errorf("result %s (error %v)", b, res.IsError)
+	}
+	var calls []string
+	for i := range rc.count() {
+		r, _ := rc.request(i)
+		calls = append(calls, r.Method+" "+r.URL.RawQuery)
+	}
+	if strings.Join(calls, ",") != "GET ,PUT dry_run=true,PUT " {
+		t.Errorf("calls %q", calls)
 	}
 }

@@ -1,10 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
+	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -200,4 +204,51 @@ func cleanError(err error) string {
 		msg = msg[i+2:]
 	}
 	return msg
+}
+
+// normalizeNumbers rewrites every integral number of arguments that passed
+// the schema in plain integer form, so that 5.0 or 1e2 decode into Go
+// integers. An integral number beyond int64 is an error at its pointer: the
+// schema's integer type accepts it, but no REST field can hold it.
+func normalizeNumbers(raw json.RawMessage) (json.RawMessage, []fieldError) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var inst any
+	if err := dec.Decode(&inst); err != nil {
+		return nil, []fieldError{{Pointer: "", Detail: "the arguments are not valid JSON"}}
+	}
+	var errs []fieldError
+	var walk func(ptr string, v any) any
+	walk = func(ptr string, v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, k := range slices.Sorted(maps.Keys(x)) {
+				x[k] = walk(pointerJoin(ptr, k), x[k])
+			}
+		case []any:
+			for i := range x {
+				x[i] = walk(ptr+"/"+strconv.Itoa(i), x[i])
+			}
+		case json.Number:
+			r, ok := new(big.Rat).SetString(string(x))
+			if !ok || !r.IsInt() {
+				return x
+			}
+			if !r.Num().IsInt64() {
+				errs = append(errs, fieldError{Pointer: ptr, Detail: "is out of range: an integer here is at most " + strconv.FormatInt(math.MaxInt64, 10)})
+				return x
+			}
+			return json.Number(r.Num().String())
+		}
+		return v
+	}
+	inst = walk("", inst)
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	b, err := json.Marshal(inst)
+	if err != nil {
+		return nil, []fieldError{{Pointer: "", Detail: "the arguments cannot be encoded"}}
+	}
+	return b, nil
 }

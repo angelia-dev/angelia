@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -169,6 +170,9 @@ func TestAPIUnreachable(t *testing.T) {
 	}
 }
 
+// goInternals matches what a Go decode error would leak into a detail.
+var goInternals = regexp.MustCompile(`json:|unmarshal|Go (struct|value)|int64|float64`)
+
 // TestInvalidArguments: arguments that fail the inputSchema are the tool
 // error invalid-arguments with {pointer, detail} items, and no REST call.
 func TestInvalidArguments(t *testing.T) {
@@ -196,7 +200,8 @@ func TestInvalidArguments(t *testing.T) {
 		{"add_watch", map[string]any{"source": "pypi"}, []string{"/name", "/coordinates"}},
 		{"ack_event", map[string]any{"consumer": "bot"}, []string{""}},
 		{"ack_event", map[string]any{"consumer": "bot", "seq": 1, "event_id": "01JBX2A7C8D9E0F1G2H3J4K5M6"}, []string{""}},
-		{"ack_event", map[string]any{"consumer": "bot", "seq": 1e30}, []string{""}},
+		{"ack_event", map[string]any{"consumer": "bot", "seq": 1e30}, []string{"/seq"}},
+		{"events_since", json.RawMessage(`{"after":9223372036854775808}`), []string{"/after"}},
 	}
 	for _, c := range cases {
 		b, _ := json.Marshal(c.args)
@@ -209,7 +214,7 @@ func TestInvalidArguments(t *testing.T) {
 			var ptrs []string
 			for _, e := range errs {
 				m, _ := e.(map[string]any)
-				if d, _ := m["detail"].(string); d == "" || strings.HasPrefix(d, "validating") {
+				if d, _ := m["detail"].(string); d == "" || strings.HasPrefix(d, "validating") || goInternals.MatchString(d) {
 					t.Errorf("detail %q", d)
 				}
 				ptrs = append(ptrs, m["pointer"].(string))

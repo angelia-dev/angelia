@@ -1,6 +1,6 @@
 # ADR 0029: The MCP server uses the official Go SDK, lives in `internal/mcp`, and every tool is a REST call made with the caller's token
 
-- **Status:** Proposed (records the maintainer decisions D8–D13 of 2026-11-10)
+- **Status:** Accepted for D8–D13 (maintainer 2026-11-10) and MIT-0 for `segmentio/asm` (maintainer 2026-11-13)
 - **Date:** 2026-11-13
 - **Story:** angelia-dev/angelia#81 (sub-story 81-A; 81-B adds the HTTP transport)
 
@@ -25,7 +25,7 @@ issue; this ADR records them and the design that follows.
    | `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | MIT, moving to Apache-2.0 (the LICENSE file describes the transition; new code is Apache-2.0) | direct |
    | `github.com/google/jsonschema-go` | v0.4.3 | MIT | SDK; also direct: argument validation (decision 6) |
    | `github.com/segmentio/encoding` | v0.5.4 | MIT | SDK (JSON) |
-   | `github.com/segmentio/asm` | v1.2.1 | **MIT No Attribution (MIT-0)** | segmentio/encoding asks for v1.1.3 (MIT); MVS selects v1.2.1, which `pressly/goose/v3` already required in the module graph. See the open question. |
+   | `github.com/segmentio/asm` | v1.2.1 | MIT No Attribution (MIT-0), accepted by the maintainer on 2026-11-13 | segmentio/encoding asks for v1.1.3 (MIT); MVS selects v1.2.1, which `pressly/goose/v3` v3.29.0 already required in the module graph. MIT-0 is MIT without the attribution condition; it is not on the AGENTS.md list, so the maintainer accepted it for this module. |
    | `github.com/yosida95/uritemplate/v3` | v3.0.2 | BSD-3-Clause | SDK (resource templates) |
    | `golang.org/x/oauth2` | v0.37.0 | BSD-3-Clause | SDK `auth`/`oauthex`; v0.37.0 is the version `nicholas-fedor/shoutrrr` already required |
    | `golang.org/x/time` | v0.15.0 | BSD-3-Clause | SDK (rate limit of log notifications) |
@@ -38,8 +38,9 @@ issue; this ADR records them and the design that follows.
    `*apiclient.API` and exports `NewServer` and `Serve` (stdio); 81-B mounts the same server over HTTP.
 3. **D9, transports and reach.** stdio is `angelia mcp`, a REST client with the CLI's connection
    (`--server`, `--token`, `ANGELIA_SERVER`, `ANGELIA_TOKEN`, the client config file and its `chmod 600`
-   check, the `--insecure-http` rule). It never opens the database. Streamable HTTP is `POST /mcp` on the
-   `api` role (81-B), outside `/v1/`, with no new role. Either way every tool call is one or more REST calls
+   check, the `--insecure-http` rule). It never opens the database, writes only MCP frames to stdout, and
+   logs (its own and the SDK's) to stderr at `info`. Streamable HTTP is `POST /mcp` on the `api` role
+   (81-B), outside `/v1/`, with no new role. Either way every tool call is one or more REST calls
    with the caller's token, so authentication, scopes, validation and the access log are the REST API's.
 4. **D10, HTTP auth and sessions** (81-B): the existing bearer API tokens, no MCP OAuth; stateless JSON
    responses; a cross-origin `Origin` gets `403`.
@@ -94,10 +95,7 @@ issue; this ADR records them and the design that follows.
 
 ### Open questions
 
-- **`segmentio/asm` v1.2.1 is MIT-0**, which is not in the AGENTS.md list (Apache-2.0, MIT, BSD, ISC,
-  MPL-2.0). MIT-0 is MIT without the attribution condition. It cannot be avoided while `pressly/goose/v3`
-  v3.29.0 requires v1.2.1 (MVS). Recommendation: accept MIT-0 for this module and add it to the list.
-- The SDK logs to the logger it is given; `angelia mcp` passes a stderr text logger at `info`.
+- None. (The licence of `segmentio/asm` was settled by the maintainer on 2026-11-13; see decision 1.)
 
 ## Alternatives considered
 

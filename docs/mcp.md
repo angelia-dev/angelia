@@ -6,7 +6,10 @@ watch and acknowledge events, with the same tokens, scopes and rules as the [RES
 
 The tools are a public contract: `mcp/tools.v1.json` of the spec repository, vendored as
 [`api/mcp/tools.v1.json`](../api/mcp/tools.v1.json), with its rules in the spec's `docs/mcp.md`. The
-design is [ADR 0029](adr/0029-mcp-server-go-sdk-rest-client.md).
+contract is the `tools` member of the `tools/list` result: protocol members of that result (such as
+`nextCursor`, `cacheScope` or `ttlMs`, which depend on the negotiated protocol version) are outside it.
+Two golden tests compare the served `tools` with the vendored file, one through the SDK's client and one
+on the raw frames that `angelia mcp` writes to stdout. The design is [ADR 0029](adr/0029-mcp-server-go-sdk-rest-client.md).
 
 ## Tools
 
@@ -55,24 +58,37 @@ before it calls a write tool.
 The agent host starts `angelia mcp`, which speaks MCP on stdin and stdout and calls the REST API of an
 instance. It reads its connection like the other client commands ([cli.md, Connection](cli.md#connection)):
 `--server`, `ANGELIA_SERVER` or the client config file for the URL, and `ANGELIA_TOKEN` or the client
-config file for the token. It never opens the database. A generic MCP client configuration:
+config file for the token. It never opens the database.
+
+The best place for the token is the client config file, `~/.config/angelia/config.yaml` (or under
+`$XDG_CONFIG_HOME`), readable only by you (`chmod 600`; `angelia mcp` refuses a file that holds a token
+and is readable by others):
+
+```yaml
+server: https://angelia.example.com
+token: <api token with the read scope>
+```
+
+The host's configuration then holds no secret. A generic MCP client configuration:
 
 ```json
 {
   "mcpServers": {
     "angelia": {
       "command": "angelia",
-      "args": ["mcp", "--server", "https://angelia.example.com"],
-      "env": { "ANGELIA_TOKEN": "<api token with the read scope>" }
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-Prefer the client config file (`chmod 600`) or the host's secret store to a token written in the host's
-configuration. `angelia mcp` refuses to send the token over `http://` to a host that is not loopback
-unless `--insecure-http` is given, and refuses a client config file that holds a token and is readable
-by others. stdout carries only MCP messages; logs go to stderr. The token is never printed.
+If the host has a secret store that it passes to the process environment, `ANGELIA_SERVER` and
+`ANGELIA_TOKEN` work too; do not write the token into the host's configuration file in clear text, and
+do not pass it with `--token`, which shows in process lists.
+
+`angelia mcp` refuses to send the token over `http://` to a host that is not loopback unless
+`--insecure-http` is given. stdout carries only MCP messages; logs go to stderr. The token is never
+printed.
 
 ### Streamable HTTP: `/mcp`
 

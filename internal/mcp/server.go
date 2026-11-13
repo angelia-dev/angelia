@@ -147,6 +147,10 @@ func handler(t tool, v *validator, a *apiclient.API) sdk.ToolHandler {
 		if errs := v.validate(raw); len(errs) > 0 {
 			return errorResult(invalidArguments(errs...)), nil
 		}
+		raw, errs := normalizeNumbers(raw)
+		if len(errs) > 0 {
+			return errorResult(invalidArguments(errs...)), nil
+		}
 		out, terr := t.run(ctx, a, raw)
 		if terr != nil {
 			return errorResult(terr), nil

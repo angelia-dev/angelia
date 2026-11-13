@@ -187,7 +187,8 @@ allows it for one command. Use an `https://` server URL instead.
 `ack_event`) on stdin and stdout, for an agent host that starts it. Each tool call is a REST call with the
 connection above (the same flags, variables, client config file, `chmod 600` check and `--insecure-http`
 rule); it never opens the database. stdout carries only MCP messages and logs go to stderr; the command
-ends when the host closes stdin. Tools, scopes, errors and a host configuration: [mcp.md](mcp.md).
+ends when the host closes stdin. A tool call still in flight then is abandoned: its result is never sent,
+and a REST write it already made (`add_watch`, `ack_event`) may or may not have happened. Tools, scopes, errors and a host configuration: [mcp.md](mcp.md).
 
 ## Event stream
 
