@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newReplayCmd())
 	root.AddCommand(newSecretCmd(), newSecretsCmd())
 	root.AddCommand(newWebhookCmd())
+	root.AddCommand(newMCPCmd())
 	return root
 }
 

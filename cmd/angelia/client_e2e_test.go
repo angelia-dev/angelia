@@ -42,6 +42,13 @@ func newE2EServer(t *testing.T) *httptest.Server {
 // newE2EServerEnv is newE2EServer with these api.allowed_env names.
 func newE2EServerEnv(t *testing.T, allowedEnv ...string) *httptest.Server {
 	t.Helper()
+	srv, _ := newE2EServerStore(t, allowedEnv...)
+	return srv
+}
+
+// newE2EServerStore is newE2EServerEnv that also returns the store.
+func newE2EServerStore(t *testing.T, allowedEnv ...string) (*httptest.Server, *sqlite.Store) {
+	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "api.db"), log)
 	if err != nil {
@@ -61,7 +68,7 @@ func newE2EServerEnv(t *testing.T, allowedEnv ...string) *httptest.Server {
 	}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, st
 }
 
 func writeTemp(t *testing.T, name, content string) string {

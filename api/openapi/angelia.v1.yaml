@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.5.0
+  version: 0.6.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the

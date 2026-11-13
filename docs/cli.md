@@ -1,6 +1,6 @@
 # The `angelia` command-line client
 
-`angelia watch|sink|sub|secret|event|delivery|apply` talk to a running instance through the
+`angelia watch|sink|sub|secret|event|delivery|apply|mcp` talk to a running instance through the
 [REST API](../api/README.md). The client is generated from the vendored OpenAPI
 document (`internal/apiclient`, `go generate ./...`).
 
@@ -18,6 +18,7 @@ angelia event stream [--after SEQ] [--watch W] [--type T] [--source S] [--no-rec
 angelia delivery list [--status dead] [--subscription S] [--event ID]
 angelia delivery get ID
 angelia apply -f FILE|DIR|- [--dry-run] [--prune -l key=value]
+angelia mcp [--server URL] [--insecure-http]
 ```
 
 `put` reads a JSON or YAML file (`-f -` for stdin) holding the body of the
@@ -179,6 +180,15 @@ The token is sent as a bearer header, so with `http://` it travels in clear
 text. The client refuses to send a token over `http://` to a host that is not
 loopback (`localhost`, `127.0.0.0/8`, `::1`) and names `--insecure-http`, which
 allows it for one command. Use an `https://` server URL instead.
+
+## MCP server
+
+`angelia mcp` serves the MCP tools (`list_watches`, `latest_version`, `events_since`, `add_watch`,
+`ack_event`) on stdin and stdout, for an agent host that starts it. Each tool call is a REST call with the
+connection above (the same flags, variables, client config file, `chmod 600` check and `--insecure-http`
+rule); it never opens the database. stdout carries only MCP messages and logs go to stderr; the command
+ends when the host closes stdin. A tool call still in flight then is abandoned: its result is never sent,
+and a REST write it already made (`add_watch`, `ack_event`) may or may not have happened. Tools, scopes, errors and a host configuration: [mcp.md](mcp.md).
 
 ## Event stream
 
