@@ -75,6 +75,16 @@ issue; this ADR records them and the design that follows.
    `watch-exists` with nothing written. Defaults are compared by the server, not by the tool.
 10. **Limits.** `list_watches` sends `limit` 50 unless given (1–100), `events_since` 20 (1–100). REST
     responses are read up to 16 MiB.
+11. **HTTP transport (81-B).** `internal/mcp.NewHTTPHandler` is the SDK's Streamable HTTP handler with
+    `Stateless` and `JSONResponse` set and its localhost DNS-rebinding protection left on. The api package
+    still does not import the SDK: `api.Options.MCP` is a factory that receives an in-memory
+    `http.RoundTripper` into `api.Server.ServeHTTP`, and `cmd/angelia` passes `NewHTTPHandler`. `/mcp` goes
+    through the same `ServeHTTP` (drain, route, authentication); then the api package refuses a method
+    other than `POST` (`405`), a cross-origin `Origin` (`403`) and a body above 1 MiB (`413`) as problem
+    documents, before the SDK sees the request. Each request builds its own MCP server (the compiled tool
+    set is shared) whose API client forwards exactly the request's `Authorization` values, so every REST
+    call is authenticated anew and nothing holds a principal across requests. The SDK's per-request
+    `info` records (session connected, ended) are dropped; its warnings and errors reach the log.
 
 ## Consequences
 

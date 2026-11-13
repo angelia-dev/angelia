@@ -85,6 +85,9 @@ type Options struct {
 	// Metrics, if set, observes the open event streams
 	// (angelia_api_event_streams). Pass a non-nil value or leave it nil.
 	Metrics StreamMetrics
+	// MCP, if set, builds the handler of POST /mcp (MCPPath), which the api
+	// role then mounts next to /v1/. Nil: /mcp is not served.
+	MCP MCPFactory
 }
 
 // StreamMetrics observes the open event streams. metrics.Metrics implements
@@ -95,7 +98,7 @@ type StreamMetrics interface {
 }
 
 // Server serves the REST API of spec openapi/angelia.v1.yaml. It is an
-// http.Handler for the /v1/ paths.
+// http.Handler for the /v1/ paths, and for MCPPath when Options.MCP is set.
 type Server struct {
 	opts     Options
 	log      *slog.Logger
@@ -107,6 +110,7 @@ type Server struct {
 	hub      *streamHub
 	stopHub  context.CancelFunc
 	streams  atomic.Int64 // open event streams
+	mcp      http.Handler // POST /mcp; nil when not served
 }
 
 // New builds a Server.
@@ -152,6 +156,14 @@ func New(opts Options) (*Server, error) {
 		s.log.ErrorContext(ctx, "event stream poller", "error", err)
 	})
 	s.stopHub = hubStop
+	if opts.MCP != nil {
+		h, err := opts.MCP(restTransport{s: s})
+		if err != nil {
+			hubStop()
+			return nil, fmt.Errorf("api: mcp: %w", err)
+		}
+		s.mcp = h
+	}
 	router := chi.NewRouter()
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		problem(SlugNotFound, "no such resource").write(w, r)
@@ -194,6 +206,7 @@ type reqState struct {
 	// report them together with the resource's own rules (deferredOps).
 	schemaErrs []fieldError
 	token      string // for the event stream's periodic recheck; never logged
+	mcp        bool   // the request is for MCPPath
 	id         string // request id, in the access log and 500 details
 }
 
@@ -210,7 +223,8 @@ func stateFrom(ctx context.Context) *reqState {
 // ServeHTTP runs the pipeline: drain check, route, authentication and scope
 // (before anything that could reveal whether a resource exists), body limits,
 // validation against the specification, then the generated router and the
-// handlers.
+// handlers. MCPPath takes the same drain check and authentication, then
+// serveMCP; its scopes are checked per tool call by the REST calls.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rec := &recorder{ResponseWriter: w}
@@ -229,6 +243,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.accessLog(r, rec, st, principal, time.Since(start))
 	}()
 
+	st.mcp = s.mcp != nil && r.URL.Path == MCPPath // no operation has this path
 	if s.draining.Load() {
 		problem(SlugUnavailable, "the instance is shutting down; retry on another instance or later").
 			withHeader("Retry-After", fmt.Sprint(RetryAfterSeconds)).write(rec, r)
@@ -258,12 +273,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	principal = p
 
+	if st.mcp {
+		s.serveMCP(rec, r)
+		return
+	}
 	if op == nil {
 		if len(allowed) > 0 {
 			slices.Sort(allowed)
-			pr := problem(SlugBadRequest, "method %s is not allowed here (allowed: %s)", r.Method, strings.Join(allowed, ", "))
-			pr.Status, pr.Title = http.StatusMethodNotAllowed, "Method not allowed"
-			pr.withHeader("Allow", strings.Join(allowed, ", ")).write(rec, r)
+			methodNotAllowed(r.Method, allowed).write(rec, r)
 			return
 		}
 		problem(SlugNotFound, "no such resource").write(rec, r)
@@ -457,8 +474,11 @@ func (r *recorder) Flush() {
 // reach it; a path segment that looks like a credential is replaced.
 func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Principal, d time.Duration) {
 	route := ""
-	if st.op != nil {
+	switch {
+	case st.op != nil:
 		route = st.op.Path
+	case st.mcp:
+		route = MCPPath
 	}
 	status := rec.status
 	if !rec.wrote {
