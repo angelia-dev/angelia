@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -42,6 +43,12 @@ type HTTPOptions struct {
 // request's Authorization header: nothing is cached across requests, so a
 // revoked token fails on its next call.
 func NewHTTPHandler(o HTTPOptions) (http.Handler, error) {
+	return newHTTPHandler(o, nil)
+}
+
+// newHTTPHandler is NewHTTPHandler; onBuild, if set, is called each time an
+// MCP server is built (for tests).
+func newHTTPHandler(o HTTPOptions, onBuild func()) (http.Handler, error) {
 	if o.REST == nil {
 		return nil, errors.New("mcp: no REST transport")
 	}
@@ -50,7 +57,7 @@ func NewHTTPHandler(o HTTPOptions) (http.Handler, error) {
 		return nil, err
 	}
 	log := quiet(o.Logger)
-	getServer := func(r *http.Request) *sdk.Server {
+	build := func(r *http.Request) *sdk.Server {
 		hc := &http.Client{
 			Transport: forwardAuth{rt: o.REST, auth: r.Header.Values("Authorization")},
 			Timeout:   apiclient.DefaultTimeout,
@@ -59,14 +66,40 @@ func NewHTTPHandler(o HTTPOptions) (http.Handler, error) {
 		if err != nil {
 			return nil // a constant URL: cannot happen; the SDK answers 400
 		}
+		if onBuild != nil {
+			onBuild()
+		}
 		return ts.server(a, o.Version, log)
 	}
-	return sdk.NewStreamableHTTPHandler(getServer, &sdk.StreamableHTTPOptions{
+	// The SDK (v1.8.0) calls getServer twice per stateless POST, the second
+	// time with a derived *http.Request. A holder in the request context,
+	// which derived requests keep, builds the server once per request.
+	getServer := func(r *http.Request) *sdk.Server {
+		h, ok := r.Context().Value(serverKey{}).(*serverHolder)
+		if !ok {
+			return build(r)
+		}
+		h.once.Do(func() { h.srv = build(r) })
+		return h.srv
+	}
+	sh := sdk.NewStreamableHTTPHandler(getServer, &sdk.StreamableHTTPOptions{
 		Stateless:           true,
 		JSONResponse:        true,
 		Logger:              log,
 		MaxRequestBodyBytes: maxBodyBytes,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sh.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), serverKey{}, &serverHolder{})))
 	}), nil
+}
+
+// serverKey holds the *serverHolder of one /mcp request.
+type serverKey struct{}
+
+// serverHolder is the MCP server of one /mcp request, built on first use.
+type serverHolder struct {
+	once sync.Once
+	srv  *sdk.Server
 }
 
 // forwardAuth sends each REST call with exactly the MCP request's

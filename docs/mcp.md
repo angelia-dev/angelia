@@ -117,12 +117,21 @@ role runs. A generic client configuration:
 - **Stateless.** No `Mcp-Session-Id`; every answer is JSON, not an event stream, so any replica behind a
   load balancer can answer any request. `GET` and `DELETE` get `405`.
 - **Browsers and DNS rebinding.** A request whose `Origin` names another host than its `Host` gets `403`;
-  requests without `Origin` (non-browser clients) are allowed. A request that reaches a loopback address
-  with a `Host` that is not loopback gets `403` (the SDK's DNS-rebinding protection).
-- **Limits.** Bodies above 1 MiB get `413`. While the instance drains, `/mcp` gets `503` with
-  `Retry-After`, like `/v1/`.
+  requests without `Origin` (non-browser clients) are allowed. The `Origin` must be a bare
+  `scheme://host[:port]` (no userinfo, path, query or fragment), and ports are compared as written. Only
+  `Host` is compared: behind a proxy that rewrites `Host`, browser clients get `403` until an allowlist of
+  origins is added. A request that reaches a loopback address with a `Host` that is not loopback gets
+  `403` (the SDK's DNS-rebinding protection).
+- **One message per request.** JSON-RPC batches (a body that starts with `[`) get `400`: MCP 2025-06-18
+  has no batches.
+- **Limits.** Bodies above 1 MiB get `413`, with or without `Content-Length`. While the instance drains,
+  a new `/mcp` request gets `503` with `Retry-After`, like `/v1/`; a request already accepted completes
+  its REST calls.
+- **Error bodies.** The refusals above (`401`, `403` for `Origin`, `405`, `400` for a batch, `413`, `503`)
+  are problem documents (`application/problem+json`). The SDK's own refusals are `text/plain`: the
+  DNS-rebinding `403`, and the `400` for an unknown method or malformed JSON-RPC.
 - **Logging.** One access-log record per `/mcp` request (`route: /mcp`, the principal, the status), and one
-  per REST call a tool makes. No header, body, token or tool argument is logged; the REST records show the
+  per REST call a tool makes, marked `via: mcp`. No header, body, token or tool argument is logged; the REST records show the
   request path, as for any REST client, so a watch or consumer name in a path appears there.
 
 Until API tokens exist (#72), `angelia serve` answers `401` to every API request, so the tools work only

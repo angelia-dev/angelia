@@ -149,6 +149,13 @@ func TestMCPOrigin(t *testing.T) {
 		{"null", http.StatusForbidden},
 		{"file://example.com", http.StatusForbidden},
 		{"::not a url", http.StatusForbidden},
+		{"https://example.com/", http.StatusOK},
+		{"https://user@example.com", http.StatusForbidden},
+		{"https://example.com/path", http.StatusForbidden},
+		{"https://example.com?x=1", http.StatusForbidden},
+		{"https://example.com?", http.StatusForbidden},
+		{"https://example.com#f", http.StatusForbidden},
+		{"https://example.com:443", http.StatusForbidden}, // ports are not normalised
 	} {
 		var hdr []string
 		if tc.origin != "" {
@@ -213,6 +220,21 @@ func TestMCPLimits(t *testing.T) {
 	exact := `{"x":"` + strings.Repeat("a", MaxBodyBytes-8) + `"}`
 	if r := e.do("POST", MCPPath, tokRead, exact); r.Status != http.StatusOK || len(stub.body) != MaxBodyBytes {
 		t.Fatalf("1 MiB body: %d, %d bytes", r.Status, len(stub.body))
+	}
+
+	// JSON-RPC batches are refused before the handler.
+	before := stub.calls()
+	for _, b := range []string{"[" + rpcBody + "]", " \r\n\t[" + rpcBody + "]"} {
+		r := e.do("POST", MCPPath, tokRead, b)
+		if r.Status != http.StatusBadRequest || r.problemType(t) != SlugBadRequest || !strings.Contains(string(r.Body), "batches") {
+			t.Errorf("batch %q: %d %s", b, r.Status, r.Body)
+		}
+	}
+	if stub.calls() != before {
+		t.Error("a batch reached the handler")
+	}
+	if r := e.do("POST", MCPPath, tokRead, `{"params":["[x"]}`); r.Status != http.StatusOK {
+		t.Errorf("an object with an array: %d", r.Status)
 	}
 
 	e.srv.Drain()
@@ -320,9 +342,25 @@ func TestMCPRESTTransport(t *testing.T) {
 		_ = resp.Body.Close()
 		t.Error("the transport served a path outside /v1/")
 	}
-	// Each in-memory call is logged as a REST request.
+	// Each in-memory call is logged as a REST request, marked via mcp.
 	if n := strings.Count(e.log.String(), `"route":"/v1/watches/{name}"`); n != 3 {
 		t.Errorf("%d access-log records for /v1/watches/{name}:\n%s", n, e.log.String())
+	}
+	if n := strings.Count(e.log.String(), `"via":"mcp"`); n != 5 {
+		t.Errorf("%d records via mcp:\n%s", n, e.log.String())
+	}
+
+	// While draining, the in-memory calls of an accepted /mcp request still
+	// complete; a request from the network gets 503.
+	e.srv.Drain()
+	if s := status("GET", "/v1/watches", "Bearer "+tokWrite, ""); s != http.StatusOK {
+		t.Errorf("in-memory call while draining: %d", s)
+	}
+	if r := e.do("GET", "/v1/watches", tokWrite, nil); r.Status != http.StatusServiceUnavailable {
+		t.Errorf("network call while draining: %d", r.Status)
+	}
+	if r := e.do("POST", MCPPath, tokWrite, rpcBody); r.Status != http.StatusServiceUnavailable {
+		t.Errorf("new /mcp request while draining: %d", r.Status)
 	}
 }
 
@@ -354,11 +392,17 @@ func TestMCPAccessLog(t *testing.T) {
 		switch rec["route"] {
 		case MCPPath:
 			mcpRecs++
+			if _, via := rec["via"]; via {
+				t.Errorf("the /mcp record is marked via: %v", rec)
+			}
 			if rec["principal"] != "tok-read" || rec["status"] != float64(http.StatusAccepted) || rec["path"] != MCPPath || rec["method"] != "POST" {
 				t.Errorf("record %v", rec)
 			}
 		case "/v1/watches":
 			restRecs++
+			if rec["via"] != "mcp" {
+				t.Errorf("the in-memory REST record is not marked via mcp: %v", rec)
+			}
 		}
 	}
 	if mcpRecs != 1 || restRecs != 1 {

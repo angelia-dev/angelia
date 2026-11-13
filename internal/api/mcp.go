@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,12 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request) {
 		problem(SlugPayloadTooLarge, "the request body is larger than 1 MiB").write(w, r)
 		return
 	}
+	// MCP 2025-06-18 has no JSON-RPC batches, and one batch of 1 MiB could
+	// fan out into thousands of tool calls.
+	if t := bytes.TrimLeft(b, " \t\r\n"); len(t) > 0 && t[0] == '[' {
+		problem(SlugBadRequest, "JSON-RPC batches are not supported; send one message per request").write(w, r)
+		return
+	}
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	r.ContentLength = int64(len(b))
 	s.mcp.ServeHTTP(w, r)
@@ -61,8 +68,10 @@ func methodNotAllowed(method string, allowed []string) *ProblemDetail {
 
 // sameOrigin reports whether r has no Origin header (a non-browser client)
 // or one whose host is the request's Host (spec docs/mcp.md D10). An opaque
-// origin ("null"), a malformed one or several Origin headers are
-// cross-origin.
+// origin ("null"), a malformed one (userinfo, a path, a query or a fragment)
+// or several Origin headers are cross-origin. Ports are compared as written,
+// not normalised: "https://h:443" against Host "h" is refused, which is the
+// safe direction.
 func sameOrigin(r *http.Request) bool {
 	o := r.Header.Values("Origin")
 	switch len(o) {
@@ -73,7 +82,8 @@ func sameOrigin(r *http.Request) bool {
 		return false
 	}
 	u, err := url.Parse(o[0])
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
@@ -84,6 +94,17 @@ func sameOrigin(r *http.Request) bool {
 // network and nothing is cached: each request is authenticated anew.
 type restTransport struct{ s *Server }
 
+// mcpCallKey marks the context of a request that restTransport serves. Only
+// restTransport sets it; a request from the network cannot.
+type mcpCallKey struct{}
+
+// fromMCP reports whether ctx is that of an in-memory REST call of an MCP
+// tool.
+func fromMCP(ctx context.Context) bool {
+	v, _ := ctx.Value(mcpCallKey{}).(bool)
+	return v
+}
+
 func (t restTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
 		defer func() { _ = req.Body.Close() }()
@@ -91,7 +112,7 @@ func (t restTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !strings.HasPrefix(req.URL.Path, "/v1/") {
 		return nil, fmt.Errorf("api: the in-process transport serves /v1/ only, not %s", req.URL.Path)
 	}
-	r := req.Clone(req.Context())
+	r := req.Clone(context.WithValue(req.Context(), mcpCallKey{}, true))
 	if r.Body == nil {
 		r.Body = http.NoBody
 	}

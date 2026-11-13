@@ -158,8 +158,9 @@ func (s *Server) GetPlugin(_ context.Context, req GetPluginRequestObject) (GetPl
 }
 
 // Role returns the api role of `angelia serve`: it mounts the API on the
-// shared listener under /v1/ (and MCP at /mcp when Options.MCP is set) and, once shutdown starts, drains it (503 with
-// Retry-After for new requests, open event streams closed).
+// shared listener under /v1/ (and MCP at /mcp when Options.MCP is set) and,
+// once shutdown starts, drains it (503 with Retry-After for new requests,
+// open event streams closed).
 func (s *Server) Role() supervisor.Role { return apiRole{s: s} }
 
 type apiRole struct{ s *Server }

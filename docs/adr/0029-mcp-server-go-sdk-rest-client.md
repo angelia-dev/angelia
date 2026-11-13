@@ -80,11 +80,17 @@ issue; this ADR records them and the design that follows.
     still does not import the SDK: `api.Options.MCP` is a factory that receives an in-memory
     `http.RoundTripper` into `api.Server.ServeHTTP`, and `cmd/angelia` passes `NewHTTPHandler`. `/mcp` goes
     through the same `ServeHTTP` (drain, route, authentication); then the api package refuses a method
-    other than `POST` (`405`), a cross-origin `Origin` (`403`) and a body above 1 MiB (`413`) as problem
-    documents, before the SDK sees the request. Each request builds its own MCP server (the compiled tool
-    set is shared) whose API client forwards exactly the request's `Authorization` values, so every REST
-    call is authenticated anew and nothing holds a principal across requests. The SDK's per-request
-    `info` records (session connected, ended) are dropped; its warnings and errors reach the log.
+    other than `POST` (`405`), a cross-origin `Origin` (`403`), a body above 1 MiB (`413`) and a JSON-RPC
+    batch (a body starting with `[`, `400`: MCP 2025-06-18 has no batches, and one 1 MiB batch could fan
+    out into thousands of tool calls) as problem documents, before the SDK sees the request. Each request
+    gets one MCP server (the compiled tool set is shared): the SDK v1.8.0 calls `getServer` twice per
+    stateless `POST`, so a holder in the request context builds it on the first call. Its API client
+    forwards exactly the request's `Authorization` values, so every REST call is authenticated anew and
+    nothing holds a principal across requests. The in-memory REST calls carry a context key that only the
+    in-memory transport sets: they skip the drain check, so an accepted `/mcp` request completes during
+    a drain as an in-flight REST request does, and their access-log records say `via: mcp`. The SDK's
+    per-request `info` records (session connected, ended) are dropped; its warnings and errors reach the
+    log.
 
 ## Consequences
 

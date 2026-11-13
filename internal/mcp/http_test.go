@@ -34,12 +34,15 @@ const tokInvalid = "mcp-invalid-token-000000000000003"
 
 // httpAuth is a revocable fake Authenticator that records every token it
 // is asked about. revokeAfterNext, when set, revokes that token right after
-// its next successful check.
+// its next successful check. hook, when set, runs once after hookAfter more
+// successful checks.
 type httpAuth struct {
 	mu              sync.Mutex
 	tokens          map[string]api.Principal
 	seen            []string
 	revokeAfterNext string
+	hookAfter       int
+	hook            func()
 }
 
 func newHTTPAuth() *httpAuth {
@@ -51,7 +54,6 @@ func newHTTPAuth() *httpAuth {
 
 func (a *httpAuth) Authenticate(_ context.Context, token string) (api.Principal, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.seen = append(a.seen, token)
 	for t, p := range a.tokens {
 		if subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1 {
@@ -59,10 +61,27 @@ func (a *httpAuth) Authenticate(_ context.Context, token string) (api.Principal,
 				delete(a.tokens, t)
 				a.revokeAfterNext = ""
 			}
+			var run func()
+			if a.hook != nil {
+				if a.hookAfter--; a.hookAfter <= 0 {
+					run, a.hook = a.hook, nil
+				}
+			}
+			a.mu.Unlock()
+			if run != nil {
+				run()
+			}
 			return p, nil
 		}
 	}
+	a.mu.Unlock()
 	return api.Principal{}, fmt.Errorf("token: %w", api.ErrUnauthenticated)
+}
+
+func (a *httpAuth) setHook(after int, f func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hookAfter, a.hook = after, f
 }
 
 func (a *httpAuth) revoke(token string) {
@@ -615,6 +634,31 @@ func TestHTTPLimitsAndDrain(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(body), "payload-too-large") {
 		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
+	// Without a Content-Length (chunked), end to end.
+	req, err := http.NewRequestWithContext(t.Context(), "POST", e.url+api.MCPPath, io.MultiReader(strings.NewReader(big)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+tokRead)
+	cr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, _ := io.ReadAll(cr.Body)
+	_ = cr.Body.Close()
+	if cr.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(cb), "payload-too-large") {
+		t.Fatalf("chunked: %d %s", cr.StatusCode, cb)
+	}
+	// A JSON-RPC batch is refused (MCP 2025-06-18 has none).
+	batch := "[" + toolCall("list_watches", map[string]any{}) + "," + toolCall("list_watches", map[string]any{}) + "]"
+	resp, body = e.post(t, "POST", batch, "Authorization", "Bearer "+tokRead)
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Content-Type") != "application/problem+json" || !strings.Contains(string(body), "batches") {
+		t.Fatalf("batch: %d %s", resp.StatusCode, body)
+	}
+
 	e.api.Drain()
 	resp, body = e.post(t, "POST", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "Authorization", "Bearer "+tokRead)
 	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") != fmt.Sprint(api.RetryAfterSeconds) {
@@ -682,4 +726,85 @@ func TestHTTPLogging(t *testing.T) {
 	if !strings.Contains(out, `"route":"/mcp","status":401`) {
 		t.Errorf("the refused call is not logged:\n%s", out)
 	}
+}
+
+// TestHTTPDrainMidCall: a drain that starts between the two REST calls of
+// one add_watch call (GET, then PUT) lets that call complete; a new /mcp
+// request then gets 503.
+func TestHTTPDrainMidCall(t *testing.T) {
+	e := newHTTPEnv(t)
+	cs := e.mustConnect(t, tokWrite)
+	// Checks: the /mcp request, the GET, then the PUT. Drain after the GET's.
+	e.auth.setHook(2, e.api.Drain)
+	got := success(t, "add_watch", callTool(t, cs, "add_watch", map[string]any{"name": "flask", "source": "pypi", "coordinates": map[string]string{"name": "flask"}}))
+	if got["change"] != "created" {
+		t.Fatalf("add_watch during the drain: %v", got)
+	}
+	if _, err := e.st.WatchByName(t.Context(), "flask"); err != nil {
+		t.Fatalf("the PUT did not land: %v", err)
+	}
+	resp, _ := e.post(t, "POST", toolCall("list_watches", map[string]any{}), "Authorization", "Bearer "+tokWrite)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("new request while draining: %d", resp.StatusCode)
+	}
+	if !strings.Contains(e.log.String(), `"method":"PUT","path":"/v1/watches/flask","route":"/v1/watches/{name}","status":201`) {
+		t.Errorf("the PUT is not logged as served:\n%s", e.log.String())
+	}
+}
+
+// TestBuildOncePerRequest: the SDK asks for the server twice per stateless
+// POST; it is built once.
+func TestBuildOncePerRequest(t *testing.T) {
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"items":[],"next_cursor":null}`)), Request: r,
+		}, nil
+	})
+	var builds int
+	var mu sync.Mutex
+	h, err := newHTTPHandler(HTTPOptions{REST: rt}, func() { mu.Lock(); builds++; mu.Unlock() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(toolCall("list_watches", map[string]any{})))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		mu.Lock()
+		if builds != i {
+			t.Errorf("after %d requests, %d builds", i, builds)
+		}
+		mu.Unlock()
+	}
+}
+
+func TestMaxBodyBytesMatchesAPI(t *testing.T) {
+	if maxBodyBytes != api.MaxBodyBytes {
+		t.Fatalf("maxBodyBytes %d, api.MaxBodyBytes %d", maxBodyBytes, api.MaxBodyBytes)
+	}
+}
+
+// TestQuietLogger: below warn is dropped, also through WithAttrs and
+// WithGroup, which keep the attributes and groups.
+func TestQuietLogger(t *testing.T) {
+	var buf logBuffer
+	l := quiet(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	for _, lg := range []*slog.Logger{l, l.With("k", "v"), l.WithGroup("g").With("k", "v")} {
+		lg.Info("dropped")
+		lg.Warn("kept")
+	}
+	out := buf.String()
+	if strings.Contains(out, "dropped") || strings.Count(out, `"msg":"kept"`) != 3 {
+		t.Fatalf("%s", out)
+	}
+	if !strings.Contains(out, `"k":"v"`) || !strings.Contains(out, `"g":{"k":"v"}`) {
+		t.Errorf("attributes or group lost: %s", out)
+	}
+	quiet(nil).Error("discarded") // must not panic
 }

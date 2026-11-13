@@ -244,7 +244,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	st.mcp = s.mcp != nil && r.URL.Path == MCPPath // no operation has this path
-	if s.draining.Load() {
+	// A REST call that a tool of an accepted /mcp request makes in memory is
+	// part of that in-flight request: it completes during the drain, as the
+	// rest of an in-flight REST request does. Only restTransport sets the key.
+	if s.draining.Load() && !fromMCP(r.Context()) {
 		problem(SlugUnavailable, "the instance is shutting down; retry on another instance or later").
 			withHeader("Retry-After", fmt.Sprint(RetryAfterSeconds)).write(rec, r)
 		return
@@ -504,6 +507,9 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	}
 	if clientErr != nil {
 		attrs = append(attrs, slog.String("client_error", clientErr.Error()))
+	}
+	if fromMCP(r.Context()) {
+		attrs = append(attrs, slog.String("via", "mcp"))
 	}
 	s.log.LogAttrs(r.Context(), slog.LevelInfo, "api request", attrs...)
 }
