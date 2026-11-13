@@ -104,18 +104,32 @@ func NewServer(o Options) (*sdk.Server, error) {
 	if o.API == nil {
 		return nil, errors.New("mcp: no API client")
 	}
+	ts, err := newToolset()
+	if err != nil {
+		return nil, err
+	}
+	return ts.server(o.API, o.Version, o.Logger), nil
+}
+
+// preparedTool is a tool with its SDK definition and compiled argument
+// validator, built once from the contract.
+type preparedTool struct {
+	tool
+	def *sdk.Tool
+	v   *validator
+}
+
+// toolset is the tool set read from the contract, ready to be bound to an
+// API client. Building it compiles the schemas; binding it is cheap, so the
+// HTTP transport binds it once per request, to that request's token.
+type toolset []preparedTool
+
+func newToolset() (toolset, error) {
 	c, err := loadContract()
 	if err != nil {
 		return nil, err
 	}
-	log := o.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
-	srv := sdk.NewServer(&sdk.Implementation{Name: "angelia", Version: o.Version}, &sdk.ServerOptions{
-		Logger:       log,
-		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
-	})
+	ts := make(toolset, 0, len(tools))
 	for _, t := range tools {
 		s, ok := c[t.name]
 		if !ok {
@@ -125,13 +139,29 @@ func NewServer(o Options) (*sdk.Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mcp: tool %s: %w", t.name, err)
 		}
-		srv.AddTool(&sdk.Tool{
+		ts = append(ts, preparedTool{tool: t, v: v, def: &sdk.Tool{
 			Name: t.name, Title: t.title, Description: t.description,
 			InputSchema: s.InputSchema, OutputSchema: s.OutputSchema,
 			Annotations: annotations(t.write),
-		}, handler(t, v, o.API))
+		}})
 	}
-	return srv, nil
+	return ts, nil
+}
+
+// server builds an MCP server whose tools call the REST API through a.
+func (ts toolset) server(a *apiclient.API, version string, log *slog.Logger) *sdk.Server {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	srv := sdk.NewServer(&sdk.Implementation{Name: "angelia", Version: version}, &sdk.ServerOptions{
+		Logger:       log,
+		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
+	})
+	for _, p := range ts {
+		def := *p.def // the SDK keeps the pointer; each server gets its own copy
+		srv.AddTool(&def, handler(p.tool, p.v, a))
+	}
+	return srv
 }
 
 // handler validates the arguments, runs the tool and builds its result: on

@@ -92,9 +92,8 @@ printed.
 
 ### Streamable HTTP: `/mcp`
 
-Planned with sub-story 81-B of [#81](https://github.com/angelia-dev/angelia/issues/81), not served yet:
-`POST /mcp` on the `api` role's listen address, with the same bearer tokens as `/v1/`, stateless JSON
-responses, and `403` for a cross-origin `Origin`. A generic client configuration will be:
+The `api` role serves `POST /mcp` on its listen address, next to `/v1/`; it is served only when the `api`
+role runs. A generic client configuration:
 
 ```json
 {
@@ -107,6 +106,33 @@ responses, and `403` for a cross-origin `Origin`. A generic client configuration
   }
 }
 ```
+
+- **Authentication.** The same bearer API tokens as `/v1/`, checked before any MCP processing: a missing,
+  malformed or unknown token, or one with no scope, gets `401` with the same `WWW-Authenticate` challenge.
+  There is no MCP OAuth authorization or protected-resource metadata.
+- **Scopes per tool call.** Each tool call makes its REST calls in memory, through the REST pipeline, with
+  exactly the request's `Authorization` header. A `read` token can list every tool and call the reads;
+  `add_watch` and `ack_event` are then tool errors with `required_scope: write`. Nothing is cached between
+  requests: a revoked token fails on its next call.
+- **Stateless.** No `Mcp-Session-Id`; every answer is JSON, not an event stream, so any replica behind a
+  load balancer can answer any request. `GET` and `DELETE` get `405`.
+- **Browsers and DNS rebinding.** A request whose `Origin` names another host than its `Host` gets `403`;
+  requests without `Origin` (non-browser clients) are allowed. The `Origin` must be a bare
+  `scheme://host[:port]` (no userinfo, path, query or fragment), and ports are compared as written. Only
+  `Host` is compared: behind a proxy that rewrites `Host`, browser clients get `403` until an allowlist of
+  origins is added. A request that reaches a loopback address with a `Host` that is not loopback gets
+  `403` (the SDK's DNS-rebinding protection).
+- **One message per request.** JSON-RPC batches (a body that starts with `[`) get `400`: MCP 2025-06-18
+  has no batches.
+- **Limits.** Bodies above 1 MiB get `413`, with or without `Content-Length`. While the instance drains,
+  a new `/mcp` request gets `503` with `Retry-After`, like `/v1/`; a request already accepted completes
+  its REST calls.
+- **Error bodies.** The refusals above (`401`, `403` for `Origin`, `405`, `400` for a batch, `413`, `503`)
+  are problem documents (`application/problem+json`). The SDK's own refusals are `text/plain`: the
+  DNS-rebinding `403`, and the `400` for an unknown method or malformed JSON-RPC.
+- **Logging.** One access-log record per `/mcp` request (`route: /mcp`, the principal, the status), and one
+  per REST call a tool makes, marked `via: mcp`. No header, body, token or tool argument is logged; the REST records show the
+  request path, as for any REST client, so a watch or consumer name in a path appears there.
 
 Until API tokens exist (#72), `angelia serve` answers `401` to every API request, so the tools work only
 against an instance with an authenticator.
