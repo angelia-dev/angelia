@@ -54,6 +54,22 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Postgres for the store tests (story #85, ADR 0028 §6, decision D18): the
+    # image digest pinned in deploy/compose/full/compose.yaml. Each test makes
+    # its own schema (internal/store/pgtest). Trust auth on a job-local
+    # container, so no password is set anywhere.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:562a6e0a66b5136bc28bef5944bbc2ddddf8ea0058d4016b96cee63f2edaf143
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -62,7 +78,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Postgres tests fail instead of skipping when the service is missing.
       - name: Tests with race detector and coverage
+        env:
+          ANGELIA_TEST_POSTGRES_DSN: postgres://postgres@localhost:5432/postgres?sslmode=disable
+          ANGELIA_TEST_POSTGRES_REQUIRED: "1"
         run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - name: Coverage gate (internal/, 80%)
         run: scripts/coverage-gate.sh coverage.out 80

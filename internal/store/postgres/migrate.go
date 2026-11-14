@@ -1,0 +1,102 @@
+// Package postgres is the Postgres store engine (story #85, ADR 0028),
+// through pgx/v5 behind database/sql.
+//
+// This file holds the schema side: the schema key that scopes every advisory
+// lock to the current schema, and the goose migrations of
+// store/migrations/postgres, run under a session advisory lock so that
+// processes starting at once migrate one after the other. The Store itself
+// (85-D) builds on it.
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"path"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
+
+	"github.com/angelia-dev/angelia/internal/store/migrations"
+)
+
+// DriverName is the database/sql driver name of pgx/v5/stdlib.
+const DriverName = "pgx"
+
+// migrationsTable records the applied schema versions, as on SQLite.
+const migrationsTable = "schema_migrations"
+
+// Migration lock waits: one probe a second for up to five minutes, so a
+// process that starts while another migrates waits for it instead of failing.
+const (
+	migrationLockProbeSeconds = 1
+	migrationLockProbes       = 300
+)
+
+// ErrNoSchema says that the connection's search_path names no existing schema,
+// so current_schema() is NULL and there is nowhere to create the tables.
+var ErrNoSchema = errors.New("store: postgres: the search_path names no existing schema")
+
+// SchemaKey returns the advisory-lock key of the connection's current schema,
+// hashtext(current_schema()) (ADR 0028 §4). Two schemas, for example two
+// Angelia instances in one database or two tests, get different keys, so their
+// locks do not contend; a hash collision only adds waiting. It returns
+// [ErrNoSchema] when current_schema() is NULL.
+func SchemaKey(ctx context.Context, db *sql.DB) (int32, error) {
+	var key sql.NullInt32
+	if err := db.QueryRowContext(ctx, `SELECT hashtext(current_schema())`).Scan(&key); err != nil {
+		return 0, fmt.Errorf("store: postgres: schema key: %w", err)
+	}
+	if !key.Valid {
+		return 0, ErrNoSchema
+	}
+	return key.Int32, nil
+}
+
+// migrationLockID is goose's session-lock id for a schema key: the 64-bit
+// value whose high half is the key and whose low half is 0, so it reads as
+// (key, 0) in pg_locks, next to the transaction locks (key, 1..3) of
+// ADR 0028 §4. Postgres keeps one-bigint and two-int4 advisory keys apart, so
+// the id never collides with those locks.
+func migrationLockID(key int32) int64 { return int64(key) << 32 }
+
+// Migrate applies the pending Postgres migrations to the current schema and
+// returns how many it applied. Running it on an up-to-date schema is a no-op.
+// It holds a session advisory lock, scoped to the schema, while it runs, so
+// processes that start at once on an empty schema both succeed and goose
+// records each version once. A nil logger means [slog.Default].
+func Migrate(ctx context.Context, db *sql.DB, logger *slog.Logger) (int, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	key, err := SchemaKey(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+	locker, err := lock.NewPostgresSessionLocker(
+		lock.WithLockID(migrationLockID(key)),
+		lock.WithLockTimeout(migrationLockProbeSeconds, migrationLockProbes),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: postgres: migration lock: %w", err)
+	}
+	p, err := goose.NewProvider(goose.DialectPostgres, db, migrations.Postgres(),
+		goose.WithTableName(migrationsTable),
+		goose.WithDisableGlobalRegistry(true),
+		goose.WithSessionLocker(locker),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: postgres: load migrations: %w", err)
+	}
+	res, err := p.Up(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("store: postgres: migrate: %w", err)
+	}
+	for _, r := range res {
+		logger.InfoContext(ctx, "applied migration", "version", r.Source.Version, "file", path.Base(r.Source.Path), "duration", r.Duration)
+	}
+	return len(res), nil
+}
