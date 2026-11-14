@@ -602,6 +602,9 @@ func TestTruncate(t *testing.T) {
 	if got := truncate("short"); got != "short" {
 		t.Errorf("truncate(short) = %q", got)
 	}
+	if got := truncate("a\x00b\xffc"); got != "a\uFFFDb\uFFFDc" {
+		t.Errorf("truncate kept NUL or invalid UTF-8: %q", got)
+	}
 	long := strings.Repeat("a", maxErrorLen-1) + "é" + "tail"
 	got := truncate(long)
 	if got != strings.Repeat("a", maxErrorLen-1)+"…" {

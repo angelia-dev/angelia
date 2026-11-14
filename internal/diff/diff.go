@@ -34,6 +34,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
@@ -159,7 +160,11 @@ func detect(known []store.Version, fetched []source.Version, now time.Time) Resu
 		// The first entry of a raw string wins: sources list newest first,
 		// so a repeated entry, even one with a different yank flag, is
 		// treated as a stale copy and skipped.
-		if f.Raw == "" || f.Raw != strings.TrimSpace(f.Raw) || seen[f.Raw] {
+		// A raw string that is not valid UTF-8 or holds a NUL cannot be
+		// stored as text on Postgres (and is malformed anyway): skipped on
+		// every engine, like a blank or padded one.
+		if f.Raw == "" || f.Raw != strings.TrimSpace(f.Raw) || !utf8.ValidString(f.Raw) ||
+			strings.ContainsRune(f.Raw, 0) || seen[f.Raw] {
 			r.Skipped++
 			continue
 		}
