@@ -250,11 +250,12 @@ func TestJSONColumnsByteForByte(t *testing.T) {
 	}
 }
 
-// TestEventPayloadEscapedNUL records the difference ADR 0028 lists as an open
-// question: the subject expression index evaluates ->>, which refuses a
-// document holding an escaped NUL anywhere, so Postgres rejects an event that
-// SQLite stores. 85-D (or the event builder) decides how to avoid it; this
-// test changes when it does.
+// TestEventPayloadEscapedNUL records why internal/event never writes the
+// escape \u0000 (ADR 0028 open question, settled in 85-D): the subject
+// expression index evaluates ->>, which refuses a document holding an escaped
+// NUL anywhere. The event builder stores U+FFFD instead on both engines
+// (TestEncodePayloadReplacesNUL), and the engine returns this refusal as
+// store.ErrInvalid (TestEventPayloadEscapedNULIsInvalid).
 func TestEventPayloadEscapedNUL(t *testing.T) {
 	db := openSchema(t)
 	_, err := db.ExecContext(t.Context(), `INSERT INTO event (id, watch_id, type, payload_json, created_at) VALUES ('e', 'w', 't', $1, 0)`,

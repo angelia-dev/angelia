@@ -341,6 +341,19 @@ do not take.
   so the unique index on `(kind, coordinates_json)` refuses a target whose coordinates exceed that
   (`54000`), where SQLite has no such limit; coordinates are a few short fields, far below it.
 
+- **As built in 85-D (2026-11-14).** `internal/store/postgres` implements `store.APIStore` and passes the
+  `storetest` suite. The event lock is taken on every `AppendEvent`, and the deliveries of an event go in one
+  `INSERT … SELECT … FROM json_populate_recordset(NULL::delivery, $1::json)`. `AppendEvent` in `InConfigTx`
+  or `InAPITx` returns `store.ErrInvalid` on both engines. `LeaseDueTargets` reads each target back after
+  writing its lease and skips (and unleases) one deleted meanwhile; `StartDeliveryAttempt` repeats the due
+  predicate, and a row it no longer matches is skipped and unleased. Errors: `23505` → `ErrConflict`,
+  `23503` → `ErrInvalidRef`, `23514`, `22P02`, `22P05` and `22021` (a NUL byte in a `TEXT` value) →
+  `ErrInvalid`; `P0001` (`event_immutable`), `40P01` and lock or statement timeouts keep no sentinel, as on
+  SQLite. **NUL in payloads** (open question below): `internal/event` writes U+FFFD (`\ufffd`) in place of
+  every `\u0000` escape of an event payload, on both engines, and looks yanks up with the same subject, so
+  the stored bytes are the same on SQLite and Postgres and a check never fails on it. The default pool size
+  is `max(4, number of CPUs)`, pgxpool's default.
+
 ### 8. Configuration surface and pool size (D20)
 
 No new YAML keys. `database.dsn` already accepts `postgres://` and `postgresql://`. TLS (`sslmode`, …) and
@@ -461,7 +474,8 @@ or changes them.
   the subject index then rejects the event on Postgres (§7), so that check fails on every retry. 85-C or
   85-D should add a test and pick one of: drop or replace NUL when the event is built (applies to both
   engines, changes no stored data today); or keep the subject in its own `TEXT` column (a schema difference
-  from SQLite, unless both engines get it). Recommendation: the first.
+  from SQLite, unless both engines get it). Recommendation: the first. *Answered in 85-D: replaced with U+FFFD
+  when the event is built (§7, as built in 85-D); for the maintainer to confirm.*
 - The pointers in architecture.md §3.2 and §5 and in ADR 0008 and 0022 to this ADR are added with the
   engine (85-E), when the promise starts to hold. ADR 0002's and ADR 0003's open questions are closed by #86.
 
