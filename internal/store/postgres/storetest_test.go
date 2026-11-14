@@ -41,7 +41,8 @@ func withServerOption(t *testing.T, dsn, option string) string {
 		}
 		q := u.Query()
 		q.Set("options", option)
-		u.RawQuery = q.Encode()
+		// pgx does not read "+" in a URL query as a space; spell it %20.
+		u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20")
 		return u.String()
 	}
 	return dsn + " options='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(option) + "'"
