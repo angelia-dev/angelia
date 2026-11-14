@@ -504,6 +504,8 @@ func (r *reconciler) watches(f *File, old []store.Watch) (toCheck, wanted map[st
 				}
 				if moved {
 					// Held versions of the old target must not come back if the watch moves back.
+					// The delete stays after UpdateWatch: on Postgres the update waits for a
+					// running check of the watch, so the delete sees its holds (ADR 0028 §2).
 					if _, err := r.tx.DeletePendingReleasesOfWatch(r.ctx, cur.ID); err != nil {
 						return err
 					}

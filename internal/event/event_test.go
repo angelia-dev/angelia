@@ -359,3 +359,43 @@ func TestShortType(t *testing.T) {
 		}
 	}
 }
+
+// TestEncodePayloadReplacesNUL: a NUL character from a registry becomes
+// U+FFFD in the stored payload, on every engine (ADR 0028 §7: Postgres
+// refuses \u0000 in a payload its subject index reads), while the text
+// "\u0000" (an escaped backslash) is kept. The subject a yank looks up is
+// encoded the same way.
+func TestEncodePayloadReplacesNUL(t *testing.T) {
+	env, err := Build(Input{
+		ID: eventID, Instance: "angelia",
+		Target: target("pypi", map[string]string{"name": "requests"}),
+		Watch:  store.Watch{ID: watchID, Labels: map[string]string{"lit": `\u0000`}},
+		Release: policy.Release{
+			Raw: "1.0\x00rc", Scheme: "pep440", DetectedAt: detected,
+		},
+		Time: emitted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := encodePayload(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `1.0\u0000rc`) || !strings.Contains(string(b), `"version":"1.0\ufffdrc"`) {
+		t.Fatalf("payload keeps the NUL escape: %s", b)
+	}
+	if !strings.Contains(string(b), `"lit":"\\u0000"`) {
+		t.Fatalf("payload changed the literal text \\u0000: %s", b)
+	}
+	var got Envelope
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := "pypi:requests@1.0\uFFFDrc"; got.Subject != want || subjectKey(env.Subject) != want {
+		t.Fatalf("subject = %q, key = %q; want %q", got.Subject, subjectKey(env.Subject), want)
+	}
+	if plain := []byte(`{"a":"\\u0000","b":"x"}`); string(replaceEscapedNUL(plain)) != string(plain) {
+		t.Fatalf("replaceEscapedNUL(%s) = %s", plain, replaceEscapedNUL(plain))
+	}
+}

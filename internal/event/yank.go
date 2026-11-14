@@ -142,7 +142,7 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			default:
 				continue
 			}
-			orig, err := tx.GetLatestEventBySubject(ctx, w.ID, kind+":"+pkg+"@"+c.Raw, TypePublished, TypePrerelease)
+			orig, err := tx.GetLatestEventBySubject(ctx, w.ID, subjectKey(kind+":"+pkg+"@"+c.Raw), TypePublished, TypePrerelease)
 			if errors.Is(err, store.ErrNotFound) {
 				logger.InfoContext(ctx, "version yanked upstream that this watch never emitted; no event",
 					slog.String("watch", w.ID), slog.String("version", raw))
@@ -164,9 +164,9 @@ func EmitYanks(ctx context.Context, tx store.Tx, watches []diff.WatchChanges, in
 			if err != nil {
 				return n, fmt.Errorf("event: watch %s yank of %q: %w", w.ID, raw, err)
 			}
-			payload, err := json.Marshal(env)
+			payload, err := encodePayload(env)
 			if err != nil {
-				return n, fmt.Errorf("event: encode %s: %w", env.ID, err)
+				return n, err
 			}
 			subs, err := in.loadSubs(ctx, tx, logger)
 			if err != nil {

@@ -6,10 +6,14 @@ import "testing"
 func cases(e Engine) []testCase {
 	return []testCase{
 		{"AppendEventAndDeliveryUniqueness", testAppendEventAndDeliveryUniqueness},
+		{"AppendEventRefusedInConfigAndAPITx", testAppendEventRefusedInConfigAndAPITx},
 		{"AckConsumer", testAckConsumer},
 		{"AckConsumerConcurrent", testAckConsumerConcurrent},
 		{"CancelHeldDeliveries", testCancelHeldDeliveries},
 		{"Close", testClose},
+		{"ConcurrentConfigApplies", testConcurrentConfigApplies},
+		{"ConcurrentRecomputeTargetInterval", testConcurrentRecomputeTargetInterval},
+		{"ConcurrentUpdateSecretSameRevision", testConcurrentUpdateSecretSameRevision},
 		{"ConcurrentWriters", testConcurrentWriters},
 		{"ConfigTxOwnershipAndUniqueNames", testConfigTxOwnershipAndUniqueNames},
 		{"ConsumerCRUD", testConsumerCRUD},
@@ -39,6 +43,7 @@ func cases(e Engine) []testCase {
 		{"LeasesExcludeAcrossStoreInstances", func(t *testing.T, _ opener) { testLeasesExcludeAcrossStoreInstances(t, e) }},
 		{"ListSubscriptions", testListSubscriptions},
 		{"MaxEventSeq", testMaxEventSeq},
+		{"MovedWatchLeavesNoStaleHold", testMovedWatchLeavesNoStaleHold},
 		{"NamedListsAndLookups", testNamedListsAndLookups},
 		{"NamesUniqueAcrossOwners", testNamesUniqueAcrossOwners},
 		{"NoSkippedEventUnderConcurrentWriters", testNoSkippedEventUnderConcurrentWriters},

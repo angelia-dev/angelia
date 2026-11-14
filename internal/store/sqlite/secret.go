@@ -19,7 +19,7 @@ var _ store.SecretStore = (*Store)(nil)
 // InSecretTx implements [store.SecretStore]. The transaction takes SQLite's
 // write lock at BEGIN (_txlock=immediate), so no other writer interleaves.
 func (s *Store) InSecretTx(ctx context.Context, fn func(tx store.SecretTx) error) error {
-	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q}) })
+	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q, config: true}) })
 }
 
 // ListSecrets implements [store.SecretReader].

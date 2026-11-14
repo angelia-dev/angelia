@@ -19,7 +19,7 @@ var allStatuses = []string{store.DeliveryPending, store.DeliveryInFlight, store.
 
 // InAPITx implements [store.APIStore].
 func (s *Store) InAPITx(ctx context.Context, fn func(tx store.APITx) error) error {
-	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q}) })
+	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q, config: true}) })
 }
 
 // ListNamedWatches implements [store.APIReader].

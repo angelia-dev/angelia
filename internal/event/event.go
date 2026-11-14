@@ -1,6 +1,8 @@
 package event
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -111,6 +113,50 @@ func NewNotes(format, body string) *Notes {
 	n.Body, n.Truncated = body[:cut], true
 	return n
 }
+
+// encodePayload marshals env into the stored payload of its event. A NUL
+// character in any string, which json.Marshal writes as the escape \u0000,
+// becomes U+FFFD (written \ufffd), the character json.Marshal already puts
+// in place of invalid UTF-8. Postgres refuses \u0000 in a document that its
+// subject index reads (ADR 0028 §7), so both engines store the same, valid
+// payload. A registry string with a NUL is malformed anyway.
+func encodePayload(env Envelope) ([]byte, error) {
+	b, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("event: encode %s: %w", env.ID, err)
+	}
+	return replaceEscapedNUL(b), nil
+}
+
+// replaceEscapedNUL replaces every \u0000 escape of the JSON text b with
+// \ufffd. It walks escapes pair by pair, so an escaped backslash followed by
+// the text "u0000" is left alone.
+func replaceEscapedNUL(b []byte) []byte {
+	const nul, repl = `\u0000`, `\ufffd`
+	if !bytes.Contains(b, []byte(nul)) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		switch {
+		case b[i] != '\\':
+			out = append(out, b[i])
+		case bytes.HasPrefix(b[i:], []byte(nul)):
+			out = append(out, repl...)
+			i += len(nul) - 1
+		case i+1 < len(b):
+			out = append(out, b[i], b[i+1]) // any other escape pair
+			i++
+		default:
+			out = append(out, b[i])
+		}
+	}
+	return out
+}
+
+// subjectKey is the subject as encodePayload stores it, for lookups by
+// subject.
+func subjectKey(subject string) string { return strings.ReplaceAll(subject, "\x00", "\uFFFD") }
 
 // Watch identifies the watch that produced the event.
 type Watch struct {
