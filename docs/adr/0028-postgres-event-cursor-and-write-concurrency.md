@@ -326,6 +326,20 @@ do not take.
   payload that contains an escaped NUL, which SQLite stores. See open questions.
 - Triggers have Postgres twins with the same firing conditions: `event_immutable`, the three
   `subscription_generation` triggers and `event_prune_seq`.
+- **As built in 85-C (2026-11-14).** The SQLite head was `00020` (the `consumer` table of #79) when 85-C
+  landed, so the initial Postgres migration is `00020_initial_schema.sql` and creates `consumer` too; there
+  is no `delivery_status_next_attempt_at` (#234). `delivery_status_next_attempt_at_id` is built as
+  `(status, next_attempt_at NULLS FIRST, id)`, so the lease order `next_attempt_at NULLS FIRST, id` walks it
+  without a sort. The goose lock id is the 64-bit value `schema_key << 32`, which reads as `(schema_key, 0)`
+  in `pg_locks`. A test in `internal/store/migrations` fails when a SQLite migration from `00020` on has no
+  Postgres twin with the same number, or the reverse. Test schemas come from `internal/store/pgtest`.
+  Every `TEXT` column is `COLLATE "C"`, so keys, unique indexes and `ORDER BY`/keyset comparisons use byte
+  order like SQLite's `BINARY`, independent of the server locale and of glibc/ICU versions (a test checks
+  `attcollation`). The subject expression is collated too: the index is on
+  `(watch_id, ((payload_json::json ->> 'subject') COLLATE "C"))`, and the yank query must repeat the
+  `COLLATE "C"` to use it. A btree entry is limited to about 2.7 KB on Postgres (a third of an 8 KB page),
+  so the unique index on `(kind, coordinates_json)` refuses a target whose coordinates exceed that
+  (`54000`), where SQLite has no such limit; coordinates are a few short fields, far below it.
 
 ### 8. Configuration surface and pool size (D20)
 
