@@ -342,17 +342,32 @@ do not take.
   (`54000`), where SQLite has no such limit; coordinates are a few short fields, far below it.
 
 - **As built in 85-D (2026-11-14).** `internal/store/postgres` implements `store.APIStore` and passes the
-  `storetest` suite. The event lock is taken on every `AppendEvent`, and the deliveries of an event go in one
+  `storetest` suite. Every transaction is begun at READ COMMITTED explicitly, and the engine sets
+  `default_transaction_isolation` to `read committed` on its connections, so a server or role default of
+  REPEATABLE READ or SERIALIZABLE changes nothing (the suite runs under such a default too). The event lock
+  is taken on every `AppendEvent`, and the deliveries of an event go in one
   `INSERT … SELECT … FROM json_populate_recordset(NULL::delivery, $1::json)`. `AppendEvent` in `InConfigTx`
   or `InAPITx` returns `store.ErrInvalid` on both engines. `LeaseDueTargets` reads each target back after
   writing its lease and skips (and unleases) one deleted meanwhile; `StartDeliveryAttempt` repeats the due
   predicate, and a row it no longer matches is skipped and unleased. Errors: `23505` → `ErrConflict`,
-  `23503` → `ErrInvalidRef`, `23514`, `22P02`, `22P05` and `22021` (a NUL byte in a `TEXT` value) →
-  `ErrInvalid`; `P0001` (`event_immutable`), `40P01` and lock or statement timeouts keep no sentinel, as on
-  SQLite. **NUL in payloads** (open question below): `internal/event` writes U+FFFD (`\ufffd`) in place of
-  every `\u0000` escape of an event payload, on both engines, and looks yanks up with the same subject, so
-  the stored bytes are the same on SQLite and Postgres and a check never fails on it. The default pool size
-  is `max(4, number of CPUs)`, pgxpool's default.
+  `23503` → `ErrInvalidRef`, `23514`, `22P02`, `22P05` and `22021` (a NUL byte or invalid UTF-8 in a `TEXT`
+  value) → `ErrInvalid`; `P0001` (`event_immutable`), `40P01` and lock or statement timeouts keep no
+  sentinel, as on SQLite. The default pool size is `max(4, number of CPUs)`, pgxpool's default; the other
+  pgxpool DSN parameters (`pool_min_conns`, `pool_max_conn_lifetime`, …) are refused with `ErrInvalid`.
+  **Text a check or a delivery writes is normalised before it is stored, on both engines**, so that bad
+  upstream text cannot wedge a target or a delivery on Postgres (whose `TEXT` holds no NUL and no invalid
+  UTF-8, and whose subject index refuses a `\u0000` escape):
+  - event payloads: `internal/event` (`encodePayload`) writes `\ufffd` (U+FFFD) in place of every
+    `\u0000` escape (invalid UTF-8 is already U+FFFD from `encoding/json`); the yank lookup encodes its
+    subject the same way (`subjectKey`);
+  - version strings: `internal/diff` skips a fetched raw version that is not valid UTF-8 or holds a NUL, as
+    it skips a blank or padded one (counted in `Skipped`);
+  - delivery errors: `internal/dispatch` (`truncate`) and `FinishDelivery` of both engines replace invalid
+    UTF-8 and NUL in `LastError` with U+FFFD.
+
+  Nothing else is normalised: other text (names, labels, filters, held-delivery reasons, consumer names)
+  comes from configuration or the API, and on Postgres a NUL or invalid UTF-8 there is refused with
+  `ErrInvalid` where SQLite stores it.
 
 ### 8. Configuration surface and pool size (D20)
 
@@ -475,7 +490,8 @@ or changes them.
   85-D should add a test and pick one of: drop or replace NUL when the event is built (applies to both
   engines, changes no stored data today); or keep the subject in its own `TEXT` column (a schema difference
   from SQLite, unless both engines get it). Recommendation: the first. *Answered in 85-D: replaced with U+FFFD
-  when the event is built (§7, as built in 85-D); for the maintainer to confirm.*
+  when the event is built, with the other normalisations listed in §7 (as built in 85-D); for the
+  maintainer to confirm.*
 - The pointers in architecture.md §3.2 and §5 and in ADR 0008 and 0022 to this ADR are added with the
   engine (85-E), when the promise starts to hold. ADR 0002's and ADR 0003's open questions are closed by #86.
 

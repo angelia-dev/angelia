@@ -336,6 +336,9 @@ func TestRedactedError(t *testing.T) {
 	if err.Error() != "auth for xxxxx failed" || !errors.Is(err, inner) {
 		t.Fatalf("redact = %q", err)
 	}
+	if short := redact(errors.New("auth for pw1 failed"), "pw1"); strings.Contains(short.Error(), "pw1") || !strings.Contains(short.Error(), "not shown") {
+		t.Fatalf("redact with a short password = %q", short)
+	}
 	if got := redact(inner, ""); got.Error() != inner.Error() || redact(nil, "pw") != nil {
 		t.Fatal("redact without password or error changed it")
 	}
@@ -359,6 +362,12 @@ func TestPoolMaxConns(t *testing.T) {
 	for _, v := range []string{"0", "x"} {
 		if _, _, err := parseDSN("host=localhost pool_max_conns=" + v); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("pool_max_conns=%s: %v, want ErrInvalid", v, err)
+		}
+	}
+	for _, p := range []string{"pool_min_conns", "pool_max_conn_lifetime", "pool_max_conn_idle_time", "pool_health_check_period", "pool_max_conn_lifetime_jitter"} {
+		_, _, err := parseDSN("postgres://u@localhost/db?" + p + "=1")
+		if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), p) {
+			t.Errorf("%s: %v, want ErrInvalid naming it", p, err)
 		}
 	}
 	cfg, n, err := parseDSN("postgres://u@localhost/db?pool_max_conns=7&application_name=x")

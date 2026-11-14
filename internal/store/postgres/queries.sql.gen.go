@@ -1678,7 +1678,7 @@ func (q *Queries) ListSecrets(ctx context.Context) ([]Secret, error) {
 }
 
 const listSinksManagedBy = `-- name: ListSinksManagedBy :many
-SELECT id, kind, config_json, name, managed_by FROM sink WHERE managed_by = $1 ORDER BY name
+SELECT id, kind, config_json, name, managed_by FROM sink WHERE managed_by = $1 ORDER BY name NULLS FIRST
 `
 
 func (q *Queries) ListSinksManagedBy(ctx context.Context, managedBy string) ([]Sink, error) {
@@ -1746,7 +1746,7 @@ func (q *Queries) ListSubscriptions(ctx context.Context) ([]Subscription, error)
 }
 
 const listSubscriptionsBySink = `-- name: ListSubscriptionsBySink :many
-SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE sink_id = $1 ORDER BY name, id
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE sink_id = $1 ORDER BY name NULLS FIRST, id
 `
 
 func (q *Queries) ListSubscriptionsBySink(ctx context.Context, sinkID string) ([]Subscription, error) {
@@ -1781,7 +1781,7 @@ func (q *Queries) ListSubscriptionsBySink(ctx context.Context, sinkID string) ([
 }
 
 const listSubscriptionsManagedBy = `-- name: ListSubscriptionsManagedBy :many
-SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE managed_by = $1 ORDER BY name
+SELECT id, filter_json, sink_id, template, name, managed_by, policy_json FROM subscription WHERE managed_by = $1 ORDER BY name NULLS FIRST
 `
 
 func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy string) ([]Subscription, error) {
@@ -1891,9 +1891,10 @@ func (q *Queries) ListWatchesByTarget(ctx context.Context, targetID string) ([]W
 }
 
 const listWatchesManagedBy = `-- name: ListWatchesManagedBy :many
-SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE managed_by = $1 ORDER BY name
+SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE managed_by = $1 ORDER BY name NULLS FIRST
 `
 
+// NULLS FIRST: SQLite sorts NULL names first, Postgres last by default.
 func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([]Watch, error) {
 	rows, err := q.db.QueryContext(ctx, listWatchesManagedBy, managedBy)
 	if err != nil {

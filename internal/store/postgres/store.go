@@ -32,6 +32,14 @@ const (
 // poolMaxConnsParam is the DSN parameter of the pool size (ADR 0028 §8).
 const poolMaxConnsParam = "pool_max_conns"
 
+// poolOnlyParams are the other pgxpool DSN parameters. database/sql has no
+// equivalent the engine applies, and the server would refuse them as
+// settings, so Open refuses them with a clear error.
+var poolOnlyParams = []string{
+	"pool_min_conns", "pool_min_idle_conns", "pool_max_conn_lifetime", "pool_max_conn_lifetime_jitter",
+	"pool_max_conn_idle_time", "pool_health_check_period",
+}
+
 // Store is the Postgres engine. It is safe for concurrent use.
 //
 // Transactions run at READ COMMITTED. Config, API and secret transactions
@@ -93,6 +101,14 @@ func parseDSN(dsn string) (*pgx.ConnConfig, int, error) {
 		// the original text: say nothing about the DSN.
 		return nil, 0, errors.New("store: postgres: the DSN cannot be parsed (its text is not shown: it may hold a password)")
 	}
+	// Autocommit statements run at READ COMMITTED too.
+	cfg.RuntimeParams["default_transaction_isolation"] = "read committed"
+	for _, p := range poolOnlyParams {
+		if _, ok := cfg.RuntimeParams[p]; ok {
+			return nil, 0, fmt.Errorf("store: postgres: the DSN parameter %s is not supported (only %s sets the pool): %w",
+				p, poolMaxConnsParam, store.ErrInvalid)
+		}
+	}
 	maxConns := max(4, runtime.NumCPU())
 	if v, ok := cfg.RuntimeParams[poolMaxConnsParam]; ok {
 		delete(cfg.RuntimeParams, poolMaxConnsParam)
@@ -113,8 +129,16 @@ type redactedError struct {
 }
 
 func (e redactedError) Error() string {
+	if len(e.password) < minRedactLen {
+		// Masking a very short password would mangle the text and could
+		// still leave it recognisable: show none of it.
+		return "store: postgres: cannot connect (the error text is not shown: it may hold the password)"
+	}
 	return strings.ReplaceAll(e.err.Error(), e.password, "xxxxx")
 }
+
+// minRedactLen is the shortest password redactedError masks in place.
+const minRedactLen = 4
 
 func (e redactedError) Unwrap() error { return e.err }
 
@@ -138,7 +162,10 @@ func (s *Store) InTx(ctx context.Context, fn func(tx store.Tx) error) error {
 // withTx runs fn on queries bound to one transaction, committing on nil. A
 // lock other than lockNone is taken as the transaction's first statement.
 func (s *Store) withTx(ctx context.Context, lock int32, fn func(q *Queries) error) (err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	// READ COMMITTED explicitly: the locking design of ADR 0028 assumes it,
+	// whatever the server or role default (REPEATABLE READ would fail
+	// writers with 40001 instead of re-checking their WHERE).
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("store: begin: %w", err)
 	}

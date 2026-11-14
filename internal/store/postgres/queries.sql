@@ -42,8 +42,9 @@ UPDATE watch SET target_id = $1, policy_json = $2, labels_json = $3, interval_ms
 -- name: ResetWatchBaseline :execrows
 UPDATE watch SET baseline_done = false WHERE id = $1;
 
+-- NULLS FIRST: SQLite sorts NULL names first, Postgres last by default.
 -- name: ListWatchesManagedBy :many
-SELECT * FROM watch WHERE managed_by = $1 ORDER BY name;
+SELECT * FROM watch WHERE managed_by = $1 ORDER BY name NULLS FIRST;
 
 -- name: GetWatch :one
 SELECT * FROM watch WHERE id = $1;
@@ -78,7 +79,7 @@ INSERT INTO sink (id, kind, config_json, name, managed_by) VALUES ($1, $2, $3, $
 UPDATE sink SET kind = $1, config_json = $2 WHERE id = $3;
 
 -- name: ListSinksManagedBy :many
-SELECT * FROM sink WHERE managed_by = $1 ORDER BY name;
+SELECT * FROM sink WHERE managed_by = $1 ORDER BY name NULLS FIRST;
 
 -- name: DeleteSink :execrows
 DELETE FROM sink WHERE id = $1;
@@ -90,7 +91,7 @@ INSERT INTO subscription (id, filter_json, sink_id, template, name, managed_by, 
 UPDATE subscription SET filter_json = $1, sink_id = $2, template = $3, policy_json = $4 WHERE id = $5;
 
 -- name: ListSubscriptionsManagedBy :many
-SELECT * FROM subscription WHERE managed_by = $1 ORDER BY name;
+SELECT * FROM subscription WHERE managed_by = $1 ORDER BY name NULLS FIRST;
 
 -- name: ListSubscriptions :many
 SELECT * FROM subscription ORDER BY id;
@@ -387,7 +388,7 @@ LIMIT sqlc.arg(max_rows);
 SELECT * FROM subscription WHERE name = $1;
 
 -- name: ListSubscriptionsBySink :many
-SELECT * FROM subscription WHERE sink_id = $1 ORDER BY name, id;
+SELECT * FROM subscription WHERE sink_id = $1 ORDER BY name NULLS FIRST, id;
 
 -- name: GetDelivery :one
 SELECT * FROM delivery WHERE id = $1;

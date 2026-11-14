@@ -26,6 +26,7 @@ func cases(e Engine) []testCase {
 		{"EventImmutable", testEventImmutable},
 		{"EventRefEventIDRoundTrip", testEventRefEventIDRoundTrip},
 		{"FinishDelivery", testFinishDelivery},
+		{"FinishDeliveryCleansLastError", testFinishDeliveryCleansLastError},
 		{"FinishDeliveryFencesStaleAttemptOfSameHolder", testFinishDeliveryFencesStaleAttemptOfSameHolder},
 		{"GetLatestEventBySubject", testGetLatestEventBySubject},
 		{"HasDueTargets", testHasDueTargets},

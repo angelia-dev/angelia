@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
@@ -115,7 +116,7 @@ func (s *Store) CountDeliveriesByStatus(ctx context.Context) (map[string]int64, 
 func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, holder string) (bool, error) {
 	p := FinishLeasedDeliveryParams{
 		Status: f.Status, ID: f.ID, Attempt: f.Attempt, LeaseName: store.DeliveryLeaseName(f.ID), Holder: holder,
-		LastError: nullString(f.LastError),
+		LastError: nullString(cleanText(f.LastError)),
 	}
 	switch f.Status {
 	case store.DeliveryPending:
@@ -198,4 +199,10 @@ func pruneBatchSize(n int) int {
 // HighestPrunedSeq implements [store.Store].
 func (s *Store) HighestPrunedSeq(ctx context.Context) (int64, error) {
 	return s.stmt().HighestPrunedSeq(ctx)
+}
+
+// cleanText replaces invalid UTF-8 and NUL with U+FFFD, so that an error
+// text is stored the same on every engine (Postgres TEXT holds neither).
+func cleanText(s string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
 }
