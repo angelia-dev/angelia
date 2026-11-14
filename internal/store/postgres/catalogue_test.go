@@ -443,7 +443,8 @@ func postgresTable(ctx context.Context, db *sql.DB, t string) ([]string, error) 
 			CASE WHEN con.contype = 'f' THEN con.confrelid::regclass::text ELSE '' END,
 			CASE WHEN con.contype = 'f' THEN `+attNames("con.confrelid", "con.confkey")+` ELSE '' END,
 			con.confdeltype::text
-		FROM pg_constraint con WHERE con.conrelid = `+rel+` ORDER BY con.conname`, []any{t},
+		FROM pg_constraint con WHERE con.conrelid = `+rel+` AND con.contype IN ('p', 'u', 'f', 'c')
+		ORDER BY con.conname`, []any{t},
 		func(rows *sql.Rows) error {
 			var typ, cols, refTable, refCols, onDelete string
 			if err := rows.Scan(&typ, &cols, &refTable, &refCols, &onDelete); err != nil {

@@ -9,6 +9,12 @@
 -- BOOLEAN, without the SQLite CHECK. JSON columns stay TEXT with a ::json CHECK
 -- (the twin of json_valid; an invalid value fails the cast with 22P02), never
 -- JSONB: event.payload_json is returned byte for byte (ADR 0015).
+-- Every TEXT column is COLLATE "C": keys, unique indexes and ORDER BY compare
+-- bytes, like SQLite's BINARY collation, whatever the database's locale, and
+-- no index depends on the glibc or ICU version of the server.
+-- The trigger functions name tables without a schema, so they resolve them
+-- through the search_path of the session that fires them: every connection
+-- of the engine sets search_path to the Angelia schema (ADR 0028 §4).
 -- Steps of the SQLite history that only make sense on an existing SQLite
 -- database (00011's duplicate-name refusal, 00013's sqlite_sequence recovery,
 -- 00016's rename, 00019's index drop) have no counterpart: there is no older
@@ -16,32 +22,32 @@
 
 -- +goose Up
 CREATE TABLE target (
-    id               TEXT   PRIMARY KEY,
-    kind             TEXT   NOT NULL,
-    coordinates_json TEXT   NOT NULL CHECK (coordinates_json::json IS NOT NULL),
-    fetch_state_json TEXT   NOT NULL DEFAULT '{}' CHECK (fetch_state_json::json IS NOT NULL),
+    id               TEXT COLLATE "C"   PRIMARY KEY,
+    kind             TEXT COLLATE "C"   NOT NULL,
+    coordinates_json TEXT COLLATE "C"   NOT NULL CHECK (coordinates_json::json IS NOT NULL),
+    fetch_state_json TEXT COLLATE "C"   NOT NULL DEFAULT '{}' CHECK (fetch_state_json::json IS NOT NULL),
     last_checked_at  BIGINT,
     next_check_at    BIGINT NOT NULL,
     error_count      BIGINT NOT NULL DEFAULT 0,
     interval_ms      BIGINT,
-    source_kind      TEXT
+    source_kind      TEXT COLLATE "C"
 );
 
 CREATE TABLE watch (
-    id            TEXT    PRIMARY KEY,
-    target_id     TEXT    NOT NULL REFERENCES target (id),
-    policy_json   TEXT    NOT NULL DEFAULT '{}' CHECK (policy_json::json IS NOT NULL),
-    labels_json   TEXT    NOT NULL DEFAULT '{}' CHECK (labels_json::json IS NOT NULL),
+    id            TEXT COLLATE "C"    PRIMARY KEY,
+    target_id     TEXT COLLATE "C"    NOT NULL REFERENCES target (id),
+    policy_json   TEXT COLLATE "C"    NOT NULL DEFAULT '{}' CHECK (policy_json::json IS NOT NULL),
+    labels_json   TEXT COLLATE "C"    NOT NULL DEFAULT '{}' CHECK (labels_json::json IS NOT NULL),
     baseline_done BOOLEAN NOT NULL DEFAULT false,
-    name          TEXT,
-    managed_by    TEXT    NOT NULL DEFAULT 'api',
+    name          TEXT COLLATE "C",
+    managed_by    TEXT COLLATE "C"    NOT NULL DEFAULT 'api',
     interval_ms   BIGINT
 );
 
 CREATE TABLE version (
-    target_id     TEXT    NOT NULL REFERENCES target (id),
-    raw           TEXT    NOT NULL,
-    normalized    TEXT    NOT NULL,
+    target_id     TEXT COLLATE "C"    NOT NULL REFERENCES target (id),
+    raw           TEXT COLLATE "C"    NOT NULL,
+    normalized    TEXT COLLATE "C"    NOT NULL,
     published_at  BIGINT,
     prerelease    BOOLEAN NOT NULL DEFAULT false,
     yanked        BOOLEAN NOT NULL DEFAULT false,
@@ -56,65 +62,65 @@ CREATE TABLE version (
 -- retention deletes the newest rows. GENERATED ALWAYS rejects an explicit seq.
 CREATE TABLE event (
     seq          BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1) PRIMARY KEY,
-    id           TEXT   NOT NULL UNIQUE,
-    watch_id     TEXT   NOT NULL, -- no FK: the event log is immutable
-    type         TEXT   NOT NULL,
-    payload_json TEXT   NOT NULL CHECK (payload_json::json IS NOT NULL),
+    id           TEXT COLLATE "C"   NOT NULL UNIQUE,
+    watch_id     TEXT COLLATE "C"   NOT NULL, -- no FK: the event log is immutable
+    type         TEXT COLLATE "C"   NOT NULL,
+    payload_json TEXT COLLATE "C"   NOT NULL CHECK (payload_json::json IS NOT NULL),
     created_at   BIGINT NOT NULL,
-    ref_event_id TEXT
+    ref_event_id TEXT COLLATE "C"
 );
 
 CREATE TABLE sink (
-    id          TEXT  PRIMARY KEY,
-    kind        TEXT  NOT NULL,
+    id          TEXT COLLATE "C"  PRIMARY KEY,
+    kind        TEXT COLLATE "C"  NOT NULL,
     config_json BYTEA NOT NULL,
-    name        TEXT,
-    managed_by  TEXT  NOT NULL DEFAULT 'api'
+    name        TEXT COLLATE "C",
+    managed_by  TEXT COLLATE "C"  NOT NULL DEFAULT 'api'
 );
 
 CREATE TABLE subscription (
-    id          TEXT PRIMARY KEY,
-    filter_json TEXT NOT NULL DEFAULT '{}' CHECK (filter_json::json IS NOT NULL),
-    sink_id     TEXT NOT NULL REFERENCES sink (id),
-    template    TEXT NOT NULL DEFAULT '',
-    name        TEXT,
-    managed_by  TEXT NOT NULL DEFAULT 'api',
-    policy_json TEXT NOT NULL DEFAULT '{}' CHECK (policy_json::json IS NOT NULL)
+    id          TEXT COLLATE "C" PRIMARY KEY,
+    filter_json TEXT COLLATE "C" NOT NULL DEFAULT '{}' CHECK (filter_json::json IS NOT NULL),
+    sink_id     TEXT COLLATE "C" NOT NULL REFERENCES sink (id),
+    template    TEXT COLLATE "C" NOT NULL DEFAULT '',
+    name        TEXT COLLATE "C",
+    managed_by  TEXT COLLATE "C" NOT NULL DEFAULT 'api',
+    policy_json TEXT COLLATE "C" NOT NULL DEFAULT '{}' CHECK (policy_json::json IS NOT NULL)
 );
 
 CREATE TABLE delivery (
-    id                     TEXT    PRIMARY KEY,
-    event_id               TEXT    NOT NULL REFERENCES event (id),
-    subscription_id        TEXT    NOT NULL, -- no FK: history outlives the subscription
-    status                 TEXT    NOT NULL CHECK (status IN ('pending', 'in_flight', 'delivered', 'dead')),
+    id                     TEXT COLLATE "C"    PRIMARY KEY,
+    event_id               TEXT COLLATE "C"    NOT NULL REFERENCES event (id),
+    subscription_id        TEXT COLLATE "C"    NOT NULL, -- no FK: history outlives the subscription
+    status                 TEXT COLLATE "C"    NOT NULL CHECK (status IN ('pending', 'in_flight', 'delivered', 'dead')),
     attempts               BIGINT  NOT NULL DEFAULT 0,
     next_attempt_at        BIGINT,
-    last_error             TEXT,
+    last_error             TEXT COLLATE "C",
     held_until             BIGINT,
     hold_started_at        BIGINT,
     hold_watch_cooldown_ms BIGINT,
     hold_prerelease        BOOLEAN,
-    hold_watch_id          TEXT,
-    hold_raw               TEXT,
-    hold_input             TEXT,
-    traceparent            TEXT,
+    hold_watch_id          TEXT COLLATE "C",
+    hold_raw               TEXT COLLATE "C",
+    hold_input             TEXT COLLATE "C",
+    traceparent            TEXT COLLATE "C",
     replay_base_attempts   BIGINT  NOT NULL DEFAULT 0,
     UNIQUE (event_id, subscription_id)
 );
 
 -- Named single-holder lease (ADR 0003, ADR 0028 §3).
 CREATE TABLE lease (
-    name       TEXT   PRIMARY KEY,
-    holder     TEXT   NOT NULL,
+    name       TEXT COLLATE "C"   PRIMARY KEY,
+    holder     TEXT COLLATE "C"   NOT NULL,
     expires_at BIGINT NOT NULL
 );
 
 CREATE TABLE pending_release (
-    watch_id     TEXT   NOT NULL REFERENCES watch (id) ON DELETE CASCADE,
-    target_id    TEXT   NOT NULL,
-    raw          TEXT   NOT NULL,
+    watch_id     TEXT COLLATE "C"   NOT NULL REFERENCES watch (id) ON DELETE CASCADE,
+    target_id    TEXT COLLATE "C"   NOT NULL,
+    raw          TEXT COLLATE "C"   NOT NULL,
     held_at      BIGINT NOT NULL,
-    release_json TEXT   NOT NULL CHECK (release_json::json IS NOT NULL),
+    release_json TEXT COLLATE "C"   NOT NULL CHECK (release_json::json IS NOT NULL),
     PRIMARY KEY (watch_id, target_id, raw),
     FOREIGN KEY (target_id, raw) REFERENCES version (target_id, raw) ON DELETE CASCADE
 );
@@ -132,10 +138,10 @@ CREATE TABLE event_prune (
 INSERT INTO event_prune (id, highest_pruned_seq) VALUES (1, 0);
 
 CREATE TABLE secret (
-    id         TEXT   PRIMARY KEY,
-    name       TEXT   NOT NULL UNIQUE,
-    hosts_json TEXT   NOT NULL DEFAULT '[]' CHECK (json_typeof(hosts_json::json) = 'array'),
-    key_id     TEXT   NOT NULL,
+    id         TEXT COLLATE "C"   PRIMARY KEY,
+    name       TEXT COLLATE "C"   NOT NULL UNIQUE,
+    hosts_json TEXT COLLATE "C"   NOT NULL DEFAULT '[]' CHECK (json_typeof(hosts_json::json) = 'array'),
+    key_id     TEXT COLLATE "C"   NOT NULL,
     ciphertext BYTEA  NOT NULL,
     revision   BIGINT NOT NULL DEFAULT 1,
     created_at BIGINT NOT NULL,
@@ -143,9 +149,9 @@ CREATE TABLE secret (
 );
 
 CREATE TABLE consumer (
-    id          TEXT   PRIMARY KEY,
-    name        TEXT   NOT NULL UNIQUE,
-    filter_json TEXT   NOT NULL DEFAULT '{}' CHECK (filter_json::json IS NOT NULL),
+    id          TEXT COLLATE "C"   PRIMARY KEY,
+    name        TEXT COLLATE "C"   NOT NULL UNIQUE,
+    filter_json TEXT COLLATE "C"   NOT NULL DEFAULT '{}' CHECK (filter_json::json IS NOT NULL),
     acked_seq   BIGINT NOT NULL DEFAULT 0 CHECK (acked_seq >= 0),
     acked_at    BIGINT,
     created_at  BIGINT NOT NULL,
@@ -158,8 +164,9 @@ CREATE INDEX target_next_check_at ON target (next_check_at);
 CREATE INDEX watch_target_id ON watch (target_id);
 CREATE UNIQUE INDEX watch_name ON watch (name);
 CREATE INDEX event_watch_id ON event (watch_id);
--- The yank lookup (ADR 0018) must use this same expression to use the index.
-CREATE INDEX event_watch_subject ON event (watch_id, ((payload_json::json) ->> 'subject'));
+-- The yank lookup (ADR 0018) must use this same expression, collation
+-- included, to use the index: (payload_json::json ->> 'subject') COLLATE "C".
+CREATE INDEX event_watch_subject ON event (watch_id, (((payload_json::json) ->> 'subject') COLLATE "C"));
 CREATE UNIQUE INDEX sink_name ON sink (name);
 CREATE INDEX subscription_sink_id ON subscription (sink_id);
 CREATE UNIQUE INDEX subscription_name ON subscription (name);
@@ -184,7 +191,9 @@ $$;
 CREATE TRIGGER event_immutable BEFORE UPDATE ON event
     FOR EACH ROW EXECUTE FUNCTION event_immutable();
 
--- The highest pruned seq rises on every event delete (SQLite 00013).
+-- The highest pruned seq rises on every event delete (SQLite 00013). A row
+-- trigger does not fire on TRUNCATE: retention deletes with DELETE, and
+-- TRUNCATE of event is not supported (it would also break ADR 0028 §1).
 -- +goose StatementBegin
 CREATE FUNCTION event_prune_seq() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

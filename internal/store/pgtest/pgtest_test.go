@@ -94,10 +94,10 @@ func TestSchemaIsolatedAndDropped(t *testing.T) {
 		}
 	})
 	t.Run("b", func(t *testing.T) {
-		second = DSN(t)
+		_, second = Schema(t)
 	})
-	if first == "" || second == "" || strings.Contains(second, first) {
-		t.Fatalf("schemas not distinct: %q, DSN %q", first, second)
+	if first == "" || second == "" || first == second {
+		t.Fatalf("schemas not distinct: %q and %q", first, second)
 	}
 	db, err := sql.Open(DriverName, server)
 	if err != nil {

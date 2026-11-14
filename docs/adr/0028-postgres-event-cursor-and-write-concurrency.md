@@ -333,6 +333,13 @@ do not take.
   without a sort. The goose lock id is the 64-bit value `schema_key << 32`, which reads as `(schema_key, 0)`
   in `pg_locks`. A test in `internal/store/migrations` fails when a SQLite migration from `00020` on has no
   Postgres twin with the same number, or the reverse. Test schemas come from `internal/store/pgtest`.
+  Every `TEXT` column is `COLLATE "C"`, so keys, unique indexes and `ORDER BY`/keyset comparisons use byte
+  order like SQLite's `BINARY`, independent of the server locale and of glibc/ICU versions (a test checks
+  `attcollation`). The subject expression is collated too: the index is on
+  `(watch_id, ((payload_json::json ->> 'subject') COLLATE "C"))`, and the yank query must repeat the
+  `COLLATE "C"` to use it. A btree entry is limited to about 2.7 KB on Postgres (a third of an 8 KB page),
+  so the unique index on `(kind, coordinates_json)` refuses a target whose coordinates exceed that
+  (`54000`), where SQLite has no such limit; coordinates are a few short fields, far below it.
 
 ### 8. Configuration surface and pool size (D20)
 

@@ -8,6 +8,10 @@
 // DSN with search_path set to it. Packages can therefore run in parallel
 // against one server, and the advisory-lock keys of the engine, derived from
 // current_schema(), never collide between tests.
+//
+// A run killed before its cleanups leaves angelia_test_* schemas behind; drop
+// them with: SELECT format('DROP SCHEMA %I CASCADE;', nspname) FROM pg_namespace
+// WHERE nspname LIKE 'angelia\_test\_%' \gexec (in psql).
 package pgtest
 
 import (
@@ -80,7 +84,7 @@ func DSN(t testing.TB) string {
 }
 
 // Schema creates a schema with a random name for the test, registers its
-// removal (DROP SCHEMA … CASCADE) as a cleanup, and returns a DSN whose
+// removal (DROP SCHEMA IF EXISTS … CASCADE) as a cleanup, and returns a DSN whose
 // search_path is that schema, and the schema's name. Close every database
 // opened on the DSN in a cleanup registered after this call, so it runs first.
 func Schema(t testing.TB) (dsn, name string) {
@@ -102,7 +106,7 @@ func Schema(t testing.TB) (dsn, name string) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		if _, err := db.ExecContext(ctx, "DROP SCHEMA "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
+		if _, err := db.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
 			t.Errorf("pgtest: drop schema %s: %v", name, err)
 		}
 		if err := db.Close(); err != nil {

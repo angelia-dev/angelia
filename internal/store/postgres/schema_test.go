@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -244,7 +245,7 @@ func TestJSONColumnsByteForByte(t *testing.T) {
 	}
 
 	// The yank lookup's expression finds the event by its subject (ADR 0018).
-	if n := count(t, db, `SELECT count(*) FROM event WHERE watch_id = 'w' AND (payload_json::json) ->> 'subject' = 'pypi:x@1.0'`); n != 1 {
+	if n := count(t, db, `SELECT count(*) FROM event WHERE watch_id = 'w' AND ((payload_json::json) ->> 'subject') COLLATE "C" = 'pypi:x@1.0'`); n != 1 {
 		t.Fatalf("subject lookup found %d events", n)
 	}
 }
@@ -279,8 +280,8 @@ func TestIndexesServeTheirQueries(t *testing.T) {
 		}
 	}
 	for q, index := range map[string]string{
-		`SELECT seq FROM event WHERE watch_id = 'w' AND (payload_json::json) ->> 'subject' = 's'`:            "event_watch_subject",
-		`SELECT id FROM delivery WHERE status = 'pending' ORDER BY next_attempt_at NULLS FIRST, id LIMIT 10`: "delivery_status_next_attempt_at_id",
+		`SELECT seq FROM event WHERE watch_id = 'w' AND ((payload_json::json) ->> 'subject') COLLATE "C" = 's'`: "event_watch_subject",
+		`SELECT id FROM delivery WHERE status = 'pending' ORDER BY next_attempt_at NULLS FIRST, id LIMIT 10`:    "delivery_status_next_attempt_at_id",
 	} {
 		rows, err := conn.QueryContext(t.Context(), "EXPLAIN "+q)
 		if err != nil {
@@ -299,6 +300,79 @@ func TestIndexesServeTheirQueries(t *testing.T) {
 		}
 		if !strings.Contains(plan.String(), index) || strings.Contains(plan.String(), "Sort") {
 			t.Errorf("%s\nplan does not walk %s without sorting:\n%s", q, index, plan.String())
+		}
+	}
+}
+
+// TestEventWatchSubjectIndexExpression pins the expression of the yank
+// lookup's index (ADR 0018): a drift in the migration fails here, not only as
+// a slower query.
+func TestEventWatchSubjectIndexExpression(t *testing.T) {
+	db := openSchema(t)
+	var def string
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT pg_get_indexdef((current_schema() || '.event_watch_subject')::regclass)`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"(watch_id, ", "(payload_json)::json ->> 'subject'::text", `COLLATE "C"`} {
+		if !strings.Contains(def, want) {
+			t.Errorf("event_watch_subject = %s; lacks %q", def, want)
+		}
+	}
+}
+
+// TestTextColumnsCollateC: every TEXT column compares bytes, like SQLite's
+// BINARY collation, whatever the server locale (ADR 0028 §7).
+func TestTextColumnsCollateC(t *testing.T) {
+	db := openSchema(t)
+	rows, err := db.QueryContext(t.Context(), `SELECT c.relname::text, a.attname::text, coalesce(co.collname::text, '')
+		FROM pg_attribute a
+		JOIN pg_class c ON c.oid = a.attrelid
+		LEFT JOIN pg_collation co ON co.oid = a.attcollation
+		WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind = 'r' AND c.relname <> $1
+		AND a.attnum > 0 AND NOT a.attisdropped AND a.atttypid = 'text'::regtype`, migrationsTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		var table, col, coll string
+		if err := rows.Scan(&table, &col, &coll); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if coll != "C" {
+			t.Errorf("%s.%s has collation %q, want C", table, col, coll)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n < 40 {
+		t.Fatalf("checked %d TEXT columns, the query reads too few", n)
+	}
+	// Byte order, not a locale's: 'B' < 'a' and 'Z' < '_' < 'a'.
+	exec(t, db, `INSERT INTO lease (name, holder, expires_at) VALUES ('a', 'h', 0), ('B', 'h', 0), ('_', 'h', 0), ('Z', 'h', 0)`)
+	got, err := queryStrings(t.Context(), db, `SELECT name FROM lease ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "") != "BZ_a" {
+		t.Fatalf("ORDER BY name = %v, want byte order [B Z _ a]", got)
+	}
+}
+
+func TestDeliveryStatusValues(t *testing.T) {
+	db := openSchema(t)
+	seed(t, db)
+	for i, status := range []string{"pending", "in_flight", "delivered", "dead"} {
+		exec(t, db, `INSERT INTO delivery (id, event_id, subscription_id, status) VALUES ($1, 'e1', $1, $2)`, fmt.Sprint("d", i), status)
+	}
+	for _, status := range []string{"Pending", "failed", ""} {
+		_, err := db.ExecContext(t.Context(), `INSERT INTO delivery (id, event_id, subscription_id, status) VALUES ('x', 'e1', 'x', $1)`, status)
+		if got := sqlState(err); got != "23514" {
+			t.Errorf("status %q: SQLSTATE %q (%v), want 23514", status, got, err)
 		}
 	}
 }
