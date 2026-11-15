@@ -1,4 +1,4 @@
-# ADR 0030: API tokens are `ang_` bearer tokens stored as SHA-256 hashes in an `api_token` table on both engines; the first admin token comes from a bootstrap file or the instance-side CLI
+# ADR 0030: API tokens are `ang_` bearer tokens stored as SHA-256 hashes in an `api_token` table on both engines; the first admin token comes from a bootstrap file or `angelia token create --local`
 
 - **Status:** Proposed
 - **Date:** 2026-11-15
@@ -47,14 +47,16 @@ What exists on main (`2374cb3`):
   to a non-loopback host unless `--insecure-http`. `Connection.String` never shows the token.
 - **Logging.** The access log records `principal` and `scope`, never headers, and `safePath` redacts a
   path segment that looks like the token. `Server.audit` writes `audit=true` records with the
-  principal. `internal/config` refuses token-looking values (`tokenStart`: `ghp_`, `glpat-`, `whsec_`,
-  …) in the instance configuration.
+  principal. `config.LooksLikeToken` (a prefix list, `tokenStart`: `ghp_`, `glpat-`, `whsec_`, …) refuses
+  token-looking values in the instance configuration, the watch file and some sink configs.
 - **Instance-side commands.** `angelia secrets keygen|rotate|status` read `--config` and open the store
-  directly (`openInstance`), unlike `angelia secret …`, which is an API client.
+  with `open.Open`, which creates and migrates it, and load the secrets keyring. `angelia secret …` is
+  an API client. `internal/store/open` also has read-only openers that never migrate
+  (`SecretReader`, `SecretKeyCounts`).
 - **Store.** Both engines ([ADR 0028](0028-postgres-event-cursor-and-write-concurrency.md)) use the same
-  migration numbers; the head is `00020` on both, so the next free number is **`00021`**. On Postgres
-  `InConfigTx`, `InAPITx` and `InSecretTx` take the config advisory lock first (ADR 0028 §2, D15). The
-  `store` interfaces are contracts (AGENTS.md).
+  migration numbers; the head is `00020` on both, so the next free number is **`00021`**. Queries are
+  sqlc-generated per engine (`internal/store/{sqlite,postgres}/queries.sql`), and both engines run the
+  shared `storetest` suite. The `store` interfaces are contracts (AGENTS.md).
 
 Constraints: no new dependency outside [architecture.md §6](../architecture.md#6-language-and-framework-phase-0-assumptions)
 without the maintainer; the OpenAPI spec, the YAML config format and the store interfaces are public
@@ -72,22 +74,23 @@ ang_<id>_<secret><check>
 ```
 
 Example shape (not a real token): `ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_` followed by 59 characters from
-`a–z2–7`. Total length 90. Regular expression for scanners and redaction:
+`a–z2–7`. Total length 90. Regular expression for scanners and redaction (no `\b`: `_` is a word
+character, so `\b` would not delimit the token from a neighbouring identifier):
 
 ```
-\bang_[0-9A-HJKMNP-TV-Z]{26}_[a-z2-7]{59}\b
+(?:^|[^A-Za-z0-9_])(ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59})(?:$|[^A-Za-z0-9_])
 ```
 
 | Part | Options | Recommendation |
 |---|---|---|
-| Prefix | (a) `ang_`; (b) `angelia_`; (c) none | **(a) `ang_`.** Short, greppable, and with the fixed length and alphabets the regex above has practically no false positives. A visible prefix is what GitHub, GitLab and npm secret scanning key on, and what our own redaction (`tokenStart`, `safePath`) needs. (b) is more unique but longer for no gain once the body is structured. |
-| Visible id | (a) the row's ULID; (b) a separate random lower-case id; (c) none, look up by hash | **(a).** It is the token's public `id` in the API and the audit log (`Principal.ID`), so a leaked token found by a scanner or in a log can be revoked by id without anyone holding admin access to the hash. ULIDs are the id convention of the whole API ("names lower case, ULIDs upper case, never overlap"), so `/v1/tokens/{id}` cannot be confused with a name. It reveals the creation time, which `GET /v1/tokens` lists anyway. |
+| Prefix | (a) `ang_`; (b) `angelia_`; (c) none | **(a) `ang_`.** Short, greppable, and with the fixed length and alphabets the regex above has practically no false positives. A visible prefix is what GitHub, GitLab and npm secret scanning key on, and what our own redaction needs. (b) is more unique but longer for no gain once the body is structured. The prefix also versions the format: a later format gets a new prefix (for example `ang2_`), so the table needs no version column. |
+| Visible id | (a) the row's ULID; (b) a separate random lower-case id; (c) none, look up by hash | **(a).** It is the token's public `id` in the API and the audit log (`Principal.ID`), so a leaked token found by a scanner or in a log can be revoked by id. ULIDs are the id convention of the whole API ("names lower case, ULIDs upper case, never overlap"), so `/v1/tokens/{id}` cannot be confused with a name. It reveals the creation time, which `GET /v1/tokens` lists anyway. |
 | Random part | 128, 192 or 256 bits | **256 bits** (32 bytes from `crypto/rand`), as ADR 0024 §1 anticipated. Lower-case RFC 4648 base32 (`encoding/base32` with a custom alphabet): no `-`/`+`/`/`, so a double-click selects the whole token and no URL or shell escaping is needed. |
-| Checksum | (a) CRC-32 suffix; (b) none | **(a).** It lets the server reject typos and random garbage without a database read (T11), and lets a scanner discard look-alikes offline (the reason GitHub added one in 2021). It is not a security control: CRC-32 is public and keyed by nothing. |
+| Checksum | (a) CRC-32 suffix; (b) none | **(a).** It filters **typos and scanner noise**: a mistyped or truncated token is rejected without a store read, and a scanner can discard look-alikes offline (the reason GitHub added one in 2021). It does **not** filter attackers: CRC-32 is public and unkeyed, so anyone can make guesses with a valid checksum, and each such guess costs one store read (T11). |
 
-Parsing is strict: wrong prefix, length, alphabet, invalid ULID or a checksum mismatch is
-`ErrUnauthenticated` before any store access. The format is versioned by its prefix: a later format
-gets a new prefix (for example `ang2_`), and the table keeps a `hash_version` column (T3).
+Parsing is strict: wrong prefix, length or alphabet; an id that is not a strict ULID (exactly 26
+upper-case Crockford characters, the first one `0`–`7` so the timestamp fits 48 bits; no lower case,
+no `I L O U`); or a checksum mismatch is `ErrUnauthenticated` before any store access.
 
 ### T2. Hashing at rest
 
@@ -101,14 +104,14 @@ gets a new prefix (for example `ang2_`), and the table keeps a `hash_version` co
 low-entropy passwords expensive; a 256-bit random secret cannot be guessed at any hash speed. argon2id
 would put 50–100 ms and 64 MiB on every request, every stream re-check (T6) and every MCP tool call, and
 turn each unauthenticated request into a memory-cost amplifier (an attacker sending garbage tokens with
-valid-looking ids makes the server allocate 64 MiB each). A pepper (c) adds nothing against an attacker
+valid checksums makes the server allocate 64 MiB each). A pepper (c) adds nothing against an attacker
 who cannot guess 256 bits, and it would make every token depend on a key that is optional today
 (ADR 0024: "an instance with no secrets needs no key") and that rotation would then have to cover.
 
 Exact definition: `hash = SHA-256("angelia api token v1" || 0x00 || token)`, where `token` is the whole
 `ang_…` string. The domain-separation prefix keeps the hash distinct from any other SHA-256 of the same
 bytes; hashing the whole string binds the id to the secret, so a row's hash cannot be paired with
-another row's id. Stored as 32 raw bytes, `hash_version = 1`.
+another row's id. Stored as 32 raw bytes.
 
 ### T3. Storage: `api_token`, migration `00021` on both engines
 
@@ -120,7 +123,6 @@ CREATE TABLE api_token (
     name          TEXT    NOT NULL,                  -- operator label, ^[a-z0-9][a-z0-9._-]{0,62}$
     scope         TEXT    NOT NULL CHECK (scope IN ('read', 'write', 'admin')),
     hash          BLOB    NOT NULL CHECK (length(hash) = 32),   -- Postgres: octet_length
-    hash_version  INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL,
     created_by    TEXT    NOT NULL,                  -- token id, 'bootstrap' or 'local'
     expires_at    INTEGER,                           -- NULL: no expiry
@@ -144,7 +146,6 @@ is; this ADR is the record the contract rule asks for):
 type APIToken struct {
     ID, Name, Scope string
     Hash            []byte
-    HashVersion     int
     CreatedAt       time.Time
     CreatedBy       string
     ExpiresAt, LastUsedAt, RevokedAt *time.Time
@@ -156,26 +157,32 @@ type TokenReader interface {
     APITokenByID(ctx context.Context, id string) (APIToken, error)
     // ListAPITokens pages by id; includeRevoked adds revoked rows.
     ListAPITokens(ctx context.Context, afterID string, limit int, includeRevoked bool) ([]APIToken, error)
-}
-
-type TokenTx interface {
-    TokenReader
-    CountAPITokens(ctx context.Context) (int64, error)            // every row, revoked included (T4)
-    CreateAPIToken(ctx context.Context, t APIToken) error           // ErrConflict: id, or active name, taken
-    RevokeAPIToken(ctx context.Context, id string, at time.Time, by string) (bool, error) // false: already revoked
+    // CountAPITokens counts every row, revoked and expired included (bootstrap, T4).
+    CountAPITokens(ctx context.Context) (int64, error)
+    // CountActiveAdminTokens counts admin rows that are neither revoked nor expired at now
+    // (revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now)): the T4 warning.
+    CountActiveAdminTokens(ctx context.Context, now time.Time) (int64, error)
 }
 
 type TokenStore interface {
     TokenReader
-    // InTokenTx takes the config lock first on Postgres (ADR 0028 D15), BEGIN IMMEDIATE on SQLite.
-    InTokenTx(ctx context.Context, fn func(tx TokenTx) error) error
-    // TouchAPITokens sets last_used_at = max(last_used_at, t) per id, outside the config lock (T6).
+    // CreateAPIToken inserts one row. ErrConflict when the id, or the name of an active
+    // token, is taken.
+    CreateAPIToken(ctx context.Context, t APIToken) error
+    // RevokeAPIToken sets revoked_at and revoked_by if unset; false when the row was
+    // already revoked; ErrNotFound when it does not exist.
+    RevokeAPIToken(ctx context.Context, id string, at time.Time, by string) (bool, error)
+    // TouchAPITokens sets last_used_at = max(last_used_at, t) per id (T6).
     TouchAPITokens(ctx context.Context, used map[string]time.Time) error
 }
 ```
 
-`storetest` gets the shared cases (create, active-name conflict, revoke twice, touch never moves
-backwards, count includes revoked rows) and both engines run them.
+Each write is a single statement, so there is **no token transaction and no config lock**. Concurrent
+creates are made safe by the constraints, not by a lock: two creates of the same active name, or two
+bootstraps of the same token id (T4), race on a unique index and the loser gets `ErrConflict`.
+`storetest` gets the shared cases (create, active-name conflict, id conflict, revoke twice, touch never
+moves backwards, `CountAPITokens` includes revoked rows, `CountActiveAdminTokens` excludes revoked,
+expired and non-admin rows), and both engines run them.
 
 ### T4. Bootstrap: the first admin token
 
@@ -184,31 +191,39 @@ Who can create the first token when token management itself needs an admin token
 | Option | Restart | Several replicas | Leak surface | Recovery of a lost admin token |
 |---|---|---|---|---|
 | (a) **Generate and print** on first start when the table is empty | Nothing printed again; a crash between insert and print loses the token | Whichever replica wins prints; the operator must find which | The token lands in container logs, journald and log shippers: "printed once" becomes "logged forever" | Needs (c) anyway |
-| (b) **Bootstrap file**: the operator puts a token (made with `angelia token generate`) in a file; the server inserts its hash as `admin` **only if the table has never held a row** | Idempotent: the table is non-empty, the file is ignored | Same file everywhere; the insert runs under the config lock, exactly one replica inserts, the others see a row and skip | The file only (a Kubernetes or Docker secret mount); the server never prints or logs the value | Needs (c) |
-| (c) **Instance-side CLI**: `angelia token create --local --scope admin --name NAME` opens the store from `--config`, like `angelia secrets rotate`, and prints the new token on its own stdout | Unaffected | Unaffected (one row, one transaction) | The operator's terminal only | **Is** the recovery path: whoever can read the instance config and reach the database is already all-powerful |
+| (b) **Bootstrap file**: the operator puts a token (made with `angelia token generate`) in a file; the server inserts its hash as `admin` **only if the table has never held a row** | Idempotent: the table is non-empty, the file is ignored | Same file everywhere: the replicas race on the token's primary key, one inserts, the others get `ErrConflict`, which means "already done" | The file (a Kubernetes or Docker secret mount); the server never prints or logs the value | Needs (c) |
+| (c) **Instance-side CLI**: `angelia token create --local --scope admin --name NAME` opens the store from `--config` and prints the new token on its own stdout | Unaffected | Unaffected (one insert) | The operator's terminal only | **Is** the recovery path: whoever can read the instance config and reach the database is already all-powerful |
 
 **Recommendation: (b) for unattended installs plus (c) for interactive installs and recovery, and no
 automatic printing (a).** The issue's "printed once" is met by (c): the token is printed exactly once,
 on the stdout of the command that created it, never by the server.
 
-- On start, the `api` role checks the table. While it holds **no active admin token** it logs one
+- On start, the `api` role calls `CountActiveAdminTokens(ctx, now)`. While it is 0 the role logs one
   `WARN` per start, without any secret: `no active admin API token; create one with "angelia token
-  create --local --scope admin --name admin" (docs/configuration.md#api-tokens)`. The quickstart becomes
-  one extra command: `docker compose exec angelia angelia token create --local --scope admin --name me`.
+  create --local --scope admin --name admin" (docs/configuration.md#api-tokens)`. **Expired and revoked
+  admin tokens do not count**, so an instance whose only admin token has expired warns too. The
+  quickstart becomes one extra command:
+  `docker compose exec angelia angelia token create --local --scope admin --name me`.
 - **Bootstrap file.** New key `api.bootstrap_token_file`, env `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` (the
   loader's `ANGELIA_<SECTION>_<KEY>` rule; the issue's `ANGELIA_BOOTSTRAP_TOKEN_FILE` would break that
-  rule). The file holds one token in the T1 format and an optional newline. On `api` role start, in one
-  `InTokenTx`: if `CountAPITokens` is **0**, insert the token's id and hash as `admin`, name
+  rule). The file holds one token in the T1 format and an optional newline. On `api` role start: if
+  `CountAPITokens` is **0**, `CreateAPIToken` with the token's id and hash, scope `admin`, name
   `bootstrap`, `created_by = 'bootstrap'`, and log `INFO bootstrap admin token <id> stored` (the id, not
-  the token); otherwise do nothing and, if the file's id is not in the table, log at `INFO` that the
-  file is ignored. Counting **every** row, revoked included, means a revoked bootstrap token never comes
-  back on the next restart. A malformed file or a bad checksum fails the start. A file that group or
-  others can read gets a `WARN`, not a refusal (Kubernetes secret volumes default to `0644`).
+  the token). `ErrConflict` from that insert means another replica stored the same token first: the
+  bootstrap is already done and the start continues. If the table already holds rows, nothing is
+  inserted, and if the file's id is not among them the role logs at `INFO` that the file is ignored.
+  Counting **every** row, revoked included, means a revoked bootstrap token never comes back on the next
+  restart. A malformed file or a bad checksum fails the start. A file that group or others can read
+  gets a `WARN`, not a refusal (Kubernetes secret volumes default to `0644`). Two replicas given
+  **different** files on an empty database could both insert; that is a misconfiguration, and both
+  tokens are then visible in `token list`.
+- **The bootstrap file is a live admin credential until it is revoked.** The docs tell operators to
+  create a named admin token, then revoke `bootstrap` (`angelia token revoke bootstrap`) or at least
+  unmount the file. A **wiped or restored-empty database re-arms an old file**: the table is empty
+  again, so the next start inserts it again. The docs say so next to the key.
 - `angelia token generate [--out FILE]` (offline, no store, no config) prints or writes a fresh
   token for the bootstrap file, like `angelia secrets keygen` (`--out` creates the file `0600` and
   refuses to overwrite).
-- `--local` works on both engines and while `serve` runs (SQLite takes its write lock briefly; Postgres
-  takes the config lock). Its rows have `created_by = 'local'`.
 
 ### T5. Scopes and the route-to-scope table
 
@@ -229,7 +244,7 @@ able to mint more tokens through a tool whose call the user may not inspect.
 
 - **Revocation** is `DELETE /v1/tokens/{id}` or `angelia token revoke`: it sets `revoked_at` and
   `revoked_by`. A token may revoke itself. Revoking the last active admin token is allowed (the CLI asks
-  for confirmation unless `--yes`); (c) of T4 recovers.
+  for confirmation unless `--yes`); T4 (c) recovers.
 - **Effect time.** With no cache (below), the next request on any replica fails. An open event stream
   fails at its next re-check, at most 60 s later (spec decision 15, already implemented). MCP over HTTP
   forwards the header on every call, so it fails at once.
@@ -240,11 +255,13 @@ able to mint more tokens through a tool whose call the user may not inspect.
   positive-only cache with a TTL of at most 10 s, cleared locally on revoke, can be added without a
   contract change; the stream re-check bound stays 60 s regardless.
 - **Last use**: writing `last_used_at` on every request would turn every read into a write (on SQLite,
-  a writer-lock acquisition per GET). Instead the authenticator records uses in memory and a background
-  flush calls `TouchAPITokens` **at most once per token per 5 minutes**, and once on graceful shutdown.
-  The value is documented as "accurate to about 5 minutes"; a crash loses at most the last interval.
-  The flush takes no config lock (a plain `UPDATE … SET last_used_at = max(…)` per id), so it never
-  waits behind config writes.
+  a writer-lock acquisition per GET). Instead the authenticator records uses in an in-memory map and a
+  background flush calls `TouchAPITokens` **at most once per token per 5 minutes**, and once on graceful
+  shutdown. The map records **only successful authentications** and is **keyed by token id**, so its
+  size is bounded by the number of tokens in the table; failed attempts never add an entry. The value is
+  documented as "accurate to about 5 minutes"; a crash loses at most the last interval. The flush is a
+  plain `UPDATE … SET last_used_at = max(…)` per id and takes no config lock, so it never waits behind
+  config writes.
 
 ### T7. CLI
 
@@ -253,16 +270,27 @@ able to mint more tokens through a tool whose call the user may not inspect.
 | `angelia token create --name NAME --scope read\|write\|admin [--expires-in D \| --expires-at T]` | API (`POST /v1/tokens`, admin token) | The token alone on **stdout**, one line, so `$(angelia token create …)` works; id, name, scope and "shown once, store it now" on **stderr**. `-o json` prints the full created object, including `token`, on stdout. |
 | `angelia token list [--all] [-o table\|json\|yaml]` | API | ID, NAME, SCOPE, CREATED, EXPIRES, LAST USED, and REVOKED with `--all`. Never a hash. |
 | `angelia token revoke ID\|NAME [--yes]` | API | A name is resolved to the active token's id first. |
-| `angelia token create\|list\|revoke --local` | Instance-side: `--config`, store opened directly | Same output. |
+| `angelia token create --local …` | Instance-side: `--config`, store-only opener (below) | Same output as `create`. |
 | `angelia token generate [--out FILE]` | Offline | A new token for the bootstrap file (T4). |
 
-**Recommendation: one `token` command group with a `--local` flag**, not a separate `tokens` group.
-The existing `secret`/`secrets` split separates different operations (values through the API, keys on
-the instance); here the operations are the same and only the path differs, so a flag says that more
-clearly than one letter. `--local` and `--server`/`--token` are mutually exclusive. The CLI never
-writes the token anywhere by itself (no `--save` into the client config in v0.1).
+- **One `token` group with a `--local` flag on `create` only**, not a separate `tokens` group. The
+  existing `secret`/`secrets` split separates different operations (values through the API, keys on the
+  instance); here the operation is the same and only the path differs. `--local` and
+  `--server`/`--token` are mutually exclusive. `create --local` is the recovery path; once an admin
+  token exists, `list` and `revoke` go through the API with it.
+- **Store-only opener for `--local`.** A new `open.TokenWriter(ctx, dsn)`, beside the existing read-only
+  openers: it opens the database, **loads no secrets keyring**, **never migrates**, and **refuses a
+  schema older than `00021`** with an error that says to upgrade or start `angelia serve` first. So a
+  missing, wrong or rotated secrets key cannot block admin recovery, and a newer CLI binary never
+  migrates a database under a running older `serve`. It only reads the instance config's `database`
+  section.
+- **Leakage paths the docs name.** The secret is printed once, and the CLI never writes it anywhere by
+  itself (no `--save` into the client config in v0.1). But: `-o json` output carries `token` and is as
+  sensitive as the token (do not pipe it into a log or a CI artefact); `--token` on a command line is
+  visible in process lists (`ps`, `/proc/<pid>/cmdline`) and shell history, so the docs prefer
+  `ANGELIA_TOKEN` or the client config file.
 
-### T8. Format of responses carrying the secret
+### T8. Where the secret appears
 
 The secret appears in exactly one place: the `201` response of `POST /v1/tokens` (member `token`) and
 the stdout of `create`/`generate`. `GET` never returns it, the access log never logs bodies, and the
@@ -278,13 +306,16 @@ audit record of a create carries id, name, scope and creator only.
    too). All `security: - bearerAuth: [admin]`.
 2. Schemas `Token` (response: `id`, `name`, `scope`, `created_at`, `created_by`, `expires_at`,
    `last_used_at`, `revoked_at`, `revoked_by`), `TokenCreate` (request: `name`, `scope`, optional
-   `expires_at`), `TokenCreated` (`Token` plus `token`, response-only).
-3. **A Spectral exception**: the existing rule forbids secret-named properties in response schemas.
+   `expires_at`), `TokenCreated` (`Token` plus `token`, response-only). The token `name` uses the
+   resource name pattern `^[a-z0-9][a-z0-9._-]{0,62}$`, which becomes part of this contract.
+3. Valid and invalid examples under `examples/` for `Token`, `TokenCreate` and `TokenCreated`, which
+   CI validates (the `TokenCreated` example uses an obviously fake token of the right shape).
+4. **A Spectral exception**: the existing rule forbids secret-named properties in response schemas.
    Allow exactly `TokenCreated.token`, and add a rule that no other response schema or example has a
    `token` member.
-4. Errors: an active-name clash is `422 validation-failed` with `errors[{pointer: "/name"}]` (no new
+5. Errors: an active-name clash is `422 validation-failed` with `errors[{pointer: "/name"}]` (no new
    problem type). `404 not-found` for an unknown id, after auth as usual.
-5. `docs/api.md`: a Resources row (Tokens, admin/admin), new decisions recording T1 (the token format
+6. `docs/api.md`: a Resources row (Tokens, admin/admin), new decisions recording T1 (the token format
    and regex, so scanners can rely on it), T5 (admin for token metadata) and T6 (revocation effect
    time), and the Auth section's "How tokens are created … is the core repository's API tokens story"
    replaced with a link to this ADR. The `bearerAuth` description names the `ang_` format.
@@ -294,20 +325,32 @@ audit record of a create carries id, name, scope and creator only.
 - Instance config key `api.bootstrap_token_file` and env `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` (new YAML
   key: the YAML format is a public contract).
 - CLI commands of T7.
-- `ang_` added to `internal/config` `tokenStart` and to the watch-file token check, so a pasted API
-  token is refused in configuration.
+- **Token detection without a bare prefix.** `ang_` is **not** added to `tokenStart`: a bare prefix
+  would refuse ordinary labels and names such as `ang_team` in the watch file and `secretFree` checks.
+  Instead `config.LooksLikeToken` becomes `hasTokenPrefix(v) || apiTokenRE.MatchString(v)`, where
+  `apiTokenRE` is the full T1 pattern, so only a real-shaped API token is refused.
 - Migrations `00021_api_token.sql` on both engines; `store.TokenStore` embedded in `store.APIStore`.
+- sqlc queries in `internal/store/sqlite/queries.sql` and `internal/store/postgres/queries.sql`, and
+  the `go generate` output committed with them.
+- Contract tests: `internal/store/sqlite/api_contract_test.go` (and its Postgres counterpart, if the
+  engine has one by then) cover the new methods; the `storetest` cases of T3 are wired into both
+  engines' `storetest_test.go`.
 - Metric `angelia_api_auth_failures_total{reason}` with the closed label set `missing`, `malformed`,
-  `unknown`, `revoked`, `expired` (ADR 0019).
+  `unknown`, `revoked`, `expired` (ADR 0019; reasons defined in T10).
 - `api.Principal` gains `Name` (internal type; the access log adds `token_name`).
-- Docs: `configuration.md` ("API tokens", replacing "Token storage is not built yet"), `cli.md`,
-  `mcp.md` (drop "until API tokens exist"), the compose quickstart.
+- Docs: `architecture.md` §3.1 (link this ADR from "Auth") and §8 (API tokens are hashed, not sealed,
+  and the bootstrap file is a credential), `configuration.md` ("API tokens", replacing "Token storage is
+  not built yet"), `cli.md`, `mcp.md` (drop "until API tokens exist"), the compose quickstart.
 
-### T10. Constant-time comparison and lookup timing
+### T10. Constant-time comparison, lookup timing and failure reasons
 
 - `Authenticate` parses the token (T1), reads the row by id, computes the T2 hash and compares it with
-  `crypto/subtle.ConstantTimeCompare`. Then it checks `revoked_at` and `expires_at`. Every failure
-  returns the same `ErrUnauthenticated` and the same `401` body.
+  `crypto/subtle.ConstantTimeCompare`. Every failure returns the same `ErrUnauthenticated` and the same
+  `401` body.
+- **Failure reasons** (for the metric and the access log only): `missing` (no header), `malformed`
+  (T1 parse or checksum fails), `unknown` (no row, **or the hash does not match, whatever the row's
+  state**). `revoked` and `expired` are used **only after the hash matched**: a guess at a revoked id
+  is `unknown`, so the reason never tells a caller without the secret anything about a row.
 - **Unknown id.** The handler still computes the hash and compares it with a fixed dummy, so the
   CPU path is the same; the store read is faster for a miss than for a hit. That difference can only
   tell an attacker whether a given **id** exists. Ids are not secrets (admins list them, logs carry
@@ -316,24 +359,48 @@ audit record of a create carries id, name, scope and creator only.
 - **Malformed or bad checksum** is rejected before the store read. That timing difference reveals only
   whether the string is well-formed, which anyone can compute.
 
-### T11. Failed authentication: rate limiting and logging
+### T11. Failed authentication: load, rate limiting and logging
 
-- **No per-client `429` limiter in v0.1.** The token cannot be brute-forced, malformed tokens cost no
-  store access (T1 checksum), and a well-formed unknown token costs one indexed read. A per-IP limiter
-  would also be harmful today: the instance has no trusted-proxy setting, so behind a reverse proxy
-  every client shares the proxy's address and one attacker would lock everyone out. Revisit with a
+- **Cost of a guess.** A malformed token or a bad checksum costs no store access, but the checksum is
+  not a defence (T1): an attacker can send well-formed guesses with valid checksums, and each costs one
+  indexed primary-key read. That is the same cost as any other cheap request, but it reaches the
+  database.
+- **No per-client `429` limiter in v0.1.** The token cannot be brute-forced, and a per-IP limiter would
+  be harmful today: the instance has no trusted-proxy setting, so behind a reverse proxy every client
+  shares the proxy's address and one attacker would lock everyone out. Revisit with an
   `X-Forwarded-For` trust setting (a later story).
+- **No global in-flight cap on token lookups either: recorded as an accepted risk.** A cap (for example
+  at most 64 concurrent store reads for not-yet-authenticated requests, the excess answered `503`) would
+  bound database load under a flood, but it would also shed legitimate requests during that flood, and
+  `http.Server` limits, `MaxStreams` and the reverse proxy already bound the request rate. The
+  maintainer may choose the cap instead (question 7).
 - **Metric** `angelia_api_auth_failures_total{reason}` (T9) for alerting.
-- **Log**: at most one `WARN api authentication failed` per reason per minute per process, with the
-  count since the last line and, for `revoked`/`expired`, the token **id** (useful: "a revoked token is
-  still in use by something"). Never the token, never a hash.
+- **Logging**: no separate warning line. Each request already writes one access-log record; a `401`
+  record gains `auth_failure=<reason>`, and, for `revoked` and `expired` only (the hash matched), the
+  token **id**, which answers "a revoked token is still in use by something". Never the token, never a
+  hash.
 
 ### T12. Audit
 
-`Server.audit` records (`audit=true`, actor principal id and name) for `token.create`, `token.revoke`,
-and, from the CLI and the server start, `token.create` with `created_by = local` or `bootstrap`. The
-`--local` commands write the same record through the instance logger. The target's id, name and scope
-are logged; the token and its hash never are.
+`Server.audit` records (`audit=true`, actor principal id and name) for `token.create` and
+`token.revoke`. The bootstrap insert at server start and `create --local` write the same `token.create`
+record through the instance logger, with `created_by = bootstrap` or `local`. The target's id, name and
+scope are logged; the token and its hash never are.
+
+### Dropped from the first draft, and why
+
+Review of the first draft (commit `55eb175`) removed these as over-engineering:
+
+- **`list --local` and `revoke --local`.** Only `create --local` is needed for recovery; once it has
+  made an admin token, `list` and `revoke` work through the API. Fewer instance-side writers.
+- **The `hash_version` column.** The token prefix already versions the format (T1); a new hash comes
+  with a new prefix, which the parser can tell apart before any store read.
+- **The rate-limited `WARN` on authentication failures.** The metric covers counting, and the access
+  log already has one record per request, now with the failure reason and, after a hash match, the id
+  (T11).
+- **A token transaction (`InTokenTx`) under the Postgres config lock.** Every token write is a single
+  statement and the races (bootstrap, same active name) are settled by the primary key and the partial
+  unique index, which turn the loser into `ErrConflict` (T3, T4).
 
 ## Consequences
 
@@ -342,17 +409,19 @@ are logged; the token and its hash never are.
 - Angelia becomes usable: `angelia serve` accepts real tokens, and the CLI, `apply`, the MCP server and
   the event stream work end to end.
 - No new dependency: SHA-256, CRC-32, base32 and `crypto/subtle` are all in the standard library, and
-  the token code is independent of the secrets key.
+  the token code is independent of the secrets key, including the recovery path.
 - A leaked token is recognisable (prefix, regex, checksum) and revocable by the id it carries.
 - Bootstrap is deterministic on restarts and with several replicas, and a token is never written to a
   server log.
 
 ### Negative
 
-- One store read per request (no cache). Fine for the expected load; measured in the implementation.
+- One store read per request (no cache), including for well-formed guesses. Fine for the expected
+  load; measured in the implementation. No global cap (accepted risk, T11).
 - `last_used_at` is approximate (about 5 minutes) and can lose the last interval on a crash.
 - Interactive installs need one extra command (`token create --local`) instead of reading a token from
   the startup log.
+- The bootstrap file stays a live admin credential until revoked, and an emptied database re-arms it.
 - No brute-force throttling; relies on token entropy until a trusted-proxy setting exists.
 - Revoked rows accumulate; a purge command is left for later.
 
@@ -376,6 +445,9 @@ are logged; the token and its hash never are.
 - **Inline `ANGELIA_API_BOOTSTRAP_TOKEN` env** beside the file: like `ANGELIA_SECRETS_KEY`, convenient on
   platforms that only inject env, but env leaks into `docker inspect`, `/proc/<pid>/environ` and crash
   reports. Left out; can be added later without breaking anything (question 4).
+- **A bare `ang_` prefix in `tokenStart`**: rejected, it would refuse labels such as `ang_team` (T9).
+- **`--local` through `open.Open`** (as `angelia secrets` does): rejected, it would need the secrets key
+  and could migrate under a running `serve` (T7).
 - **Tokens in the watch file / `apply`**: rejected; a token is a credential and the watch file lives in
   Git.
 - **Hard delete on revoke**: rejected; the audit trail would name ids that no longer exist, and ids could
@@ -384,46 +456,51 @@ are logged; the token and its hash never are.
 
 ## Questions for the maintainer
 
-1. **T1 prefix and format**: `ang_<ULID>_<52 base32><7 CRC-32>` (90 chars). Approve, or prefer
-   `angelia_` / no checksum? (Recommendation: approve as is.)
+1. **T1 prefix and format**: `ang_<ULID>_<52 base32><7 CRC-32>` (90 chars), strict ULID parse, the
+   regex with explicit delimiters. Approve, or prefer `angelia_` / no checksum? (Recommendation:
+   approve as is.)
 2. **T2 hashing**: SHA-256 with the `"angelia api token v1"` domain prefix, no argon2id, no pepper.
    (Recommendation: approve; it matches ADR 0024 §1.)
 3. **T4 bootstrap**: no automatic printing; bootstrap file plus `token create --local`, with a `WARN`
-   while no active admin token exists. Is that acceptable for the issue's "printed once", or do you want
-   (a) as well, printed only when stderr is a terminal?
+   while no active (unexpired, unrevoked) admin token exists. Is that acceptable for the issue's
+   "printed once", or do you want (a) as well, printed only when stderr is a terminal?
 4. **T4 config surface**: new key `api.bootstrap_token_file` / env `ANGELIA_API_BOOTSTRAP_TOKEN_FILE`
    (loader convention, not the issue's `ANGELIA_BOOTSTRAP_TOKEN_FILE`). File only, or an inline env too?
    (Recommendation: file only.)
-5. **T7 CLI shape**: one `token` group with `--local`, versus a separate instance-side `tokens` group.
-   (Recommendation: `--local`.)
+5. **T7 CLI shape**: one `token` group with `create --local` only (store-only opener, no keyring, no
+   migration, schema `00021` or newer), versus a separate instance-side `tokens` group.
+   (Recommendation: `create --local`.)
 6. **T6 expiry default**: none (recommended) or a default such as 365 days?
-7. **T11**: accept no `429` limiter until a trusted-proxy setting exists?
-8. **T9 spec PR**: OK to add the Spectral exception for `TokenCreated.token` and the four admin
-   operations as a minor spec release?
+7. **T11 load**: accept no `429` limiter until a trusted-proxy setting exists, and **no global in-flight
+   cap** on token lookups as an accepted risk? Or add the cap (for example 64 concurrent lookups,
+   excess `503`)? (Recommendation: no cap in v0.1.)
+8. **T9 spec PR**: OK to add the four admin operations, the `Token*` schemas and examples, the `name`
+   pattern, and the Spectral exception for `TokenCreated.token`, as a minor spec release?
 
 ## Implementation split proposal
 
 | Sub-story | Content | Size / complexity / model | Executor | Blocked by | ACs (issue #72) |
 |---|---|---|---|---|---|
 | **72-A** ADR 0030 | This note; maintainer answers the questions; status Accepted. | XS / High / Opus | Human-led (agent drafts) | – | Design note |
-| **72-B** Spec | Spec PR of T9 (paths, schemas, Spectral exception, `docs/api.md` decisions); vendor the new spec into `api/openapi/`, regenerate, add the four ids to `wantScopes`. | S / Medium / Sonnet | Agent + human check (public contract) | 72-A | Scope checks on every route |
-| **72-C** Token core and store | `internal/apitoken` (generate, parse, checksum, hash, `Authenticator` with constant-time compare and `last_used_at` coalescing); migrations `00021` on both engines; `store.TokenStore` on SQLite and Postgres; `storetest` cases; `ang_` in `tokenStart`. | M / High / Opus | Agent + human check (migrations, auth) | 72-A | Stored hashed; constant-time comparison |
-| **72-D** API and wiring | `/v1/tokens` handlers, audit records, failure metric and rate-limited log, `serve` wires the real authenticator instead of `DenyAll`, bootstrap file at `api` role start; `TestAuthEveryRoute` on real tokens. | M / High / Opus | Agent + human check (API auth) | 72-B, 72-C | Bootstrap never logged; scope table test |
-| **72-E** CLI and docs | `angelia token create\|list\|revoke [--local]` and `generate`; golden tests; `configuration.md`, `cli.md`, `mcp.md`, compose quickstart. | S / Medium / Sonnet | Agent | 72-D | `angelia token create\|list\|revoke` |
+| **72-B** Spec | Spec PR of T9 (paths, schemas, examples, Spectral exception, `docs/api.md` decisions); vendor the new spec into `api/openapi/`, regenerate, add the four ids to `wantScopes`. | S / Medium / Sonnet | Agent + human check (public contract) | 72-A | Scope checks on every route |
+| **72-C** Token core and store | `internal/apitoken` (generate, strict parse, checksum, hash, `Authenticator` with constant-time compare, failure reasons, `last_used_at` coalescing); migrations `00021` on both engines; sqlc queries and generated code; `store.TokenStore` on SQLite and Postgres; contract and `storetest` cases on both engines; `LooksLikeToken` with the full regex. | M / High / Opus | Agent + human check (migrations, auth) | 72-A | Stored hashed; constant-time comparison |
+| **72-D** API and wiring | `/v1/tokens` handlers, audit records, failure metric and access-log fields; `serve` wires the real authenticator instead of `DenyAll`; `TestAuthEveryRoute` on real tokens. | S / High / Opus | Agent + human check (API auth) | 72-B, 72-C | Scope table test |
+| **72-E** Bootstrap and instance-side | Bootstrap file at `api` role start (config key, `ErrConflict` as done, active-admin `WARN`); `open.TokenWriter`; `angelia token generate` and `create --local`. | S / High / Opus | Agent + human check (bootstrap credential) | 72-C | Bootstrap never logged |
+| **72-F** CLI and docs | `angelia token create\|list\|revoke` through the API; golden tests; `architecture.md`, `configuration.md`, `cli.md`, `mcp.md`, compose quickstart. | S / Medium / Sonnet | Agent | 72-D, 72-E | `angelia token create\|list\|revoke` |
 
 | | |
 |---|---|
-| Size | M (whole story, ≈ 1.5× M) → sub-stories XS + S + M + M + S |
+| Size | M (whole story, ≈ 1.5× M) → sub-stories XS + S + M + S + S + S |
 | Complexity | Very high (design), High (implementation) |
-| Suggested model | Opus (`claude-opus-5-5`) for 72-A, 72-C, 72-D; Sonnet (`claude-sonnet-5-5`) for 72-B, 72-E |
-| Executor | 72-A Human-led; 72-B, 72-C, 72-D Agent + human check; 72-E Agent |
+| Suggested model | Opus (`claude-opus-5-5`) for 72-A, 72-C, 72-D, 72-E; Sonnet (`claude-sonnet-5-5`) for 72-B, 72-F |
+| Executor | 72-A Human-led; 72-B, 72-C, 72-D, 72-E Agent + human check; 72-F Agent |
 | Risk class | Security |
-| Human estimate | **3.5 person-days** with review and tests (0.5 + 0.5 + 1 + 1 + 0.5) |
-| Expected first-pass success (agent) | 72-B 60%, 72-C 45%, 72-D 40%, 72-E 60% |
-| Expected agent wall-clock | ≈ 9 h (0.5 + 1.5 + 3 + 3 + 1.5 h, rounded down for overlap) |
-| Expected human supervision | ≈ 6 h (decisions, migration and auth reviews) |
+| Human estimate | **4 person-days** with review and tests (0.5 + 0.5 + 1 + 0.75 + 0.75 + 0.5) |
+| Expected first-pass success (agent) | 72-B 60%, 72-C 45%, 72-D 50%, 72-E 45%, 72-F 60% |
+| Expected agent wall-clock | ≈ 10 h (0.5 + 1.5 + 3 + 2 + 2 + 1.5 h, rounded down for overlap) |
+| Expected human supervision | ≈ 9 h (decisions; migration, auth and bootstrap reviews; Security risk class) |
 
-72-B and 72-C can run in parallel once 72-A is accepted.
+72-B and 72-C can run in parallel once 72-A is accepted; 72-D and 72-E can run in parallel after 72-C.
 
 ## References
 
@@ -436,7 +513,8 @@ are logged; the token and its hash never are.
   caller's token); [ADR 0019](0019-prometheus-metrics-on-the-listen-address.md) (closed label sets).
 - `internal/api/auth.go`, `internal/api/auth_test.go` (`TestScopesFromSpec`, `TestAuthEveryRoute`),
   `internal/api/server.go` (`MaxAuthRecheck`), `internal/mcp/http.go`, `cmd/angelia/api.go`,
-  `cmd/angelia/clientconfig.go`, `cmd/angelia/secrets.go`.
+  `cmd/angelia/clientconfig.go`, `cmd/angelia/secrets.go`, `internal/config/config.go`
+  (`LooksLikeToken`), `internal/store/open/open.go`.
 - Spec `docs/api.md` decisions 15, 22, 23, 35 and "Auth"; `openapi/angelia.v1.yaml` `bearerAuth`.
 - RFC 6750 (bearer tokens); GitHub, "Behind GitHub's new authentication token formats" (2021) for the
   prefix-and-checksum design.
