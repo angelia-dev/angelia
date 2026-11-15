@@ -54,7 +54,10 @@ The differences from the SQLite run:
   with the holder and the target. The harness reads them from every replica's log and fails when two
   checks of one target overlap. A check lasts from its start line to its finish line; a check cut off
   by a kill has no finish line, and lasts to the expiry of its lease, because no other holder can take
-  the target before that. A run whose logs hold no check fails the check too.
+  the target before that. The check also fails when the evidence is thin: a replica's log holds no check,
+  a target of the database has no check in any log, or a finished check lasted longer than a third of
+  the lease (it was renewed, so the lease expiry in its start line would be too early an end). Failure
+  details name replicas, not holders, which contain the hostname.
 - `-replicas` greater than 1 needs `-database postgres`; SQLite is one process.
 
 ## What a run does
@@ -140,7 +143,10 @@ a kill is sent again after the lease) and counted.
 `-releases-per-hour` (36,000: one release per package every 30 s), `-receiver-delay` (250ms), `-min-pending` (500),
 `-from-start` (0.1), `-from-start-max` (300ms), `-stages` (8), `-stage-every` (30s), `-min-detection-kills` (30),
 `-seed` (random; the report records it, to repeat the kill times), `-drain-timeout` (15m),
-`-database` (`sqlite`) and `-replicas` (1): see "On Postgres" above.
+`-database` (`sqlite`) and `-replicas` (1): see "On Postgres" above;
+`-registry-delay-min` / `-registry-delay-max` (0: the registry answers in about 10 ms): a per-request delay
+uniform in that range, so that checks last about a second and kills land inside them (use it with
+replicas, for example `-registry-delay-min 500ms -registry-delay-max 2s`).
 Raise `-releases-per-hour` if the report shows kills waiting for work; lower it if the drain is long.
 
 ## Known limits

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
+	"github.com/angelia-dev/angelia/internal/scheduler"
 )
 
 func main() {
@@ -72,6 +73,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&o.w.Subscriptions, "subscriptions", 5, "webhook sinks, one subscription each; every event is delivered to each")
 	fs.Float64Var(&o.w.ReleasesPerH, "releases-per-hour", 36000, "new releases per hour over all packages (with -n 300 and 5 subscriptions, 15,000 deliveries per 5-minute check cycle)")
 	fs.IntVar(&o.w.History, "history", 3, "versions each package has at start (recorded as the baseline, without events)")
+	fs.DurationVar(&o.w.DelayMin, "registry-delay-min", 0, "least response delay of the fake registry; with -registry-delay-max, makes checks last long enough for a kill to land inside one (0: checks take milliseconds)")
+	fs.DurationVar(&o.w.DelayMax, "registry-delay-max", 0, "the registry's delay is uniform in [-registry-delay-min, this); 0 keeps the quick default")
 	fs.DurationVar(&o.receiverDelay, "receiver-delay", 250*time.Millisecond, "the receiver answers after a delay uniform in [0, this)")
 	fs.StringVar(&o.receiverHost, "receiver-host", "127.0.0.2", "loopback address of the receiver; another host than the registry's 127.0.0.1, so each has its own rate limit")
 	fs.IntVar(&o.minFlow, "min-flow", 200, "requests the receiver must have got before the first kill")
@@ -92,7 +95,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if o.kills < 1 || o.minPending < 1 || o.stages < 1 || o.stageEvery < 0 || o.fromStart < 0 || o.fromStart > 1 || o.fromStartMax < 0 || o.minUp <= 0 || o.maxUp < o.minUp || o.w.Packages < 1 || o.w.Subscriptions < 1 ||
-		o.w.ReleasesPerH <= 0 || o.w.History < 1 || o.receiverDelay < 0 || fs.NArg() != 0 {
+		o.w.ReleasesPerH <= 0 || o.w.DelayMin < 0 || (o.w.DelayMax > 0 && o.w.DelayMax <= o.w.DelayMin) || (o.w.DelayMax == 0 && o.w.DelayMin > 0) || o.w.History < 1 || o.receiverDelay < 0 || fs.NArg() != 0 {
 		_, _ = fmt.Fprintln(stderr, "crash: -kills, -n, -subscriptions, -releases-per-hour, -history and the uptimes must be positive, -max-uptime >= -min-uptime; no arguments")
 		return 2
 	}
@@ -473,7 +476,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		if err != nil {
 			return finish(fmt.Errorf("read the scheduler logs: %w", err), notes...)
 		}
-		verify = append(verify, checkOverlaps(runs))
+		verify = append(verify, checkOverlaps(runs, scheduler.DefaultLeaseTTL, snap.Targets))
 	}
 	rep.Tally = tally
 	rep.decide(verify, setupChecks(o.kills, o.minDetection, kills, tally, drained))

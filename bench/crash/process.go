@@ -52,6 +52,7 @@ func (l launcher) start(args ...string) (*proc, error) {
 	}
 	cmd := exec.Command(l.bin, append([]string{"serve", "--config", l.cfg}, args...)...) //nolint:gosec // the binary under test
 	cmd.Stdout, cmd.Stderr, cmd.Env = f, f, l.env
+	setPdeathsig(cmd) // a harness that dies takes its replicas with it
 	if err := cmd.Start(); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("start %s: %w", l.bin, err)

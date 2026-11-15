@@ -2,163 +2,165 @@
 
 **Verdict: PASS.** Target ([architecture.md §6](../../docs/architecture.md#6-language-and-framework-phase-0-assumptions)): zero lost deliveries, duplicates only within the idempotency key, over 100 SIGKILLs during heavy dispatch.
 
-Run 2026-11-15T20:44:50Z, 986.0s in total (warm-up 281.4s, kill loop 201.1s, drain 503.3s).
+Run 2026-11-15T21:35:07Z, 1053.9s in total (warm-up 284.2s, kill loop 228.0s, drain 541.4s).
 
-- Postgres **16.15**, not 17: the only server of the machine. Run with `-replicas 2 -kills 100` and the default workload (`go run ./bench/crash -database postgres -replicas 2`, the DSN in `BENCH_POSTGRES_DSN`); see [bench/crash/README.md](../crash/README.md#on-postgres-with-several-replicas).
-- Both replicas, the registry, the receiver and Postgres share one 4-CPU machine, so one clock. Dispatch drained at about 30 requests per second with the backlog the kills left (6,600 deliveries at the freeze), which is why the drain took 503 s; this run does not measure dispatch throughput.
+- Postgres **16.15**, not 17: the only server of the machine. Run with `-replicas 2 -kills 100 -registry-delay-min 500ms -registry-delay-max 2s` and the default workload otherwise (`go run ./bench/crash -database postgres ...`, the DSN in `BENCH_POSTGRES_DSN`); see [bench/crash/README.md](../crash/README.md#on-postgres-with-several-replicas). The harness was built from the commit below plus the uncommitted review fixes (they are in the next commit).
+- **71 of 1,103 checks were cut off by a kill** (no finish line in the log; judged until their lease expiry), and none overlapped another check of the same target. The registry delay (0.5 to 2 s per request) makes a check last about a second, so kills land inside checks. The first run of this benchmark, without a delay, had 1 of 1,026.
+- The kill-loop rows ("Kills during detection", "cut requests off", the backlog after each kill) count the whole cluster: with replicas, the surviving replica keeps checking and dispatching during and after a kill.
+- Both replicas, the registry, the receiver and Postgres share one 4-CPU machine, so one clock. The drain took 541 s because it waits for a full check cycle (leases of killed replicas, then every target checked after the freeze), and that cycle finds the releases published since each target's last check: 3,702 deliveries were pending at the freeze and about 14,000 requests were received during the drain. Dispatch ran at about 26 requests per second in both the kill loop and the drain. This run does not measure dispatch throughput.
 
 ## Checks
 
 | Check | Result | Detail |
 |---|---|---|
 | SIGKILLs during the run | pass | 100 of 100, each process ended by SIGKILL |
-| every kill during dispatch (deliveries pending or in flight) | pass | 100 of 100 kills; 62 cut requests off at the receiver |
-| kills during detection | pass | 81 kills found checks committed since the previous kill (want at least 30) |
+| every kill during dispatch (deliveries pending or in flight) | pass | 100 of 100 kills; 51 cut requests off at the receiver |
+| kills during detection | pass | 69 kills found checks committed since the previous kill (want at least 30) |
 | drain finished (every target checked after the freeze, every delivery finished) | pass | 0 deliveries pending or in flight at the end |
 | database integrity (foreign keys, constraints, indexes) | pass | ok |
 | watches and subscriptions match the workload | pass | 300 watches, 5 subscriptions |
-| versions recorded match the registry at the freeze | pass | 300 packages: 1960 baseline and 3753 new versions, as published |
-| one event per new version | pass | 3753 events for 3753 new versions (1960 baseline versions without events) |
-| one delivery per event and subscription | pass | 18765 deliveries = 3753 events x 5 subscriptions |
-| no delivery given up (dead) | pass | 18765 delivered, 0 dead, 0 unfinished |
-| every release published before the freeze reached every sink (registry) | pass | 18765 of 18765 expected (3753 new versions x 5 sinks) |
-| every delivery in the database received at least once (zero lost) | pass | 18765 of 18765 finished deliveries received |
-| duplicates only within the idempotency key | pass | 196 duplicate requests over 196 deliveries, each with its delivery's key and body |
-| every request signed (Standard Webhooks) | pass | 18961 requests verified |
+| versions recorded match the registry at the freeze | pass | 300 packages: 1983 baseline and 4028 new versions, as published |
+| one event per new version | pass | 4028 events for 4028 new versions (1983 baseline versions without events) |
+| one delivery per event and subscription | pass | 20140 deliveries = 4028 events x 5 subscriptions |
+| no delivery given up (dead) | pass | 20140 delivered, 0 dead, 0 unfinished |
+| every release published before the freeze reached every sink (registry) | pass | 20140 of 20140 expected (4028 new versions x 5 sinks) |
+| every delivery in the database received at least once (zero lost) | pass | 20140 of 20140 finished deliveries received |
+| duplicates only within the idempotency key | pass | 158 duplicate requests over 154 deliveries, each with its delivery's key and body |
+| every request signed (Standard Webhooks) | pass | 20298 requests verified |
 | no request outside the database's deliveries | pass | none |
-| no target checked by two holders at once (from the scheduler logs) | pass | 1026 checks of 300 targets by 86 holders (1 cut off by a kill), none overlapping |
+| no target checked by two holders at once (from the scheduler logs) | pass | 1103 checks of 300 targets in 2 logs by 87 holders (71 cut off by a kill), none overlapping, every database target checked |
 
 ## Counts
 
 | | |
 |---|---|
-| Versions recorded (baseline, new) | 1960, 3753 |
-| Events | 3753 |
-| Deliveries (rows) | 18765 |
-| Deliveries attempted more than once | 196 |
-| Requests received | 18961 |
-| Distinct deliveries received | 18765 |
-| Duplicate requests (deliveries received twice or more) | 196 (196) |
-| Received before the first kill | 207 |
-| Expected from the registry: new versions, deliveries | 3753, 18765 |
+| Versions recorded (baseline, new) | 1983, 4028 |
+| Events | 4028 |
+| Deliveries (rows) | 20140 |
+| Deliveries attempted more than once | 154 |
+| Requests received | 20298 |
+| Distinct deliveries received | 20140 |
+| Duplicate requests (deliveries received twice or more) | 158 (154) |
+| Received before the first kill | 202 |
+| Expected from the registry: new versions, deliveries | 4028, 20140 |
 
 ## Kills
 
 | | |
 |---|---|
 | Kills | 100 |
-| Kills timed from the process start, not waiting for /readyz (startup to ready: see below) | 13 |
+| Kills timed from the process start, not waiting for /readyz (startup to ready: see below) | 6 |
 | Uptime after ready (drawn) | 0.2s to 3.0s, median 1.8s |
 | Restart to ready | median 0.2s, max 0.3s |
-| Kills during detection (checks committed since the previous kill) | 81 (81 with new events) |
-| Requests received per life | min 0, median 41, max 101 |
-| Kills that cut requests off at the receiver | 62 (335 requests) |
-| Kills per replica | replica 1: 50, replica 2: 50 |
+| Kills during detection (checks committed since the previous kill) | 69 (69 with new events) |
+| Requests received per life | min 0, median 51, max 96 |
+| Kills that cut requests off at the receiver | 51 (263 requests) |
+| Kills per replica | replica 1: 52, replica 2: 48 |
 
 <details><summary>Every kill</summary>
 
 | # | Replica | Timed from | Restart to ready | Uptime | Checks | Events | Received | Open at kill | Pending after | In flight after |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 1 | ready | 0.0s | 1.0s | 28 | 271 | 43 | 2 | 641 | 2 |
-| 2 | 1 | start | 0.0s | 0.0s | 0 | 0 | 1 | 1 | 641 | 2 |
-| 3 | 2 | ready | 0.3s | 0.3s | 1 | 9 | 13 | 6 | 667 | 8 |
-| 4 | 1 | ready | 0.2s | 0.7s | 0 | 0 | 39 | 4 | 624 | 12 |
-| 5 | 2 | ready | 0.2s | 2.1s | 5 | 48 | 61 | 0 | 803 | 12 |
-| 6 | 1 | ready | 0.3s | 0.8s | 5 | 41 | 28 | 0 | 979 | 12 |
-| 7 | 1 | ready | 0.2s | 2.1s | 3 | 31 | 61 | 0 | 1073 | 12 |
-| 8 | 1 | ready | 0.2s | 2.7s | 2 | 22 | 85 | 4 | 1093 | 16 |
-| 9 | 2 | ready | 0.3s | 0.6s | 3 | 30 | 15 | 8 | 1220 | 20 |
-| 10 | 1 | ready | 0.2s | 0.5s | 0 | 0 | 20 | 3 | 1197 | 23 |
-| 11 | 1 | start | 0.0s | 0.2s | 0 | 0 | 3 | 0 | 1197 | 23 |
-| 12 | 1 | start | 0.0s | 0.1s | 0 | 0 | 0 | 0 | 1197 | 23 |
-| 13 | 1 | start | 0.0s | 0.2s | 1 | 10 | 0 | 0 | 1247 | 23 |
-| 14 | 1 | ready | 0.2s | 2.3s | 4 | 42 | 49 | 8 | 1389 | 31 |
-| 15 | 1 | ready | 0.2s | 2.4s | 3 | 31 | 99 | 1 | 1444 | 32 |
-| 16 | 1 | ready | 0.3s | 1.5s | 0 | 0 | 51 | 4 | 1389 | 36 |
-| 17 | 2 | ready | 0.3s | 2.1s | 4 | 38 | 45 | 6 | 1516 | 42 |
-| 18 | 2 | ready | 0.2s | 3.0s | 2 | 18 | 81 | 0 | 1522 | 42 |
-| 19 | 1 | ready | 0.2s | 0.4s | 0 | 0 | 13 | 8 | 1501 | 50 |
-| 20 | 2 | ready | 0.3s | 2.2s | 4 | 38 | 77 | 0 | 1614 | 50 |
-| 21 | 1 | ready | 0.3s | 2.3s | 3 | 29 | 59 | 7 | 1693 | 58 |
-| 22 | 1 | ready | 0.3s | 2.4s | 3 | 30 | 61 | 10 | 1768 | 68 |
-| 23 | 1 | ready | 0.3s | 1.2s | 1 | 9 | 30 | 0 | 1783 | 66 |
-| 24 | 1 | ready | 0.2s | 1.8s | 6 | 59 | 41 | 0 | 2037 | 66 |
-| 25 | 2 | ready | 0.3s | 2.1s | 2 | 21 | 42 | 0 | 2100 | 66 |
-| 26 | 2 | start | 0.0s | 0.2s | 0 | 0 | 3 | 8 | 2089 | 74 |
-| 27 | 1 | ready | 0.3s | 1.4s | 2 | 21 | 39 | 2 | 2152 | 67 |
-| 28 | 1 | ready | 0.2s | 1.8s | 3 | 31 | 48 | 0 | 2259 | 66 |
-| 29 | 1 | ready | 0.3s | 0.6s | 1 | 9 | 19 | 0 | 2277 | 66 |
-| 30 | 1 | start | 0.0s | 0.2s | 0 | 0 | 6 | 7 | 2263 | 74 |
-| 31 | 1 | ready | 0.3s | 2.4s | 2 | 21 | 64 | 8 | 2290 | 74 |
-| 32 | 1 | start | 0.0s | 0.1s | 0 | 0 | 3 | 3 | 2290 | 74 |
-| 33 | 2 | ready | 0.3s | 2.5s | 3 | 28 | 68 | 5 | 2358 | 78 |
-| 34 | 2 | ready | 0.3s | 1.6s | 1 | 9 | 37 | 0 | 2366 | 74 |
-| 35 | 2 | ready | 0.3s | 2.7s | 5 | 50 | 94 | 1 | 2521 | 75 |
-| 36 | 2 | ready | 0.2s | 3.0s | 4 | 38 | 68 | 5 | 2638 | 79 |
-| 37 | 1 | ready | 0.2s | 1.8s | 2 | 19 | 42 | 0 | 2691 | 74 |
-| 38 | 2 | ready | 0.2s | 0.6s | 1 | 11 | 22 | 0 | 2724 | 74 |
-| 39 | 2 | ready | 0.2s | 0.3s | 1 | 11 | 13 | 4 | 2762 | 78 |
-| 40 | 2 | start | 0.0s | 0.1s | 0 | 0 | 6 | 8 | 2751 | 86 |
-| 41 | 2 | ready | 0.3s | 1.2s | 2 | 19 | 31 | 8 | 2804 | 86 |
-| 42 | 2 | ready | 0.2s | 1.8s | 2 | 19 | 39 | 8 | 2853 | 94 |
-| 43 | 1 | ready | 0.3s | 0.3s | 0 | 0 | 25 | 2 | 2824 | 88 |
-| 44 | 1 | ready | 0.2s | 1.5s | 2 | 20 | 43 | 3 | 2877 | 90 |
-| 45 | 2 | ready | 0.2s | 2.7s | 1 | 10 | 71 | 2 | 2854 | 92 |
-| 46 | 2 | ready | 0.2s | 0.3s | 1 | 10 | 14 | 1 | 2889 | 93 |
-| 47 | 2 | ready | 0.2s | 1.1s | 3 | 31 | 24 | 8 | 3003 | 101 |
-| 48 | 1 | ready | 0.2s | 0.8s | 0 | 0 | 14 | 0 | 2984 | 93 |
-| 49 | 1 | ready | 0.2s | 1.8s | 4 | 42 | 66 | 0 | 3128 | 93 |
-| 50 | 2 | ready | 0.2s | 2.0s | 1 | 10 | 72 | 1 | 3105 | 94 |
-| 51 | 2 | ready | 0.3s | 2.5s | 4 | 39 | 74 | 7 | 3219 | 101 |
-| 52 | 2 | ready | 0.2s | 2.1s | 4 | 38 | 64 | 0 | 3340 | 101 |
-| 53 | 2 | ready | 0.3s | 2.7s | 7 | 70 | 82 | 16 | 3592 | 117 |
-| 54 | 2 | ready | 0.3s | 2.8s | 6 | 57 | 79 | 0 | 3797 | 109 |
-| 55 | 1 | ready | 0.2s | 2.7s | 2 | 20 | 76 | 6 | 3815 | 115 |
-| 56 | 2 | ready | 0.2s | 0.6s | 0 | 0 | 13 | 0 | 3802 | 111 |
-| 57 | 2 | ready | 0.2s | 0.7s | 1 | 11 | 31 | 0 | 3826 | 111 |
-| 58 | 2 | start | 0.0s | 0.1s | 0 | 0 | 0 | 0 | 3826 | 111 |
-| 59 | 2 | start | 0.0s | 0.3s | 1 | 9 | 0 | 8 | 3863 | 119 |
-| 60 | 2 | ready | 0.2s | 2.4s | 2 | 20 | 72 | 8 | 3884 | 127 |
-| 61 | 2 | ready | 0.3s | 1.6s | 2 | 20 | 62 | 2 | 3913 | 129 |
-| 62 | 2 | start | 0.0s | 0.0s | 0 | 0 | 0 | 2 | 3913 | 129 |
-| 63 | 1 | ready | 0.3s | 2.4s | 5 | 52 | 72 | 0 | 4092 | 137 |
-| 64 | 1 | ready | 0.2s | 1.2s | 3 | 30 | 30 | 8 | 4198 | 137 |
-| 65 | 1 | ready | 0.3s | 2.9s | 1 | 10 | 64 | 0 | 4183 | 129 |
-| 66 | 2 | ready | 0.2s | 0.2s | 0 | 0 | 18 | 10 | 4155 | 139 |
-| 67 | 2 | ready | 0.2s | 2.7s | 1 | 10 | 69 | 8 | 4128 | 145 |
-| 68 | 1 | ready | 0.3s | 2.4s | 1 | 9 | 59 | 11 | 4097 | 156 |
-| 69 | 1 | ready | 0.3s | 1.3s | 6 | 60 | 30 | 2 | 4363 | 151 |
-| 70 | 1 | ready | 0.3s | 1.9s | 4 | 41 | 101 | 2 | 4465 | 153 |
-| 71 | 2 | ready | 0.2s | 1.6s | 1 | 10 | 53 | 0 | 4462 | 151 |
-| 72 | 2 | start | 0.0s | 0.3s | 1 | 10 | 0 | 8 | 4504 | 159 |
-| 73 | 1 | ready | 0.3s | 1.6s | 1 | 10 | 48 | 0 | 4507 | 157 |
-| 74 | 2 | ready | 0.2s | 0.7s | 3 | 29 | 41 | 1 | 4616 | 152 |
-| 75 | 2 | ready | 0.2s | 1.4s | 1 | 10 | 46 | 0 | 4624 | 148 |
-| 76 | 1 | ready | 0.2s | 1.6s | 5 | 48 | 57 | 8 | 4798 | 156 |
-| 77 | 2 | ready | 0.3s | 1.8s | 2 | 19 | 38 | 0 | 4853 | 148 |
-| 78 | 1 | ready | 0.3s | 0.9s | 4 | 39 | 31 | 0 | 5017 | 148 |
-| 79 | 1 | ready | 0.2s | 0.8s | 1 | 10 | 25 | 0 | 5042 | 148 |
-| 80 | 2 | ready | 0.2s | 1.6s | 3 | 30 | 54 | 11 | 5127 | 159 |
-| 81 | 2 | ready | 0.2s | 2.1s | 2 | 19 | 57 | 1 | 5175 | 146 |
-| 82 | 2 | ready | 0.2s | 1.5s | 1 | 10 | 37 | 0 | 5188 | 145 |
-| 83 | 1 | ready | 0.3s | 0.3s | 1 | 11 | 16 | 6 | 5226 | 142 |
-| 84 | 1 | ready | 0.2s | 0.9s | 1 | 10 | 18 | 5 | 5253 | 142 |
-| 85 | 1 | ready | 0.2s | 1.0s | 0 | 0 | 39 | 3 | 5210 | 139 |
-| 86 | 1 | ready | 0.2s | 2.3s | 7 | 71 | 52 | 7 | 5510 | 139 |
-| 87 | 1 | ready | 0.2s | 2.7s | 1 | 10 | 84 | 7 | 5475 | 140 |
-| 88 | 2 | ready | 0.3s | 2.5s | 4 | 38 | 77 | 0 | 5592 | 132 |
-| 89 | 1 | ready | 0.3s | 1.2s | 5 | 47 | 31 | 4 | 5785 | 137 |
-| 90 | 1 | start | 0.0s | 0.2s | 0 | 0 | 6 | 7 | 5775 | 145 |
-| 91 | 2 | ready | 0.2s | 1.9s | 5 | 49 | 41 | 0 | 5976 | 137 |
-| 92 | 1 | ready | 0.2s | 2.1s | 2 | 21 | 60 | 0 | 6029 | 129 |
-| 93 | 2 | ready | 0.3s | 2.7s | 1 | 9 | 85 | 2 | 5994 | 123 |
-| 94 | 2 | ready | 0.2s | 0.9s | 1 | 9 | 27 | 7 | 6004 | 129 |
-| 95 | 1 | ready | 0.2s | 1.8s | 2 | 19 | 35 | 0 | 6062 | 121 |
-| 96 | 2 | ready | 0.3s | 0.7s | 2 | 20 | 25 | 0 | 6137 | 121 |
-| 97 | 2 | ready | 0.2s | 2.6s | 2 | 20 | 76 | 5 | 6157 | 125 |
-| 98 | 2 | ready | 0.2s | 0.2s | 2 | 21 | 12 | 3 | 6248 | 128 |
-| 99 | 2 | ready | 0.2s | 2.8s | 5 | 52 | 98 | 4 | 6406 | 132 |
-| 100 | 1 | ready | 0.2s | 2.2s | 5 | 53 | 54 | 0 | 6625 | 122 |
+| 1 | 1 | ready | 0.0s | 1.0s | 33 | 323 | 33 | 0 | 652 | 0 |
+| 2 | 2 | ready | 0.3s | 2.1s | 3 | 31 | 65 | 0 | 742 | 0 |
+| 3 | 1 | ready | 0.2s | 1.2s | 0 | 0 | 39 | 7 | 696 | 6 |
+| 4 | 2 | ready | 0.2s | 1.9s | 1 | 11 | 54 | 5 | 692 | 5 |
+| 5 | 1 | ready | 0.2s | 1.4s | 3 | 31 | 36 | 2 | 809 | 7 |
+| 6 | 1 | ready | 0.2s | 1.0s | 1 | 11 | 26 | 0 | 838 | 5 |
+| 7 | 2 | ready | 0.2s | 2.1s | 3 | 32 | 65 | 0 | 933 | 5 |
+| 8 | 2 | ready | 0.2s | 2.9s | 5 | 39 | 71 | 0 | 1057 | 5 |
+| 9 | 2 | start | 0.0s | 0.0s | 0 | 0 | 0 | 0 | 1057 | 5 |
+| 10 | 1 | ready | 0.2s | 1.6s | 0 | 0 | 68 | 10 | 981 | 15 |
+| 11 | 1 | ready | 0.2s | 1.8s | 0 | 0 | 34 | 0 | 947 | 9 |
+| 12 | 1 | start | 0.0s | 0.3s | 1 | 9 | 12 | 9 | 971 | 18 |
+| 13 | 1 | ready | 0.2s | 0.8s | 1 | 10 | 18 | 4 | 999 | 21 |
+| 14 | 2 | ready | 0.2s | 1.5s | 1 | 11 | 47 | 5 | 1002 | 21 |
+| 15 | 2 | start | 0.0s | 0.2s | 0 | 0 | 4 | 0 | 1002 | 17 |
+| 16 | 2 | ready | 0.2s | 2.8s | 1 | 10 | 82 | 7 | 963 | 25 |
+| 17 | 2 | ready | 0.3s | 2.7s | 4 | 40 | 75 | 1 | 1074 | 26 |
+| 18 | 1 | ready | 0.2s | 1.5s | 0 | 0 | 46 | 0 | 1028 | 26 |
+| 19 | 1 | ready | 0.2s | 2.1s | 2 | 20 | 49 | 0 | 1079 | 26 |
+| 20 | 1 | ready | 0.2s | 1.3s | 0 | 0 | 51 | 8 | 1020 | 34 |
+| 21 | 2 | ready | 0.3s | 1.1s | 1 | 10 | 26 | 8 | 1036 | 42 |
+| 22 | 1 | ready | 0.3s | 2.4s | 4 | 40 | 60 | 0 | 1175 | 34 |
+| 23 | 1 | start | 0.0s | 0.1s | 0 | 0 | 0 | 8 | 1167 | 42 |
+| 24 | 1 | ready | 0.2s | 2.6s | 4 | 40 | 64 | 2 | 1300 | 36 |
+| 25 | 2 | ready | 0.2s | 2.6s | 1 | 10 | 70 | 2 | 1279 | 38 |
+| 26 | 2 | ready | 0.2s | 1.4s | 1 | 9 | 52 | 2 | 1270 | 40 |
+| 27 | 1 | ready | 0.2s | 0.3s | 1 | 10 | 29 | 5 | 1286 | 45 |
+| 28 | 2 | ready | 0.2s | 2.8s | 2 | 18 | 84 | 3 | 1289 | 45 |
+| 29 | 2 | ready | 0.2s | 2.5s | 3 | 29 | 67 | 0 | 1367 | 44 |
+| 30 | 2 | ready | 0.3s | 0.7s | 1 | 10 | 34 | 0 | 1383 | 44 |
+| 31 | 2 | ready | 0.2s | 2.3s | 2 | 20 | 62 | 0 | 1421 | 44 |
+| 32 | 1 | ready | 0.2s | 2.9s | 1 | 10 | 96 | 2 | 1373 | 46 |
+| 33 | 1 | ready | 0.2s | 1.7s | 1 | 10 | 54 | 2 | 1368 | 46 |
+| 34 | 2 | ready | 0.2s | 1.3s | 2 | 19 | 40 | 8 | 1410 | 54 |
+| 35 | 1 | ready | 0.2s | 1.9s | 4 | 39 | 59 | 0 | 1541 | 46 |
+| 36 | 1 | ready | 0.2s | 0.8s | 0 | 0 | 21 | 0 | 1520 | 46 |
+| 37 | 2 | ready | 0.2s | 3.0s | 6 | 63 | 93 | 1 | 1741 | 47 |
+| 38 | 2 | ready | 0.2s | 2.4s | 1 | 11 | 54 | 2 | 1741 | 48 |
+| 39 | 1 | ready | 0.2s | 2.3s | 0 | 0 | 54 | 7 | 1676 | 56 |
+| 40 | 2 | ready | 0.3s | 2.7s | 6 | 62 | 49 | 0 | 1934 | 48 |
+| 41 | 1 | ready | 0.3s | 2.6s | 2 | 18 | 55 | 8 | 1961 | 56 |
+| 42 | 2 | ready | 0.2s | 1.8s | 0 | 0 | 61 | 1 | 1899 | 57 |
+| 43 | 1 | ready | 0.3s | 2.5s | 4 | 38 | 94 | 6 | 1989 | 63 |
+| 44 | 2 | ready | 0.2s | 0.6s | 1 | 11 | 15 | 0 | 2029 | 57 |
+| 45 | 2 | ready | 0.2s | 1.1s | 0 | 0 | 28 | 0 | 2001 | 57 |
+| 46 | 2 | ready | 0.2s | 2.5s | 1 | 10 | 64 | 8 | 1979 | 65 |
+| 47 | 1 | ready | 0.2s | 2.1s | 6 | 60 | 43 | 0 | 2222 | 65 |
+| 48 | 1 | ready | 0.2s | 2.0s | 2 | 20 | 68 | 0 | 2245 | 65 |
+| 49 | 2 | ready | 0.2s | 1.5s | 1 | 11 | 65 | 5 | 2230 | 71 |
+| 50 | 2 | ready | 0.2s | 2.4s | 2 | 21 | 52 | 6 | 2277 | 76 |
+| 51 | 1 | ready | 0.2s | 0.5s | 1 | 10 | 25 | 3 | 2299 | 79 |
+| 52 | 1 | ready | 0.2s | 2.0s | 3 | 30 | 55 | 1 | 2393 | 80 |
+| 53 | 2 | ready | 0.2s | 1.7s | 3 | 32 | 43 | 8 | 2502 | 87 |
+| 54 | 1 | ready | 0.3s | 2.2s | 0 | 0 | 52 | 0 | 2450 | 87 |
+| 55 | 1 | ready | 0.2s | 0.6s | 1 | 9 | 35 | 0 | 2460 | 87 |
+| 56 | 1 | ready | 0.2s | 2.3s | 3 | 28 | 59 | 0 | 2541 | 87 |
+| 57 | 1 | ready | 0.2s | 2.1s | 0 | 0 | 60 | 0 | 2480 | 87 |
+| 58 | 2 | ready | 0.2s | 1.5s | 2 | 18 | 51 | 16 | 2503 | 102 |
+| 59 | 2 | ready | 0.3s | 2.8s | 6 | 60 | 64 | 0 | 2732 | 95 |
+| 60 | 1 | ready | 0.2s | 2.9s | 3 | 30 | 79 | 0 | 2803 | 95 |
+| 61 | 2 | ready | 0.2s | 2.9s | 2 | 21 | 94 | 4 | 2811 | 98 |
+| 62 | 1 | ready | 0.2s | 1.6s | 3 | 19 | 42 | 0 | 2864 | 97 |
+| 63 | 1 | ready | 0.2s | 1.1s | 0 | 0 | 28 | 7 | 2829 | 104 |
+| 64 | 1 | start | 0.0s | 0.0s | 0 | 0 | 0 | 7 | 2829 | 104 |
+| 65 | 2 | ready | 0.2s | 2.6s | 1 | 19 | 82 | 8 | 2794 | 107 |
+| 66 | 1 | ready | 0.2s | 1.7s | 1 | 10 | 83 | 1 | 2755 | 108 |
+| 67 | 1 | ready | 0.2s | 2.5s | 3 | 29 | 52 | 0 | 2848 | 107 |
+| 68 | 1 | ready | 0.3s | 1.4s | 1 | 10 | 43 | 3 | 2851 | 110 |
+| 69 | 2 | ready | 0.2s | 1.6s | 0 | 0 | 56 | 0 | 2799 | 106 |
+| 70 | 2 | ready | 0.3s | 3.0s | 8 | 77 | 85 | 1 | 3106 | 99 |
+| 71 | 1 | ready | 0.2s | 1.9s | 3 | 29 | 46 | 8 | 3196 | 106 |
+| 72 | 1 | ready | 0.3s | 0.9s | 3 | 29 | 24 | 0 | 3317 | 106 |
+| 73 | 1 | ready | 0.2s | 0.8s | 3 | 29 | 63 | 1 | 3398 | 107 |
+| 74 | 2 | ready | 0.2s | 0.5s | 2 | 19 | 13 | 8 | 3480 | 107 |
+| 75 | 1 | ready | 0.2s | 0.8s | 0 | 0 | 31 | 0 | 3449 | 107 |
+| 76 | 1 | ready | 0.2s | 0.4s | 0 | 0 | 27 | 5 | 3417 | 112 |
+| 77 | 1 | ready | 0.3s | 1.9s | 0 | 0 | 43 | 5 | 3370 | 114 |
+| 78 | 1 | ready | 0.2s | 0.4s | 0 | 0 | 14 | 0 | 3356 | 109 |
+| 79 | 2 | ready | 0.2s | 2.7s | 1 | 10 | 79 | 0 | 3327 | 109 |
+| 80 | 1 | ready | 0.2s | 0.8s | 0 | 0 | 23 | 0 | 3304 | 109 |
+| 81 | 1 | ready | 0.2s | 0.7s | 1 | 10 | 26 | 0 | 3336 | 101 |
+| 82 | 2 | ready | 0.2s | 0.4s | 0 | 0 | 20 | 5 | 3311 | 106 |
+| 83 | 2 | start | 0.0s | 0.2s | 0 | 0 | 5 | 0 | 3311 | 106 |
+| 84 | 2 | ready | 0.2s | 2.4s | 2 | 21 | 55 | 0 | 3361 | 106 |
+| 85 | 2 | ready | 0.2s | 0.7s | 0 | 0 | 29 | 0 | 3332 | 106 |
+| 86 | 2 | ready | 0.2s | 0.8s | 0 | 0 | 35 | 0 | 3297 | 106 |
+| 87 | 1 | ready | 0.2s | 0.6s | 0 | 0 | 20 | 6 | 3273 | 110 |
+| 88 | 2 | ready | 0.2s | 1.1s | 0 | 0 | 24 | 0 | 3248 | 110 |
+| 89 | 1 | ready | 0.2s | 2.9s | 3 | 33 | 80 | 0 | 3330 | 106 |
+| 90 | 2 | ready | 0.2s | 0.2s | 0 | 0 | 12 | 3 | 3319 | 105 |
+| 91 | 2 | ready | 0.3s | 3.0s | 1 | 11 | 70 | 0 | 3304 | 102 |
+| 92 | 2 | ready | 0.2s | 1.3s | 1 | 9 | 47 | 0 | 3294 | 102 |
+| 93 | 1 | ready | 0.2s | 2.1s | 2 | 19 | 66 | 0 | 3323 | 102 |
+| 94 | 1 | ready | 0.2s | 1.0s | 0 | 0 | 23 | 7 | 3284 | 110 |
+| 95 | 1 | ready | 0.3s | 2.5s | 3 | 31 | 58 | 4 | 3372 | 106 |
+| 96 | 2 | ready | 0.2s | 2.6s | 1 | 10 | 63 | 0 | 3358 | 106 |
+| 97 | 1 | ready | 0.2s | 1.6s | 0 | 0 | 44 | 0 | 3316 | 104 |
+| 98 | 2 | ready | 0.3s | 3.0s | 8 | 80 | 90 | 8 | 3618 | 112 |
+| 99 | 2 | ready | 0.2s | 2.9s | 2 | 21 | 62 | 0 | 3661 | 112 |
+| 100 | 2 | ready | 0.2s | 0.3s | 1 | 10 | 9 | 0 | 3702 | 112 |
 
 </details>
 
@@ -171,9 +173,10 @@ Run 2026-11-15T20:44:50Z, 986.0s in total (warm-up 281.4s, kill loop 201.1s, dra
 | Webhook sinks and subscriptions | 5, each matching every event |
 | Kills | 100, uptime uniform in [200ms, 3s) after /readyz; 10% in [0, 300ms) after the start |
 | Warm-up | watches added in 8 groups, 30s apart; a kill waits for 500 pending deliveries |
+| Registry delay | uniform in [500ms, 2s) per request |
 | Receiver delay | uniform in [0, 250ms) per request |
 | Dispatch starts the kills | after 200 requests received |
-| Seed | 12227956151495396084 |
+| Seed | 8082839333688488424 |
 
 ## Environment
 
@@ -185,4 +188,4 @@ Run 2026-11-15T20:44:50Z, 986.0s in total (warm-up 281.4s, kill loop 201.1s, dra
 | CPU | Intel(R) Xeon(R) Processor @ 2.10GHz, 4 CPUs |
 | Memory | 15.7 GiB |
 | Go | harness go1.27.4, angelia go1.27.4 |
-| Commit | 37e6c783c62abd9f2260cd11faf603d11f344c95 |
+| Commit | 9175df5724decffa1777fe3f9df229be3ac47c38 (with uncommitted changes) |

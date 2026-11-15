@@ -29,6 +29,8 @@ type Snapshot struct {
 	// integrity_check and foreign_key_check on SQLite, foreign key and
 	// constraint queries on Postgres); empty when the database is sound.
 	Integrity []string
+	// Targets are the ids of every target, as the scheduler logs them.
+	Targets []string
 	// Postgres is true when the snapshot came from Postgres.
 	Postgres bool
 }
@@ -109,6 +111,7 @@ func readSnapshot(ctx context.Context, path string) (*Snapshot, error) {
 			return fmt.Errorf("target %s coordinates: %w", tid, err)
 		}
 		s.Packages[wid], targets[tid] = c.Name, c.Name
+		s.Targets = append(s.Targets, tid)
 		return nil
 	})
 	if err == nil {

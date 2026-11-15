@@ -110,3 +110,22 @@ func TestMarkdownWithReplicas(t *testing.T) {
 		}
 	}
 }
+
+// The registry delay is off by default (checks take milliseconds) and, when
+// given, replaces the quick latency.
+func TestRegistryDelay(t *testing.T) {
+	b := registryConfig(workload{Packages: 3, ReleasesPerH: 1, History: 3}).Ecosystems["pypi"]
+	if b.Latency != 2e6 || b.LatencyJitter != 8e6 {
+		t.Errorf("default latency %v + %v", b.Latency, b.LatencyJitter)
+	}
+	b = registryConfig(workload{Packages: 3, ReleasesPerH: 1, History: 3, DelayMin: 500 * time.Millisecond, DelayMax: 2 * time.Second}).Ecosystems["pypi"]
+	if b.Latency != 500*time.Millisecond || b.LatencyJitter != 1500*time.Millisecond {
+		t.Errorf("delayed latency %v + %v", b.Latency, b.LatencyJitter)
+	}
+	for _, args := range [][]string{{"-registry-delay-min", "1s"}, {"-registry-delay-min", "2s", "-registry-delay-max", "1s"}} {
+		var stderr bytes.Buffer
+		if code := run(context.Background(), args, io.Discard, &stderr); code != 2 {
+			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+}

@@ -327,6 +327,9 @@ func (r *Report) Markdown(w io.Writer) error {
 	p("| Webhook sinks and subscriptions | %d, each matching every event |\n", w2.Subscriptions)
 	p("| Kills | %d, uptime %s |\n", r.Params.Kills, r.Params.Uptime)
 	p("| Warm-up | watches added in %s; a kill waits for %d pending deliveries |\n", r.Params.Stages, r.Params.MinPending)
+	if w2.DelayMax > 0 {
+		p("| Registry delay | uniform in [%s, %s) per request |\n", w2.DelayMin, w2.DelayMax)
+	}
 	p("| Receiver delay | uniform in [0, %s) per request |\n", r.Params.ReceiverWait)
 	p("| Dispatch starts the kills | after %d requests received |\n", r.Params.MinFlow)
 	p("| Seed | %d |\n", r.Params.Seed)

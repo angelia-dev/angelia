@@ -67,7 +67,7 @@ func TestCheckOverlaps(t *testing.T) {
 		chk("t3", "h1", 0, 300000, false),     // h1 killed; its lease expired at 300000
 		chk("t3", "h2", 300000, 300008, true), // h2 took it over exactly then
 	}
-	if c := checkOverlaps(ok); !c.OK {
+	if c := checkOverlaps(logs(ok), ttl, nil); !c.OK {
 		t.Errorf("clean runs failed: %+v", c)
 	}
 	for name, runs := range map[string][]CheckRun{
@@ -77,13 +77,57 @@ func TestCheckOverlaps(t *testing.T) {
 		"started before the other ended": {chk("t1", "h2", 5, 20, true), chk("t1", "h1", 0, 6, true)},
 		"no check logged":                nil,
 	} {
-		c := checkOverlaps(runs)
+		c := checkOverlaps(logs(runs), ttl, nil)
 		if c.OK || len(c.Examples) == 0 {
 			t.Errorf("%s: check passed: %+v", name, c)
 		}
 	}
-	c := checkOverlaps(ok)
-	if !strings.Contains(c.Detail, "5 checks of 3 targets by 2 holders (1 cut off by a kill)") {
+	c := checkOverlaps(logs(ok), ttl, nil)
+	if !strings.Contains(c.Detail, "5 checks of 3 targets in 2 logs by 2 holders (1 cut off by a kill)") {
 		t.Errorf("detail %q", c.Detail)
+	}
+}
+
+const ttl = 5 * time.Minute
+
+// logs spreads runs over two replica logs, by holder.
+func logs(runs []CheckRun) [][]CheckRun {
+	out := [][]CheckRun{nil, nil}
+	for _, r := range runs {
+		i := 0
+		if r.Holder == "h2" {
+			i = 1
+		}
+		r.Replica = i + 1
+		out[i] = append(out[i], r)
+	}
+	return out
+}
+
+// The verdict needs evidence from every replica, every database target, and
+// checks short enough that the lease was never renewed.
+func TestCheckOverlapsNeedsEvidence(t *testing.T) {
+	both := []CheckRun{chk("t1", "h1", 0, 10, true), chk("t2", "h2", 0, 10, true)}
+	if c := checkOverlaps(logs(both), ttl, []string{"t1", "t2"}); !c.OK {
+		t.Fatalf("clean: %+v", c)
+	}
+	for name, c := range map[string]Check{
+		"a replica log without a check":       checkOverlaps(logs(both[:1]), ttl, nil),
+		"a database target never checked":     checkOverlaps(logs(both), ttl, []string{"t1", "t2", "t3"}),
+		"a check that outlived a lease third": checkOverlaps(logs([]CheckRun{chk("t1", "h1", 0, 100001, true), chk("t2", "h2", 0, 10, true)}), ttl, nil),
+	} {
+		if c.OK || len(c.Examples) == 0 {
+			t.Errorf("%s: passed: %+v", name, c)
+		}
+	}
+	// Details name the replica, not the holder (which holds the hostname).
+	c := checkOverlaps(logs([]CheckRun{chk("t1", "host-h1", 0, 10, true), chk("t1", "h2", 5, 20, true)}), ttl, nil)
+	if c.OK || strings.Contains(strings.Join(c.Examples, ""), "host-h1") || !strings.Contains(c.Examples[0], "replica 1") {
+		t.Errorf("examples %v", c.Examples)
+	}
+	// An end time is in whole milliseconds, like the stored lease expiry.
+	runs, err := parseCheckLog(strings.NewReader(`{"time":"2026-11-15T12:00:00Z","msg":"check started","role":"scheduler","holder":"h","target":"t","lease_until":"2026-11-15T12:05:00.123456789Z"}`))
+	if err != nil || runs[0].End.Nanosecond() != 123000000 {
+		t.Errorf("end %v, %v", runs, err)
 	}
 }

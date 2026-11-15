@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +27,11 @@ type workload struct {
 	Subscriptions int     `json:"subscriptions"`  // webhook sinks, one subscription each, all matching every event
 	ReleasesPerH  float64 `json:"releases_per_h"` // over all packages
 	History       int     `json:"history"`        // versions each package has before the run (the baseline)
+	// DelayMin and DelayMax are the registry's response delay, uniform in
+	// [DelayMin, DelayMax); both zero keeps the quick default, so that
+	// checks take milliseconds.
+	DelayMin time.Duration `json:"registry_delay_min_ns,omitempty"`
+	DelayMax time.Duration `json:"registry_delay_max_ns,omitempty"`
 }
 
 // registryConfig is the fake registry behaviour: only pypi has packages,
@@ -38,6 +44,9 @@ func registryConfig(w workload) *fakereg.Config {
 			b.Packages, b.ReleasesPerHour, b.History = w.Packages, w.ReleasesPerH, w.History
 		}
 		b.Latency, b.LatencyJitter = 2e6, 8e6 // 2 ms + [0, 8 ms)
+		if w.DelayMax > 0 {
+			b.Latency, b.LatencyJitter = w.DelayMin, w.DelayMax-w.DelayMin
+		}
 		c.Ecosystems[name] = b
 	}
 	return c

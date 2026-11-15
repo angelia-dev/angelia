@@ -73,8 +73,9 @@ type loopConfig struct {
 }
 
 // killLoop kills cur (running and ready) after a random uptime, starts a
-// new process, and so on until it has killed cfg.Kills processes. No
-// process runs when it returns.
+// new process, and so on until it has killed cfg.Kills processes. With a
+// single process none runs when it returns; with a cluster, the replicas the
+// last kill did not take down still run (the caller stops them).
 func killLoop(ctx context.Context, cfg loopConfig, rng *rand.Rand, cur instance) ([]Kill, error) {
 	kills := make([]Kill, 0, cfg.Kills)
 	prev := cfg.Now()
