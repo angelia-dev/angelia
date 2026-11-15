@@ -75,7 +75,8 @@ oapi-codegen v2.8.2 with `chi-server` and `strict-server` gives routing, typed r
   taken at insert, not at commit, so this no-skip promise does not hold yet. The question is the same
   one [ADR 0008](0008-store-history-rows-and-event-cursor.md) leaves open, and it blocks the pull API
   and the stream on Postgres until it is answered (for example, by a commit-ordered cursor or a
-  visibility horizon).
+  visibility horizon). **Answered by [ADR 0028](0028-postgres-event-cursor-and-write-concurrency.md) §1**:
+  the Postgres engine takes an advisory lock before every event insert, so `seq` order is commit order.
 - Whether `masked_fields` should list a nested secret as a dotted path (`auth.password`, as now) or as
   a JSON Pointer.
 

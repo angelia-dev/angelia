@@ -12,7 +12,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -23,7 +23,7 @@ import (
 // Every request gets 401 for now: the authenticator is api.DenyAll until API
 // tokens (#72, human-led) exist, so no token is accepted and nothing is
 // exposed.
-func newAPIServer(cfg *config.Config, st *sqlite.Store, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, log *slog.Logger) (*api.Server, error) {
+func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, log *slog.Logger) (*api.Server, error) {
 	opts := api.Options{
 		Store: st, Auth: api.DenyAll{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
 		API: cfg.API, AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Secrets: keys, Logger: log,

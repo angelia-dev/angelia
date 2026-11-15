@@ -13,7 +13,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 |---|---|---|---|
 | `instance.name` | `ANGELIA_INSTANCE_NAME` | `angelia` | `^[a-z0-9][a-z0-9.-]{0,62}$` |
 | `listen` | `ANGELIA_LISTEN` | `:8080` | `host:port` |
-| `database.dsn` | `ANGELIA_DATABASE_DSN` | `sqlite:///var/lib/angelia/angelia.db` | `sqlite://`, `postgres://`, `postgresql://` URL |
+| `database.dsn` | `ANGELIA_DATABASE_DSN` | `sqlite:///var/lib/angelia/angelia.db` | `sqlite://`, `postgres://`, `postgresql://` URL; see [Database](#database) |
 | `roles` | `ANGELIA_ROLES` (comma-separated) | `[all]` | `api`, `scheduler`, `worker`, `dispatcher`, `all` |
 | `secrets.key_file` | `ANGELIA_SECRETS_KEY_FILE` | empty | path to the key file; see [Stored secrets](#stored-secrets) |
 | `secrets.previous_key_files` | `ANGELIA_SECRETS_PREVIOUS_KEY_FILES` (comma-separated) | empty | paths of older key files, kept during a rotation |
@@ -80,6 +80,26 @@ Check a configuration with `angelia config check [--config FILE]`.
   starting with `ANGELIA_` is always refused, in this list and in the API, because those variables
   hold the instance's own settings. The API answers a refused name with
   `422 env-not-allowed`. The watch file is not limited by this list.
+
+## Database
+
+`database.dsn` chooses the store engine by its scheme: `sqlite://` is SQLite (the default), `postgres://` and
+`postgresql://` are Postgres ([ADR 0028](adr/0028-postgres-event-cursor-and-write-concurrency.md)). There is no
+other key: the engine, the pool size, TLS and the schema are all set in the DSN. Only the URL form is
+accepted; a keyword/value DSN (`host=… dbname=…`) is refused by `config check`.
+
+| Postgres setting | How |
+|---|---|
+| Versions | 15 to 18 are supported; CI runs 17. |
+| Password | In the DSN (`postgres://angelia:PASSWORD@host:5432/angelia`, URL-encode special characters) or in `PGPASSWORD` / `.pgpass`. Angelia never logs the DSN, and an error never shows the password. |
+| TLS | `sslmode` (`disable`, `require`, `verify-ca`, `verify-full`) and the other libpq parameters pgx reads (`sslrootcert`, …). The compose example uses `sslmode=disable` on a private network only; use `verify-full` across a network you do not control. |
+| Pool size | `pool_max_conns` (default: the larger of 4 and the number of CPUs). The other `pool_*` parameters are refused. |
+| Timeouts | Set `connect_timeout` (seconds) in the DSN, or `PGCONNECT_TIMEOUT`, to bound a connect that never completes; pgx applies it. Independently, `config check` and the start-up secrets check give each read-only query of the store a 10 s limit, and `config check` then reports "stored secrets not checked" instead of waiting. |
+| Schema | The first existing schema of the connection's `search_path` (set `?search_path=angelia` in the URL, and create the schema first); the tables are created there at start. Several instances can share one database in different schemas. |
+| Migrations | `angelia serve` creates and upgrades the schema at start, under a lock, so several processes can start together. `config check`, `secrets status` and the start-up checks connect read-only: they never create or migrate anything. A database that does not exist, or that Angelia has not initialised, counts as empty for `config check` and is an error for `secrets status` and `rotate`. "Exists" differs by engine: for SQLite the file must exist (an empty file passes), for Postgres the database must exist and hold the Angelia tables (the `schema_migrations` table). |
+
+`angelia secrets status` and `secrets rotate` work on both engines; on Postgres each row is re-encrypted only
+if its `revision` is unchanged, as on SQLite.
 
 ## Outgoing HTTP and private networks
 
@@ -426,7 +446,7 @@ Every role checks the key at startup, since all roles share the store.
 | No key, a secret is written through the API | `422 secrets-key-missing`; nothing is stored. |
 | A `*_ref` names a secret that does not exist | A warning when the watch file is applied; the API accepts it without a warning. Each delivery fails before it is sent, and is retried, until the secret is stored. |
 
-The startup check reads SQLite databases; a Postgres store is not checked yet.
+The startup check reads the store named by `database.dsn`, SQLite or Postgres, without creating or migrating it.
 
 ### Rotating the key
 

@@ -35,7 +35,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 )
 
 // The composition root of the detect and deliver roles: one netguard client
@@ -271,7 +271,7 @@ func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (
 // pipelineDeps is what the scheduler and dispatcher roles are built from.
 type pipelineDeps struct {
 	cfg     *config.Config
-	store   *sqlite.Store
+	store   open.Store
 	keys    *secrets.Keyring
 	plugins []api.PluginInfo
 	tracer  trace.TracerProvider
@@ -362,16 +362,12 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	return out, nil
 }
 
-// openStore opens the SQLite store named by the instance configuration and
-// runs the stored-sinks check of ADR 0024 §6 before any role starts: every
+// openStore opens the store named by the instance configuration (SQLite or
+// Postgres, from database.dsn) and runs the stored-sinks check of ADR 0024 §6 before any role starts: every
 // role that opens the store refuses one whose sinks hold literal secrets
 // (ADR 0024 amendment).
-func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo, log *slog.Logger) (*sqlite.Store, error) {
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		return nil, fmt.Errorf("only sqlite databases are supported in this phase: %w", err)
-	}
-	st, err := sqlite.Open(ctx, dbPath, log)
+func openStore(ctx context.Context, cfg *config.Config, plugins []api.PluginInfo, log *slog.Logger) (open.Store, error) {
+	st, err := open.Open(ctx, cfg.Database.DSN, log)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,7 +10,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -44,12 +43,9 @@ func shoutrrrWarnings(ctx context.Context, cfg *config.Config, sinks []watchfile
 			storeErr = err
 			return nil, err
 		}
-		path, err := cfg.Database.SQLitePath()
-		if err != nil {
-			storeErr = errors.New("stored secrets are checked for sqlite databases only")
-			return nil, storeErr
-		}
-		r, err := sqlite.OpenSecretReader(ctx, path)
+		bctx, cancel := helperContext(ctx)
+		defer cancel()
+		r, err := open.SecretReader(bctx, cfg.Database.DSN)
 		if err != nil {
 			storeErr = err
 			return nil, err

@@ -5,8 +5,6 @@
 -- the value that was PUT. target.interval_ms stays the effective interval: the
 -- smallest interval among the watches on the target. NULL on rows written
 -- before this migration until the next apply sets it.
---
--- TODO(postgres, #85): the Postgres engine needs the same column (BIGINT).
 
 -- +goose Up
 ALTER TABLE watch ADD COLUMN interval_ms INTEGER;

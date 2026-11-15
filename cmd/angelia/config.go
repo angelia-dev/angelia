@@ -10,12 +10,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -241,16 +242,15 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 		_, _ = fmt.Fprintln(warn, "warning:", w)
 	}
 	counts := map[string]int64{}
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		// TODO(postgres, #85): count the Postgres store too.
-		return keysLine(keys) + "; stored secrets not checked (postgres)", nil //nolint:nilerr // only sqlite stores are counted in this phase
-	}
-	c, err := sqlite.SecretKeyCounts(ctx, dbPath)
+	bctx, cancel := helperContext(ctx)
+	c, err := open.SecretKeyCounts(bctx, cfg.Database.DSN)
+	cancel()
 	switch {
-	case errors.Is(err, sqlite.ErrNoDatabase):
+	case errors.Is(err, open.ErrNoDatabase):
 	case err != nil:
+		// Not counted: say so, instead of a summary that claims 0 stored.
 		_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
+		return keysLine(keys) + "; stored secrets not checked", nil
 	default:
 		counts = c
 	}
@@ -273,22 +273,33 @@ func keysLine(keys *secrets.Keyring) string {
 	return s
 }
 
+// helperTimeoutDefault bounds each read-only store helper of `config check`
+// and of the start-up secrets check: a database that accepts the connection
+// and never answers must not hang them. The DSN's own connect_timeout (or
+// PGCONNECT_TIMEOUT) bounds the connect on its own.
+const helperTimeoutDefault = 10 * time.Second
+
+// helperTimeout is a variable so that a test can shorten it.
+var helperTimeout = helperTimeoutDefault
+
+// helperContext returns ctx bounded by helperTimeout.
+func helperContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, helperTimeout)
+}
+
 // checkSourceSecretsOnDisk checks the stored secrets named by
 // sources.<kind>.auth against the database, read-only and by metadata (name
-// and hosts) as serve does at start. With no sqlite database yet there is
+// and hosts) as serve does at start. With no database yet there is
 // nothing to check against, which is a warning when a source names one.
 func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.Writer) error {
 	if len(sourceRefs(cfg)) == 0 {
 		return nil
 	}
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked (postgres)")
-		return nil //nolint:nilerr // only sqlite stores are read in this phase
-	}
-	hosts, err := sqlite.SecretHosts(ctx, dbPath)
+	bctx, cancel := helperContext(ctx)
+	defer cancel()
+	hosts, err := open.SecretHosts(bctx, cfg.Database.DSN)
 	switch {
-	case errors.Is(err, sqlite.ErrNoDatabase):
+	case errors.Is(err, open.ErrNoDatabase):
 		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked: the database does not exist yet; store the secrets named by sources.<kind>.auth before serve")
 		return nil
 	case err != nil:
@@ -303,16 +314,14 @@ func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.W
 
 // storedTargetWarnings reads the sources of the stored targets read-only,
 // like the secrets check, and warns about those that are no longer
-// configured or changed kind. A database that is missing, unreadable or not
-// sqlite is not an error here.
+// configured or changed kind. A database that is missing or unreadable is
+// not an error here.
 func storedTargetWarnings(ctx context.Context, cfg *config.Config, plugins []config.InstalledPlugin) []string {
-	dbPath, err := cfg.Database.SQLitePath()
+	bctx, cancel := helperContext(ctx)
+	defer cancel()
+	stored, err := open.StoredTargetSources(bctx, cfg.Database.DSN)
 	if err != nil {
-		return nil
-	}
-	stored, err := sqlite.StoredTargetSources(ctx, dbPath)
-	if err != nil {
-		if !errors.Is(err, sqlite.ErrNoDatabase) {
+		if !errors.Is(err, open.ErrNoDatabase) {
 			return []string{fmt.Sprintf("stored targets not checked against the sources: %v", err)}
 		}
 		return nil

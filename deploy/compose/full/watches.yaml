@@ -1,5 +1,4 @@
 # Watch file for the full example (format: docs/watch-file.md). Same as the SQLite example.
-# Angelia is a placeholder in this stack until the Postgres store lands (#85).
 version: 1
 
 watches:

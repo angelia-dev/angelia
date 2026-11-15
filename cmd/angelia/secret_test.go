@@ -19,6 +19,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
 
@@ -451,15 +452,16 @@ func TestConfigCheckSecrets(t *testing.T) {
 		t.Fatalf("bad key file: %v", err)
 	}
 	noCanary(t, "config check", errOut, err.Error())
-	// NIT3 (#75 review): a Postgres store is not counted, and says so.
-	pg := writeCfg(t, "database:\n  dsn: postgres://angelia@db.example.com/angelia\nsecrets:\n  key_file: "+writeKeyFile(t, 2)+"\n")
-	out, _, err = runCLI(t, "config", "check", "--config", pg)
-	if err != nil || !strings.Contains(out, "secrets: key "+keyring(t, 2).PrimaryID()+"; stored secrets not checked (postgres)\n") {
-		t.Fatalf("postgres: %v %s", err, out)
+	// A Postgres server that cannot be reached is a warning, like a SQLite
+	// file that cannot be read, and the password is never shown.
+	pg := writeCfg(t, "database:\n  dsn: postgres://angelia:"+deadPGPassword+"@127.0.0.1:1/angelia?sslmode=disable\nsecrets:\n  key_file: "+writeKeyFile(t, 2)+"\n")
+	out, errOut, err = runCLI(t, "config", "check", "--config", pg)
+	if err != nil || !strings.Contains(errOut, "stored secrets not checked") || !strings.Contains(out, "secrets: key "+keyring(t, 2).PrimaryID()) {
+		t.Fatalf("postgres: %v %s %s", err, out, errOut)
 	}
-	pgNone := writeCfg(t, "database:\n  dsn: postgres://angelia@db.example.com/angelia\n")
-	if out, _, err = runCLI(t, "config", "check", "--config", pgNone); err != nil || !strings.Contains(out, "secrets: no key configured; stored secrets not checked (postgres)\n") {
-		t.Fatalf("postgres, no key: %v %s", err, out)
+	noCanary(t, "config check postgres", out, errOut)
+	if strings.Contains(out+errOut, deadPGPassword) {
+		t.Fatalf("the Postgres password is shown: %s %s", out, errOut)
 	}
 }
 
@@ -469,7 +471,7 @@ func TestSecretsCommandsNeedADatabase(t *testing.T) {
 	cfg, db := instanceFiles(t, "secrets:\n  key_file: "+writeKeyFile(t, 1)+"\n")
 	for _, cmd := range []string{"status", "rotate"} {
 		_, _, err := runCLI(t, "secrets", cmd, "--config", cfg)
-		if !errors.Is(err, sqlite.ErrNoDatabase) || !strings.Contains(err.Error(), db) {
+		if !errors.Is(err, open.ErrNoDatabase) || !strings.Contains(err.Error(), db) {
 			t.Errorf("%s: %v", cmd, err)
 		}
 		if _, err := os.Stat(db); err == nil {

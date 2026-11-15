@@ -1,6 +1,5 @@
-# Instance configuration for the full example. PLACEHOLDER: `angelia serve` refuses a postgres
-# DSN until the Postgres store lands (#85). compose.yaml overrides database.dsn with
-# ANGELIA_DATABASE_DSN, which adds the password from .env.
+# Instance configuration for the full example (Angelia on Postgres). compose.yaml overrides
+# database.dsn with ANGELIA_DATABASE_DSN, which adds the password from .env; the DSN below has none.
 instance:
   name: homelab-full
 

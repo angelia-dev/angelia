@@ -450,6 +450,12 @@ SELECT * FROM secret ORDER BY name;
 -- name: CountSecretsByKeyID :many
 SELECT key_id, COUNT(*) AS n FROM secret GROUP BY key_id ORDER BY key_id;
 
+-- name: ListTargetSources :many
+SELECT kind, source_kind, count(*) AS targets FROM target GROUP BY kind, source_kind ORDER BY kind, source_kind;
+
+-- name: ListTargetDemand :many
+SELECT kind, interval_ms, count(*) AS targets FROM target GROUP BY kind, interval_ms ORDER BY kind, interval_ms;
+
 -- Named consumers (story #79-B).
 
 -- name: CreateConsumer :exec

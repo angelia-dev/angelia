@@ -11,8 +11,6 @@
 -- ack that moves the cursor. filter_json holds the stored filter
 -- ({watch, type, source}); deleting a watch does not touch a consumer.
 -- Timestamps are milliseconds (ADR 0008).
---
--- TODO(postgres, #85): the Postgres twin uses BIGINT and JSONB.
 
 -- +goose Up
 CREATE TABLE consumer (
