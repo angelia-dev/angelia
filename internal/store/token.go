@@ -81,7 +81,11 @@ const (
 )
 
 // ValidateNewAPIToken checks the fields CreateAPIToken stores; engines call
-// it before the insert. The error wraps ErrInvalid.
+// it before the insert. The error wraps ErrInvalid. It checks presence, the
+// scope and the hash length only: the name pattern
+// (^[a-z0-9][a-z0-9._-]{0,62}$) and that the id is a ULID are checked by the
+// callers that build a token, the API handler (72-D) and the bootstrap and
+// `token create --local` (72-E).
 func ValidateNewAPIToken(t APIToken) error {
 	switch {
 	case t.ID == "" || t.Name == "" || t.CreatedBy == "":

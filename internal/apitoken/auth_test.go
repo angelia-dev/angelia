@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/api"
+	"github.com/angelia-dev/angelia/internal/apitoken/format"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
@@ -99,7 +100,11 @@ func TestAuthenticate(t *testing.T) {
 	// A malformed token, or one with a typo, fails before any store access.
 	_, err = a.Authenticate(ctx, "ang_team")
 	wantReason(t, err, ReasonMalformed, "")
-	_, err = a.Authenticate(ctx, readTok[:50]+"x"+readTok[51:])
+	typo := byte('x')
+	if readTok[50] == typo {
+		typo = 'y'
+	}
+	_, err = a.Authenticate(ctx, readTok[:50]+string(typo)+readTok[51:])
 	wantReason(t, err, ReasonMalformed, "")
 
 	// A well-formed token with an unknown id.
@@ -121,10 +126,7 @@ func TestAuthenticate(t *testing.T) {
 
 // forge makes a well-formed token with a valid checksum for id and a secret
 // that is not the stored one.
-func forge(id string) string {
-	body := Prefix + id + "_" + strings.Repeat("a", secretLen)
-	return body + checksum(body)
-}
+func forge(id string) string { return format.Format(id, [32]byte{}) }
 
 // The error never shows the token.
 func TestAuthErrorHidesToken(t *testing.T) {
@@ -150,6 +152,8 @@ type fakeStore struct {
 	// touching, when set, is closed on the first touch, which then waits
 	// for release.
 	touching, release chan struct{}
+	// touched, when set, gets the result of every touch (without blocking).
+	touched chan error
 }
 
 func (f *fakeStore) APITokenByID(_ context.Context, id string) (store.APIToken, error) {
@@ -174,11 +178,17 @@ func (f *fakeStore) TouchAPITokens(_ context.Context, used map[string]time.Time)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.touchErr != nil {
-		return f.touchErr
+	err := f.touchErr
+	if err == nil {
+		f.touches = append(f.touches, used)
 	}
-	f.touches = append(f.touches, used)
-	return nil
+	if f.touched != nil {
+		select {
+		case f.touched <- err:
+		default:
+		}
+	}
+	return err
 }
 
 func (f *fakeStore) add(name, scope string) (id, tok string) {
@@ -374,27 +384,17 @@ func TestFlushDoesNotBlockAuthentication(t *testing.T) {
 }
 
 func TestRunFlushesAndFinalFlush(t *testing.T) {
-	f := &fakeStore{}
+	f := &fakeStore{touched: make(chan error, 1)}
 	a := NewAuthenticator(f, slog.New(slog.DiscardHandler))
 	id, tok := f.add("a", "read")
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- a.Run(ctx, time.Millisecond, time.Second) }()
 	if _, err := a.Authenticate(t.Context(), tok); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		f.mu.Lock()
-		n := len(f.touches)
-		f.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Run never flushed")
-		}
-		time.Sleep(time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, time.Millisecond, time.Second) }()
+	if err := <-f.touched; err != nil {
+		t.Fatal(err)
 	}
 	// A use inside the interval is written by the final flush only.
 	if _, err := a.Authenticate(t.Context(), tok); err != nil {
@@ -411,12 +411,21 @@ func TestRunFlushesAndFinalFlush(t *testing.T) {
 	}
 }
 
-// Run logs a failed flush and keeps going.
+func TestRunRefusesNonPositiveTick(t *testing.T) {
+	a := NewAuthenticator(&fakeStore{}, nil)
+	for _, tick := range []time.Duration{0, -time.Second} {
+		if err := a.Run(t.Context(), tick, time.Second); err == nil {
+			t.Fatalf("Run with tick %s: no error", tick)
+		}
+	}
+}
+
+// Run logs a failed flush at a tick and keeps going; at shutdown it logs a
+// failed final flush with a message of its own.
 func TestRunLogsFailures(t *testing.T) {
-	f := &fakeStore{touchErr: errors.New("busy")}
-	var buf strings.Builder
-	var mu sync.Mutex
-	a := NewAuthenticator(f, slog.New(slog.NewTextHandler(&lockedWriter{w: &buf, mu: &mu}, nil)))
+	f := &fakeStore{touchErr: errors.New("busy"), touched: make(chan error, 1)}
+	rec := &recorder{first: make(chan string, 1)}
+	a := NewAuthenticator(f, slog.New(slog.NewTextHandler(rec, nil)))
 	_, tok := f.add("a", "read")
 	if _, err := a.Authenticate(t.Context(), tok); err != nil {
 		t.Fatal(err)
@@ -424,28 +433,47 @@ func TestRunLogsFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx, time.Millisecond, time.Second) }()
-	time.Sleep(20 * time.Millisecond)
+	if err := <-f.touched; err == nil {
+		t.Fatal("the first touch succeeded")
+	}
+	// ctx is still live, so the first record is a per-tick one.
+	first := <-rec.first
+	if !strings.Contains(first, `msg="`+msgFlushFailed+`"`) || strings.Contains(first, "at shutdown") ||
+		!strings.Contains(first, `err="apitoken: record last use: busy"`) {
+		t.Fatalf("tick record = %s", first)
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	out := buf.String()
-	if !strings.Contains(out, "last use not recorded") || !strings.Contains(out, "at shutdown") || strings.Contains(out, tok) {
-		t.Fatalf("log = %s", out)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	last := rec.lines[len(rec.lines)-1]
+	if !strings.Contains(last, `msg="`+msgShutdownFlushFailed+`"`) {
+		t.Fatalf("last record = %s, want the shutdown one", last)
+	}
+	for _, l := range rec.lines {
+		if strings.Contains(l, tok) {
+			t.Fatalf("a record shows the token: %s", l)
+		}
 	}
 }
 
-type lockedWriter struct {
-	w  *strings.Builder
-	mu *sync.Mutex
+// recorder keeps every log record and sends the first one to first.
+type recorder struct {
+	mu    sync.Mutex
+	lines []string
+	first chan string
 }
 
-func (l *lockedWriter) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.w.Write(p)
+func (r *recorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, string(p))
+	if len(r.lines) == 1 {
+		r.first <- string(p)
+	}
+	return len(p), nil
 }
 
 // End to end on SQLite: a successful use reaches last_used_at.

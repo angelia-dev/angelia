@@ -76,7 +76,7 @@ const TouchInterval = 5 * time.Minute
 
 // dummyHash is compared with the hash of a token whose id has no row, so an
 // unknown id takes the same CPU path as a known one (ADR 0030 T10).
-var dummyHash = Hash(Prefix + "dummy")
+var dummyHash = hashArray(Prefix + "dummy")
 
 // Authenticator is the [api.Authenticator] of API tokens. It reads the row by
 // the token's id on every call (no cache, ADR 0030 T6), compares hashes in
@@ -125,7 +125,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (api.Pri
 	h := Hash(token)
 	row, err := a.store.APITokenByID(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		subtle.ConstantTimeCompare(h, dummyHash)
+		subtle.ConstantTimeCompare(h, dummyHash[:])
 		return api.Principal{}, &AuthError{Reason: ReasonUnknown}
 	}
 	if err != nil {
@@ -198,23 +198,33 @@ func (a *Authenticator) Flush(ctx context.Context, all bool) error {
 	return nil
 }
 
+// Messages of Run's log records.
+const (
+	msgFlushFailed         = "api token last use not recorded"
+	msgShutdownFlushFailed = "api token last use not recorded at shutdown"
+)
+
 // Run flushes recorded uses every tick until ctx ends, then once more with
 // every recorded use, on a context of its own bounded by shutdownTimeout. A
-// failed flush is logged and retried at the next tick. It returns nil.
+// failed flush is logged and retried at the next tick. It returns nil when
+// ctx ends, and an error at once for a tick that is not positive.
 func (a *Authenticator) Run(ctx context.Context, tick, shutdownTimeout time.Duration) error {
+	if tick <= 0 {
+		return fmt.Errorf("apitoken: flush tick %s is not positive", tick)
+	}
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
 			if err := a.Flush(ctx, false); err != nil && ctx.Err() == nil {
-				a.log.WarnContext(ctx, "api token last use not recorded", "err", err)
+				a.log.WarnContext(ctx, msgFlushFailed, "err", err)
 			}
 		case <-ctx.Done():
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 			defer cancel()
 			if err := a.Flush(fctx, true); err != nil {
-				a.log.WarnContext(fctx, "api token last use not recorded at shutdown", "err", err)
+				a.log.WarnContext(fctx, msgShutdownFlushFailed, "err", err)
 			}
 			return nil
 		}

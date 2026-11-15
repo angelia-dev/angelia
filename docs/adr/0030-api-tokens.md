@@ -85,7 +85,7 @@ Clarification (72-C, matching the spec): the check is the CRC-32 (IEEE) of the A
 `ang_<id>_<secret>`, written as 4 big-endian bytes in lower-case RFC 4648 base32 without padding,
 which gives 7 characters. Test vector: the spec's example token
 `ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_` + `fake` × 13 + `7qt7acq` has a valid check
-(`internal/apitoken`, `TestSpecExampleParses`).
+(`internal/apitoken/format`, `TestSpecExampleParses`).
 
 | Part | Options | Recommendation |
 |---|---|---|
