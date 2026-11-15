@@ -91,7 +91,6 @@ func TestInstallDocCommandsExistInTheCLI(t *testing.T) {
 			var args, flags []string
 			for _, f := range fields[1:] {
 				switch {
-				case strings.HasPrefix(f, "#"):
 				case strings.HasPrefix(f, "--"):
 					flags = append(flags, strings.SplitN(f, "=", 2)[0])
 				default:
@@ -102,8 +101,10 @@ func TestInstallDocCommandsExistInTheCLI(t *testing.T) {
 				}
 			}
 			root := newRootCmd()
-			cmd, _, err := root.Find(args)
-			if err != nil || cmd == root {
+			cmd, rest, err := root.Find(args)
+			// A typo in the last word resolves to the parent, which must not
+			// accept it: require a runnable leaf with no words left over.
+			if err != nil || cmd == root || !cmd.Runnable() || (cmd.HasSubCommands() && len(rest) > 0) {
 				t.Errorf("%q: not a command of the CLI", line)
 				continue
 			}
@@ -121,15 +122,26 @@ func TestInstallDocCommandsExistInTheCLI(t *testing.T) {
 	}
 }
 
-// AC: the compose examples pin the planned 0.2.0, the first image with Postgres.
-func TestComposeExamplesPinTheNextRelease(t *testing.T) {
+// AC: both compose examples pin the same published or planned Angelia tag, and
+// not the 0.1.0 that was never published.
+func TestComposeExamplesPinTheSameAngeliaTag(t *testing.T) {
+	re := regexp.MustCompile(`(?m)^\s*image: ghcr\.io/angelia-dev/angelia:(\S+)$`)
+	var tags []string
 	for _, dir := range []string{"sqlite", "full"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "compose", dir, "compose.yaml")) //nolint:gosec // fixed fixture paths
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(raw), "image: ghcr.io/angelia-dev/angelia:0.2.0\n") {
-			t.Errorf("%s/compose.yaml does not pin ghcr.io/angelia-dev/angelia:0.2.0", dir)
+		m := re.FindStringSubmatch(string(raw))
+		if m == nil {
+			t.Fatalf("%s/compose.yaml pins no ghcr.io/angelia-dev/angelia tag", dir)
 		}
+		tags = append(tags, m[1])
+	}
+	if tags[0] != tags[1] {
+		t.Errorf("compose examples pin different tags: %v", tags)
+	}
+	if tags[0] == "0.1.0" || tags[0] == "latest" {
+		t.Errorf("compose tag %q was never published or is not a pin", tags[0])
 	}
 }

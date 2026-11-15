@@ -12,16 +12,18 @@ Actions dispatches or chat services.
 Everything that goes through the REST API needs a bearer token, and **token storage is not built yet** (#72). Until it
 is, `angelia serve` refuses every token. These return `401 unauthorized`:
 
-- the REST API under `/v1/`, including the pull API and SSE event streams;
-- the MCP server (`angelia mcp`), which is a client of that API;
+- the REST API under `/v1/`, including SSE event streams;
 - the CLI client commands: `watch`, `sink`, `sub`, `event`, `delivery`, `replay`, `secret` and `apply`.
 
 These work without a token: `/healthz`, `/readyz` and `/metrics` on the listen address, `angelia serve`,
 `angelia config check`, `angelia healthcheck`, `angelia webhook secret new`, `angelia version`, and push delivery
 configured from the watch file. To change what is watched, edit the watch file and restart the process.
 
-The pull API, MCP and Postgres support are on `main` but not in v0.1.2. They come with the next release (planned as
-v0.2.0).
+**Coming in 0.2.0 (on `main`, not in v0.1.2; the version is planned, not confirmed):**
+
+- the pull API (consumers), which will also need a token;
+- `angelia mcp`, the MCP server (a client of the API, so it will need a token too);
+- the Postgres store (`postgres://` DSN) and the `full/` compose stack.
 
 ## 1. Install the binary
 
@@ -89,9 +91,11 @@ watches:
 Check them, then start:
 
 ```sh
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin angelia
 sudo mkdir -p /etc/angelia /var/lib/angelia     # put the two files in /etc/angelia
-angelia config check --config /etc/angelia/angelia.yaml --watches /etc/angelia/watches.yaml
-angelia serve --config /etc/angelia/angelia.yaml --watches /etc/angelia/watches.yaml
+sudo chown angelia: /var/lib/angelia            # the database lives here
+sudo -u angelia angelia config check --config /etc/angelia/angelia.yaml --watches /etc/angelia/watches.yaml
+sudo -u angelia angelia serve --config /etc/angelia/angelia.yaml --watches /etc/angelia/watches.yaml
 ```
 
 `serve` creates the database, applies the watch file and records the versions that exist today as the baseline, without
@@ -107,12 +111,7 @@ default database is `sqlite:///var/lib/angelia/angelia.db` and the default liste
 
 ### As a systemd service
 
-Create a service user and a directory for the secrets file, then install this unit as
-`/etc/systemd/system/angelia.service`:
-
-```sh
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin angelia
-```
+Use the `angelia` user created above and install this unit as `/etc/systemd/system/angelia.service`:
 
 <!-- install-check: unit -->
 ```ini
@@ -136,6 +135,15 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+# MemoryDenyWriteExecute is left off on purpose: WASM plugins may need JIT.
 
 [Install]
 WantedBy=multi-user.target
@@ -161,6 +169,10 @@ cd deploy/compose/sqlite
 docker compose up -d
 docker compose ps                 # "healthy" after the first probe
 ```
+
+Run from a clone of the repository. To pass a signing secret (section 4) into the container, add it under the
+`angelia` service's `environment:` in `compose.yaml` (for example `MY_WEBHOOK_SECRET: ${MY_WEBHOOK_SECRET}`) and
+export it before `docker compose up`.
 
 Notes:
 
@@ -213,7 +225,7 @@ subscriptions:
 A subscription without a `filter` receives every event of every watch. Filters, templates and policies:
 [watch-file.md](watch-file.md).
 
-**3. Allow the local receiver.** Angelia refuses to send webhooks to loopback and private addresses (its SSRF guard), and
+**3. Allow the local receiver (test only).** Angelia refuses to send webhooks to loopback and private addresses (its SSRF guard), and
 to plain `http://`. Real receivers use `https://` on a public name and need nothing more. For this local test, allow
 the one address in the instance configuration, which the watch file cannot do for you
 ([why](configuration.md#outgoing-http-and-private-networks)):
@@ -231,7 +243,10 @@ http:
   allow_http_hosts: ["127.0.0.1"]
 ```
 
-**4. Start a receiver that checks the signature.** Save this as `receiver.py` (Python 3, standard library only). It
+**Remove the whole `http:` block once the sink points at a real `https://` receiver.** `allow_networks: 127.0.0.1/32`
+lets every sink and every source reach every service on loopback, including Angelia's own API, not only your receiver.
+
+**4. Start a receiver that checks the signature.** Save this as `receiver.py` (Python 3.9 or newer, standard library only; it accepts one or several space-separated secrets, as during a rotation). It
 verifies the [Standard Webhooks](https://www.standardwebhooks.com/) signature as
 [webhooks.md](webhooks.md#for-receivers) describes, and prints the event. Use a Standard Webhooks library in a real receiver.
 
@@ -239,7 +254,7 @@ verifies the [Standard Webhooks](https://www.standardwebhooks.com/) signature as
 import base64, hashlib, hmac, json, os, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-SECRET = base64.b64decode(os.environ["MY_WEBHOOK_SECRET"].strip().removeprefix("whsec_"))
+SECRETS = [base64.b64decode(v.removeprefix("whsec_")) for v in os.environ["MY_WEBHOOK_SECRET"].split()]
 
 class Hook(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -247,14 +262,14 @@ class Hook(BaseHTTPRequestHandler):
         msg_id = self.headers.get("webhook-id", "")
         ts = self.headers.get("webhook-timestamp", "")
         signed = f"{msg_id}.{ts}.".encode() + body
-        want = base64.b64encode(hmac.new(SECRET, signed, hashlib.sha256).digest()).decode()
+        wants = [base64.b64encode(hmac.new(k, signed, hashlib.sha256).digest()).decode() for k in SECRETS]
         given = [s.removeprefix("v1,") for s in self.headers.get("webhook-signature", "").split() if s.startswith("v1,")]
         fresh = ts.isdigit() and abs(time.time() - int(ts)) <= 300
-        ok = fresh and any(hmac.compare_digest(want, g) for g in given)
+        ok = fresh and any(hmac.compare_digest(w, g) for w in wants for g in given)
         print("signature", "OK" if ok else "INVALID", msg_id, flush=True)
         if ok:
             print(json.dumps(json.loads(body), indent=2), flush=True)
-        self.send_response(204 if ok else 401)
+        self.send_response(204 if ok else 503)  # 503: Angelia retries; a 401 would be final
         self.end_headers()
 
 HTTPServer(("127.0.0.1", 9000), Hook).serve_forever()
