@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +221,51 @@ func TestConsumerMigrationDown(t *testing.T) {
 	}
 }
 
+// 00021 only adds the api_token table (story #72, ADR 0030 T3): its checks
+// refuse an unknown scope, a hash that is not 32 bytes and a second active
+// token of one name (a revoked one may share it); its down drops the table.
+func TestAPITokenMigration(t *testing.T) {
+	ctx := t.Context()
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
+	must(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = migrate(ctx, db, discard(), 21)
+	must(t, err)
+	const cols = `INSERT INTO api_token (id, name, scope, hash, created_at, created_by, revoked_at) VALUES `
+	hash := "x'" + strings.Repeat("00", 32) + "'"
+	must(t, func() error {
+		_, err := db.ExecContext(ctx, cols+`('a','n','read',`+hash+`,1,'local',NULL), ('b','n','read',`+hash+`,1,'local',2)`)
+		return err
+	}())
+	for _, q := range []string{
+		cols + `('c','m','root',` + hash + `,1,'local',NULL)`,
+		cols + `('c','m','read',x'00',1,'local',NULL)`,
+		cols + `('c','n','read',` + hash + `,1,'local',NULL)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err == nil {
+			t.Fatalf("%s: accepted", q)
+		}
+	}
+	tables := func() (n int) {
+		t.Helper()
+		must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'api_token'`).Scan(&n))
+		return n
+	}
+	p, err := newProvider(db)
+	must(t, err)
+	if _, err := p.DownTo(ctx, 20); err != nil {
+		t.Fatal(err)
+	}
+	if tables() != 0 {
+		t.Fatal("api_token table present after down")
+	}
+	var consumer int
+	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'consumer'`).Scan(&consumer))
+	if consumer != 1 {
+		t.Fatal("down of 00021 removed the 00020 table")
+	}
+}
+
 func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 	ctx := t.Context()
 	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
@@ -247,8 +293,8 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 5 { // 00016 to 00020
-		t.Fatalf("applied %d migrations, want 5", applied)
+	if applied != 6 { // 00016 to 00021
+		t.Fatalf("applied %d migrations, want 6", applied)
 	}
 	var idx int // 00018 adds the lease order index (story #232)
 	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))

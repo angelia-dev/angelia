@@ -483,3 +483,37 @@ RETURNING *;
 -- name: MaxEventSeq :one
 SELECT CAST(max(coalesce((SELECT max(seq) FROM event), 0),
                 coalesce((SELECT highest_pruned_seq FROM event_prune WHERE id = 1), 0)) AS INTEGER);
+
+-- API tokens (story #72, ADR 0030 T3). Every write is one statement: the
+-- races (same active name, same id) end on the primary key and the partial
+-- unique index, never on a lock.
+
+-- name: CreateAPIToken :exec
+INSERT INTO api_token (id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL);
+
+-- name: GetAPIToken :one
+SELECT * FROM api_token WHERE id = ?;
+
+-- name: ListAPITokensPage :many
+SELECT * FROM api_token WHERE id > sqlc.arg(after_id) ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: ListActiveAPITokensPage :many
+SELECT * FROM api_token WHERE id > sqlc.arg(after_id) AND revoked_at IS NULL ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: CountAPITokens :one
+SELECT count(*) FROM api_token;
+
+-- name: CountActiveAdminTokens :one
+SELECT count(*) FROM api_token
+WHERE scope = 'admin' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CAST(sqlc.arg(now) AS INTEGER));
+
+-- name: RevokeAPIToken :execrows
+UPDATE api_token SET revoked_at = CAST(sqlc.arg(revoked_at) AS INTEGER), revoked_by = CAST(sqlc.arg(revoked_by) AS TEXT)
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+
+-- last_used_at only moves forward. SQLite's max() of a NULL is NULL, hence
+-- the coalesce.
+-- name: TouchAPIToken :exec
+UPDATE api_token SET last_used_at = max(coalesce(last_used_at, 0), CAST(sqlc.arg(used_at) AS INTEGER))
+WHERE id = sqlc.arg(id);

@@ -5,9 +5,11 @@ package storetest
 // interfaces declare it: Store, ConfigTx and APITx each have a CreateTarget or
 // GetSink, and a case that exercises one of them stands for the name.
 // TestEveryContractMethodHasACase fails when a method of store.Store,
-// store.APIStore or store.SecretStore (and the transaction interfaces they
-// hand out) is missing here, so a new method needs a new case.
+// store.APIStore (which embeds store.SecretStore and store.TokenStore) or the
+// transaction interfaces they hand out is missing here, so a new method needs
+// a new case.
 var covers = map[string]string{
+	"APITokenByID":                 "APITokenCRUD",
 	"AckConsumer":                  "AckConsumer",
 	"AcquireLease":                 "LeaseDueDeliveriesTakesOverExpired",
 	"AddPendingRelease":            "PendingRelease",
@@ -16,9 +18,12 @@ var covers = map[string]string{
 	"CancelHeldDeliveries":         "CancelHeldDeliveries",
 	"Close":                        "Close",
 	"ConsumerByName":               "ConsumerCRUD",
+	"CountAPITokens":               "CountAPITokens",
+	"CountActiveAdminTokens":       "CountAPITokens",
 	"CountDeliveriesByStatus":      "CountDeliveriesByStatus",
 	"CountDueTargets":              "LeaseDueTargets",
 	"CountSecretsByKeyID":          "SecretCRUD",
+	"CreateAPIToken":               "APITokenCRUD",
 	"CreateConsumer":               "ConsumerCRUD",
 	"CreateSecret":                 "SecretCRUD",
 	"CreateSink":                   "NamesUniqueAcrossOwners",
@@ -56,6 +61,7 @@ var covers = map[string]string{
 	"InTx":                         "NoSkippedEventUnderConcurrentWriters",
 	"LeaseDueDeliveries":           "EventAndDeliveryReads",
 	"LeaseDueTargets":              "LeaseDueTargets",
+	"ListAPITokens":                "ListAPITokens",
 	"ListConsumers":                "ConsumerCRUD",
 	"ListDeliveries":               "FinishDelivery",
 	"ListDeliveryPage":             "EventAndDeliveryReads",
@@ -82,12 +88,14 @@ var covers = map[string]string{
 	"ReplayDelivery":               "EventAndDeliveryReads",
 	"RescheduleHeldDelivery":       "HeldDeliveryOperations",
 	"ResetWatchBaseline":           "UpdateWatchKeepsBaseline",
+	"RevokeAPIToken":               "APITokenRevoke",
 	"SecretByName":                 "SecretCRUD",
 	"SetTargetInterval":            "ConfigTxOwnershipAndUniqueNames",
 	"SinkByName":                   "NamedListsAndLookups",
 	"SubscriptionByName":           "NamedListsAndLookups",
 	"SubscriptionGeneration":       "SubscriptionGenerationCountsEverySubscriptionWrite",
 	"SubscriptionsBySink":          "NamedListsAndLookups",
+	"TouchAPITokens":               "TouchAPITokens",
 	"UpdateConsumer":               "ConsumerCRUD",
 	"UpdateSecret":                 "SecretCRUD",
 	"UpdateSink":                   "InAPITxLookupsAndSinkUpdate",

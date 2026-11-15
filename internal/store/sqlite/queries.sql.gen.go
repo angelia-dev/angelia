@@ -125,6 +125,29 @@ func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, 
 	return result.RowsAffected()
 }
 
+const countAPITokens = `-- name: CountAPITokens :one
+SELECT count(*) FROM api_token
+`
+
+func (q *Queries) CountAPITokens(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAPITokens)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveAdminTokens = `-- name: CountActiveAdminTokens :one
+SELECT count(*) FROM api_token
+WHERE scope = 'admin' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CAST(?1 AS INTEGER))
+`
+
+func (q *Queries) CountActiveAdminTokens(ctx context.Context, now int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveAdminTokens, now)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDeliveriesByStatus = `-- name: CountDeliveriesByStatus :many
 SELECT status, count(*) AS n FROM delivery GROUP BY status
 `
@@ -203,6 +226,38 @@ func (q *Queries) CountSecretsByKeyID(ctx context.Context) ([]CountSecretsByKeyI
 		return nil, err
 	}
 	return items, nil
+}
+
+const createAPIToken = `-- name: CreateAPIToken :exec
+
+INSERT INTO api_token (id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+`
+
+type CreateAPITokenParams struct {
+	ID        string
+	Name      string
+	Scope     string
+	Hash      []byte
+	CreatedAt int64
+	CreatedBy string
+	ExpiresAt sql.NullInt64
+}
+
+// API tokens (story #72, ADR 0030 T3). Every write is one statement: the
+// races (same active name, same id) end on the primary key and the partial
+// unique index, never on a lock.
+func (q *Queries) CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) error {
+	_, err := q.db.ExecContext(ctx, createAPIToken,
+		arg.ID,
+		arg.Name,
+		arg.Scope,
+		arg.Hash,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ExpiresAt,
+	)
+	return err
 }
 
 const createConsumer = `-- name: CreateConsumer :exec
@@ -682,6 +737,28 @@ func (q *Queries) FinishLeasedDelivery(ctx context.Context, arg FinishLeasedDeli
 	return result.RowsAffected()
 }
 
+const getAPIToken = `-- name: GetAPIToken :one
+SELECT id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by FROM api_token WHERE id = ?
+`
+
+func (q *Queries) GetAPIToken(ctx context.Context, id string) (ApiToken, error) {
+	row := q.db.QueryRowContext(ctx, getAPIToken, id)
+	var i ApiToken
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Scope,
+		&i.Hash,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+	)
+	return i, err
+}
+
 const getConsumerByName = `-- name: GetConsumerByName :one
 SELECT id, name, filter_json, acked_seq, acked_at, created_at, updated_at FROM consumer WHERE name = ?
 `
@@ -1047,6 +1124,92 @@ func (q *Queries) HighestPrunedSeq(ctx context.Context) (int64, error) {
 	var highest_pruned_seq int64
 	err := row.Scan(&highest_pruned_seq)
 	return highest_pruned_seq, err
+}
+
+const listAPITokensPage = `-- name: ListAPITokensPage :many
+SELECT id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by FROM api_token WHERE id > ?1 ORDER BY id LIMIT ?2
+`
+
+type ListAPITokensPageParams struct {
+	AfterID string
+	MaxRows int64
+}
+
+func (q *Queries) ListAPITokensPage(ctx context.Context, arg ListAPITokensPageParams) ([]ApiToken, error) {
+	rows, err := q.db.QueryContext(ctx, listAPITokensPage, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ApiToken
+	for rows.Next() {
+		var i ApiToken
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Scope,
+			&i.Hash,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.RevokedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveAPITokensPage = `-- name: ListActiveAPITokensPage :many
+SELECT id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by FROM api_token WHERE id > ?1 AND revoked_at IS NULL ORDER BY id LIMIT ?2
+`
+
+type ListActiveAPITokensPageParams struct {
+	AfterID string
+	MaxRows int64
+}
+
+func (q *Queries) ListActiveAPITokensPage(ctx context.Context, arg ListActiveAPITokensPageParams) ([]ApiToken, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveAPITokensPage, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ApiToken
+	for rows.Next() {
+		var i ApiToken
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Scope,
+			&i.Hash,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.RevokedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listConsumersPage = `-- name: ListConsumersPage :many
@@ -2232,6 +2395,25 @@ func (q *Queries) ResetWatchBaseline(ctx context.Context, id string) (int64, err
 	return result.RowsAffected()
 }
 
+const revokeAPIToken = `-- name: RevokeAPIToken :execrows
+UPDATE api_token SET revoked_at = CAST(?1 AS INTEGER), revoked_by = CAST(?2 AS TEXT)
+WHERE id = ?3 AND revoked_at IS NULL
+`
+
+type RevokeAPITokenParams struct {
+	RevokedAt int64
+	RevokedBy string
+	ID        string
+}
+
+func (q *Queries) RevokeAPIToken(ctx context.Context, arg RevokeAPITokenParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeAPIToken, arg.RevokedAt, arg.RevokedBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setTargetInterval = `-- name: SetTargetInterval :execrows
 UPDATE target SET interval_ms = ?, next_check_at = ? WHERE id = ?
 `
@@ -2302,6 +2484,23 @@ func (q *Queries) TargetExists(ctx context.Context, id string) (bool, error) {
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const touchAPIToken = `-- name: TouchAPIToken :exec
+UPDATE api_token SET last_used_at = max(coalesce(last_used_at, 0), CAST(?1 AS INTEGER))
+WHERE id = ?2
+`
+
+type TouchAPITokenParams struct {
+	UsedAt int64
+	ID     string
+}
+
+// last_used_at only moves forward. SQLite's max() of a NULL is NULL, hence
+// the coalesce.
+func (q *Queries) TouchAPIToken(ctx context.Context, arg TouchAPITokenParams) error {
+	_, err := q.db.ExecContext(ctx, touchAPIToken, arg.UsedAt, arg.ID)
+	return err
 }
 
 const updateConsumerFilter = `-- name: UpdateConsumerFilter :execrows

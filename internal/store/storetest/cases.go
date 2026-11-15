@@ -5,6 +5,9 @@ import "testing"
 // cases lists every case of the suite, in the order they run.
 func cases(e Engine) []testCase {
 	return []testCase{
+		{"APITokenCRUD", testAPITokenCRUD},
+		{"APITokenCreateRace", testAPITokenCreateRace},
+		{"APITokenRevoke", testAPITokenRevoke},
 		{"AppendEventAndDeliveryUniqueness", testAppendEventAndDeliveryUniqueness},
 		{"AppendEventRefusedInConfigAndAPITx", testAppendEventRefusedInConfigAndAPITx},
 		{"AckConsumer", testAckConsumer},
@@ -17,6 +20,7 @@ func cases(e Engine) []testCase {
 		{"ConcurrentWriters", testConcurrentWriters},
 		{"ConfigTxOwnershipAndUniqueNames", testConfigTxOwnershipAndUniqueNames},
 		{"ConsumerCRUD", testConsumerCRUD},
+		{"CountAPITokens", testCountAPITokens},
 		{"CountDeliveriesByStatus", testCountDeliveriesByStatus},
 		{"DeleteConfigKeepsHistory", testDeleteConfigKeepsHistory},
 		{"DeleteWatchKeepsConsumers", testDeleteWatchKeepsConsumers},
@@ -42,6 +46,7 @@ func cases(e Engine) []testCase {
 		{"LeaseDueTargets", testLeaseDueTargets},
 		{"LeaseDueTargetsConcurrent", testLeaseDueTargetsConcurrent},
 		{"LeasesExcludeAcrossStoreInstances", func(t *testing.T, _ opener) { testLeasesExcludeAcrossStoreInstances(t, e) }},
+		{"ListAPITokens", testListAPITokens},
 		{"ListSubscriptions", testListSubscriptions},
 		{"MaxEventSeq", testMaxEventSeq},
 		{"MovedWatchLeavesNoStaleHold", testMovedWatchLeavesNoStaleHold},
@@ -61,6 +66,7 @@ func cases(e Engine) []testCase {
 		{"SecretTxRollsBack", testSecretTxRollsBack},
 		{"SubscriptionGenerationCountsEverySubscriptionWrite", testSubscriptionGenerationCountsEverySubscriptionWrite},
 		{"SubscriptionPolicyRoundTrip", testSubscriptionPolicyRoundTrip},
+		{"TouchAPITokens", testTouchAPITokens},
 		{"UpdateTargetLeased", testUpdateTargetLeased},
 		{"UpdateVersionAndBaseline", testUpdateVersionAndBaseline},
 		{"UpdateWatchKeepsBaseline", testUpdateWatchKeepsBaseline},

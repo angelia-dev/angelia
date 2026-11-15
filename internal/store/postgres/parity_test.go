@@ -105,6 +105,8 @@ func TestSQLiteCatalogue(t *testing.T) {
 		"foreign key watch (target_id) references target (id) on delete no action",
 		"check event.payload_json",
 		"check consumer.acked_seq",
+		"check api_token.hash",
+		"index api_token_active_name on api_token unique (name) where revoked_at is null",
 		"index event_watch_subject on event (watch_id,<expr>)",
 		"index delivery_held on delivery (subscription_id) where held_until is not null",
 		"index watch_name on watch unique (name)",
