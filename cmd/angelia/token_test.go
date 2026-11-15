@@ -58,6 +58,22 @@ func TestTokenGenerate(t *testing.T) {
 	}
 }
 
+// A failed write of --out leaves no file behind.
+func TestWriteNewFileRemovesOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bootstrap")
+	boom := errors.New("disk full")
+	err := writeNewFileWith(path, "x\n", func(f *os.File, c string) error {
+		_, _ = f.WriteString(c[:1])
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the partial file is still there: %v", err)
+	}
+}
+
 // tokenInstance writes an instance config on dsn, with no secrets key, and
 // returns its path.
 func tokenInstance(t *testing.T, dsn string) string {

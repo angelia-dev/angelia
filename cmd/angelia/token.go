@@ -64,17 +64,29 @@ credential until it is revoked: keep the file as secret as the token.`,
 }
 
 // writeNewFile creates path with mode 0600 and writes content; it refuses to
-// overwrite a file.
+// overwrite a file, and removes the file it created when the write fails, so
+// no partial token is left behind.
 func writeNewFile(path, content string) error {
+	return writeNewFileWith(path, content, func(f *os.File, c string) error {
+		_, err := f.WriteString(c)
+		return err //nolint:wrapcheck // the caller prefixes it
+	})
+}
+
+func writeNewFileWith(path, content string, write func(*os.File, string) error) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: the operator's path.
 	if err != nil {
 		return err //nolint:wrapcheck // the caller prefixes it
 	}
-	if _, err := f.WriteString(content); err != nil {
-		_ = f.Close()
+	err = write(f, content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
 		return err //nolint:wrapcheck // the caller prefixes it
 	}
-	return f.Close() //nolint:wrapcheck // the caller prefixes it
+	return nil
 }
 
 // tokenCreateFlags are the flags of `token create`, shared by both paths.

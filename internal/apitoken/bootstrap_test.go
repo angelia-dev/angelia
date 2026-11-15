@@ -225,6 +225,60 @@ func TestBootstrapConflictIsDone(t *testing.T) {
 	}
 }
 
+// ErrConflict on the name (another process stored a different token named
+// "bootstrap") ignores the file instead of claiming it is stored; a failed
+// lookup after the conflict fails the start.
+func TestBootstrapNameConflictIgnoresTheFile(t *testing.T) {
+	st := openStore(t)
+	create(t, st, BootstrapName, "admin", nil)
+	id, tok := Generate(t0)
+	log, logs := newLog()
+	if err := Bootstrap(t.Context(), zeroCount{st}, writeBootstrap(t, tok, 0o600), t0, log); err != nil {
+		t.Fatalf("name conflict: %v", err)
+	}
+	if _, err := st.APITokenByID(t.Context(), id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the file's token was stored: %v", err)
+	}
+	if !strings.Contains(logs.String(), "ignored: an active token is already named bootstrap") || strings.Contains(logs.String(), "already stored") {
+		t.Fatalf("logs: %s", logs)
+	}
+	boom := errors.New("boom")
+	err := Bootstrap(t.Context(), failing{create: store.ErrConflict, byID: boom}, writeBootstrap(t, tok, 0o600), t0, nil)
+	if !errors.Is(err, boom) {
+		t.Fatalf("lookup after conflict: %v", err)
+	}
+}
+
+// CreatedAt is stored to the millisecond, as `token create --local` does.
+func TestBootstrapTruncatesCreatedAt(t *testing.T) {
+	st := openStore(t)
+	id, tok := Generate(t0)
+	now := time.Date(2026, 11, 15, 12, 0, 0, 123456789, time.FixedZone("x", 3600))
+	if err := Bootstrap(t.Context(), st, writeBootstrap(t, tok, 0o600), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.APITokenByID(t.Context(), id)
+	if err != nil || !row.CreatedAt.Equal(now.Truncate(time.Millisecond)) {
+		t.Fatalf("created_at %v %v", row.CreatedAt, err)
+	}
+}
+
+// A bootstrap path that looks like part of a token is never echoed.
+func TestReadBootstrapFileHidesATokenLikePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_partial")
+	_, _, _, err := ReadBootstrapFile(path)
+	if err == nil || !errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "ang_") || strings.Contains(err.Error(), "01JCZ8W3") {
+		t.Fatalf("token-like path: %v", err)
+	}
+	_, tok := Generate(t0)
+	if err := os.WriteFile(path, []byte(tok[:40]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := ReadBootstrapFile(path); err == nil || strings.Contains(err.Error(), "ang_") {
+		t.Fatalf("token-like path, malformed: %v", err)
+	}
+}
+
 type zeroCount struct{ store.TokenStore }
 
 func (zeroCount) CountAPITokens(context.Context) (int64, error) { return 0, nil }

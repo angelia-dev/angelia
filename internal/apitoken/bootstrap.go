@@ -36,37 +36,50 @@ const maxBootstrapFile = 4096
 
 // ReadBootstrapFile reads the bootstrap token file at path (ADR 0030 T4): one
 // token in the format of T1, optionally followed by one newline ("\n" or
-// "\r\n"). It follows symbolic links, as Kubernetes secret volumes are links,
-// and checks the opened file: it must be a regular file, and on Unix group
-// or others must not be able to write it. A file that group or others can
-// read is accepted with a warning, returned for the caller to log, because
-// Kubernetes secret volumes default to mode 0644. No error or warning ever
-// holds the file's content.
+// "\r\n"). It follows symbolic links, as Kubernetes secret volumes are links.
+// The path must name a regular file: it is checked with a stat before the
+// open, so a FIFO or a device never blocks the start, and the opened file
+// must be the one checked (no swap in between). On Unix group or others must
+// not be able to write it. A file that group or others can read is accepted
+// with a warning, returned for the caller to log, because Kubernetes secret
+// volumes default to mode 0644. No error or warning ever holds the file's
+// content, nor the path when it looks like part of a token.
 func ReadBootstrapFile(path string) (id, token, warning string, err error) {
+	where := bootstrapWhere(path)
+	fail := func(format string, a ...any) (string, string, string, error) {
+		return "", "", "", fmt.Errorf("api.bootstrap_token_file %s: "+format, append([]any{where}, a...)...)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		return fail("%w", pathErr(err))
+	}
+	if !before.Mode().IsRegular() {
+		return fail("not a regular file")
+	}
 	f, err := os.Open(path) //nolint:gosec // G304: the operator's bootstrap file.
 	if err != nil {
-		return "", "", "", fmt.Errorf("api.bootstrap_token_file: %w", err)
+		return fail("%w", pathErr(err))
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return "", "", "", fmt.Errorf("api.bootstrap_token_file: %w", err)
+		return fail("%w", pathErr(err))
 	}
-	if !info.Mode().IsRegular() {
-		return "", "", "", fmt.Errorf("api.bootstrap_token_file %s: not a regular file", path)
+	if !os.SameFile(before, info) {
+		return fail("the file changed while it was being opened; retry")
 	}
 	if runtime.GOOS != "windows" {
 		perm := info.Mode().Perm()
 		switch {
 		case perm&0o022 != 0:
-			return "", "", "", fmt.Errorf("api.bootstrap_token_file %s is writable by group or others (mode %04o), so another user could replace the admin token; run: chmod 600 %s", path, perm, path)
+			return fail("is writable by group or others (mode %04o), so another user could replace the admin token; run: chmod 600 on it", perm)
 		case perm&0o044 != 0:
-			warning = fmt.Sprintf("api.bootstrap_token_file %s is readable by group or others (mode %04o); it holds an admin token: chmod 600 it, or revoke the bootstrap token once you have created your own admin token", path, perm)
+			warning = fmt.Sprintf("api.bootstrap_token_file %s is readable by group or others (mode %04o); it holds an admin token: chmod 600 it, or revoke the bootstrap token once you have created your own admin token", where, perm)
 		}
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBootstrapFile+1))
 	if err != nil {
-		return "", "", "", fmt.Errorf("api.bootstrap_token_file %s: %w", path, err)
+		return fail("%w", pathErr(err))
 	}
 	s := string(data)
 	if t, ok := strings.CutSuffix(s, "\n"); ok {
@@ -74,9 +87,29 @@ func ReadBootstrapFile(path string) (id, token, warning string, err error) {
 	}
 	id, err = Parse(s)
 	if err != nil {
-		return "", "", "", fmt.Errorf("api.bootstrap_token_file %s: not an API token: want one token from `angelia token generate` and at most one newline (the content is not shown)", path)
+		return fail("not an API token: want one token from `angelia token generate` and at most one newline (the content is not shown)")
 	}
 	return id, s, warning, nil
+}
+
+// bootstrapWhere is how messages name the bootstrap file: its path, unless
+// the path holds the token prefix, which suggests a token pasted where the
+// path belongs (config refuses a whole token; this covers a partial one).
+func bootstrapWhere(path string) string {
+	if strings.Contains(path, Prefix) {
+		return "(path not shown: it looks like part of a token)"
+	}
+	return path
+}
+
+// pathErr drops the path from an *os.PathError, which the caller names
+// through bootstrapWhere instead.
+func pathErr(err error) error {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return fmt.Errorf("%s: %w", pe.Op, pe.Err)
+	}
+	return err
 }
 
 // Bootstrap stores the token of the bootstrap file at path as an admin token
@@ -86,8 +119,9 @@ func ReadBootstrapFile(path string) (id, token, warning string, err error) {
 //   - A file that cannot be read, or does not hold a token, is an error: the
 //     role does not start. The error never holds the content.
 //   - With the table empty, the token is inserted. [store.ErrConflict] means
-//     another replica inserted it (or another bootstrap token) first: the
-//     bootstrap is done, and the start continues.
+//     another replica inserted it first (the bootstrap is done), or another
+//     process stored a different token named "bootstrap" (the file is
+//     ignored); either way the start continues.
 //   - With rows in the table, revoked or expired ones included, nothing is
 //     inserted, so a revoked bootstrap token never comes back. If the file's
 //     token is not among them the file is ignored, which is logged.
@@ -123,11 +157,21 @@ func Bootstrap(ctx context.Context, st store.TokenStore, path string, now time.T
 	}
 	err = st.CreateAPIToken(ctx, store.APIToken{
 		ID: id, Name: BootstrapName, Scope: store.TokenScopeAdmin, Hash: Hash(token),
-		CreatedAt: now, CreatedBy: CreatedByBootstrap,
+		CreatedAt: now.UTC().Truncate(time.Millisecond), CreatedBy: CreatedByBootstrap,
 	})
 	switch {
 	case errors.Is(err, store.ErrConflict):
-		log.InfoContext(ctx, "bootstrap admin token already stored by another process", "id", id)
+		// The id is taken (another replica stored this token) or the name
+		// is (another process stored a different bootstrap token).
+		_, lerr := st.APITokenByID(ctx, id)
+		switch {
+		case lerr == nil:
+			log.InfoContext(ctx, "bootstrap admin token already stored by another process", "id", id)
+		case errors.Is(lerr, store.ErrNotFound):
+			log.InfoContext(ctx, "api.bootstrap_token_file ignored: an active token is already named bootstrap", "id", id)
+		default:
+			return fmt.Errorf("api token bootstrap: %w", lerr)
+		}
 	case err != nil:
 		return fmt.Errorf("api token bootstrap: %w", err)
 	default:

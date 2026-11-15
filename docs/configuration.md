@@ -288,9 +288,12 @@ first admin token comes from one of two instance-side paths:
   - The file holds one token and at most one newline (`\n` or `\r\n`). Anything else, a missing file or
     one that is not a regular file fails the start, and the error never shows the content. Symbolic
     links are followed (Kubernetes secret volumes are links).
-  - On Unix, a file that group or others can **write** is refused (another user could swap in a token of
-    their own); one that group or others can **read** is accepted with a warning, since Kubernetes secret
+  - On Unix, a file that group or others can **read** is accepted with a warning, since Kubernetes secret
     volumes default to `0644`. Prefer `0600` or `defaultMode: 0400`.
+  - The bootstrap file is refused if it is group- or other-writable: this goes beyond ADR 0030 T4, and
+    was decided so that no other user can plant an admin token of their own.
+  - A FIFO, device or directory is refused before it is opened, so it cannot block the start. A path
+    that looks like part of a token is not shown in errors.
   - There is no inline form: the key names a file, and a value that looks like a token is refused
     without being echoed.
 

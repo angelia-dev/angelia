@@ -117,6 +117,14 @@ func TestTokenWriterNeverCreates(t *testing.T) {
 		if _, err := TokenWriter(t.Context(), "sqlite://"+empty); !errors.Is(err, ErrNoDatabase) {
 			t.Fatalf("TokenWriter(empty file) = %v", err)
 		}
+		if info, err := os.Stat(empty); err != nil || info.Size() != 0 {
+			t.Fatalf("TokenWriter wrote to the empty file it refused: %v %v", info.Size(), err)
+		}
+		for _, suffix := range []string{"-wal", "-shm"} {
+			if _, err := os.Stat(empty + suffix); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("TokenWriter created %s: %v", empty+suffix, err)
+			}
+		}
 	})
 	t.Run("postgres", func(t *testing.T) {
 		dsn, _ := pgDSN(t)
