@@ -30,7 +30,7 @@ services:
   # the DSN unescaped, so use hex only (or URL-encode it). It is visible in `docker inspect`
   # of this container. sslmode=disable is for this private compose network only.
   angelia:
-    image: ghcr.io/angelia-dev/angelia:0.1.0
+    image: ghcr.io/angelia-dev/angelia:0.2.0
     command:
       - serve
       - --config

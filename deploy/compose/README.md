@@ -5,15 +5,18 @@ pipeline, see [docs/operations/release.md](../../docs/operations/release.md)):
 
 | Directory | What it runs | Status |
 |---|---|---|
-| [`sqlite/`](sqlite/compose.yaml) | One Angelia container, SQLite on a named volume (the "homelab" mode of [architecture.md §7](../../docs/architecture.md#7-deployment)) | Ready, once the image is published |
-| [`full/`](full/compose.yaml) | Angelia with Postgres, plus an apprise-api sidecar that is not wired yet | Ready, once the image is published; not run by CI (see below) |
+| [`sqlite/`](sqlite/compose.yaml) | One Angelia container, SQLite on a named volume (the "homelab" mode of [architecture.md §7](../../docs/architecture.md#7-deployment)) | Ready, once `0.2.0` is released and the package is public |
+| [`full/`](full/compose.yaml) | Angelia with Postgres, plus an apprise-api sidecar that is not wired yet | Needs `0.2.0`, the first image with Postgres support; not run by CI (see below) |
 
 ## Before you start
 
-- **The image is not published yet.** The first release is a human decision (see the release
-  doc). Until `ghcr.io/angelia-dev/angelia:0.1.0` exists, `docker compose up` fails with a pull
-  error. The compose files pin a version tag. Add the digest of the released image once it is
-  published and verified (`cosign verify`, see the release doc).
+- **The compose files pin `0.2.0`**, the first image with Postgres support (#85). It is planned and
+  not released yet, so until it is, `docker compose up` fails with a pull error. `0.1.2` is the
+  latest published image and is enough for the SQLite example alone (change the tag; the
+  Postgres stack needs `0.2.0`). The GitHub Container Registry package is still private: pulling
+  it anonymously works only once the package is public, otherwise `docker login ghcr.io`. Add the
+  digest of the released image once it is published and verified (`cosign verify`, see the release
+  doc). The first-run guide is [docs/install.md](../../docs/install.md).
 - **Pins are refreshed by hand** until Dependabot covers compose files. Third-party images
   (postgres, busybox, apprise) carry a tag and a `@sha256:` digest. The digest moves with the
   tag, so re-pin the digest when you bump a tag, and check that it matches the registry.
@@ -56,7 +59,8 @@ angelia config check --config angelia.yaml --watches watches.yaml
 ### Not covered here
 
 - **Delivery to a webhook receiver.** The example has no sink, so events are stored but not
-  delivered. Add one with a [webhook sink](../../docs/webhooks.md); the CI check below does,
+  delivered. Add one with a [webhook sink](../../docs/webhooks.md), as in the walk-through of
+  [docs/install.md](../../docs/install.md#4-your-first-delivered-event); the CI check below does,
   in its own copy of the example.
 
 ## Full stack (Postgres)
