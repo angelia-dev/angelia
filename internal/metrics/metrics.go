@@ -7,13 +7,14 @@
 // table is counted by a collector that queries the store at scrape time
 // (Metrics.RegisterDeliveryCounts); the scheduler's per-host demand estimate is set with Metrics.SetHostDemand. Handler serves the registry.
 //
-// Cardinality is bounded by design. The only labels are source kind,
-// fetch result, delivery outcome and status, fixed lists (bucket, origin,
-// reason, class), and the host of the netguard limits table: the built-in
-// hosts plus those of http.host_limits.hosts (any other host is "other",
-// because sinks share the client and their hosts can be secret). No label ever
-// carries a package, watch, target, subscription or sink name.
-// docs/operations/metrics.md documents every metric.
+// Cardinality is bounded by design. The only labels are source kind, fetch
+// result, delivery outcome and status, fixed lists (bucket, origin, reason,
+// class, the API's authentication failure reason), and the host of the
+// netguard limits table: the built-in hosts plus those of
+// http.host_limits.hosts (any other host is "other", because sinks share the
+// client and their hosts can be secret). No label ever carries a package,
+// watch, target, subscription or sink name. docs/operations/metrics.md
+// documents every metric.
 package metrics
 
 import (
@@ -22,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/dispatch"
 	"github.com/angelia-dev/angelia/internal/netguard"
@@ -52,6 +55,7 @@ type Metrics struct {
 
 	dueTargets prometheus.Gauge
 	streams    prometheus.Gauge
+	authFails  *prometheus.CounterVec
 	checkLag   prometheus.Histogram
 	fetches    *prometheus.CounterVec
 	rateWait   *prometheus.HistogramVec
@@ -96,6 +100,13 @@ func New(log *slog.Logger) *Metrics {
 		Name: "angelia_api_event_streams",
 		Help: "Open event streams (GET /v1/events/stream) of this process.",
 	})
+	m.authFails = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "angelia_api_auth_failures_total",
+		Help: "API requests refused with 401 by this process, by reason: missing, malformed, unknown, revoked or expired.",
+	}, []string{"reason"})
+	for _, r := range api.AuthReasons() {
+		m.authFails.WithLabelValues(r) // every reason starts at 0
+	}
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",
 		Help: "How late a check started: lease time minus the time the target was due.",
@@ -150,7 +161,7 @@ func New(log *slog.Logger) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		info, m.dueTargets, m.streams, m.checkLag, m.fetches, m.rateWait, m.attempts,
+		info, m.dueTargets, m.streams, m.authFails, m.checkLag, m.fetches, m.rateWait, m.attempts,
 		m.hostLimitRate, m.hostLimitBurst, m.hostDemand, m.serverPauses, m.responses, m.deadlineRefusals,
 	)
 	return m
@@ -179,6 +190,15 @@ func (m *Metrics) EventStreamOpened() { m.streams.Inc() }
 
 // EventStreamClosed implements api.StreamMetrics.
 func (m *Metrics) EventStreamClosed() { m.streams.Dec() }
+
+// AuthFailed implements api.AuthMetrics. A reason outside api.AuthReasons
+// is counted as unknown, so that the label set stays closed.
+func (m *Metrics) AuthFailed(reason string) {
+	if !slices.Contains(api.AuthReasons(), reason) {
+		reason = api.AuthReasonUnknown
+	}
+	m.authFails.WithLabelValues(reason).Inc()
+}
 
 // CheckLag implements scheduler.Metrics. A negative lag counts as zero.
 func (m *Metrics) CheckLag(d time.Duration) { m.checkLag.Observe(max(0, d).Seconds()) }

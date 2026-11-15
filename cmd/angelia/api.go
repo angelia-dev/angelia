@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/angelia-dev/angelia/internal/api"
+	"github.com/angelia-dev/angelia/internal/apitoken"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/mcp"
@@ -20,13 +23,17 @@ import (
 // the caller opened and checked (openStore) and closes, with MCP over
 // Streamable HTTP at /mcp (ADR 0029).
 //
-// Every request gets 401 for now: the authenticator is api.DenyAll until API
-// tokens (#72, human-led) exist, so no token is accepted and nothing is
-// exposed.
+// Requests authenticate with the stored API tokens (ADR 0030): the api role
+// runs the authenticator's last-use flush for its lifetime, with a final
+// flush once it drains.
 func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, log *slog.Logger) (*api.Server, error) {
+	auth := apitoken.NewAuthenticator(st, log)
 	opts := api.Options{
-		Store: st, Auth: api.DenyAll{}, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
+		Store: st, Auth: auth, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
 		API: cfg.API, AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Secrets: keys, Logger: log,
+		AuthLoop: func(ctx context.Context) error {
+			return auth.Run(ctx, tokenFlushTick, tokenFlushTimeout) //nolint:wrapcheck // the api role wraps it
+		},
 	}
 	opts.MCP = func(rest http.RoundTripper) (http.Handler, error) {
 		return mcp.NewHTTPHandler(mcp.HTTPOptions{REST: rest, Version: buildinfo.Version(), Logger: log}) //nolint:wrapcheck // api.New wraps it
@@ -40,6 +47,14 @@ func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registr
 	}
 	return srv, nil
 }
+
+// The api role's last-use flush (ADR 0030 T6): a tick well below
+// apitoken.TouchInterval, which bounds the writes per token, and a short
+// bound on the final flush, which comes out of the drain budget.
+const (
+	tokenFlushTick    = time.Minute
+	tokenFlushTimeout = 5 * time.Second
+)
 
 // builtinPlugins is the plugin catalogue of the built-in kinds. WASM plugins
 // join it once serve loads them.

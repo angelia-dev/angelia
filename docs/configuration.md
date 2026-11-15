@@ -254,16 +254,31 @@ The `api` role serves the REST API of the
 [OpenAPI specification](https://github.com/angelia-dev/spec/blob/main/openapi/angelia.v1.yaml)
 under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
 
-- Every request needs a bearer token. **Token storage is not built yet** (story #72): until it is,
-  `angelia serve` uses an authenticator that refuses every token, so every API request gets
-  `401 unauthorized`. The health, readiness and metrics routes need no token.
+- Every request needs a bearer token: an API token (`ang_…`, [ADR 0030](adr/0030-api-tokens.md))
+  with one scope, `read`, `write` or `admin`, sent as `Authorization: Bearer <token>`. The server
+  stores a SHA-256 hash of each token, never the token. A missing, malformed, unknown, revoked or
+  expired token gets the same `401 unauthorized`; a scope that is too low gets `403 forbidden`.
+  The health, readiness and metrics routes need no token.
+- Tokens are managed under `/v1/tokens` with an `admin` token: `POST` creates one and returns it
+  **once**, in the `201` body only (store it then; it cannot be read again); `GET` lists or reads
+  their metadata (never the token or its hash); `DELETE /v1/tokens/{id}` revokes one, from the next
+  request on, on every instance (an open event stream stops at its next re-check, at most 60 s
+  later). A token's name is unique among active tokens. `last_used_at` is written at most every
+  5 minutes per token and when the api role stops, so it is accurate to about 5 minutes.
+- The first admin token is created on the instance (bootstrap file or `angelia token create
+  --local`, [ADR 0030](adr/0030-api-tokens.md) T4). Until a release ships these, an instance with
+  no token in its store answers every API request with `401`.
 - Bodies are limited to 1 MiB (`413 payload-too-large`). While the process drains, the API answers
   `503 unavailable` with `Retry-After: 5`, and open event streams are closed.
 - Each request writes one `api request` record to the log with its request id, method, path, route,
-  status, size, duration, principal and scope. Headers, the query string and bodies are never
-  logged, and a path segment that looks like a credential is replaced with `[redacted]`. Replays,
-  secret writes and consumer creates, filter changes and deletes also write an `api audit` record;
-  consumer acks are frequent and are only in the access log.
+  status, size, duration, principal (the token's id), scope and `token_name`. A `401` record has
+  `auth_failure` instead (`missing`, `malformed`, `unknown`, `revoked` or `expired`), plus the
+  `token_id` for `revoked` and `expired` only, so that an old token still in use can be found;
+  `angelia_api_auth_failures_total` counts the same reasons. Headers, the query string and bodies
+  are never logged, and a path segment that looks like a credential is replaced with `[redacted]`.
+  Replays, secret writes, token creates and revocations, and consumer creates, filter changes and
+  deletes also write an `api audit` record (with the actor's token id and name; never a token or a
+  hash); consumer acks are frequent and are only in the access log.
 
 ## Installed plugins
 

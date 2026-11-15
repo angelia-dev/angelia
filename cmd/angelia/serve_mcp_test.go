@@ -11,8 +11,8 @@ import (
 )
 
 // TestServeMountsMCPWithAPIRole: /mcp is served by the api role only, and
-// with the api role it takes the same authentication as /v1/ (DenyAll until
-// API tokens exist, so 401 with the challenge).
+// with the api role it takes the same authentication as /v1/ (no token, so
+// 401 with the challenge).
 func TestServeMountsMCPWithAPIRole(t *testing.T) {
 	for _, tc := range []struct {
 		roles string

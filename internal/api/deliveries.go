@@ -355,5 +355,8 @@ func (s *Server) audit(ctx context.Context, action string, attrs ...slog.Attr) {
 		slog.Bool("audit", true), slog.String("action", action),
 		slog.String("principal", p.ID), slog.String("request_id", stateFrom(ctx).id),
 	}
+	if p.Name != "" {
+		base = append(base, slog.String("principal_name", p.Name))
+	}
 	s.log.LogAttrs(ctx, slog.LevelInfo, "api audit", append(base, attrs...)...)
 }

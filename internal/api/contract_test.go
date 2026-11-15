@@ -526,6 +526,37 @@ func TestContract(t *testing.T) {
 	c.call("deleteConsumer", 204, "/v1/consumers/audit-agent", tokWrite, nil)
 	c.call("getConsumer", 404, "/v1/consumers/audit-agent", tokRead, nil)
 
+	// API tokens (spec 0.7.0), with an admin principal whose id is the
+	// examples' creator. The token and the id are random.
+	e.auth.mu.Lock()
+	e.auth.tokens[tokULID] = Principal{ID: adminULID, Name: "ops", Scope: ScopeAdmin}
+	e.auth.mu.Unlock()
+	e.now = time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	r, v = c.call("createToken", 201, "/v1/tokens", tokULID, c.exampleBody("TokenCreate"))
+	tid := v.(map[string]any)["id"].(string)
+	if r.Header.Get("Location") != "/v1/tokens/"+tid {
+		t.Errorf("createToken Location %v", r.Header)
+	}
+	c.sameAsExample("TokenCreated", v, "id", "token")
+	_, v = c.call("getToken", 200, "/v1/tokens/"+tid, tokULID, nil)
+	c.sameAsExample("Token", v, "id", "last_used_at")
+	_, v = c.call("createToken", 422, "/v1/tokens", tokULID, c.exampleBody("TokenCreate"))
+	c.sameAsExample("ProblemTokenNameTaken", v)
+	c.call("createToken", 201, "/v1/tokens", tokULID, c.exampleBody("TokenCreateExpiring"))
+	_, v = c.call("listTokens", 200, "/v1/tokens", tokULID, nil)
+	if items := v.(map[string]any)["items"].([]any); len(items) != 2 {
+		t.Errorf("listTokens: %v", v)
+	}
+	e.now = time.Date(2026, 11, 15, 10, 30, 0, 0, time.UTC)
+	c.call("revokeToken", 204, "/v1/tokens/"+tid, tokULID, nil)
+	c.call("revokeToken", 204, "/v1/tokens/"+tid, tokULID, nil)
+	_, v = c.call("listTokens", 200, "/v1/tokens?include_revoked=true", tokULID, nil)
+	if items := v.(map[string]any)["items"].([]any); len(items) != 2 {
+		t.Errorf("listTokens?include_revoked: %v", v)
+	}
+	c.call("getToken", 404, "/v1/tokens/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
+	c.call("revokeToken", 404, "/v1/tokens/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
+
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)
 	if r.Header.Get("Angelia-Change") != "deleted" {

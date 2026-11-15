@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.6.0
+  version: 0.7.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -22,6 +22,8 @@ info:
     - Every operation needs a bearer token with the scope it names (`read` < `write` < `admin`).
     - Secret values are stored write-only through `/v1/secrets` and referenced from configuration
       by name with a `*_ref` key; no response ever carries a value.
+    - API tokens are managed through `/v1/tokens` (`admin`). A token's secret appears once, in the
+      `201` response of `POST /v1/tokens`, and never again.
   contact:
     name: Angelia maintainers
     url: https://github.com/angelia-dev/spec/issues
@@ -52,6 +54,8 @@ tags:
     description: One delivery per event and matching subscription, with its retry state, the dead-letter view and replay.
   - name: plugins
     description: Installed source and sink kinds (read-only).
+  - name: tokens
+    description: API tokens (`ang_...`), one scope each. The secret is returned once, when the token is created.
 
 paths:
   /v1/watches:
@@ -1460,6 +1464,153 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v1/tokens:
+    get:
+      operationId: listTokens
+      summary: List API tokens
+      description: |
+        API tokens in ascending `id` order (ULIDs, so oldest first): their id, name, scope, times
+        and who created and revoked them, **never the token or its hash**. Revoked tokens are left
+        out unless `include_revoked=true`; expired tokens are listed (they are not revoked). Needs
+        the `admin` scope: the list shows who can do what.
+      tags: [tokens]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IncludeRevoked'
+      responses:
+        '200':
+          description: One page of tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/TokenPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: createToken
+      summary: Create an API token
+      description: |
+        Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+        the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+        ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+        `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+        not in the future, or a `scope` that is not `read`, `write` or `admin` is
+        `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+        reused.
+      tags: [tokens]
+      security:
+        - bearerAuth: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenCreate'
+            examples:
+              readToken:
+                $ref: '#/components/examples/TokenCreate'
+              expiringAdminToken:
+                $ref: '#/components/examples/TokenCreateExpiring'
+      responses:
+        '201':
+          description: The token was created. `token` is shown this once.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenCreated'
+              examples:
+                created:
+                  $ref: '#/components/examples/TokenCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/tokens/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TokenId'
+    get:
+      operationId: getToken
+      summary: Get an API token's metadata
+      description: The token's id, name, scope, times and creator, revoked or not. Never the token or its hash.
+      tags: [tokens]
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '200':
+          description: The token, without its secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+              examples:
+                token:
+                  $ref: '#/components/examples/Token'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: revokeToken
+      summary: Revoke an API token
+      description: |
+        Sets `revoked_at` and `revoked_by`; the row stays, so an id is never reused. Requests that
+        carry the token fail with `401` from the next request on (an open event stream fails at
+        its next re-check, at most 60 seconds later). A token may revoke itself, and the last
+        active admin token may be revoked. Revoking an already revoked token is `204` too and
+        changes nothing. An unknown id is `404`.
+      tags: [tokens]
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '204':
+          description: The token is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1468,10 +1619,20 @@ components:
       description: |
         An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
         ordered, and a token satisfies an operation whose scope is at or below its own:
-        `read` (every `GET`), `write` (watches, subscriptions, replays, consumers and their acks), `admin` (sinks, secrets,
+        `read` (every `GET`), `write` (watches, subscriptions, replays, consumers and their acks), `admin` (sinks, secrets, API tokens,
         any change to a `*_ref` key, and everything else). The scope an operation needs is listed in its `security` requirement.
         The token and its scope are checked before anything else, so a `401` or `403` never
         reveals whether a resource exists.
+
+        A token looks like `ang_<id>_<secret><check>`, 90 characters: the prefix `ang_`, the
+        token's 26-character ULID (its public `id`), an underscore, 52 characters of random
+        secret and a 7-character CRC-32 check, the last two in lower-case base32 (`a-z2-7`).
+        check = CRC-32 (IEEE) of the ASCII bytes `ang_<id>_<secret>`, as 4 big-endian bytes,
+        lower-case RFC 4648 base32 without padding.
+        Scanners and log redaction can match
+        `(?:^|[^A-Za-z0-9_])(ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59})(?:$|[^A-Za-z0-9_])`.
+        Tokens are created with `POST /v1/tokens` (or `angelia token create`); the token is
+        returned once.
 
   headers:
     AngeliaChange:
@@ -1525,6 +1686,14 @@ components:
       schema:
         $ref: '#/components/schemas/Name'
       example: platform-ci
+    TokenId:
+      name: id
+      in: path
+      required: true
+      description: The token's id, a ULID (the `ang_` token carries it after the prefix). Never the token itself.
+      schema:
+        $ref: '#/components/schemas/Ulid'
+      example: 01JCZ8W3T6Q9N2H4K7M5R0V8XA
     ConsumerName:
       name: name
       in: path
@@ -1551,6 +1720,14 @@ components:
         maximum: 500
         default: 100
       example: 100
+    IncludeRevoked:
+      name: include_revoked
+      in: query
+      description: List revoked tokens too. Expired tokens are always listed.
+      schema:
+        type: boolean
+        default: false
+      example: false
     Cursor:
       name: cursor
       in: query
@@ -1656,7 +1833,7 @@ components:
             consumerExclusive:
               $ref: '#/components/examples/ProblemConsumerExclusive'
     Unauthorized:
-      description: No token, or a token that is unknown, revoked or malformed.
+      description: No token, or a token that is unknown, revoked, expired or malformed.
       headers:
         WWW-Authenticate:
           $ref: '#/components/headers/WwwAuthenticate'
@@ -1712,7 +1889,7 @@ components:
             unsupported:
               $ref: '#/components/examples/ProblemUnsupportedMediaType'
     ValidationFailed:
-      description: The body is well-formed JSON but breaks the resource's rules (`validation-failed`, every error listed in `errors`), names an environment variable the instance does not allow (`env-not-allowed`), stores a secret on an instance with no key (`secrets-key-missing`), or references an unbound secret where a host binding is mandatory (`secret-host-binding-required`).
+      description: The body is well-formed JSON but breaks the resource's rules (`validation-failed`, every error listed in `errors`; for example a token name that an active token already has), names an environment variable the instance does not allow (`env-not-allowed`), stores a secret on an instance with no key (`secrets-key-missing`), or references an unbound secret where a host binding is mandatory (`secret-host-binding-required`).
       content:
         application/problem+json:
           schema:
@@ -1720,6 +1897,8 @@ components:
           examples:
             validation:
               $ref: '#/components/examples/ProblemValidation'
+            tokenNameTaken:
+              $ref: '#/components/examples/ProblemTokenNameTaken'
             ackUnknownEvent:
               $ref: '#/components/examples/ProblemAckUnknownEvent'
             envNotAllowed:
@@ -1776,7 +1955,7 @@ components:
 
   schemas:
     Name:
-      description: The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+      description: The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
       type: string
       pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
     Ulid:
@@ -2174,6 +2353,100 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Consumer'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    TokenCreate:
+      description: |
+        The body of `POST /v1/tokens`. `name` is a label for operators and must be unique among
+        active tokens; `scope` is the token's one scope; `expires_at`, when given, must be in the
+        future. A token with no `expires_at` never expires.
+      type: object
+      required: [name, scope]
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/Name'
+          description: An operator label, unique among tokens that are not revoked. It is not a key, since tokens are addressed by `id`.
+        scope:
+          $ref: '#/components/schemas/TokenScope'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the token stops working, in the future. Absent means never.
+    TokenScope:
+      description: The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+      type: string
+      enum: [read, write, admin]
+    TokenActor:
+      description: Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+      type: string
+      pattern: '^([0-7][0-9A-HJKMNP-TV-Z]{25}|bootstrap|local)$'
+    Token:
+      description: |
+        An API token as the server returns it: metadata only. No scope, flag or parameter returns
+        the token or its hash, except the one `201` of `POST /v1/tokens` (`TokenCreated`).
+      type: object
+      required: [id, name, scope, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by]
+      properties:
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated when the token is created, never reused. It is the ULID inside the `ang_` token, so a leaked token found by a scanner can be revoked by id.
+        name:
+          $ref: '#/components/schemas/Name'
+        scope:
+          $ref: '#/components/schemas/TokenScope'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        created_by:
+          $ref: '#/components/schemas/TokenActor'
+        expires_at:
+          description: When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        last_used_at:
+          description: When the token last authenticated a request, or `null` if it never has. Accurate to about 5 minutes, and a crash can lose the last interval.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        revoked_at:
+          description: When the token was revoked, or `null` while it is active.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        revoked_by:
+          description: Who revoked the token, or `null` while it is active.
+          oneOf:
+            - $ref: '#/components/schemas/TokenActor'
+            - type: 'null'
+    TokenCreated:
+      description: |
+        The `201` response of `POST /v1/tokens`: the `Token` plus `token`, the one place the
+        secret is ever returned. It is shown once and cannot be read again; the server keeps a hash.
+        The member is deliberately named `token`: a Spectral rule allows it on this schema only.
+      allOf:
+        - $ref: '#/components/schemas/Token'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              description: |
+                The API token, to send as `Authorization: Bearer <token>`: `ang_`, the token's `id`,
+                `_`, 52 characters of random secret and a 7-character CRC-32 check (90 characters,
+                lower-case base32 after the id). Store it now.
+              type: string
+              minLength: 90
+              maxLength: 90
+              pattern: '^ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59}$'
+              readOnly: true
+    TokenPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Token'
         next_cursor:
           $ref: '#/components/schemas/NextCursor'
 
@@ -3317,6 +3590,66 @@ components:
             updated_at: '2026-11-05T09:05:00.000Z'
             referenced_by: []
         next_cursor: null
+    TokenCreate:
+      summary: A read-only token with no expiry
+      value:
+        name: grafana
+        scope: read
+    TokenCreateExpiring:
+      summary: An admin token that expires
+      value:
+        name: ops-laptop
+        scope: admin
+        expires_at: '2027-02-13T09:00:00.000Z'
+    TokenCreated:
+      summary: A new token; the secret (a fake one here) appears only in this response
+      value:
+        id: 01JCZ8W3T6Q9N2H4K7M5R0V8XA
+        name: grafana
+        scope: read
+        created_at: '2026-11-15T10:00:00.000Z'
+        created_by: 01JCZ7P0N4D8E1B5XJ2Q6S3TGH
+        expires_at: null
+        last_used_at: null
+        revoked_at: null
+        revoked_by: null
+        token: ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_fakefakefakefakefakefakefakefakefakefakefakefakefake7qt7acq
+    Token:
+      summary: A token in use; never the token itself
+      value:
+        id: 01JCZ8W3T6Q9N2H4K7M5R0V8XA
+        name: grafana
+        scope: read
+        created_at: '2026-11-15T10:00:00.000Z'
+        created_by: 01JCZ7P0N4D8E1B5XJ2Q6S3TGH
+        expires_at: null
+        last_used_at: '2026-11-15T10:25:00.000Z'
+        revoked_at: null
+        revoked_by: null
+    TokenPage:
+      summary: A page with `include_revoked=true`, a revoked bootstrap token and an active read token
+      value:
+        items:
+          - id: 01JCZ7P0N4D8E1B5XJ2Q6S3TGH
+            name: bootstrap
+            scope: admin
+            created_at: '2026-11-15T09:00:00.000Z'
+            created_by: bootstrap
+            expires_at: null
+            last_used_at: '2026-11-15T10:00:00.000Z'
+            revoked_at: '2026-11-15T10:30:00.000Z'
+            revoked_by: 01JCZ9A5R2M7C0Y4VK8N1D6EWB
+          - id: 01JCZ8W3T6Q9N2H4K7M5R0V8XA
+            name: grafana
+            scope: read
+            created_at: '2026-11-15T10:00:00.000Z'
+            created_by: 01JCZ7P0N4D8E1B5XJ2Q6S3TGH
+            expires_at: null
+            last_used_at: '2026-11-15T10:25:00.000Z'
+            revoked_at: null
+            revoked_by: null
+        next_cursor: null
+
     SubscriptionPut:
       summary: Minor and major releases of the platform team's watches, to CI
       value:
@@ -3565,6 +3898,17 @@ components:
             detail: must be one of none, only, include
           - pointer: /interval
             detail: must be at least 5m
+    ProblemTokenNameTaken:
+      summary: A token name that an active token already has
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-validation-failed
+        title: Validation failed
+        status: 422
+        detail: the token has 1 error
+        instance: /v1/tokens
+        errors:
+          - pointer: /name
+            detail: an active token already has this name
     ProblemInternal:
       summary: An unexpected error
       value:

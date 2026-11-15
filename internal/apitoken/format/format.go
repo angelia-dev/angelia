@@ -16,6 +16,7 @@ package format
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
 	"errors"
@@ -106,4 +107,16 @@ func checksum(body string) string {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], crc32.ChecksumIEEE([]byte(body)))
 	return b32.EncodeToString(b[:])
+}
+
+// hashDomain separates the token hash from any other SHA-256 of the same
+// bytes (ADR 0030 T2).
+const hashDomain = "angelia api token v1\x00"
+
+// Hash is the stored form of a token (ADR 0030 T2):
+// SHA-256("angelia api token v1" || 0x00 || token). It lives here, beside
+// the format, so that internal/api can store a token it creates without
+// importing internal/apitoken (which imports internal/api).
+func Hash(token string) [32]byte {
+	return sha256.Sum256([]byte(hashDomain + token))
 }

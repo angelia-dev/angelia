@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,12 @@ const (
 	MaxAuthRecheck    = 60 * time.Second
 	DefaultEventScan  = 10000
 	// DefaultMaxStreams bounds the event streams one Server holds open.
-	DefaultMaxStreams  = 1000
+	DefaultMaxStreams = 1000
+	// DefaultDrainWait is Options.DrainWait's default: the HTTP write
+	// timeout of the supervisor, which already bounds every request but an
+	// event stream (closed by the drain), so that the wait plus the final
+	// flush stays inside the default drain timeout (25 s).
+	DefaultDrainWait   = 10 * time.Second
 	streamWriteTimeout = 10 * time.Second
 	// StatusClientClosed is the status the access log records for a request
 	// whose client went away before anything was written (nginx's 499). It
@@ -49,9 +55,14 @@ const (
 // Options configures a Server. Store, Auth and Sources are required.
 type Options struct {
 	Store store.APIStore
-	// Auth resolves bearer tokens. `angelia serve` passes DenyAll until API
-	// tokens (#72) exist.
+	// Auth resolves bearer tokens; `angelia serve` passes the API token
+	// authenticator of internal/apitoken (ADR 0030).
 	Auth Authenticator
+	// AuthLoop, if set, is the authenticator's background work (the
+	// last-use flush of internal/apitoken): the api role runs it for its
+	// lifetime and, once it drains, cancels its context and waits for it to
+	// return, so that it can write what it holds. An error ends the role.
+	AuthLoop func(ctx context.Context) error
 	// Sources validates watch coordinates (no I/O), as for the watch file.
 	Sources *source.Registry
 	// Plugins is the catalogue of GET /v1/plugins: every usable source and
@@ -83,8 +94,15 @@ type Options struct {
 	// unavailable with Retry-After. 0 means DefaultMaxStreams.
 	MaxStreams int
 	// Metrics, if set, observes the open event streams
-	// (angelia_api_event_streams). Pass a non-nil value or leave it nil.
+	// (angelia_api_event_streams) and, when it also implements AuthMetrics,
+	// the refused authentications (angelia_api_auth_failures_total). Pass a
+	// non-nil value or leave it nil.
 	Metrics StreamMetrics
+	// DrainWait bounds how long the api role, once it drains, waits for the
+	// requests still in flight to finish before it stops AuthLoop (whose
+	// last flush must come after their authentications). 0 means
+	// DefaultDrainWait.
+	DrainWait time.Duration
 	// MCP, if set, builds the handler of POST /mcp (MCPPath), which the api
 	// role then mounts next to /v1/. Nil: /mcp is not served.
 	MCP MCPFactory
@@ -111,6 +129,8 @@ type Server struct {
 	stopHub  context.CancelFunc
 	streams  atomic.Int64 // open event streams
 	mcp      http.Handler // POST /mcp; nil when not served
+	authObs  AuthMetrics  // nil: auth failures are not counted
+	inflight reqCounter   // requests that reached authentication and have not returned
 }
 
 // New builds a Server.
@@ -146,11 +166,15 @@ func New(opts Options) (*Server, error) {
 	if opts.MaxStreams <= 0 {
 		opts.MaxStreams = DefaultMaxStreams
 	}
+	if opts.DrainWait <= 0 {
+		opts.DrainWait = DefaultDrainWait
+	}
 	spec, err := loadSpec()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{opts: opts, log: opts.Logger, spec: spec, stop: make(chan struct{})}
+	s.authObs, _ = opts.Metrics.(AuthMetrics)
 	hubCtx, hubStop := context.WithCancel(context.Background())
 	s.hub = newStreamHub(hubCtx, opts.Store, opts.StreamPoll, func(ctx context.Context, err error) {
 		s.log.ErrorContext(ctx, "event stream poller", "error", err)
@@ -206,8 +230,13 @@ type reqState struct {
 	// report them together with the resource's own rules (deferredOps).
 	schemaErrs []fieldError
 	token      string // for the event stream's periodic recheck; never logged
-	mcp        bool   // the request is for MCPPath
-	id         string // request id, in the access log and 500 details
+	// authFailure is why the request got 401 (AuthReason*), and failedID
+	// the token id when the hash matched (revoked or expired), for the
+	// access log.
+	authFailure string
+	failedID    string
+	mcp         bool   // the request is for MCPPath
+	id          string // request id, in the access log and 500 details
 }
 
 type reqStateKey struct{}
@@ -258,19 +287,42 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token, sent := bearerToken(r)
 	st.token = token // also for the access log: never logged, only compared
 	if token == "" {
+		reason := AuthReasonMissing
+		if sent {
+			reason = AuthReasonMalformed
+		}
+		s.authFailed(st, reason, "")
 		unauthorized(sent).write(rec, r)
 		return
 	}
+	// Counted from here until ServeHTTP returns, so that the api role's
+	// final last-use flush comes after this authentication (apiRole.Run).
+	// An MCP tool's in-memory REST call is counted too, inside its /mcp
+	// request.
+	s.inflight.enter()
+	defer s.inflight.leave()
 	p, err := s.opts.Auth.Authenticate(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthenticated):
+		reason, id := AuthReasonUnknown, ""
+		var f AuthFailure
+		if errors.As(err, &f) {
+			reason, id = f.FailureReason()
+		}
+		s.authFailed(st, reason, id)
 		unauthorized(true).write(rec, r)
+		return
+	case err != nil && r.Context().Err() != nil:
+		// The client went away during the lookup (context.Canceled):
+		// nothing failed on the server, and nobody reads a response. The
+		// access log records 499.
 		return
 	case err != nil:
 		s.log.ErrorContext(r.Context(), "authenticate", "request_id", st.id, "error", err)
 		problem(SlugInternalError, "internal error; see the server log for request %s", st.id).write(rec, r)
 		return
 	case p.Scope < ScopeRead:
+		s.authFailed(st, AuthReasonUnknown, "")
 		unauthorized(true).write(rec, r)
 		return
 	}
@@ -374,7 +426,7 @@ func (s *Server) checkRequest(r *http.Request, op *operation, vars map[string]st
 
 // deferredOps validate their body against the schema and the resource's
 // rules together.
-var deferredOps = map[string]bool{"putWatch": true, "putSink": true, "putSubscription": true}
+var deferredOps = map[string]bool{"putWatch": true, "putSink": true, "putSubscription": true, "createToken": true}
 
 // deferredProblem is the 422 of a deferredOps body that breaks the schema:
 // its schema errors and the errors of the resource's rules, together.
@@ -393,6 +445,9 @@ func (s *Server) deferredProblem(op *operation, name string, body []byte, schema
 	case "putSubscription":
 		what = "subscription"
 		_, rules = s.parseSubscriptionBody(name, body)
+	case "createToken":
+		what = "token"
+		_, rules = parseTokenBody(body, s.now())
 	}
 	return validationProblem(what, mergeErrors(schemaErrs, rules))
 }
@@ -435,6 +490,57 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 	}
 	s.log.ErrorContext(r.Context(), "api request failed", "request_id", st.id, "error", err)
 	problem(SlugInternalError, "internal error; see the server log for request %s", st.id).write(w, r)
+}
+
+// reqCounter counts requests in flight; wait returns once none is left.
+// Unlike a sync.WaitGroup, enter may run while wait waits.
+type reqCounter struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n drops to 0; nil while n is 0
+}
+
+func (c *reqCounter) enter() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		c.idle = make(chan struct{})
+	}
+	c.n++
+}
+
+func (c *reqCounter) leave() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n--
+	if c.n == 0 {
+		close(c.idle)
+		c.idle = nil
+	}
+}
+
+func (c *reqCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// wait returns true once no request is in flight, or false when ctx ends
+// first.
+func (c *reqCounter) wait(ctx context.Context) bool {
+	for {
+		c.mu.Lock()
+		idle := c.idle
+		c.mu.Unlock()
+		if idle == nil {
+			return true
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // recorder captures the status and size of a response for the access log.
@@ -504,6 +610,15 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	}
 	if p.ID != "" {
 		attrs = append(attrs, slog.String("principal", p.ID), slog.String("scope", p.Scope.String()))
+		if p.Name != "" {
+			attrs = append(attrs, slog.String("token_name", p.Name))
+		}
+	}
+	if st.authFailure != "" {
+		attrs = append(attrs, slog.String("auth_failure", st.authFailure))
+		if st.failedID != "" {
+			attrs = append(attrs, slog.String("token_id", st.failedID))
+		}
 	}
 	if clientErr != nil {
 		attrs = append(attrs, slog.String("client_error", clientErr.Error()))

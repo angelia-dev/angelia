@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil/promlint"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/dispatch"
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/scheduler"
@@ -529,4 +531,30 @@ func TestEventStreamsGauge(t *testing.T) {
 		}
 	}
 	t.Fatal("angelia_api_event_streams is missing")
+}
+
+// The auth failure counter has the closed label set of ADR 0030 T10, every
+// reason from 0, and anything else counts as unknown.
+func TestAuthFailures(t *testing.T) {
+	m := New(nil)
+	var _ api.AuthMetrics = m
+	m.AuthFailed(api.AuthReasonRevoked)
+	m.AuthFailed(api.AuthReasonMissing)
+	m.AuthFailed(api.AuthReasonMissing)
+	m.AuthFailed("something-else")
+	want := map[string]float64{"missing": 2, "malformed": 0, "unknown": 1, "revoked": 1, "expired": 0}
+	for _, f := range gather(t, m) {
+		if f.GetName() != "angelia_api_auth_failures_total" {
+			continue
+		}
+		got := map[string]float64{}
+		for _, s := range f.GetMetric() {
+			got[s.GetLabel()[0].GetValue()] = s.GetCounter().GetValue()
+		}
+		if !maps.Equal(got, want) {
+			t.Fatalf("counter = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("angelia_api_auth_failures_total is missing")
 }

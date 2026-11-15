@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -494,5 +495,21 @@ func TestLastUseReachesStore(t *testing.T) {
 	}
 	if row.LastUsedAt == nil || !row.LastUsedAt.Equal(c.now()) {
 		t.Fatalf("last_used_at = %v", row.LastUsedAt)
+	}
+}
+
+// The reasons are internal/api's closed set, and every AuthError says its
+// reason to the server through api.AuthFailure.
+func TestFailureReasonForServer(t *testing.T) {
+	got := []string{string(ReasonMissing), string(ReasonMalformed), string(ReasonUnknown), string(ReasonRevoked), string(ReasonExpired)}
+	if !slices.Equal(got, api.AuthReasons()) {
+		t.Fatalf("reasons %v, api %v", got, api.AuthReasons())
+	}
+	var f api.AuthFailure
+	if err := error(&AuthError{Reason: ReasonRevoked, ID: "X"}); !errors.As(err, &f) {
+		t.Fatal("AuthError is not an api.AuthFailure")
+	}
+	if r, id := f.FailureReason(); r != "revoked" || id != "X" {
+		t.Fatalf("FailureReason = %s, %s", r, id)
 	}
 }

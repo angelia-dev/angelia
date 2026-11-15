@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -167,10 +169,45 @@ type apiRole struct{ s *Server }
 
 func (apiRole) Name() string { return "api" }
 
+// Run waits for ctx, then drains the server. It runs Options.AuthLoop for
+// the same lifetime. Once it drains, no new request authenticates (a new one
+// gets 503 before its token is read; an MCP tool's in-memory call runs only
+// inside an /mcp request already in flight), so Run waits for the requests
+// in flight, at most Options.DrainWait, and only then ends the loop's
+// context, so that its final flush holds every recorded use. A request still
+// running after DrainWait (logged) may record a use the flush misses.
 func (r apiRole) Run(ctx context.Context) error {
-	<-ctx.Done()
-	r.s.Drain()
-	return nil
+	loop := r.s.opts.AuthLoop
+	if loop == nil {
+		<-ctx.Done()
+		r.s.Drain()
+		return nil
+	}
+	lctx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- loop(lctx) }()
+	select {
+	case <-ctx.Done():
+		r.s.Drain()
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.s.opts.DrainWait)
+		if !r.s.inflight.wait(wctx) {
+			r.s.log.WarnContext(wctx, "api requests still in flight at the final token flush",
+				"in_flight", r.s.inflight.count(), "waited", r.s.opts.DrainWait.String())
+		}
+		cancel()
+		stop()
+		if err := <-done; err != nil {
+			return fmt.Errorf("api role: %w", err)
+		}
+		return nil
+	case err := <-done:
+		r.s.Drain()
+		if err == nil {
+			err = errors.New("the authenticator's loop stopped")
+		}
+		return fmt.Errorf("api role: %w", err)
+	}
 }
 
 // Mount implements supervisor.HTTPRole.

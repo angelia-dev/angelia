@@ -19,19 +19,19 @@ import (
 // failure is the same 401.
 type Reason string
 
-// The failure reasons, a closed set.
+// The failure reasons, a closed set: those of internal/api (AuthReason*).
 const (
 	// ReasonMissing: no bearer token was sent. The server sets it; the
 	// Authenticator never sees a missing token.
-	ReasonMissing Reason = "missing"
+	ReasonMissing Reason = api.AuthReasonMissing
 	// ReasonMalformed: the token fails the strict parse or its checksum.
-	ReasonMalformed Reason = "malformed"
+	ReasonMalformed Reason = api.AuthReasonMalformed
 	// ReasonUnknown: no row has the token's id, or the hash does not match,
 	// whatever the row's state.
-	ReasonUnknown Reason = "unknown"
+	ReasonUnknown Reason = api.AuthReasonUnknown
 	// ReasonRevoked and ReasonExpired are given only after the hash matched.
-	ReasonRevoked Reason = "revoked"
-	ReasonExpired Reason = "expired"
+	ReasonRevoked Reason = api.AuthReasonRevoked
+	ReasonExpired Reason = api.AuthReasonExpired
 )
 
 // AuthError is the error of a failed authentication. It wraps
@@ -49,6 +49,11 @@ func (e *AuthError) Error() string {
 	}
 	return "apitoken: " + string(e.Reason) + " token"
 }
+
+// FailureReason implements [api.AuthFailure].
+func (e *AuthError) FailureReason() (reason, tokenID string) { return string(e.Reason), e.ID }
+
+var _ api.AuthFailure = (*AuthError)(nil)
 
 // Unwrap makes every AuthError an [api.ErrUnauthenticated].
 func (e *AuthError) Unwrap() error { return api.ErrUnauthenticated }
