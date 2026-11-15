@@ -70,7 +70,8 @@ type PackageTruth struct {
 // Verify compares the registry, the database and what the receiver got.
 // The checks, in the order of the pipeline:
 //
-//  1. the database is sound (PRAGMA integrity_check, foreign_key_check);
+//  1. the database is sound (PRAGMA integrity_check, foreign_key_check on
+//     SQLite; foreign key, constraint and index queries on Postgres);
 //  2. it holds the workload's watches and subscriptions;
 //  3. every package's recorded versions are exactly the registry's at the
 //     freeze, and its baseline the registry's first response (no version
@@ -94,7 +95,11 @@ func Verify(s *Snapshot, receipts []Receipt, truth Truth) ([]Check, Tally) {
 	var c checker
 	var t Tally
 
-	c.add("database integrity (integrity_check, foreign_key_check)", "ok", slices.Clone(s.Integrity))
+	name := "database integrity (integrity_check, foreign_key_check)"
+	if s.Postgres {
+		name = "database integrity (foreign keys, constraints, indexes)"
+	}
+	c.add(name, "ok", slices.Clone(s.Integrity))
 
 	var wl []string
 	byName := map[string]bool{}

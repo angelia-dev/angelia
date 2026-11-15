@@ -42,6 +42,11 @@ type Params struct {
 	MinFlow      int           `json:"min_flow"`
 	MinPending   int           `json:"min_pending"`
 	Stages       string        `json:"stages"`
+	// Database is sqlite or postgres; Replicas the number of angelia
+	// processes (always 1 on SQLite); PostgresVersion the server's.
+	Database        string `json:"database,omitempty"`
+	Replicas        int    `json:"replicas,omitempty"`
+	PostgresVersion string `json:"postgres_version,omitempty"`
 }
 
 // Phases are the times the run spent in each phase.
@@ -282,13 +287,35 @@ func (r *Report) Markdown(w io.Writer) error {
 		p("| Kills during detection (checks committed since the previous kill) | %d (%d with new events) |\n", detecting, withEvents)
 		p("| Requests received per life | min %d, median %d, max %d |\n", rec[0], rec[len(rec)/2], rec[len(rec)-1])
 		p("| Kills that cut requests off at the receiver | %d (%d requests) |\n", open, cut)
-		p("\n<details><summary>Every kill</summary>\n\n| # | Timed from | Restart to ready | Uptime | Checks | Events | Received | Open at kill | Pending after | In flight after |\n|---|---|---|---|---|---|---|---|---|---|\n")
+		replicas := r.Params.Replicas > 1
+		if replicas {
+			per := make([]int, r.Params.Replicas)
+			for _, k := range r.Kills {
+				if k.Replica >= 1 && k.Replica <= len(per) {
+					per[k.Replica-1]++
+				}
+			}
+			var parts []string
+			for i, n := range per {
+				parts = append(parts, fmt.Sprintf("replica %d: %d", i+1, n))
+			}
+			p("| Kills per replica | %s |\n", strings.Join(parts, ", "))
+		}
+		rcol, rsep := "", ""
+		if replicas {
+			rcol, rsep = " Replica |", "---|"
+		}
+		p("\n<details><summary>Every kill</summary>\n\n| # |%s Timed from | Restart to ready | Uptime | Checks | Events | Received | Open at kill | Pending after | In flight after |\n|---|%s---|---|---|---|---|---|---|---|---|\n", rcol, rsep)
 		for _, k := range r.Kills {
 			from := "ready"
 			if k.FromStart {
 				from = "start"
 			}
-			p("| %d | %s | %s | %s | %d | %d | %d | %d | %d | %d |\n", k.Index, from, secs(k.Startup), secs(k.Uptime), k.Checks, k.Events, k.Received, k.Open, k.Backlog.Pending, k.Backlog.InFlight)
+			rc := ""
+			if replicas {
+				rc = fmt.Sprintf(" %d |", k.Replica)
+			}
+			p("| %d |%s %s | %s | %s | %d | %d | %d | %d | %d | %d |\n", k.Index, rc, from, secs(k.Startup), secs(k.Uptime), k.Checks, k.Events, k.Received, k.Open, k.Backlog.Pending, k.Backlog.InFlight)
 		}
 		p("\n</details>\n")
 	}
@@ -308,7 +335,11 @@ func (r *Report) Markdown(w io.Writer) error {
 	if e.Note != "" {
 		p("| Machine | %s |\n", e.Note)
 	}
-	p("| Mode | process (angelia as a child process, no container limits) |\n")
+	if r.Params.Database == "postgres" {
+		p("| Mode | %d × `angelia serve` (every role, its own holder each) as child processes on one Postgres %s database, no container limits |\n", r.Params.Replicas, r.Params.PostgresVersion)
+	} else {
+		p("| Mode | process (angelia as a child process, no container limits) |\n")
+	}
 	p("| OS, kernel | %s, %s |\n| CPU | %s, %d CPUs |\n| Memory | %s |\n", e.OS, e.Kernel, e.CPUModel, e.CPUs, e.Memory)
 	p("| Go | harness %s, angelia %s |\n", e.HarnessGo, e.AngeliaGo)
 	mod := ""

@@ -94,10 +94,27 @@ func writeWatchFile(path, receiver string, w workload, n int) error {
 	return writeYAML(path, f)
 }
 
-// writeInstanceConfig writes angelia.yaml: the database in dataDir, pypi
-// at the fake registry, and the registry and the receiver allowed past the
-// SSRF guard (plain http to the receiver's host only).
+// writeInstanceConfig writes angelia.yaml: SQLite in dataDir, pypi at the
+// fake registry, and the registry and the receiver allowed past the SSRF
+// guard (plain http to the receiver's host only).
 func writeInstanceConfig(path, listen, dataDir, registry, receiver string) error {
+	dsn := "sqlite://" + filepath.ToSlash(filepath.Join(dataDir, "angelia.db"))
+	return writeConfig(path, listen, dsn, "info", registry, receiver)
+}
+
+// writePostgresConfig writes the configuration of one replica on Postgres.
+// The DSN is not in the file: it holds a password and reaches every replica
+// as ANGELIA_DATABASE_DSN (see dsnEnv). The log level is debug, because
+// benchmark 5 on Postgres reads the scheduler's check start and finish lines
+// from the logs.
+func writePostgresConfig(path, listen, registry, receiver string) error {
+	return writeConfig(path, listen, "", "debug", registry, receiver)
+}
+
+// dsnEnv is the variable that gives angelia the database DSN.
+const dsnEnv = "ANGELIA_DATABASE_DSN"
+
+func writeConfig(path, listen, dsn, level, registry, receiver string) error {
 	reg, err := url.Parse(registry)
 	if err != nil {
 		return err
@@ -107,10 +124,9 @@ func writeInstanceConfig(path, listen, dataDir, registry, receiver string) error
 		return err
 	}
 	c := map[string]any{
-		"listen":   listen,
-		"roles":    []string{"all"},
-		"database": map[string]string{"dsn": "sqlite://" + filepath.ToSlash(filepath.Join(dataDir, "angelia.db"))},
-		"log":      map[string]string{"level": "info", "format": "json"},
+		"listen": listen,
+		"roles":  []string{"all"},
+		"log":    map[string]string{"level": level, "format": "json"},
 		"http": map[string]any{
 			"allow_networks":   []string{reg.Hostname() + "/32", rcv.Hostname() + "/32"},
 			"allow_http_hosts": []string{rcv.Hostname()},
@@ -119,6 +135,9 @@ func writeInstanceConfig(path, listen, dataDir, registry, receiver string) error
 			}},
 		},
 		"sources": map[string]any{"pypi": map[string]string{"base_url": registry + "/pypi"}},
+	}
+	if dsn != "" {
+		c["database"] = map[string]string{"dsn": dsn}
 	}
 	return writeYAML(path, c)
 }

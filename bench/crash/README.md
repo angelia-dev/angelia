@@ -14,6 +14,49 @@ It needs Linux (angelia runs as a child process; the receiver listens on `127.0.
 else: no Docker, no network. The result does not depend on the machine's speed, so it runs anywhere.
 Exit status: 0 pass, 1 fail, 2 error, 3 incomplete.
 
+## On Postgres, with several replicas
+
+`-database postgres -replicas N` runs the same benchmark against Postgres with N replicas: N
+`angelia serve` processes with every role on one database, each process with its own holder
+([ADR 0009](../../docs/adr/0009-scheduler-target-leases-and-backoff.md), [ADR 0017](../../docs/adr/0017-dispatcher-delivery-leases-and-retries.md)).
+Each kill takes down one random replica, and the next restart brings it back while the others keep
+running. It needs a Postgres server (17 is the supported version) and **a new, empty database**: the
+harness refuses one that has tables, because its checks count every row, and it never clears or drops
+anything. It is not run in CI (it needs a server and about 15 minutes).
+
+```
+docker run -d --name angelia-bench-pg -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=angelia_bench -p 127.0.0.1:5432:5432 postgres:17-alpine
+export BENCH_POSTGRES_DSN='postgres://postgres:bench@127.0.0.1:5432/angelia_bench?sslmode=disable'
+BENCH_CRASH_FLAGS='-database postgres -replicas 2' BENCH_ENV_NOTE='postgres:17-alpine in Docker, 2 replicas' make bench-crash
+docker rm -f angelia-bench-pg                       # a second run needs a new database
+```
+
+Any other server works the same: `createdb angelia_bench` and a DSN for it. The DSN is read from
+`BENCH_POSTGRES_DSN` only: it is not a flag (it would show in the process list), it reaches angelia
+as `ANGELIA_DATABASE_DSN`, and it is not written to the configuration or the report. The report
+records the server version.
+
+The differences from the SQLite run:
+
+- `angelia.yaml` and `angelia.log` are per replica: `angelia-1.yaml`, `angelia-1.log`, `angelia-2.log`, ….
+  Each replica has its own listen address. The configuration sets `log.level: debug`; that adds the
+  scheduler's `check started` and `check finished` lines (and few others) to the logs.
+- **The warm-up restarts every replica for each group of watches**, so all replicas apply the same
+  watch file at once.
+- The report adds the replica of each kill and the kills per replica.
+- The database checks read Postgres through the same queries as SQLite. `PRAGMA integrity_check` and
+  `foreign_key_check` have no equivalent, so "database integrity" becomes: no row whose foreign key
+  points at nothing (a query per foreign key of the schema), no constraint that is not validated, no
+  index that is not valid, and no foreign key in the catalogue that the harness does not list (a new
+  one fails the benchmark's tests until it is listed in `snapshot.go`).
+- **One new check: no target checked by two holders at once.** The scheduler writes two debug lines
+  per check, `check started` (with `lease_until`, when its lease expires) and `check finished`, each
+  with the holder and the target. The harness reads them from every replica's log and fails when two
+  checks of one target overlap. A check lasts from its start line to its finish line; a check cut off
+  by a kill has no finish line, and lasts to the expiry of its lease, because no other holder can take
+  the target before that. A run whose logs hold no check fails the check too.
+- `-replicas` greater than 1 needs `-database postgres`; SQLite is one process.
+
 ## What a run does
 
 1. Starts, in the harness process, the [fake registry](../fakereg/README.md) (pypi only: `-n` packages,
@@ -73,7 +116,7 @@ A run takes about 14 minutes: 4.5 of warm-up, about 4 of kills, 5 to 6 of drain.
 | Every kill during dispatch | a kill found no delivery pending or in flight (incomplete: the run was not heavy enough) |
 | Kills during detection | fewer than `-min-detection-kills` kills found checks committed since the previous kill (incomplete) |
 | Drain finished | a target was not checked after the freeze, or a delivery is still pending or in flight (incomplete: the registry checks cannot be judged) |
-| Database integrity | `PRAGMA integrity_check` is not `ok`, or `foreign_key_check` reports a row |
+| Database integrity | `PRAGMA integrity_check` is not `ok`, or `foreign_key_check` reports a row; on Postgres: an orphan row, a constraint not validated, an invalid index |
 | Watches and subscriptions match the workload | the database lacks a watch or subscription of the workload, or has more |
 | Versions recorded match the registry at the freeze | a package's versions are not exactly the registry's at the freeze, or its baseline is not the registry's first response (a version lost before it was recorded) |
 | One event per new version | a version first seen after the baseline has no `release.published` event, or two (the transactional outbox) |
@@ -84,6 +127,7 @@ A run takes about 14 minutes: 4.5 of warm-up, about 4 of kills, 5 to 6 of drain.
 | **Duplicates only within the idempotency key** | a request's `webhook-id` is not `<event id>:<subscription id>` of its event and sink, or a duplicate has another body |
 | Every request signed | a Standard Webhooks signature does not verify |
 | No request outside the database's deliveries | a request names an event or sink the database does not have |
+| No target checked by two holders at once (Postgres only) | two checks of one target overlap in the replicas' scheduler logs (see above) |
 
 A failed delivery check is the verdict **fail**: stop and report it with the examples the report lists
 before changing angelia. Duplicates are expected (at-least-once delivery: a request answered just before
@@ -95,13 +139,29 @@ a kill is sent again after the lease) and counted.
 `-kills` (100), `-min-uptime` / `-max-uptime` (200ms / 3s), `-n` (300 packages), `-subscriptions` (5),
 `-releases-per-hour` (36,000: one release per package every 30 s), `-receiver-delay` (250ms), `-min-pending` (500),
 `-from-start` (0.1), `-from-start-max` (300ms), `-stages` (8), `-stage-every` (30s), `-min-detection-kills` (30),
-`-seed` (random; the report records it, to repeat the kill times), `-drain-timeout` (15m).
+`-seed` (random; the report records it, to repeat the kill times), `-drain-timeout` (15m),
+`-database` (`sqlite`) and `-replicas` (1): see "On Postgres" above.
 Raise `-releases-per-hour` if the report shows kills waiting for work; lower it if the drain is long.
 
 ## Known limits
 
-- **One host, one database**: SQLite and one process, as the default deployment. A Postgres run with
-  several dispatchers is for the HA story.
+- **One host, one database**: SQLite and one process, as the default deployment, or Postgres with
+  replicas as processes on the same host. Replicas on several hosts, a Postgres that fails over or
+  restarts, and network faults between angelia and the database are not covered, and the replicas share
+  one clock, so clock skew between hosts (ADR 0009, ADR 0017) is not exercised.
+- **Postgres kills only angelia**, not the database: SIGKILL of a replica leaves its connections to be
+  closed by the server, and its locks and open transactions are released when it notices. A crash of
+  Postgres itself is another test.
+- **With replicas, a kill does not stop dispatch**: the surviving replicas keep leasing, so the backlog
+  read after a kill is what they left, not what the dead replica held, and "kills during detection"
+  counts checks committed by any replica since the previous kill. The kill's own effect (a lease held by
+  the dead process, a request cut off) shows in the duplicates and in the checks after the lease expires.
+- **The rate limits are per process** ([ADR 0027](../../docs/adr/0027-configurable-per-host-rate-limits.md) §7):
+  with N replicas the receiver can get N times the 100 rps of one.
+- **The overlap check trusts one host's clock and log lines**: all replicas stamp their lines with the
+  same clock, and a check that renewed its lease (it runs longer than a third of the lease, which
+  checks against the fake registry never do) is judged by its finish line, so a long check cut off by a
+  kill would be judged by its first lease expiry.
 - **Kill points** are random in time, not chosen in the code: across 100 kills they land in the
   startup, the scheduler's checks and commits, the dispatcher's lease and finish transactions and the
   sink call, but a given run does not prove every instruction was hit. The report says how many kills

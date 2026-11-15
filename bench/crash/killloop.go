@@ -41,6 +41,9 @@ type Kill struct {
 	// detection was running in this process.
 	Checks int `json:"checks"`
 	Events int `json:"events"`
+	// Replica is the replica that was killed, counted from 1; 0 when the
+	// run has one process.
+	Replica int `json:"replica,omitempty"`
 }
 
 // loopConfig shapes the kill loop.
@@ -126,6 +129,9 @@ func killLoop(ctx context.Context, cfg loopConfig, rng *rand.Rand, cur instance)
 		}
 		k.Open = cfg.Open()
 		err := cur.kill()
+		if r, ok := cur.(interface{ lastKilled() int }); ok {
+			k.Replica = r.lastKilled()
+		}
 		cur = nil
 		if err != nil {
 			return kills, fmt.Errorf("kill %d: %w", k.Index, err)
