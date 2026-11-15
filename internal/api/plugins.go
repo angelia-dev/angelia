@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -167,10 +169,35 @@ type apiRole struct{ s *Server }
 
 func (apiRole) Name() string { return "api" }
 
+// Run waits for ctx, then drains the server. It runs Options.AuthLoop for
+// the same lifetime: the loop's context ends after the drain, so that no new
+// request authenticates after the loop's last write, and Run waits for it.
 func (r apiRole) Run(ctx context.Context) error {
-	<-ctx.Done()
-	r.s.Drain()
-	return nil
+	loop := r.s.opts.AuthLoop
+	if loop == nil {
+		<-ctx.Done()
+		r.s.Drain()
+		return nil
+	}
+	lctx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- loop(lctx) }()
+	select {
+	case <-ctx.Done():
+		r.s.Drain()
+		stop()
+		if err := <-done; err != nil {
+			return fmt.Errorf("api role: %w", err)
+		}
+		return nil
+	case err := <-done:
+		r.s.Drain()
+		if err == nil {
+			err = errors.New("the authenticator's loop stopped")
+		}
+		return fmt.Errorf("api role: %w", err)
+	}
 }
 
 // Mount implements supervisor.HTTPRole.

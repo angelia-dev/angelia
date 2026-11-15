@@ -157,19 +157,19 @@ func (e PrereleaseMode) Valid() bool {
 
 // Defines values for ProblemRequiredScope.
 const (
-	Admin ProblemRequiredScope = "admin"
-	Read  ProblemRequiredScope = "read"
-	Write ProblemRequiredScope = "write"
+	ProblemRequiredScopeAdmin ProblemRequiredScope = "admin"
+	ProblemRequiredScopeRead  ProblemRequiredScope = "read"
+	ProblemRequiredScopeWrite ProblemRequiredScope = "write"
 )
 
 // Valid indicates whether the value is a known member of the ProblemRequiredScope enum.
 func (e ProblemRequiredScope) Valid() bool {
 	switch e {
-	case Admin:
+	case ProblemRequiredScopeAdmin:
 		return true
-	case Read:
+	case ProblemRequiredScopeRead:
 		return true
-	case Write:
+	case ProblemRequiredScopeWrite:
 		return true
 	default:
 		return false
@@ -236,6 +236,27 @@ func (e ShortEventType) Valid() bool {
 	}
 }
 
+// Defines values for TokenScope.
+const (
+	TokenScopeAdmin TokenScope = "admin"
+	TokenScopeRead  TokenScope = "read"
+	TokenScopeWrite TokenScope = "write"
+)
+
+// Valid indicates whether the value is a known member of the TokenScope enum.
+func (e TokenScope) Valid() bool {
+	switch e {
+	case TokenScopeAdmin:
+		return true
+	case TokenScopeRead:
+		return true
+	case TokenScopeWrite:
+		return true
+	default:
+		return false
+	}
+}
+
 // Bump defines model for Bump.
 type Bump string
 
@@ -260,7 +281,7 @@ type Consumer struct {
 	// Id Generated when the consumer is created; kept across updates.
 	Id Ulid `json:"id"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// UpdatedAt When the filter was last changed by a `PUT`. An ack does not change it.
@@ -425,7 +446,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type Name = string
 
 // NameOrId A name (lower case) or a ULID id (upper case). The two never overlap.
@@ -605,7 +626,7 @@ type Secret struct {
 	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
 	KeyId string `json:"key_id"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
@@ -627,7 +648,7 @@ type SecretPage struct {
 
 // SecretReferrer defines model for SecretReferrer.
 type SecretReferrer struct {
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
@@ -718,7 +739,7 @@ type Sink struct {
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
 	MaskedFields []string `json:"masked_fields"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// UrlRedacted Whether the URLs in `config` were cut to `scheme://host` because the token's scope is below `admin`.
@@ -786,7 +807,7 @@ type Subscription struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Policy Narrows the watch's policy for this subscription only; it can never widen it.
@@ -859,6 +880,108 @@ type SubscriptionWrite struct {
 // Examples: 2026-10-30T17:00:02.512Z
 type Timestamp = time.Time
 
+// Token An API token as the server returns it: metadata only. No scope, flag or parameter returns
+// the token or its hash, except the one `201` of `POST /v1/tokens` (`TokenCreated`).
+type Token struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	CreatedBy TokenActor `json:"created_by"`
+
+	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
+	ExpiresAt *Timestamp `json:"expires_at"`
+
+	// Id Generated when the token is created, never reused. It is the ULID inside the `ang_` token, so a leaked token found by a scanner can be revoked by id.
+	Id Ulid `json:"id"`
+
+	// LastUsedAt When the token last authenticated a request, or `null` if it never has. Accurate to about 5 minutes, and a crash can lose the last interval.
+	LastUsedAt *Timestamp `json:"last_used_at"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+
+	// RevokedAt When the token was revoked, or `null` while it is active.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the token, or `null` while it is active.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+}
+
+// TokenActor Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+type TokenActor = string
+
+// TokenCreate The body of `POST /v1/tokens`. `name` is a label for operators and must be unique among
+// active tokens; `scope` is the token's one scope; `expires_at`, when given, must be in the
+// future. A token with no `expires_at` never expires.
+type TokenCreate struct {
+	// ExpiresAt When the token stops working, in the future. Absent means never.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
+
+	// Name An operator label, unique among tokens that are not revoked. It is not a key, since tokens are addressed by `id`.
+	Name Name `json:"name"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+}
+
+// TokenCreated The `201` response of `POST /v1/tokens`: the `Token` plus `token`, the one place the
+// secret is ever returned. It is shown once and cannot be read again; the server keeps a hash.
+// The member is deliberately named `token`: a Spectral rule allows it on this schema only.
+type TokenCreated struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	CreatedBy TokenActor `json:"created_by"`
+
+	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
+	ExpiresAt *Timestamp `json:"expires_at"`
+
+	// Id Generated when the token is created, never reused. It is the ULID inside the `ang_` token, so a leaked token found by a scanner can be revoked by id.
+	Id Ulid `json:"id"`
+
+	// LastUsedAt When the token last authenticated a request, or `null` if it never has. Accurate to about 5 minutes, and a crash can lose the last interval.
+	LastUsedAt *Timestamp `json:"last_used_at"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+
+	// RevokedAt When the token was revoked, or `null` while it is active.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the token, or `null` while it is active.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+
+	// Token The API token, to send as `Authorization: Bearer <token>`: `ang_`, the token's `id`,
+	// `_`, 52 characters of random secret and a 7-character CRC-32 check (90 characters,
+	// lower-case base32 after the id). Store it now.
+	Token *string `json:"token,omitempty"`
+}
+
+// TokenPage defines model for TokenPage.
+type TokenPage struct {
+	Items []Token `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// TokenScope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+type TokenScope string
+
 // Ulid ULID: 26 characters, Crockford base32, upper case.
 type Ulid = string
 
@@ -922,7 +1045,7 @@ type Watch struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
@@ -1020,10 +1143,10 @@ type WatchWrite struct {
 // Examples: 4182
 type After = Seq
 
-// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerName = Name
 
-// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerParam = Name
 
 // DeliveryId ULID: 26 characters, Crockford base32, upper case.
@@ -1035,23 +1158,29 @@ type DryRun = bool
 // EventLimit defines model for EventLimit.
 type EventLimit = int
 
+// IncludeRevoked defines model for IncludeRevoked.
+type IncludeRevoked = bool
+
 // LabelFilter defines model for LabelFilter.
 type LabelFilter = []string
 
 // Limit defines model for Limit.
 type Limit = int
 
-// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SecretName = Name
 
-// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SinkName = Name
 
 // SourceFilter defines model for SourceFilter.
 type SourceFilter = []Kind
 
-// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SubscriptionName = Name
+
+// TokenId ULID: 26 characters, Crockford base32, upper case.
+type TokenId = Ulid
 
 // TypeFilter defines model for TypeFilter.
 type TypeFilter = []ShortEventType
@@ -1059,7 +1188,7 @@ type TypeFilter = []ShortEventType
 // WatchFilter defines model for WatchFilter.
 type WatchFilter = []NameOrId
 
-// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type WatchName = Name
 
 // BadRequest RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
@@ -1292,6 +1421,18 @@ type PutSubscriptionParams struct {
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
 }
 
+// ListTokensParams defines parameters for ListTokens.
+type ListTokensParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IncludeRevoked List revoked tokens too. Expired tokens are always listed.
+	IncludeRevoked *IncludeRevoked `form:"include_revoked,omitempty" json:"include_revoked,omitempty"`
+}
+
 // ListWatchesParams defines parameters for ListWatches.
 type ListWatchesParams struct {
 	// Limit Page size.
@@ -1354,6 +1495,9 @@ type PutSinkJSONRequestBody = SinkWrite
 
 // PutSubscriptionJSONRequestBody defines body for PutSubscription for application/json ContentType.
 type PutSubscriptionJSONRequestBody = SubscriptionWrite
+
+// CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
+type CreateTokenJSONRequestBody = TokenCreate
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
@@ -2272,6 +2416,64 @@ type ClientInterface interface {
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 	PutSubscription(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListTokens List API tokens
+	//
+	// API tokens in ascending `id` order (ULIDs, so oldest first): their id, name, scope, times
+	// and who created and revoked them, **never the token or its hash**. Revoked tokens are left
+	// out unless `include_revoked=true`; expired tokens are listed (they are not revoked). Needs
+	// the `admin` scope: the list shows who can do what.
+	//
+	// Corresponds with GET /v1/tokens (the `ListTokens` operationId).
+	ListTokens(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateTokenWithBody Create an API token
+	//
+	// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+	// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+	// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+	// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+	// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+	// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+	// reused.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+	CreateTokenWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateToken Create an API token
+	//
+	// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+	// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+	// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+	// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+	// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+	// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+	// reused.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+	CreateToken(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeToken Revoke an API token
+	//
+	// Sets `revoked_at` and `revoked_by`; the row stays, so an id is never reused. Requests that
+	// carry the token fail with `401` from the next request on (an open event stream fails at
+	// its next re-check, at most 60 seconds later). A token may revoke itself, and the last
+	// active admin token may be revoked. Revoking an already revoked token is `204` too and
+	// changes nothing. An unknown id is `404`.
+	//
+	// Corresponds with DELETE /v1/tokens/{id} (the `RevokeToken` operationId).
+	RevokeToken(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetToken Get an API token's metadata
+	//
+	// The token's id, name, scope, times and creator, revoked or not. Never the token or its hash.
+	//
+	// Corresponds with GET /v1/tokens/{id} (the `GetToken` operationId).
+	GetToken(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWatches List watches
 	//
 	// Watches in ascending `name` order, one page at a time.
@@ -3092,6 +3294,114 @@ func (c *Client) PutSubscriptionWithBody(ctx context.Context, name SubscriptionN
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 func (c *Client) PutSubscription(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutSubscriptionRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListTokens List API tokens
+//
+// API tokens in ascending `id` order (ULIDs, so oldest first): their id, name, scope, times
+// and who created and revoked them, **never the token or its hash**. Revoked tokens are left
+// out unless `include_revoked=true`; expired tokens are listed (they are not revoked). Needs
+// the `admin` scope: the list shows who can do what.
+//
+// Corresponds with GET /v1/tokens (the `ListTokens` operationId).
+func (c *Client) ListTokens(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListTokensRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateTokenWithBody Create an API token
+//
+// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+// reused.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+func (c *Client) CreateTokenWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTokenRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateToken Create an API token
+//
+// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+// reused.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+func (c *Client) CreateToken(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTokenRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RevokeToken Revoke an API token
+//
+// Sets `revoked_at` and `revoked_by`; the row stays, so an id is never reused. Requests that
+// carry the token fail with `401` from the next request on (an open event stream fails at
+// its next re-check, at most 60 seconds later). A token may revoke itself, and the last
+// active admin token may be revoked. Revoking an already revoked token is `204` too and
+// changes nothing. An unknown id is `404`.
+//
+// Corresponds with DELETE /v1/tokens/{id} (the `RevokeToken` operationId).
+func (c *Client) RevokeToken(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeTokenRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetToken Get an API token's metadata
+//
+// The token's id, name, scope, times and creator, revoked or not. Never the token or its hash.
+//
+// Corresponds with GET /v1/tokens/{id} (the `GetToken` operationId).
+func (c *Client) GetToken(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTokenRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -4853,6 +5163,192 @@ func NewPutSubscriptionRequestWithBody(server string, name SubscriptionName, par
 	return req, nil
 }
 
+// NewListTokensRequest constructs an http.Request for the ListTokens method
+func NewListTokensRequest(server string, params *ListTokensParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tokens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.IncludeRevoked != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "include_revoked", *params.IncludeRevoked, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateTokenRequest calls the generic CreateToken builder with application/json body
+func NewCreateTokenRequest(server string, body CreateTokenJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateTokenRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateTokenRequestWithBody constructs an http.Request for the CreateToken method, with any body, and a specified content type
+func NewCreateTokenRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tokens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRevokeTokenRequest constructs an http.Request for the RevokeToken method
+func NewRevokeTokenRequest(server string, id TokenId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tokens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetTokenRequest constructs an http.Request for the GetToken method
+func NewGetTokenRequest(server string, id TokenId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tokens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListWatchesRequest constructs an http.Request for the ListWatches method
 func NewListWatchesRequest(server string, params *ListWatchesParams) (*http.Request, error) {
 	var err error
@@ -5716,6 +6212,70 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 	PutSubscriptionWithResponse(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSubscriptionResponse, error)
+
+	// ListTokensWithResponse List API tokens
+	//
+	// API tokens in ascending `id` order (ULIDs, so oldest first): their id, name, scope, times
+	// and who created and revoked them, **never the token or its hash**. Revoked tokens are left
+	// out unless `include_revoked=true`; expired tokens are listed (they are not revoked). Needs
+	// the `admin` scope: the list shows who can do what.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/tokens (the `ListTokens` operationId).
+	ListTokensWithResponse(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*ListTokensResponse, error)
+
+	// CreateTokenWithBodyWithResponse Create an API token
+	//
+	// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+	// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+	// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+	// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+	// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+	// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+	// reused.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+	CreateTokenWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error)
+
+	// CreateTokenWithResponse Create an API token
+	//
+	// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+	// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+	// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+	// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+	// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+	// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+	// reused.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+	CreateTokenWithResponse(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error)
+
+	// RevokeTokenWithResponse Revoke an API token
+	//
+	// Sets `revoked_at` and `revoked_by`; the row stays, so an id is never reused. Requests that
+	// carry the token fail with `401` from the next request on (an open event stream fails at
+	// its next re-check, at most 60 seconds later). A token may revoke itself, and the last
+	// active admin token may be revoked. Revoking an already revoked token is `204` too and
+	// changes nothing. An unknown id is `404`.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /v1/tokens/{id} (the `RevokeToken` operationId).
+	RevokeTokenWithResponse(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error)
+
+	// GetTokenWithResponse Get an API token's metadata
+	//
+	// The token's id, name, scope, times and creator, revoked or not. Never the token or its hash.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/tokens/{id} (the `GetToken` operationId).
+	GetTokenWithResponse(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*GetTokenResponse, error)
 
 	// ListWatchesWithResponse List watches
 	//
@@ -8437,6 +8997,387 @@ func (r PutSubscriptionResponse) ContentType() string {
 	return ""
 }
 
+// ListTokensResponse401Headers the declared response headers of an HTTP 401 response for ListTokens
+type ListTokensResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// ListTokensResponse503Headers the declared response headers of an HTTP 503 response for ListTokens
+type ListTokensResponse503Headers struct {
+	RetryAfter *int
+}
+
+type ListTokensResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TokenPage
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *ListTokensResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *ListTokensResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListTokensResponse) GetJSON200() *TokenPage {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r ListTokensResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r ListTokensResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r ListTokensResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r ListTokensResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r ListTokensResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r ListTokensResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListTokensResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListTokensResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListTokensResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// CreateTokenResponse201Headers the declared response headers of an HTTP 201 response for CreateToken
+type CreateTokenResponse201Headers struct {
+	Location *string
+}
+
+// CreateTokenResponse401Headers the declared response headers of an HTTP 401 response for CreateToken
+type CreateTokenResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// CreateTokenResponse503Headers the declared response headers of an HTTP 503 response for CreateToken
+type CreateTokenResponse503Headers struct {
+	RetryAfter *int
+}
+
+type CreateTokenResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *TokenCreated
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers201 the parsed response headers for an HTTP 201 response
+	Headers201 *CreateTokenResponse201Headers
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *CreateTokenResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *CreateTokenResponse503Headers
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r CreateTokenResponse) GetJSON201() *TokenCreated {
+	return r.JSON201
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r CreateTokenResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r CreateTokenResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateTokenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateTokenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateTokenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// RevokeTokenResponse401Headers the declared response headers of an HTTP 401 response for RevokeToken
+type RevokeTokenResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// RevokeTokenResponse503Headers the declared response headers of an HTTP 503 response for RevokeToken
+type RevokeTokenResponse503Headers struct {
+	RetryAfter *int
+}
+
+type RevokeTokenResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *RevokeTokenResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *RevokeTokenResponse503Headers
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r RevokeTokenResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r RevokeTokenResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r RevokeTokenResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r RevokeTokenResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r RevokeTokenResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r RevokeTokenResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeTokenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeTokenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RevokeTokenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// GetTokenResponse401Headers the declared response headers of an HTTP 401 response for GetToken
+type GetTokenResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// GetTokenResponse503Headers the declared response headers of an HTTP 503 response for GetToken
+type GetTokenResponse503Headers struct {
+	RetryAfter *int
+}
+
+type GetTokenResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Token
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *GetTokenResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *GetTokenResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetTokenResponse) GetJSON200() *Token {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r GetTokenResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r GetTokenResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r GetTokenResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r GetTokenResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r GetTokenResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r GetTokenResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetTokenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetTokenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetTokenResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // ListWatchesResponse401Headers the declared response headers of an HTTP 401 response for ListWatches
 type ListWatchesResponse401Headers struct {
 	WWWAuthenticate *string
@@ -9611,6 +10552,100 @@ func (c *ClientWithResponses) PutSubscriptionWithResponse(ctx context.Context, n
 		return nil, err
 	}
 	return ParsePutSubscriptionResponse(rsp)
+}
+
+// ListTokensWithResponse List API tokens
+//
+// API tokens in ascending `id` order (ULIDs, so oldest first): their id, name, scope, times
+// and who created and revoked them, **never the token or its hash**. Revoked tokens are left
+// out unless `include_revoked=true`; expired tokens are listed (they are not revoked). Needs
+// the `admin` scope: the list shows who can do what.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/tokens (the `ListTokens` operationId).
+func (c *ClientWithResponses) ListTokensWithResponse(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*ListTokensResponse, error) {
+	rsp, err := c.ListTokens(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListTokensResponse(rsp)
+}
+
+// CreateTokenWithBodyWithResponse Create an API token
+//
+// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+// reused.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+func (c *ClientWithResponses) CreateTokenWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error) {
+	rsp, err := c.CreateTokenWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTokenResponse(rsp)
+}
+
+// CreateTokenWithResponse Create an API token
+//
+// Creates a token with the given `name`, `scope` and optional `expires_at`. The response is
+// the only place the token itself (`token`, `ang_` followed by the token's id and secret) is
+// ever returned: store it now, it cannot be read again. The server keeps a hash only. A
+// `name` is unique among **active** (not revoked) tokens; a clash, an `expires_at` that is
+// not in the future, or a `scope` that is not `read`, `write` or `admin` is
+// `422 validation-failed` with a pointer to the member. Names of revoked tokens can be
+// reused.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/tokens (the `CreateToken` operationId).
+func (c *ClientWithResponses) CreateTokenWithResponse(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error) {
+	rsp, err := c.CreateToken(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTokenResponse(rsp)
+}
+
+// RevokeTokenWithResponse Revoke an API token
+//
+// Sets `revoked_at` and `revoked_by`; the row stays, so an id is never reused. Requests that
+// carry the token fail with `401` from the next request on (an open event stream fails at
+// its next re-check, at most 60 seconds later). A token may revoke itself, and the last
+// active admin token may be revoked. Revoking an already revoked token is `204` too and
+// changes nothing. An unknown id is `404`.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /v1/tokens/{id} (the `RevokeToken` operationId).
+func (c *ClientWithResponses) RevokeTokenWithResponse(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error) {
+	rsp, err := c.RevokeToken(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeTokenResponse(rsp)
+}
+
+// GetTokenWithResponse Get an API token's metadata
+//
+// The token's id, name, scope, times and creator, revoked or not. Never the token or its hash.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/tokens/{id} (the `GetToken` operationId).
+func (c *ClientWithResponses) GetTokenWithResponse(ctx context.Context, id TokenId, reqEditors ...RequestEditorFn) (*GetTokenResponse, error) {
+	rsp, err := c.GetToken(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetTokenResponse(rsp)
 }
 
 // ListWatchesWithResponse List watches
@@ -12271,6 +13306,369 @@ func ParsePutSubscriptionResponse(rsp *http.Response) (*PutSubscriptionResponse,
 		response.Headers401 = &headers
 	case rsp.StatusCode == 503:
 		var headers PutSubscriptionResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseListTokensResponse parses an HTTP response from a ListTokensWithResponse call
+func ParseListTokensResponse(rsp *http.Response) (*ListTokensResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListTokensResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TokenPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers ListTokensResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers ListTokensResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseCreateTokenResponse parses an HTTP response from a CreateTokenWithResponse call
+func ParseCreateTokenResponse(rsp *http.Response) (*CreateTokenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateTokenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest TokenCreated
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 201:
+		var headers CreateTokenResponse201Headers
+		if values := rsp.Header.Values("Location"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Location", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: "uri-reference"}); err != nil {
+				return nil, err
+			}
+			headers.Location = &value
+		}
+		response.Headers201 = &headers
+	case rsp.StatusCode == 401:
+		var headers CreateTokenResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers CreateTokenResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseRevokeTokenResponse parses an HTTP response from a RevokeTokenWithResponse call
+func ParseRevokeTokenResponse(rsp *http.Response) (*RevokeTokenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeTokenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers RevokeTokenResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers RevokeTokenResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseGetTokenResponse parses an HTTP response from a GetTokenWithResponse call
+func ParseGetTokenResponse(rsp *http.Response) (*GetTokenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetTokenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Token
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers GetTokenResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers GetTokenResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {

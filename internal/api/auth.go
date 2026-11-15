@@ -60,9 +60,9 @@ type Principal struct {
 // does not accept: unknown, revoked or malformed.
 var ErrUnauthenticated = errors.New("api: unauthenticated")
 
-// Authenticator resolves a bearer token to its principal. Token storage,
-// hashing and revocation belong to the API tokens story (#72); an
-// implementation compares secrets in constant time (crypto/subtle). The
+// Authenticator resolves a bearer token to its principal. internal/apitoken
+// implements it over the stored API tokens (ADR 0030); an implementation
+// compares secrets in constant time (crypto/subtle). The
 // server calls it on every request and again at least every 60 seconds on an
 // open event stream, so a revoked token stops working within that time.
 type Authenticator interface {
@@ -71,13 +71,64 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, token string) (Principal, error)
 }
 
-// DenyAll is the Authenticator `angelia serve` uses until API tokens (#72)
-// exist: it accepts no token, so every API request gets 401.
+// DenyAll accepts no token, so every API request gets 401.
 type DenyAll struct{}
 
 // Authenticate implements Authenticator.
 func (DenyAll) Authenticate(context.Context, string) (Principal, error) {
 	return Principal{}, ErrUnauthenticated
+}
+
+// The reasons of a refused authentication (ADR 0030 T10, T11), a closed
+// set: the label values of angelia_api_auth_failures_total and the
+// auth_failure field of the access log. They never reach the caller, whose
+// 401 is the same for every reason.
+const (
+	// AuthReasonMissing: no Authorization header.
+	AuthReasonMissing = "missing"
+	// AuthReasonMalformed: a header that is not one "Bearer <token>", or a
+	// token that fails the format's strict parse or checksum.
+	AuthReasonMalformed = "malformed"
+	// AuthReasonUnknown: no token has this id, or the hash does not match;
+	// also any refusal whose error does not say why.
+	AuthReasonUnknown = "unknown"
+	// AuthReasonRevoked and AuthReasonExpired come only after the hash
+	// matched, so they tell nothing to a caller without the token.
+	AuthReasonRevoked = "revoked"
+	AuthReasonExpired = "expired"
+)
+
+// AuthReasons lists the reasons, in a fixed order.
+func AuthReasons() []string {
+	return []string{AuthReasonMissing, AuthReasonMalformed, AuthReasonUnknown, AuthReasonRevoked, AuthReasonExpired}
+}
+
+// AuthFailure is an authentication error that says why it failed. An
+// Authenticator's error may implement it (internal/apitoken does); the
+// server reads it with errors.As for the metric and the access log.
+type AuthFailure interface {
+	error
+	// FailureReason returns one of the AuthReason values and, for
+	// AuthReasonRevoked and AuthReasonExpired only, the token id.
+	FailureReason() (reason, tokenID string)
+}
+
+// AuthMetrics counts refused authentications by reason
+// (angelia_api_auth_failures_total). metrics.Metrics implements it.
+type AuthMetrics interface {
+	AuthFailed(reason string)
+}
+
+// authFailed records a refused authentication for the access log and the
+// metric.
+func (s *Server) authFailed(st *reqState, reason, id string) {
+	st.authFailure = reason
+	if reason == AuthReasonRevoked || reason == AuthReasonExpired {
+		st.failedID = id
+	}
+	if s.authObs != nil {
+		s.authObs.AuthFailed(reason)
+	}
 }
 
 // bearerToken reads "Authorization: Bearer <token>". ok is false when the

@@ -22,14 +22,7 @@ var wantScopes = map[string]Scope{
 	"listSecrets": ScopeAdmin, "getSecret": ScopeAdmin, "putSecret": ScopeAdmin, "deleteSecret": ScopeAdmin,
 	"listConsumers": ScopeRead, "getConsumer": ScopeRead, "putConsumer": ScopeWrite, "deleteConsumer": ScopeWrite,
 	"ackConsumer": ScopeWrite,
-}
-
-// concretePath fills the path parameters of an operation with valid values
-// that name no existing resource.
-func concretePath(op *operation) string {
-	r := strings.NewReplacer("{name}", "does-not-exist", "{id}", "01JBX2A7C8D9E0F1G2H3J4K5M6",
-		"{interface}", "source", "{kind}", "nope")
-	return r.Replace(op.Path)
+	"listTokens":  ScopeAdmin, "createToken": ScopeAdmin, "getToken": ScopeAdmin, "revokeToken": ScopeAdmin,
 }
 
 func TestScopesFromSpec(t *testing.T) {
@@ -49,58 +42,9 @@ func TestScopesFromSpec(t *testing.T) {
 	}
 }
 
-// TestAuthEveryRoute runs every operation with no token, an unknown token,
-// each scope below its own (403 before anything else, so before 404), and its
-// own scope (neither 401 nor 403).
-func TestAuthEveryRoute(t *testing.T) {
-	tokens := map[Scope]string{ScopeRead: tokRead, ScopeWrite: tokWrite, ScopeAdmin: tokAdmin}
-	for _, op := range newEnv(t).srv.spec.ops {
-		t.Run(op.ID, func(t *testing.T) {
-			e := newEnv(t)
-			e.srv.Drain() // nothing else may run: the stream would block
-			e.srv.draining.Store(false)
-			path := concretePath(op)
-			body := any(nil)
-			if op.Body != nil {
-				body = map[string]any{}
-			}
-
-			r := e.do(op.Method, path, "", body)
-			if r.Status != http.StatusUnauthorized || r.problemType(t) != SlugUnauthorized {
-				t.Fatalf("no token: %d %s", r.Status, r.Body)
-			}
-			if got := r.Header.Get("WWW-Authenticate"); got != `Bearer realm="angelia"` {
-				t.Errorf("WWW-Authenticate = %q", got)
-			}
-			r = e.do(op.Method, path, "not-a-known-token", body)
-			if r.Status != http.StatusUnauthorized || !strings.Contains(r.Header.Get("WWW-Authenticate"), `error="invalid_token"`) {
-				t.Fatalf("unknown token: %d %v", r.Status, r.Header)
-			}
-			r = e.do(op.Method, path, "", body, "Authorization", "Basic dXNlcjpwYXNz")
-			if r.Status != http.StatusUnauthorized {
-				t.Fatalf("basic auth: %d", r.Status)
-			}
-			for sc := ScopeRead; sc < op.Scope; sc++ {
-				r := e.do(op.Method, path, tokens[sc], body)
-				if r.Status != http.StatusForbidden || r.problemType(t) != SlugForbidden {
-					t.Fatalf("scope %s: %d %s", sc, r.Status, r.Body)
-				}
-				if got := r.json(t)["required_scope"]; got != op.Scope.String() {
-					t.Errorf("required_scope = %v, want %s", got, op.Scope)
-				}
-			}
-			for sc := op.Scope; sc <= ScopeAdmin; sc++ {
-				r := e.do(op.Method, path, tokens[sc], body)
-				if r.Status == http.StatusUnauthorized || r.Status == http.StatusForbidden {
-					t.Fatalf("scope %s: %d %s", sc, r.Status, r.Body)
-				}
-				if !op.Statuses[r.Status] && r.Status != http.StatusBadRequest {
-					t.Errorf("scope %s: status %d is not declared for %s: %s", sc, r.Status, op.ID, r.Body)
-				}
-			}
-		})
-	}
-}
+// TestAuthEveryRoute, the table test over every operation, runs on real API
+// tokens in auth_tokens_test.go (package api_test, which can import
+// internal/apitoken).
 
 func TestDenyAll(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.Auth = DenyAll{} })

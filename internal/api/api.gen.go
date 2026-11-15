@@ -156,19 +156,19 @@ func (e PrereleaseMode) Valid() bool {
 
 // Defines values for ProblemRequiredScope.
 const (
-	Admin ProblemRequiredScope = "admin"
-	Read  ProblemRequiredScope = "read"
-	Write ProblemRequiredScope = "write"
+	ProblemRequiredScopeAdmin ProblemRequiredScope = "admin"
+	ProblemRequiredScopeRead  ProblemRequiredScope = "read"
+	ProblemRequiredScopeWrite ProblemRequiredScope = "write"
 )
 
 // Valid indicates whether the value is a known member of the ProblemRequiredScope enum.
 func (e ProblemRequiredScope) Valid() bool {
 	switch e {
-	case Admin:
+	case ProblemRequiredScopeAdmin:
 		return true
-	case Read:
+	case ProblemRequiredScopeRead:
 		return true
-	case Write:
+	case ProblemRequiredScopeWrite:
 		return true
 	default:
 		return false
@@ -235,6 +235,27 @@ func (e ShortEventType) Valid() bool {
 	}
 }
 
+// Defines values for TokenScope.
+const (
+	TokenScopeAdmin TokenScope = "admin"
+	TokenScopeRead  TokenScope = "read"
+	TokenScopeWrite TokenScope = "write"
+)
+
+// Valid indicates whether the value is a known member of the TokenScope enum.
+func (e TokenScope) Valid() bool {
+	switch e {
+	case TokenScopeAdmin:
+		return true
+	case TokenScopeRead:
+		return true
+	case TokenScopeWrite:
+		return true
+	default:
+		return false
+	}
+}
+
 // Bump defines model for Bump.
 type Bump string
 
@@ -259,7 +280,7 @@ type Consumer struct {
 	// Id Generated when the consumer is created; kept across updates.
 	Id Ulid `json:"id"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// UpdatedAt When the filter was last changed by a `PUT`. An ack does not change it.
@@ -424,7 +445,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type Name = string
 
 // NameOrId A name (lower case) or a ULID id (upper case). The two never overlap.
@@ -604,7 +625,7 @@ type Secret struct {
 	// KeyId The id of the key that encrypted the value (16 hex digits); it changes when `angelia secrets rotate` re-encrypts the value under a new key.
 	KeyId string `json:"key_id"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// ReferencedBy The configuration that references the secret with a `*_ref` key, sorted by resource, name and pointer.
@@ -626,7 +647,7 @@ type SecretPage struct {
 
 // SecretReferrer defines model for SecretReferrer.
 type SecretReferrer struct {
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Pointer JSON Pointer (RFC 6901) to the `*_ref` key in the resource.
@@ -717,7 +738,7 @@ type Sink struct {
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
 	MaskedFields []string `json:"masked_fields"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// UrlRedacted Whether the URLs in `config` were cut to `scheme://host` because the token's scope is below `admin`.
@@ -785,7 +806,7 @@ type Subscription struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Policy Narrows the watch's policy for this subscription only; it can never widen it.
@@ -858,6 +879,108 @@ type SubscriptionWrite struct {
 // Examples: 2026-10-30T17:00:02.512Z
 type Timestamp = time.Time
 
+// Token An API token as the server returns it: metadata only. No scope, flag or parameter returns
+// the token or its hash, except the one `201` of `POST /v1/tokens` (`TokenCreated`).
+type Token struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	CreatedBy TokenActor `json:"created_by"`
+
+	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
+	ExpiresAt *Timestamp `json:"expires_at"`
+
+	// Id Generated when the token is created, never reused. It is the ULID inside the `ang_` token, so a leaked token found by a scanner can be revoked by id.
+	Id Ulid `json:"id"`
+
+	// LastUsedAt When the token last authenticated a request, or `null` if it never has. Accurate to about 5 minutes, and a crash can lose the last interval.
+	LastUsedAt *Timestamp `json:"last_used_at"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+
+	// RevokedAt When the token was revoked, or `null` while it is active.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the token, or `null` while it is active.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+}
+
+// TokenActor Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+type TokenActor = string
+
+// TokenCreate The body of `POST /v1/tokens`. `name` is a label for operators and must be unique among
+// active tokens; `scope` is the token's one scope; `expires_at`, when given, must be in the
+// future. A token with no `expires_at` never expires.
+type TokenCreate struct {
+	// ExpiresAt When the token stops working, in the future. Absent means never.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
+
+	// Name An operator label, unique among tokens that are not revoked. It is not a key, since tokens are addressed by `id`.
+	Name Name `json:"name"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+}
+
+// TokenCreated The `201` response of `POST /v1/tokens`: the `Token` plus `token`, the one place the
+// secret is ever returned. It is shown once and cannot be read again; the server keeps a hash.
+// The member is deliberately named `token`: a Spectral rule allows it on this schema only.
+type TokenCreated struct {
+	// CreatedAt RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	CreatedBy TokenActor `json:"created_by"`
+
+	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
+	ExpiresAt *Timestamp `json:"expires_at"`
+
+	// Id Generated when the token is created, never reused. It is the ULID inside the `ang_` token, so a leaked token found by a scanner can be revoked by id.
+	Id Ulid `json:"id"`
+
+	// LastUsedAt When the token last authenticated a request, or `null` if it never has. Accurate to about 5 minutes, and a crash can lose the last interval.
+	LastUsedAt *Timestamp `json:"last_used_at"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+
+	// RevokedAt When the token was revoked, or `null` while it is active.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the token, or `null` while it is active.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+
+	// Token The API token, to send as `Authorization: Bearer <token>`: `ang_`, the token's `id`,
+	// `_`, 52 characters of random secret and a 7-character CRC-32 check (90 characters,
+	// lower-case base32 after the id). Store it now.
+	Token *string `json:"token,omitempty"`
+}
+
+// TokenPage defines model for TokenPage.
+type TokenPage struct {
+	Items []Token `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// TokenScope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+type TokenScope string
+
 // Ulid ULID: 26 characters, Crockford base32, upper case.
 type Ulid = string
 
@@ -921,7 +1044,7 @@ type Watch struct {
 	// refuses to change or delete it (`409 managed-by-file`).
 	ManagedBy ManagedBy `json:"managed_by"`
 
-	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 	Name Name `json:"name"`
 
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
@@ -1019,10 +1142,10 @@ type WatchWrite struct {
 // Examples: 4182
 type After = Seq
 
-// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerName = Name
 
-// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// ConsumerParam The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerParam = Name
 
 // DeliveryId ULID: 26 characters, Crockford base32, upper case.
@@ -1034,23 +1157,29 @@ type DryRun = bool
 // EventLimit defines model for EventLimit.
 type EventLimit = int
 
+// IncludeRevoked defines model for IncludeRevoked.
+type IncludeRevoked = bool
+
 // LabelFilter defines model for LabelFilter.
 type LabelFilter = []string
 
 // Limit defines model for Limit.
 type Limit = int
 
-// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SecretName = Name
 
-// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SinkName = Name
 
 // SourceFilter defines model for SourceFilter.
 type SourceFilter = []Kind
 
-// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// SubscriptionName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SubscriptionName = Name
+
+// TokenId ULID: 26 characters, Crockford base32, upper case.
+type TokenId = Ulid
 
 // TypeFilter defines model for TypeFilter.
 type TypeFilter = []ShortEventType
@@ -1058,7 +1187,7 @@ type TypeFilter = []ShortEventType
 // WatchFilter defines model for WatchFilter.
 type WatchFilter = []NameOrId
 
-// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file). Unique per resource type, whoever manages the resource.
+// WatchName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type WatchName = Name
 
 // BadRequest RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
@@ -1291,6 +1420,18 @@ type PutSubscriptionParams struct {
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
 }
 
+// ListTokensParams defines parameters for ListTokens.
+type ListTokensParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IncludeRevoked List revoked tokens too. Expired tokens are always listed.
+	IncludeRevoked *IncludeRevoked `form:"include_revoked,omitempty" json:"include_revoked,omitempty"`
+}
+
 // ListWatchesParams defines parameters for ListWatches.
 type ListWatchesParams struct {
 	// Limit Page size.
@@ -1353,6 +1494,9 @@ type PutSinkJSONRequestBody = SinkWrite
 
 // PutSubscriptionJSONRequestBody defines body for PutSubscription for application/json ContentType.
 type PutSubscriptionJSONRequestBody = SubscriptionWrite
+
+// CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
+type CreateTokenJSONRequestBody = TokenCreate
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
@@ -1851,6 +1995,18 @@ type ServerInterface interface {
 	// PutSubscription Create or replace a subscription
 	// (PUT /v1/subscriptions/{name})
 	PutSubscription(w http.ResponseWriter, r *http.Request, name SubscriptionName, params PutSubscriptionParams)
+	// ListTokens List API tokens
+	// (GET /v1/tokens)
+	ListTokens(w http.ResponseWriter, r *http.Request, params ListTokensParams)
+	// CreateToken Create an API token
+	// (POST /v1/tokens)
+	CreateToken(w http.ResponseWriter, r *http.Request)
+	// RevokeToken Revoke an API token
+	// (DELETE /v1/tokens/{id})
+	RevokeToken(w http.ResponseWriter, r *http.Request, id TokenId)
+	// GetToken Get an API token's metadata
+	// (GET /v1/tokens/{id})
+	GetToken(w http.ResponseWriter, r *http.Request, id TokenId)
 	// ListWatches List watches
 	// (GET /v1/watches)
 	ListWatches(w http.ResponseWriter, r *http.Request, params ListWatchesParams)
@@ -2025,6 +2181,30 @@ func (_ Unimplemented) GetSubscription(w http.ResponseWriter, r *http.Request, n
 // PutSubscription Create or replace a subscription
 // (PUT /v1/subscriptions/{name})
 func (_ Unimplemented) PutSubscription(w http.ResponseWriter, r *http.Request, name SubscriptionName, params PutSubscriptionParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListTokens List API tokens
+// (GET /v1/tokens)
+func (_ Unimplemented) ListTokens(w http.ResponseWriter, r *http.Request, params ListTokensParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateToken Create an API token
+// (POST /v1/tokens)
+func (_ Unimplemented) CreateToken(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeToken Revoke an API token
+// (DELETE /v1/tokens/{id})
+func (_ Unimplemented) RevokeToken(w http.ResponseWriter, r *http.Request, id TokenId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetToken Get an API token's metadata
+// (GET /v1/tokens/{id})
+func (_ Unimplemented) GetToken(w http.ResponseWriter, r *http.Request, id TokenId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3218,6 +3398,131 @@ func (siw *ServerInterfaceWrapper) PutSubscription(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListTokens operation middleware
+func (siw *ServerInterfaceWrapper) ListTokens(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTokensParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "include_revoked" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_revoked", r.URL.Query(), &params.IncludeRevoked, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "include_revoked"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_revoked", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTokens(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateToken operation middleware
+func (siw *ServerInterfaceWrapper) CreateToken(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeToken operation middleware
+func (siw *ServerInterfaceWrapper) RevokeToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id TokenId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeToken(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetToken operation middleware
+func (siw *ServerInterfaceWrapper) GetToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id TokenId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetToken(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListWatches operation middleware
 func (siw *ServerInterfaceWrapper) ListWatches(w http.ResponseWriter, r *http.Request) {
 
@@ -3687,6 +3992,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/plugins/{interface}/{kind}", wrapper.GetPlugin)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/tokens", wrapper.ListTokens)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/tokens", wrapper.CreateToken)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/tokens/{id}", wrapper.RevokeToken)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/tokens/{id}", wrapper.GetToken)
+	})
 
 	return r
 }
@@ -3950,6 +4267,38 @@ type PutSubscriptionResponseObject interface {
 	VisitPutSubscriptionResponse(w http.ResponseWriter) error
 }
 
+type ListTokensRequestObject struct {
+	Params ListTokensParams
+}
+
+type ListTokensResponseObject interface {
+	VisitListTokensResponse(w http.ResponseWriter) error
+}
+
+type CreateTokenRequestObject struct {
+	Body *CreateTokenJSONRequestBody
+}
+
+type CreateTokenResponseObject interface {
+	VisitCreateTokenResponse(w http.ResponseWriter) error
+}
+
+type RevokeTokenRequestObject struct {
+	Id TokenId `json:"id"`
+}
+
+type RevokeTokenResponseObject interface {
+	VisitRevokeTokenResponse(w http.ResponseWriter) error
+}
+
+type GetTokenRequestObject struct {
+	Id TokenId `json:"id"`
+}
+
+type GetTokenResponseObject interface {
+	VisitGetTokenResponse(w http.ResponseWriter) error
+}
+
 type ListWatchesRequestObject struct {
 	Params ListWatchesParams
 }
@@ -4074,6 +4423,18 @@ type StrictServerInterface interface {
 	// PutSubscription Create or replace a subscription
 	// (PUT /v1/subscriptions/{name})
 	PutSubscription(ctx context.Context, request PutSubscriptionRequestObject) (PutSubscriptionResponseObject, error)
+	// ListTokens List API tokens
+	// (GET /v1/tokens)
+	ListTokens(ctx context.Context, request ListTokensRequestObject) (ListTokensResponseObject, error)
+	// CreateToken Create an API token
+	// (POST /v1/tokens)
+	CreateToken(ctx context.Context, request CreateTokenRequestObject) (CreateTokenResponseObject, error)
+	// RevokeToken Revoke an API token
+	// (DELETE /v1/tokens/{id})
+	RevokeToken(ctx context.Context, request RevokeTokenRequestObject) (RevokeTokenResponseObject, error)
+	// GetToken Get an API token's metadata
+	// (GET /v1/tokens/{id})
+	GetToken(ctx context.Context, request GetTokenRequestObject) (GetTokenResponseObject, error)
 	// ListWatches List watches
 	// (GET /v1/watches)
 	ListWatches(ctx context.Context, request ListWatchesRequestObject) (ListWatchesResponseObject, error)
@@ -4858,6 +5219,115 @@ func (sh *strictHandler) PutSubscription(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutSubscriptionResponseObject); ok {
 		if err := validResponse.VisitPutSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTokens operation middleware
+func (sh *strictHandler) ListTokens(w http.ResponseWriter, r *http.Request, params ListTokensParams) {
+	var request ListTokensRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTokens(ctx, request.(ListTokensRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTokens")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTokensResponseObject); ok {
+		if err := validResponse.VisitListTokensResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateToken operation middleware
+func (sh *strictHandler) CreateToken(w http.ResponseWriter, r *http.Request) {
+	var request CreateTokenRequestObject
+
+	var body CreateTokenJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateToken(ctx, request.(CreateTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateTokenResponseObject); ok {
+		if err := validResponse.VisitCreateTokenResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeToken operation middleware
+func (sh *strictHandler) RevokeToken(w http.ResponseWriter, r *http.Request, id TokenId) {
+	var request RevokeTokenRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeToken(ctx, request.(RevokeTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeTokenResponseObject); ok {
+		if err := validResponse.VisitRevokeTokenResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetToken operation middleware
+func (sh *strictHandler) GetToken(w http.ResponseWriter, r *http.Request, id TokenId) {
+	var request GetTokenRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetToken(ctx, request.(GetTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTokenResponseObject); ok {
+		if err := validResponse.VisitGetTokenResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

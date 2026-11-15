@@ -48,7 +48,7 @@ The initial proposal was: a core API, verifier batches, an event "batch" that fa
 - `GET /v1/events?after=<seq>&watch=…&type=…&source=…`: the pull API, with the filters and responses of the [OpenAPI spec](https://github.com/angelia-dev/spec/blob/main/docs/api.md) (`type` takes short types such as `release.published`, `source` takes source kinds). Cursors are a monotonic integer sequence assigned in commit order (`event.seq`), so a consumer can resume after downtime without skipping an event; the ULID stays the public event id ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)).
 - `GET /v1/events/stream`: SSE, same filters.
 - **MCP server** (stdio and streamable HTTP) exposing tools such as `list_watches`, `latest_version`, `events_since`, `add_watch`, `ack_event`. This is the agent surface.
-- Auth: API tokens with scopes (read / write / admin). OIDC later.
+- Auth: API tokens with scopes (read / write / admin), `ang_` bearer tokens stored as SHA-256 hashes and managed under `/v1/tokens` ([ADR 0030](adr/0030-api-tokens.md)). OIDC later.
 - Config-as-code: `angelia apply -f watches.yaml` is idempotent and upserts via the API (GitOps).
 
 ### 3.2 Scheduler and workers
@@ -230,6 +230,7 @@ Proposed stack [P0]:
 ## 8. Security
 
 - Secrets (tokens, webhook secrets) are encrypted at rest with AES-256-GCM and a key from a file or env ([ADR 0024](adr/0024-secrets-encrypted-at-rest.md)); they are never returned by the API.
+- API tokens are hashed, not sealed: the store keeps a SHA-256 of each `ang_` token, compared in constant time, and the token appears once, in the response that creates it ([ADR 0030](adr/0030-api-tokens.md)). The bootstrap token file is a live admin credential until that token is revoked.
 - SSRF protection on `http-*` sources and webhook sinks: deny private ranges by default, allowlist to opt in.
 - WASM plugins only reach hosts declared in their manifest.
 - Signed releases (cosign), SBOM published, OpenSSF Scorecard. A supply-chain tool has to practice what it preaches.

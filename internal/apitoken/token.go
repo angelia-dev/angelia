@@ -5,7 +5,6 @@
 package apitoken
 
 import (
-	"crypto/sha256"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/apitoken/format"
@@ -26,17 +25,11 @@ func Generate(now time.Time) (id, token string) { return format.Generate(now) }
 // Parse checks a token strictly and returns its id ([format.Parse]).
 func Parse(token string) (string, error) { return format.Parse(token) }
 
-// hashDomain separates the token hash from any other SHA-256 of the same
-// bytes (ADR 0030 T2).
-const hashDomain = "angelia api token v1\x00"
-
 // Hash is the stored form of a token (ADR 0030 T2):
-// SHA-256("angelia api token v1" || 0x00 || token), 32 bytes.
+// SHA-256("angelia api token v1" || 0x00 || token), 32 bytes ([format.Hash]).
 func Hash(token string) []byte {
-	h := hashArray(token)
+	h := format.Hash(token)
 	return h[:]
 }
 
-func hashArray(token string) [32]byte {
-	return sha256.Sum256([]byte(hashDomain + token))
-}
+func hashArray(token string) [32]byte { return format.Hash(token) }

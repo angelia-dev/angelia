@@ -1,11 +1,13 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `fa3e413` ("feat(mcp): MCP tool contract v1 (spec 0.6.0) (#17)", the spec pull request of
-angelia-dev/angelia#81, merged on the spec repository's `main`). Since `423580c` ("feat(openapi):
-consumer cursors and ack (spec 0.5.0) (#16)"), spec 0.6.0 adds the MCP tool contract
-`mcp/tools.v1.json` (vendored here as `mcp/tools.v1.json`), and `openapi/angelia.v1.yaml` changes only
-its `info.version` to 0.6.0. The schemas are unchanged.
+at commit `874e3a8` ("feat(openapi): API tokens under /v1/tokens (spec 0.7.0) (#18)", the spec pull
+request of angelia-dev/angelia#72, merged on the spec repository's `main`). Since `fa3e413`
+("feat(mcp): MCP tool contract v1 (spec 0.6.0) (#17)"), spec 0.7.0 adds the four `admin` operations
+under `/v1/tokens` (`listTokens`, `createToken`, `getToken`, `revokeToken`), the schemas `Token`,
+`TokenCreate`, `TokenCreated`, `TokenPage`, `TokenScope` and `TokenActor`, the `ang_` token format in
+the `bearerAuth` description, and their examples. The MCP tool contract and the event schemas are
+unchanged (no MCP tool manages tokens).
 
 | Here | In the spec repository |
 | --- | --- |
