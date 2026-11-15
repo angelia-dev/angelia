@@ -41,3 +41,6 @@ go.work.sum
 
 # Built by deploy/compose/ci/run.sh
 /deploy/compose/ci/bin/
+
+# Compose quickstart: the bootstrap admin token (a credential), made with `angelia token generate --out`
+deploy/compose/*/bootstrap-token

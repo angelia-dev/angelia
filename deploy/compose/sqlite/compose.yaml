@@ -24,6 +24,11 @@ services:
       - /etc/angelia/angelia.yaml
       - --watches
       - /etc/angelia/watches.yaml
+    environment:
+      # The first admin token ("bootstrap"), stored when the token table is empty. See ../README.md.
+      ANGELIA_API_BOOTSTRAP_TOKEN_FILE: /run/secrets/angelia_bootstrap_token
+    secrets:
+      - angelia_bootstrap_token
     ports:
       # Loopback only: the REST API needs a token and nothing else is public yet.
       - "127.0.0.1:8080:8080"
@@ -43,6 +48,12 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+# Made once, before the first `up`: `angelia token generate --out bootstrap-token` (../README.md).
+# The path can be changed with ANGELIA_BOOTSTRAP_TOKEN_FILE. Create it before `up`.
+secrets:
+  angelia_bootstrap_token:
+    file: ${ANGELIA_BOOTSTRAP_TOKEN_FILE:-./bootstrap-token}
 
 volumes:
   angelia-data:

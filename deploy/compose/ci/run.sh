@@ -27,6 +27,7 @@ ctx=""
 cleanup() {
 	status=$?
 	[[ -z "$ctx" ]] || rm -rf "$ctx"
+	[[ -z "${bootstrap_dir:-}" ]] || rm -rf "$bootstrap_dir"
 	if ((status != 0)); then
 		echo "::group::compose ps"
 		compose ps -a || true
@@ -61,6 +62,14 @@ if [[ -z "${ANGELIA_IMAGE:-}" ]]; then
 	export ANGELIA_IMAGE=angelia:ci
 fi
 
+# A fresh bootstrap admin token (ADR 0030 T4), the compose file's secret. The container
+# runs as uid 65532, not as this user, so the file must be readable by others.
+bootstrap_dir="$(mktemp -d)"
+ANGELIA_BOOTSTRAP_TOKEN_FILE="$bootstrap_dir/bootstrap-token"
+export ANGELIA_BOOTSTRAP_TOKEN_FILE
+docker run --rm "$ANGELIA_IMAGE" token generate >"$ANGELIA_BOOTSTRAP_TOKEN_FILE"
+chmod 0644 "$ANGELIA_BOOTSTRAP_TOKEN_FILE"
+
 # A fresh signing secret for this run, shared by the sender and the receiver.
 CI_WEBHOOK_SECRET="whsec_$(head -c 32 /dev/urandom | base64 -w0)"
 export CI_WEBHOOK_SECRET
@@ -75,6 +84,15 @@ for _ in $(seq 1 30); do
 	sleep 1
 done
 curl -fsS -o /dev/null http://127.0.0.1:8099/pypi/pypi/pkg-00000/json
+
+# The API needs a token: none is refused, the bootstrap token works (the token is not echoed).
+step "check the bootstrap token"
+none="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/watches)"
+bearer="$(curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:8080/v1/watches <<<"header = \"Authorization: Bearer $(cat "$ANGELIA_BOOTSTRAP_TOKEN_FILE")\"")"
+if [[ "$none" != 401 || "$bearer" != 200 ]]; then
+	echo "GET /v1/watches: $none without a token (want 401), $bearer with the bootstrap token (want 200)" >&2
+	exit 1
+fi
 
 # 3. The first check records the versions known at start (baseline) and emits nothing.
 step "wait for the baseline"

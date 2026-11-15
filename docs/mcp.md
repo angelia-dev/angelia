@@ -134,5 +134,7 @@ role runs. A generic client configuration:
   per REST call a tool makes, marked `via: mcp`. No header, body, token or tool argument is logged; the REST records show the
   request path, as for any REST client, so a watch or consumer name in a path appears there.
 
-Until API tokens exist (#72), `angelia serve` answers `401` to every API request, so the tools work only
-against an instance with an authenticator.
+Every tool call needs an API token ([configuration.md](configuration.md#api-tokens)): over stdio,
+`angelia mcp` uses `--server`, `ANGELIA_SERVER`, `ANGELIA_TOKEN` or the client config file, like the other
+commands; over HTTP, the client sends `Authorization: Bearer <token>` to `/mcp`. A token of scope `read` can
+list the tools and call the three reads; the two writes need `write`.

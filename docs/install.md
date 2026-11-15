@@ -9,20 +9,24 @@ Angelia is an installable **pre-release**. Push delivery is usable: you describe
 [watch file](watch-file.md), and Angelia detects new versions and delivers signed events to your webhooks, GitHub
 Actions dispatches or chat services.
 
-Everything that goes through the REST API needs a bearer token, and **token storage is not built yet** (#72). Until it
-is, `angelia serve` refuses every token. These return `401 unauthorized`:
+Everything that goes through the REST API needs a bearer token (`401 unauthorized` without one). The first admin token
+is made on the instance, in [section 4](#4-create-your-first-api-token). These need a token:
 
 - the REST API under `/v1/`, including SSE event streams;
-- the CLI client commands: `watch`, `sink`, `sub`, `event`, `delivery`, `replay`, `secret` and `apply`.
+- the CLI client commands: `watch`, `sink`, `sub`, `event`, `delivery`, `replay`, `secret`, `apply`, `token create`,
+  `token list` and `token revoke`;
+- `angelia mcp` and the `/mcp` endpoint.
 
 These work without a token: `/healthz`, `/readyz` and `/metrics` on the listen address, `angelia serve`,
-`angelia config check`, `angelia healthcheck`, `angelia webhook secret new`, `angelia version`, and push delivery
-configured from the watch file. To change what is watched, edit the watch file and restart the process.
+`angelia config check`, `angelia healthcheck`, `angelia webhook secret new`, `angelia token generate`,
+`angelia token create --local`, `angelia version`, and push delivery configured from the watch file. To change what
+is watched, edit the watch file and restart the process, or use the API with a token.
 
 **Coming in 0.2.0 (on `main`, not in v0.1.2; the version is planned, not confirmed):**
 
-- the pull API (consumers), which will also need a token;
-- `angelia mcp`, the MCP server (a client of the API, so it will need a token too);
+- the pull API (consumers), which needs a token;
+- `angelia mcp`, the MCP server (a client of the API, so it needs a token too);
+- API tokens and the `angelia token` commands;
 - the Postgres store (`postgres://` DSN) and the `full/` compose stack.
 
 ## 1. Install the binary
@@ -103,7 +107,7 @@ events: you only hear about releases made after that. Then, from another termina
 
 ```sh
 curl -i http://127.0.0.1:8080/healthz        # 200
-curl -i http://127.0.0.1:8080/v1/watches     # 401 until token storage (#72)
+curl -i http://127.0.0.1:8080/v1/watches     # 401: the API needs a token (next step)
 ```
 
 `angelia serve` reads the watch file once, at startup. Edit it and restart the process to apply a change. The
@@ -166,11 +170,17 @@ volume (`sqlite/`), and a stack with Postgres (`full/`).
 
 ```sh
 cd deploy/compose/sqlite
+# The first admin token (section 4), made once with the image itself. The container user is uid 65532,
+# not you, so it must be able to read the file: a mode of 0644 is accepted with a warning in the log.
+docker run --rm ghcr.io/angelia-dev/angelia:0.2.0 token generate > bootstrap-token && chmod 0644 bootstrap-token
 docker compose up -d
 docker compose ps                 # "healthy" after the first probe
 ```
 
-Run from a clone of the repository. To pass a signing secret (section 4) into the container, add it under the
+`bootstrap-token` holds an admin token (git ignores it): read it with `cat bootstrap-token` and use it as in
+section 4. Once you have made a named admin token, revoke `bootstrap` (`angelia token revoke bootstrap`).
+
+Run from a clone of the repository. To pass a signing secret (section 5) into the container, add it under the
 `angelia` service's `environment:` in `compose.yaml` (for example `MY_WEBHOOK_SECRET: ${MY_WEBHOOK_SECRET}`) and
 export it before `docker compose up`.
 
@@ -184,7 +194,39 @@ Notes:
   digest after verifying it.
 - The port is published on `127.0.0.1` only. Put a reverse proxy in front before you expose it.
 
-## 4. Your first delivered event
+## 4. Create your first API token
+
+The REST API, the CLI client and MCP take a bearer token (`ang_…`) with one scope: `read`, `write` or `admin`. The
+instance stores only a hash, so a token is shown once, when it is made. The first one is an `admin` token made on the
+instance; with it you make the others through the API. Two ways, one is enough:
+
+- **A command on the instance** (it writes the token to the database and needs no running server):
+
+  ```sh
+  angelia token create --local --name me --config /etc/angelia/angelia.yaml     # prints the token alone on stdout
+  # container: docker compose exec angelia angelia token create --local --name me
+  ```
+
+- **A bootstrap file**, for unattended installs, as the compose examples do. Make it once, before the first start, and
+  name it in `api.bootstrap_token_file`: `angelia token generate --out bootstrap-token`. The first start with an empty
+  token table stores it as the admin token `bootstrap`; the token is the file's content. See
+  [configuration.md](configuration.md#api-tokens) before you rely on it: it is an admin credential until revoked.
+
+Then use the token (here `ang_…` stands for what the command printed; keep it out of shell history and logs):
+
+```sh
+export ANGELIA_TOKEN=ang_...                                      # or a client config file, see cli.md
+curl -s -H "Authorization: Bearer $ANGELIA_TOKEN" http://127.0.0.1:8080/v1/watches   # 200 with the watches
+angelia watch list --server http://127.0.0.1:8080                 # the CLI reads ANGELIA_TOKEN
+angelia token create --name ci --scope write --expires-in 90d     # more tokens, through the API
+angelia token list
+angelia token revoke bootstrap                                    # once you have a named admin token
+```
+
+For [MCP](mcp.md), run `angelia mcp --server http://127.0.0.1:8080` (it reads `ANGELIA_TOKEN` too), or point an HTTP
+client at `/mcp` with the same bearer header. Give agents a `read` or `write` token, not `admin`.
+
+## 5. Your first delivered event
 
 A webhook sink, one watch and one subscription. The signing secret never goes into a file: you generate it, keep it in an
 environment variable of the Angelia process, and give the same value to the receiver.
@@ -304,4 +346,4 @@ that fails is retried with backoff; the reasons are in the Angelia log and in [w
   for chat messages.
 - Other sinks: [GitHub dispatch](github-dispatch.md), [Shoutrrr](shoutrrr.md) (chat).
 - [Instance configuration](configuration.md), [metrics](operations/metrics.md), [private registries](private-registries.md).
-- [Command-line reference](cli.md) and [MCP](mcp.md): both need API tokens (#72).
+- [Command-line reference](cli.md) and [MCP](mcp.md): both use the API token of section 4.

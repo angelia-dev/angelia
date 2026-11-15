@@ -21,6 +21,9 @@ type composeFile struct {
 	Name     string             `yaml:"name"`
 	Services map[string]service `yaml:"services"`
 	Volumes  map[string]any     `yaml:"volumes"`
+	Secrets  map[string]struct {
+		File string `yaml:"file"`
+	} `yaml:"secrets"`
 }
 
 type service struct {
@@ -31,6 +34,7 @@ type service struct {
 	Volumes         []string             `yaml:"volumes"`
 	Environment     map[string]string    `yaml:"environment"`
 	DependsOn       map[string]dependsOn `yaml:"depends_on"`
+	Secrets         []string             `yaml:"secrets"`
 	Restart         string               `yaml:"restart"`
 	StopGracePeriod string               `yaml:"stop_grace_period"`
 	Healthcheck     *healthcheck         `yaml:"healthcheck"`
@@ -332,3 +336,39 @@ var (
 	// The Dockerfile HEALTHCHECK: optional flags, then the exec form of the probe.
 	healthcheckLineRE = regexp.MustCompile(`^HEALTHCHECK (--[\w-]+=\S+ )*CMD \["/usr/local/bin/angelia","healthcheck"\]$`)
 )
+
+// Both stacks hand the first admin token to the api role as a file secret
+// (ADR 0030 T4): the same secret, the same path, a file that is made once with
+// `angelia token generate --out` and never committed. The secret is read-only
+// by construction, and the token itself is in neither compose file.
+func TestComposeFilesMountTheBootstrapTokenAsASecret(t *testing.T) {
+	const path = "/run/secrets/angelia_bootstrap_token"
+	ignore, err := os.ReadFile("../../.gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"sqlite", "full"} {
+		f := load(t, dir+"/compose.yaml")
+		angelia := f.Services["angelia"]
+		if got := angelia.Environment["ANGELIA_API_BOOTSTRAP_TOKEN_FILE"]; got != path {
+			t.Errorf("%s: ANGELIA_API_BOOTSTRAP_TOKEN_FILE = %q, want %q", dir, got, path)
+		}
+		if strings.Join(angelia.Secrets, ",") != "angelia_bootstrap_token" {
+			t.Errorf("%s: service secrets = %q", dir, angelia.Secrets)
+		}
+		sec, ok := f.Secrets["angelia_bootstrap_token"]
+		if !ok || !strings.HasSuffix(sec.File, ":-./bootstrap-token}") {
+			t.Errorf("%s: top-level secret = %+v, want a file defaulting to ./bootstrap-token", dir, sec)
+		}
+		raw, err := os.ReadFile(dir + "/compose.yaml") //nolint:gosec // fixed fixture paths of this package
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "ang_") {
+			t.Errorf("%s/compose.yaml holds something that looks like a token", dir)
+		}
+		if !strings.Contains(string(ignore), "deploy/compose/*/bootstrap-token") {
+			t.Error(".gitignore does not keep the bootstrap token file out of git")
+		}
+	}
+}

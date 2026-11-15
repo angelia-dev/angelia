@@ -267,8 +267,9 @@ under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
   later). A token's name is unique among active tokens. `last_used_at` is written at most every
   5 minutes per token and when the api role stops, so it is accurate to about 5 minutes.
 - The first admin token is created on the instance (bootstrap file or `angelia token create
-  --local`, [ADR 0030](adr/0030-api-tokens.md) T4). Until a release ships these, an instance with
-  no token in its store answers every API request with `401`.
+  --local`, [ADR 0030](adr/0030-api-tokens.md) T4; see [API tokens](#api-tokens)). An instance with
+  no token in its store answers every API request with `401`. After that, `angelia token create`,
+  `list` and `revoke` ([CLI](cli.md#api-tokens)) manage tokens through the API.
 - Bodies are limited to 1 MiB (`413 payload-too-large`). While the process drains, the API answers
   `503 unavailable` with `Retry-After: 5`, and open event streams are closed.
 - Each request writes one `api request` record to the log with its request id, method, path, route,

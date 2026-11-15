@@ -26,6 +26,8 @@ pipeline, see [docs/operations/release.md](../../docs/operations/release.md)):
 
 ```sh
 cd deploy/compose/sqlite
+# The first admin token, once (see "The first API token" below):
+docker run --rm ghcr.io/angelia-dev/angelia:0.2.0 token generate > bootstrap-token && chmod 0644 bootstrap-token
 docker compose up -d
 docker compose ps          # "healthy" after the first probe
 docker compose logs -f angelia
@@ -37,9 +39,8 @@ docker compose logs -f angelia
 - The database is in the named volume `angelia-data`. The `volume-init` job gives that volume
   to the image user (uid 65532) before Angelia starts, because a new volume is owned by root.
   Remove the volume with `docker compose down -v` only if you want to lose the data.
-- The port is published on `127.0.0.1:8080` only. The REST API needs a bearer token, and token
-  storage is not built yet, so every API request is refused for now (see
-  [docs/configuration.md](../../docs/configuration.md#rest-api)).
+- The port is published on `127.0.0.1:8080` only. The REST API needs a bearer token: see
+  [The first API token](#the-first-api-token).
 - The healthcheck runs `angelia healthcheck`. The image has no shell or curl, so the binary is
   its own probe. Exit 0 means a 2xx answer; a redirect, a timeout (3s) or a refused connection
   is exit 1.
@@ -60,14 +61,36 @@ angelia config check --config angelia.yaml --watches watches.yaml
 
 - **Delivery to a webhook receiver.** The example has no sink, so events are stored but not
   delivered. Add one with a [webhook sink](../../docs/webhooks.md), as in the walk-through of
-  [docs/install.md](../../docs/install.md#4-your-first-delivered-event); the CI check below does,
+  [docs/install.md](../../docs/install.md#5-your-first-delivered-event); the CI check below does,
   in its own copy of the example.
+
+## The first API token
+
+Both stacks mount a **bootstrap token** as a Compose file secret and give its path to the `api`
+role (`ANGELIA_API_BOOTSTRAP_TOKEN_FILE=/run/secrets/angelia_bootstrap_token`,
+[ADR 0030](../../docs/adr/0030-api-tokens.md) T4). Make the file once, before the first `up`, as in
+the commands above (`angelia token generate`, from the image or from a binary). The first start,
+with an empty token table, stores it as the admin token `bootstrap`.
+
+- **The file is the token.** `cat bootstrap-token` prints it. Use it as `ANGELIA_TOKEN` with the CLI
+  or as a bearer header: `curl -H "Authorization: Bearer $(cat bootstrap-token)"
+  http://127.0.0.1:8080/v1/watches`. Git ignores `bootstrap-token`; never commit it.
+- **Permissions.** The container runs as uid 65532, which cannot read a file that is mode `0600`
+  and owned by you. `chmod 0644` is accepted (the log warns that others can read it), or keep
+  `0600` and `sudo chown 65532 bootstrap-token`. Another path: `ANGELIA_BOOTSTRAP_TOKEN_FILE`.
+- **Keep the file while it is configured.** The role reads it at every start and fails to start
+  if it is missing. Make a named admin token with it (`angelia token create --name me --scope
+  admin`), then revoke `bootstrap` (`angelia token revoke bootstrap`) and drop the secret from
+  your compose file. A wiped database re-arms an old file.
+- **Without a file.** Remove the `secrets` entries and run
+  `docker compose exec angelia angelia token create --local --name me` once the stack is up.
 
 ## Full stack (Postgres)
 
 ```sh
 cd deploy/compose/full
 printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
+docker run --rm ghcr.io/angelia-dev/angelia:0.2.0 token generate > bootstrap-token && chmod 0644 bootstrap-token
 docker compose up -d       # postgres first, then angelia when postgres is healthy
 docker compose ps          # both "healthy" after the first probes
 ```
@@ -83,6 +106,8 @@ docker compose ps          # both "healthy" after the first probes
   Run `docker compose up` on it once yourself before you rely on it.
 - **apprise** (`caronc/apprise`, the apprise-api image) is in the `not-wired` profile. Nothing
   calls it: the chat sink that would use it does not exist yet (#120).
+- The bootstrap token works as in the SQLite stack ([above](#the-first-api-token)); the file goes
+  next to this `compose.yaml`.
 - The password is interpolated into `ANGELIA_DATABASE_DSN` from `.env`, unescaped. Use hex only
   (the `openssl rand -hex` above), or URL-encode it: characters such as `@ : / #` break the DSN.
   The password is visible in `docker inspect` of the angelia container. That is acceptable for
