@@ -2,8 +2,7 @@
 # of the angelia container through `serve --watches`. Edit it and restart the container.
 #
 # No sink is listed here: events are detected and stored, and they are delivered once a sink
-# is added (for example with `angelia apply`, docs/cli.md). Delivery to a webhook needs the
-# webhook sink (#108).
+# is added to this file (see docs/install.md, "Your first delivered event", and docs/webhooks.md).
 version: 1
 
 watches:

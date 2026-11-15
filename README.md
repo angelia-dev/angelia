@@ -10,7 +10,7 @@ Detect → normalize → deliver.
 
 ## Status
 
-**Pre-alpha / Phase 0.** Nothing here is usable yet. Part of the [angelia-dev](https://github.com/angelia-dev) organization. Design docs:
+**Installable pre-release (v0.1.x).** Signed binaries and a container image are built by the release pipeline. **Push mode is usable:** describe watches, sinks and subscriptions in a [watch file](docs/watch-file.md) and Angelia delivers signed webhooks, GitHub dispatches and chat messages. **The REST API, the CLI client commands, the pull API, SSE and MCP answer `401` until token storage lands** ([#72](https://github.com/angelia-dev/angelia/issues/72)). The Postgres store, the pull API and MCP are on `main` and ship with the next release. Start with [docs/install.md](docs/install.md). Part of the [angelia-dev](https://github.com/angelia-dev) organization. Design docs:
 
 - [docs/prd.md](docs/prd.md): problem, market, goals, requirements, roadmap
 - [docs/architecture.md](docs/architecture.md): components, event contract, language choice, Phase 0 benchmarks
@@ -34,9 +34,12 @@ Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/pro
 
 ## Run it
 
+Follow [docs/install.md](docs/install.md): install a [release](https://github.com/angelia-dev/angelia/releases)
+binary and verify it, run it with SQLite (with a systemd unit), and get a first signed webhook delivered.
+
 Container images and Docker Compose examples are in [deploy/compose/](deploy/compose/README.md):
-one container with SQLite on a volume, and a full stack with Postgres. The image is not
-published yet.
+one container with SQLite on a volume, and a full stack with Postgres. The GitHub Container
+Registry package is not public yet, so pulling the image needs a login for now.
 
 ## Development
 

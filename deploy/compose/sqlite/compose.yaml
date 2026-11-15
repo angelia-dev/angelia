@@ -17,7 +17,7 @@ services:
     restart: "no"
 
   angelia:
-    image: ghcr.io/angelia-dev/angelia:0.1.0
+    image: ghcr.io/angelia-dev/angelia:0.2.0
     command:
       - serve
       - --config
