@@ -274,7 +274,7 @@ able to mint more tokens through a tool whose call the user may not inspect.
 | Command | Path | Output |
 |---|---|---|
 | `angelia token create --name NAME --scope read\|write\|admin [--expires-in D \| --expires-at T]` | API (`POST /v1/tokens`, admin token) | The token alone on **stdout**, one line, so `$(angelia token create …)` works; id, name, scope and "shown once, store it now" on **stderr**. `-o json` prints the full created object, including `token`, on stdout. |
-| `angelia token list [--all] [-o table\|json\|yaml]` | API | ID, NAME, SCOPE, CREATED, EXPIRES, LAST USED, and REVOKED with `--all`. Never a hash. |
+| `angelia token list [--include-revoked] [-o table\|json]` | API | ID, NAME, SCOPE, CREATED, EXPIRES, LAST USED, and REVOKED with `--include-revoked` (`--all` follows pages, as on the other list commands). Never a hash. |
 | `angelia token revoke ID\|NAME [--yes]` | API | A name is resolved to the active token's id first. |
 | `angelia token create --local …` | Instance-side: `--config`, store-only opener (below) | Same output as `create`. |
 | `angelia token generate [--out FILE]` | Offline | A new token for the bootstrap file (T4). |

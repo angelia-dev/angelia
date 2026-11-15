@@ -21,8 +21,8 @@ import (
 
 // `angelia token …`: API tokens (story #72, ADR 0030 T7). One group for
 // both paths: `generate` is offline and `create --local` writes to the
-// instance's database directly; create, list and revoke through the API
-// (72-F) join the same group, added to newTokenCmd.
+// instance's database directly; create, list and revoke go through the API
+// (token_api.go).
 
 func newTokenCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -31,7 +31,7 @@ func newTokenCmd() *cobra.Command {
 		Long: `Manage the bearer tokens of the REST API. A token is shown once, when it is
 created; the instance stores only its hash. See docs/configuration.md, "API tokens".`,
 	}
-	cmd.AddCommand(newTokenGenerateCmd(), newTokenCreateCmd())
+	cmd.AddCommand(newTokenGenerateCmd(), newTokenCreateCmd(), newTokenListCmd(), newTokenRevokeCmd())
 	return cmd
 }
 
@@ -101,10 +101,16 @@ type tokenCreateFlags struct {
 func newTokenCreateCmd() *cobra.Command {
 	var f tokenCreateFlags
 	cmd := &cobra.Command{
-		Use:   "create --local --name NAME [--scope read|write|admin] [--expires-in D | --expires-at T]",
+		Use:   "create --name NAME [--scope read|write|admin] [--expires-in D | --expires-at T] [--local]",
 		Short: "Create an API token and print it once",
 		Long: `Create an API token. The token is printed alone on stdout, once, so that
 $(angelia token create …) works; its id, name, scope and expiry go to stderr.
+
+Without --local the token is created through the API (POST /v1/tokens) with an
+admin token: --server, --token (or ANGELIA_SERVER, ANGELIA_TOKEN, the client
+config file) as for the other commands. --scope defaults to read. With -o json
+the 201 body is printed instead of the bare token: it holds the token, so it is
+as sensitive as the token itself (do not pipe it into a log or a CI artefact).
 
 --local writes to the instance's database directly, without the API: it reads
 database.dsn from the instance configuration (--config or ANGELIA_CONFIG), needs
@@ -114,7 +120,13 @@ token's creator is recorded as "local". With --local, --scope defaults to admin.
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !f.local {
-				return errors.New("token create: only --local is available in this version (creating a token through the API comes with the token API)")
+				if cmd.Flags().Changed("config") {
+					return errors.New("token create: --config only applies with --local (without it the command talks to the API; see --server)")
+				}
+				return runTokenCreateAPI(cmd, f, time.Now())
+			}
+			if cmd.Flags().Changed("output") {
+				return errors.New("token create: -o does not apply with --local")
 			}
 			return runTokenCreateLocal(cmd, f, time.Now())
 		},
@@ -122,10 +134,15 @@ token's creator is recorded as "local". With --local, --scope defaults to admin.
 	fl := cmd.Flags()
 	fl.BoolVar(&f.local, "local", false, "write to the instance's database directly (instance-side, no API)")
 	fl.StringVar(&f.name, "name", "", "the token's name, unique among active tokens: ^[a-z0-9][a-z0-9._-]{0,62}$")
-	fl.StringVar(&f.scope, "scope", "", "read, write or admin (default admin with --local)")
+	fl.StringVar(&f.scope, "scope", "", "read, write or admin (default read; admin with --local)")
 	fl.StringVar(&f.expiresAt, "expires-at", "", "expiry as an RFC 3339 time, such as 2027-01-31T00:00:00Z (default: never)")
 	fl.StringVar(&f.expiresIn, "expires-in", "", "expiry from now, such as 90d or 720h (default: never)")
 	cmd.MarkFlagsMutuallyExclusive("expires-at", "expires-in")
+	addClientFlags(cmd)
+	// --local never talks to the API: a connection flag would be ignored.
+	for _, name := range []string{"server", "token", "insecure-http"} {
+		cmd.MarkFlagsMutuallyExclusive("local", name)
+	}
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.RegisterFlagCompletionFunc("scope", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{store.TokenScopeRead, store.TokenScopeWrite, store.TokenScopeAdmin}, cobra.ShellCompDirectiveNoFileComp
@@ -216,13 +233,10 @@ func runTokenCreateLocal(cmd *cobra.Command, f tokenCreateFlags, now time.Time) 
 		return fmt.Errorf("token create: %w", err)
 	}
 	if _, err := fmt.Fprintln(cmd.OutOrStdout(), tok); err != nil {
+		reportTokenLost(cmd.ErrOrStderr(), id)
 		return err
 	}
-	exp := "never"
-	if expires != nil {
-		exp = expires.Format(time.RFC3339)
-	}
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "created API token %s (name %s, scope %s, expires %s)\nthe token is shown once: store it now\n", id, f.name, f.scope, exp)
+	reportTokenCreated(cmd.ErrOrStderr(), id, f.name, f.scope, expires)
 	return nil
 }
 

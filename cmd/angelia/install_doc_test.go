@@ -145,3 +145,34 @@ func TestComposeExamplesPinTheSameAngeliaTag(t *testing.T) {
 		t.Errorf("compose tag %q was never published or is not a pin", tags[0])
 	}
 }
+
+// The `docker run ghcr.io/angelia-dev/angelia:<tag> token generate` lines of
+// the guides use the tag the compose files pin.
+func TestTokenGenerateDocsUseThePinnedTag(t *testing.T) {
+	pin := regexp.MustCompile(`(?m)^\s*image: ghcr\.io/angelia-dev/angelia:(\S+)$`)
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "compose", "sqlite", "compose.yaml")) //nolint:gosec // fixed fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := pin.FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatal("sqlite/compose.yaml pins no tag")
+	}
+	use := regexp.MustCompile(`ghcr\.io/angelia-dev/angelia:(\S+) token generate`)
+	seen := 0
+	for _, f := range []string{"README.md", "docs/install.md", "deploy/compose/README.md"} {
+		doc, err := os.ReadFile(filepath.Join("..", "..", f)) //nolint:gosec // fixed fixture paths
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range use.FindAllStringSubmatch(string(doc), -1) {
+			seen++
+			if u[1] != m[1] {
+				t.Errorf("%s runs token generate with tag %s, compose pins %s", f, u[1], m[1])
+			}
+		}
+	}
+	if seen < 2 {
+		t.Errorf("found %d token generate lines, want at least 2 (install.md and the compose README)", seen)
+	}
+}

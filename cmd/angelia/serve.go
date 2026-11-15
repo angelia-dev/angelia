@@ -134,7 +134,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			if err := bootstrapAPITokens(cmd.Context(), cfg, st, log); err != nil {
 				return err
 			}
-			srv, err := newAPIServer(cfg, st, sources, keys, m, log)
+			srv, err := newAPIServer(cfg, st, sources, keys, m, drain, log)
 			if err != nil {
 				return err
 			}

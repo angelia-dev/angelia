@@ -156,7 +156,7 @@ func TestTokenCreateLocalPostgres(t *testing.T) {
 }
 
 // Flags are checked before anything is opened; a missing database is an
-// error and is not created; without --local the command refuses.
+// error and is not created.
 func TestTokenCreateLocalErrors(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "missing.db")
 	cfg := tokenInstance(t, "sqlite://"+db)
@@ -164,7 +164,6 @@ func TestTokenCreateLocalErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--name", "me"}, "only --local"},
 		{[]string{"--local"}, `"name" not set`},
 		{[]string{"--local", "--name", "Me"}, "--name"},
 		{[]string{"--local", "--name", "_me"}, "--name"},
