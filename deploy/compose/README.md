@@ -78,6 +78,8 @@ with an empty token table, stores it as the admin token `bootstrap`.
 - **Permissions.** The container runs as uid 65532, which cannot read a file that is mode `0600`
   and owned by you. `chmod 0644` is accepted (the log warns that others can read it), or keep
   `0600` and `sudo chown 65532 bootstrap-token`. Another path: `ANGELIA_BOOTSTRAP_TOKEN_FILE`.
+  Do not confuse it with `ANGELIA_API_BOOTSTRAP_TOKEN_FILE`: the first is a path on the host, read by
+  Compose when it interpolates `compose.yaml`; the second is the path inside the container, already set there.
 - **Keep the file while it is configured.** The role reads it at every start and fails to start
   if it is missing. Make a named admin token with it (`angelia token create --name me --scope
   admin`), then revoke `bootstrap` (`angelia token revoke bootstrap`) and drop the secret from

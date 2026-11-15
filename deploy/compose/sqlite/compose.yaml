@@ -49,7 +49,7 @@ services:
       start_period: 10s
       retries: 3
 
-# Made once, before the first `up`: `angelia token generate --out bootstrap-token` (../README.md).
+# Made once, before the first `up`: `docker run --rm IMAGE token generate > bootstrap-token && chmod 0644 bootstrap-token` (see ../README.md).
 # The path can be changed with ANGELIA_BOOTSTRAP_TOKEN_FILE. Create it before `up`.
 secrets:
   angelia_bootstrap_token:

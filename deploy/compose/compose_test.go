@@ -339,7 +339,7 @@ var (
 
 // Both stacks hand the first admin token to the api role as a file secret
 // (ADR 0030 T4): the same secret, the same path, a file that is made once with
-// `angelia token generate --out` and never committed. The secret is read-only
+// `angelia token generate` (see deploy/compose/README.md) and never committed. The secret is read-only
 // by construction, and the token itself is in neither compose file.
 func TestComposeFilesMountTheBootstrapTokenAsASecret(t *testing.T) {
 	const path = "/run/secrets/angelia_bootstrap_token"

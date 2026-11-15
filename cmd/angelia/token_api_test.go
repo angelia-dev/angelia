@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http/httptest"
 	"path/filepath"
@@ -287,4 +288,77 @@ func TestAPIOptionsDrainWait(t *testing.T) {
 	if o.DrainWait != 0 { // api.New reads 0 as api.DefaultDrainWait
 		t.Errorf("DrainWait = %v", o.DrainWait)
 	}
+}
+
+// Revoking the last active admin token needs --yes (ADR 0030 T6); it is not
+// asked when another active admin token exists, and expired or revoked admin
+// tokens do not count.
+func TestTokenRevokeLastAdmin(t *testing.T) {
+	ta := newTokenAPI(t)
+	// Two admin tokens: the seeded one and a new one. Revoking either is fine.
+	out, _, err := ta.run(t, ta.admin, "token", "create", "--name", "second", "--scope", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := strings.TrimSpace(out)
+	if _, _, err := ta.run(t, ta.admin, "token", "revoke", "second"); err != nil {
+		t.Fatalf("not the last admin: %v", err)
+	}
+	if _, _, err := ta.run(t, second, "watch", "list"); err == nil {
+		t.Fatal("second still works")
+	}
+	// Now the seeded token is the only active admin.
+	out, errOut, err := ta.run(t, ta.admin, "token", "revoke", "admin")
+	if err == nil || !strings.Contains(err.Error(), "last active admin token; pass --yes") || out != "" || strings.Contains(errOut, "revoked") {
+		t.Fatalf("last admin: %v %q %q", err, out, errOut)
+	}
+	if _, errOut, err := ta.run(t, ta.admin, "watch", "list"); err != nil {
+		t.Fatalf("the refused revoke changed something: %v %s", err, errOut)
+	}
+	// A non-admin target is never asked about.
+	if _, _, err := ta.run(t, ta.admin, "token", "revoke", "reader"); err != nil {
+		t.Fatalf("revoking a read token: %v", err)
+	}
+	if _, errOut, err := ta.run(t, ta.admin, "token", "revoke", ta.adminID, "--yes"); err != nil || !strings.Contains(errOut, "revoked API token "+ta.adminID) {
+		t.Fatalf("--yes: %v %q", err, errOut)
+	}
+	if _, _, err := ta.run(t, ta.admin, "watch", "list"); err == nil {
+		t.Fatal("the revoked admin token still works")
+	}
+}
+
+func TestTokenCreateConfigNeedsLocal(t *testing.T) {
+	ta := newTokenAPI(t)
+	_, _, err := ta.run(t, ta.admin, "token", "create", "--name", "x", "--config", "/nonexistent.yaml")
+	if err == nil || !strings.Contains(err.Error(), "--config only applies with --local") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("closed pipe") }
+
+// When stdout cannot take the token, stderr says which token to revoke, and
+// does not hold the token.
+func TestTokenCreateStdoutFailureNamesTheToken(t *testing.T) {
+	ta := newTokenAPI(t)
+	root := newRootCmd()
+	var e bytes.Buffer
+	root.SetOut(failWriter{})
+	root.SetErr(&e)
+	root.SetArgs([]string{"token", "create", "--name", "lost", "--server", ta.srv.URL, "--token", ta.admin})
+	if err := root.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("no error")
+	}
+	rows, err := ta.st.ListAPITokens(t.Context(), "", 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == "lost" && strings.Contains(e.String(), "created token "+r.ID+" but could not print it; revoke it with `angelia token revoke "+r.ID+"`") {
+			return
+		}
+	}
+	t.Fatalf("stderr: %q", e.String())
 }

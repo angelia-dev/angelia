@@ -120,6 +120,9 @@ token's creator is recorded as "local". With --local, --scope defaults to admin.
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !f.local {
+				if cmd.Flags().Changed("config") {
+					return errors.New("token create: --config only applies with --local (without it the command talks to the API; see --server)")
+				}
 				return runTokenCreateAPI(cmd, f, time.Now())
 			}
 			if cmd.Flags().Changed("output") {
@@ -131,7 +134,7 @@ token's creator is recorded as "local". With --local, --scope defaults to admin.
 	fl := cmd.Flags()
 	fl.BoolVar(&f.local, "local", false, "write to the instance's database directly (instance-side, no API)")
 	fl.StringVar(&f.name, "name", "", "the token's name, unique among active tokens: ^[a-z0-9][a-z0-9._-]{0,62}$")
-	fl.StringVar(&f.scope, "scope", "", "read, write or admin (default admin with --local)")
+	fl.StringVar(&f.scope, "scope", "", "read, write or admin (default read; admin with --local)")
 	fl.StringVar(&f.expiresAt, "expires-at", "", "expiry as an RFC 3339 time, such as 2027-01-31T00:00:00Z (default: never)")
 	fl.StringVar(&f.expiresIn, "expires-in", "", "expiry from now, such as 90d or 720h (default: never)")
 	cmd.MarkFlagsMutuallyExclusive("expires-at", "expires-in")
@@ -230,6 +233,7 @@ func runTokenCreateLocal(cmd *cobra.Command, f tokenCreateFlags, now time.Time) 
 		return fmt.Errorf("token create: %w", err)
 	}
 	if _, err := fmt.Fprintln(cmd.OutOrStdout(), tok); err != nil {
+		reportTokenLost(cmd.ErrOrStderr(), id)
 		return err
 	}
 	reportTokenCreated(cmd.ErrOrStderr(), id, f.name, f.scope, expires)

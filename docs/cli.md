@@ -302,7 +302,7 @@ angelia token create --local --name NAME [--scope read|write|admin] [--expires-i
 
 angelia token create --name NAME [--scope read|write|admin] [--expires-in D | --expires-at T] [-o json]
 angelia token list [--include-revoked] [--limit N] [--cursor C | --all] [-o json]
-angelia token revoke ID|NAME
+angelia token revoke ID|NAME [--yes]
 ```
 
 `generate` and `create --local` run on the instance and need no API token (ADR 0030 T7). `create`,
@@ -326,6 +326,7 @@ as for the other commands ([connection](#connection): `--server`, `--token`, `AN
     tokens. `--scope` defaults to `admin`.
   - `--expires-at` takes an RFC 3339 time and `--expires-in` a duration from now (`90d`, `720h`); either
     must be in the future, and at most one is given. Without them the token never expires.
+  - `--config` applies only with `--local` (without it the command talks to the API) and is refused otherwise.
   - `--local` cannot be combined with `--server`, `--token` or `--insecure-http`: it never talks to the
     API, so they would be ignored (a usage error). `-o` does not apply to it either.
 - `create` (through the API) prints the token alone on stdout and the id, name, scope and expiry on
@@ -337,6 +338,9 @@ as for the other commands ([connection](#connection): `--server`, `--token`, `AN
   hash); `--include-revoked` adds revoked tokens and a `REVOKED` column. Expired tokens are always listed.
 - `revoke` takes a token's id or the name of an active token (resolved through `list`). Pass the id, never
   the token: a token given by mistake is refused and not echoed. Revoking a revoked token changes nothing.
+  Revoking the **last active admin token** (counting only admin tokens that are not revoked or expired) is
+  refused unless `--yes` is given, since without an admin token the API cannot manage tokens; recover
+  with `angelia token create --local`. There is no interactive prompt.
   The token stops working from the next request, and an open event stream notices within a minute.
 - A token is never written to a log or an error message by these commands. `--token` on the command
   line is visible in process lists; prefer `ANGELIA_TOKEN` or the client config file.
