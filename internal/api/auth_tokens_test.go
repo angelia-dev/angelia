@@ -18,6 +18,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/apitoken"
 	"github.com/angelia-dev/angelia/internal/apitoken/format"
+	"github.com/angelia-dev/angelia/internal/mcp"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
@@ -410,5 +411,68 @@ func TestTokenRevokesItself(t *testing.T) {
 	row, err := e.st.APITokenByID(context.Background(), id)
 	if err != nil || row.RevokedBy != id {
 		t.Fatalf("%+v %v", row, err)
+	}
+}
+
+// postMCP sends one JSON-RPC request to /mcp.
+func postMCP(t *testing.T, url, token, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), "POST", url+api.MCPPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// MCP over HTTP on real tokens: a read token calls list_watches; once it
+// is revoked, the same token's next /mcp request is 401 (revoked in the
+// access log), as MCP forwards the header on every call (ADR 0030 T6).
+func TestMCPRealToken(t *testing.T) {
+	e := newTokEnv(t, func(o *api.Options) {
+		o.MCP = func(rest http.RoundTripper) (http.Handler, error) {
+			return mcp.NewHTTPHandler(mcp.HTTPOptions{REST: rest, Version: "test"}) //nolint:wrapcheck // test
+		}
+	})
+	ts := httptest.NewServer(e.srv)
+	t.Cleanup(ts.Close)
+	admin := e.tokens[api.ScopeAdmin]
+	r := e.must(http.StatusCreated, e.do("POST", "/v1/tokens", admin, map[string]any{"name": "agent", "scope": "read"}))
+	id, tok := r.json(t)["id"].(string), r.json(t)["token"].(string)
+
+	const call = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_watches","arguments":{}}}`
+	status, body := postMCP(t, ts.URL, tok, call)
+	if status != http.StatusOK || !strings.Contains(body, `"result"`) || strings.Contains(body, `"isError":true`) {
+		t.Fatalf("list_watches with a read token: %d %s", status, body)
+	}
+	var inner bool
+	for _, rec := range e.accessLog() {
+		if rec["via"] == "mcp" && rec["route"] == "/v1/watches" && rec["principal"] == id && rec["status"] == float64(http.StatusOK) {
+			inner = true
+		}
+	}
+	if !inner {
+		t.Errorf("no in-memory REST call with the token: %v", e.accessLog())
+	}
+
+	e.must(http.StatusNoContent, e.do("DELETE", "/v1/tokens/"+id, admin, nil))
+	status, body = postMCP(t, ts.URL, tok, call)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("revoked token on /mcp: %d %s", status, body)
+	}
+	recs := e.accessLog()
+	if last := recs[len(recs)-1]; last["route"] != api.MCPPath || last["auth_failure"] != "revoked" || last["token_id"] != id {
+		t.Errorf("access log of the revoked /mcp call: %v", last)
+	}
+	if strings.Contains(e.log.String(), tok) {
+		t.Error("the token reached the log")
 	}
 }

@@ -7,13 +7,14 @@
 // table is counted by a collector that queries the store at scrape time
 // (Metrics.RegisterDeliveryCounts); the scheduler's per-host demand estimate is set with Metrics.SetHostDemand. Handler serves the registry.
 //
-// Cardinality is bounded by design. The only labels are source kind,
-// fetch result, delivery outcome and status, fixed lists (bucket, origin,
-// reason, class, the API's authentication failure reason), and the host of the netguard limits table: the built-in
-// hosts plus those of http.host_limits.hosts (any other host is "other",
-// because sinks share the client and their hosts can be secret). No label ever
-// carries a package, watch, target, subscription or sink name.
-// docs/operations/metrics.md documents every metric.
+// Cardinality is bounded by design. The only labels are source kind, fetch
+// result, delivery outcome and status, fixed lists (bucket, origin, reason,
+// class, the API's authentication failure reason), and the host of the
+// netguard limits table: the built-in hosts plus those of
+// http.host_limits.hosts (any other host is "other", because sinks share the
+// client and their hosts can be secret). No label ever carries a package,
+// watch, target, subscription or sink name. docs/operations/metrics.md
+// documents every metric.
 package metrics
 
 import (

@@ -170,8 +170,12 @@ type apiRole struct{ s *Server }
 func (apiRole) Name() string { return "api" }
 
 // Run waits for ctx, then drains the server. It runs Options.AuthLoop for
-// the same lifetime: the loop's context ends after the drain, so that no new
-// request authenticates after the loop's last write, and Run waits for it.
+// the same lifetime. Once it drains, no new request authenticates (a new one
+// gets 503 before its token is read; an MCP tool's in-memory call runs only
+// inside an /mcp request already in flight), so Run waits for the requests
+// in flight, at most Options.DrainWait, and only then ends the loop's
+// context, so that its final flush holds every recorded use. A request still
+// running after DrainWait (logged) may record a use the flush misses.
 func (r apiRole) Run(ctx context.Context) error {
 	loop := r.s.opts.AuthLoop
 	if loop == nil {
@@ -186,6 +190,12 @@ func (r apiRole) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		r.s.Drain()
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.s.opts.DrainWait)
+		if !r.s.inflight.wait(wctx) {
+			r.s.log.WarnContext(wctx, "api requests still in flight at the final token flush",
+				"in_flight", r.s.inflight.count(), "waited", r.s.opts.DrainWait.String())
+		}
+		cancel()
 		stop()
 		if err := <-done; err != nil {
 			return fmt.Errorf("api role: %w", err)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,12 @@ const (
 	MaxAuthRecheck    = 60 * time.Second
 	DefaultEventScan  = 10000
 	// DefaultMaxStreams bounds the event streams one Server holds open.
-	DefaultMaxStreams  = 1000
+	DefaultMaxStreams = 1000
+	// DefaultDrainWait is Options.DrainWait's default: the HTTP write
+	// timeout of the supervisor, which already bounds every request but an
+	// event stream (closed by the drain), so that the wait plus the final
+	// flush stays inside the default drain timeout (25 s).
+	DefaultDrainWait   = 10 * time.Second
 	streamWriteTimeout = 10 * time.Second
 	// StatusClientClosed is the status the access log records for a request
 	// whose client went away before anything was written (nginx's 499). It
@@ -92,6 +98,11 @@ type Options struct {
 	// the refused authentications (angelia_api_auth_failures_total). Pass a
 	// non-nil value or leave it nil.
 	Metrics StreamMetrics
+	// DrainWait bounds how long the api role, once it drains, waits for the
+	// requests still in flight to finish before it stops AuthLoop (whose
+	// last flush must come after their authentications). 0 means
+	// DefaultDrainWait.
+	DrainWait time.Duration
 	// MCP, if set, builds the handler of POST /mcp (MCPPath), which the api
 	// role then mounts next to /v1/. Nil: /mcp is not served.
 	MCP MCPFactory
@@ -119,6 +130,7 @@ type Server struct {
 	streams  atomic.Int64 // open event streams
 	mcp      http.Handler // POST /mcp; nil when not served
 	authObs  AuthMetrics  // nil: auth failures are not counted
+	inflight reqCounter   // requests that reached authentication and have not returned
 }
 
 // New builds a Server.
@@ -153,6 +165,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.MaxStreams <= 0 {
 		opts.MaxStreams = DefaultMaxStreams
+	}
+	if opts.DrainWait <= 0 {
+		opts.DrainWait = DefaultDrainWait
 	}
 	spec, err := loadSpec()
 	if err != nil {
@@ -280,6 +295,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		unauthorized(sent).write(rec, r)
 		return
 	}
+	// Counted from here until ServeHTTP returns, so that the api role's
+	// final last-use flush comes after this authentication (apiRole.Run).
+	// An MCP tool's in-memory REST call is counted too, inside its /mcp
+	// request.
+	s.inflight.enter()
+	defer s.inflight.leave()
 	p, err := s.opts.Auth.Authenticate(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthenticated):
@@ -469,6 +490,57 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 	}
 	s.log.ErrorContext(r.Context(), "api request failed", "request_id", st.id, "error", err)
 	problem(SlugInternalError, "internal error; see the server log for request %s", st.id).write(w, r)
+}
+
+// reqCounter counts requests in flight; wait returns once none is left.
+// Unlike a sync.WaitGroup, enter may run while wait waits.
+type reqCounter struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n drops to 0; nil while n is 0
+}
+
+func (c *reqCounter) enter() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		c.idle = make(chan struct{})
+	}
+	c.n++
+}
+
+func (c *reqCounter) leave() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n--
+	if c.n == 0 {
+		close(c.idle)
+		c.idle = nil
+	}
+}
+
+func (c *reqCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// wait returns true once no request is in flight, or false when ctx ends
+// first.
+func (c *reqCounter) wait(ctx context.Context) bool {
+	for {
+		c.mu.Lock()
+		idle := c.idle
+		c.mu.Unlock()
+		if idle == nil {
+			return true
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // recorder captures the status and size of a response for the access log.

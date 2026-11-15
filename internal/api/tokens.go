@@ -151,6 +151,8 @@ func (s *Server) CreateToken(ctx context.Context, _ CreateTokenRequestObject) (C
 	s.audit(ctx, "token.create", attrs...)
 	h := http.Header{}
 	h.Set("Location", location("tokens", id))
+	// The body carries the token: no cache may keep it.
+	h.Set("Cache-Control", "no-store")
 	return response{status: http.StatusCreated, header: h, body: tokenCreatedJSON{tokenJSON: tokenJSONOf(row), Token: token}}, nil
 }
 

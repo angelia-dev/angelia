@@ -122,6 +122,9 @@ func TestCreateTokenSecretOnce(t *testing.T) {
 	if r.Header.Get("Angelia-Change") != "" {
 		t.Errorf("Angelia-Change on a create: %v", r.Header)
 	}
+	if got := r.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q on the response that carries the token", got)
+	}
 	if body["created_by"] != adminULID || body["scope"] != "write" || body["name"] != "ci" ||
 		body["expires_at"] != exp.Format(timestampLayout) || body["revoked_at"] != nil || body["last_used_at"] != nil {
 		t.Errorf("created body: %s", r.Body)
@@ -469,4 +472,111 @@ func TestRoleRunsAuthLoop(t *testing.T) {
 	if err := e.srv.Role().Run(ctx); err == nil || !strings.Contains(err.Error(), "flush failed") {
 		t.Errorf("a failing final flush: %v", err)
 	}
+}
+
+// gateAuth blocks each authentication until released, then accepts it.
+type gateAuth struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a gateAuth) Authenticate(context.Context, string) (Principal, error) {
+	a.entered <- struct{}{}
+	<-a.release
+	return Principal{ID: "tok-read", Scope: ScopeRead}, nil
+}
+
+// roleWithGate starts a request that blocks in authentication and the api
+// role with an AuthLoop that reports how many requests were in flight when
+// its context ended.
+func roleWithGate(t *testing.T, wait time.Duration) (e *env, a gateAuth, cancel func(), roleDone chan error, inflightAtStop chan int, reqDone chan struct{}) {
+	t.Helper()
+	a = gateAuth{entered: make(chan struct{}), release: make(chan struct{})}
+	inflightAtStop = make(chan int, 1)
+	var srv *Server
+	e = newEnv(t, func(o *Options) {
+		o.Auth = a
+		o.DrainWait = wait
+		o.AuthLoop = func(ctx context.Context) error {
+			<-ctx.Done()
+			inflightAtStop <- srv.inflight.count()
+			return nil
+		}
+	})
+	srv = e.srv
+	reqDone = make(chan struct{})
+	go func() {
+		defer close(reqDone)
+		e.do("GET", "/v1/watches", tokRead, nil)
+	}()
+	<-a.entered
+	ctx, c := context.WithCancel(context.Background())
+	roleDone = make(chan error, 1)
+	go func() { roleDone <- srv.Role().Run(ctx) }()
+	return e, a, c, roleDone, inflightAtStop, reqDone
+}
+
+// AC (final flush): once the role drains, it waits for the requests in
+// flight before it ends AuthLoop, so the final flush comes after their
+// authentications.
+func TestRoleWaitsForInflightBeforeFlush(t *testing.T) {
+	e, a, cancel, roleDone, atStop, reqDone := roleWithGate(t, time.Hour)
+	cancel()
+	<-e.srv.stop // drained, and the role is waiting for the request
+	select {
+	case n := <-atStop:
+		t.Fatalf("the loop stopped with %d request(s) in flight", n)
+	default:
+	}
+	close(a.release)
+	<-reqDone
+	if n := <-atStop; n != 0 {
+		t.Fatalf("%d request(s) in flight at the final flush", n)
+	}
+	if err := <-roleDone; err != nil {
+		t.Fatal(err)
+	}
+	// A new request after the drain is refused before authentication.
+	if r := e.do("GET", "/v1/watches", tokRead, nil); r.Status != http.StatusServiceUnavailable {
+		t.Fatalf("after the drain: %d", r.Status)
+	}
+}
+
+// The wait is bounded by DrainWait: a stuck request delays the final flush
+// at most that long, and the gap is logged.
+func TestRoleDrainWaitBound(t *testing.T) {
+	e, a, cancel, roleDone, atStop, reqDone := roleWithGate(t, time.Millisecond)
+	cancel()
+	if err := <-roleDone; err != nil {
+		t.Fatal(err)
+	}
+	if n := <-atStop; n != 1 {
+		t.Fatalf("in flight at the flush: %d, want the stuck request", n)
+	}
+	if !strings.Contains(e.log.String(), "still in flight at the final token flush") {
+		t.Errorf("no warning: %s", e.log.String())
+	}
+	close(a.release)
+	<-reqDone
+}
+
+func TestReqCounter(t *testing.T) {
+	var c reqCounter
+	if !c.wait(context.Background()) {
+		t.Fatal("an idle counter waits")
+	}
+	c.enter()
+	c.enter()
+	c.leave()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if c.wait(ctx) || c.count() != 1 {
+		t.Fatal("wait returned with a request in flight")
+	}
+	c.leave()
+	if !c.wait(context.Background()) || c.count() != 0 {
+		t.Fatal("wait after the last leave")
+	}
+	c.enter() // reusable after a wait
+	c.leave()
 }
