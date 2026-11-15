@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/angelia-dev/angelia/internal/apitoken/format"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
 	"github.com/angelia-dev/angelia/internal/secrets"
 )
@@ -790,9 +791,12 @@ func ReservedEnvName(s string) bool { return strings.HasPrefix(s, envPrefix) }
 // ReservedEnvRefusal starts the error of a reference to an ANGELIA_ name.
 const ReservedEnvRefusal = "names starting with " + envPrefix + " are always refused"
 
-// LooksLikeToken reports whether v starts with a well-known credential prefix.
-// Callers must not echo v when it does.
-func LooksLikeToken(v string) bool { return hasTokenPrefix(v) }
+// LooksLikeToken reports whether v starts with a well-known credential prefix
+// or holds an Angelia API token anywhere ([format.Contains], the full pattern
+// of ADR 0030 T1). A bare "ang_" prefix is deliberately not in tokenStart: it
+// would refuse ordinary names such as "ang_team" (ADR 0030 T9). Callers must
+// not echo v when it does.
+func LooksLikeToken(v string) bool { return hasTokenPrefix(v) || format.Contains(v) }
 
 func hasTokenPrefix(v string) bool {
 	for _, p := range tokenStart {

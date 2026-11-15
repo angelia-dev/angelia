@@ -84,6 +84,9 @@ func TestSchemaConstraints(t *testing.T) {
 		{"secret hosts_json invalid", `INSERT INTO secret (id, name, hosts_json, key_id, ciphertext, created_at, updated_at) VALUES ('x', 'n', 'x', 'k', '\x00', 0, 0)`, invalidJSON},
 		{"consumer filter_json", `INSERT INTO consumer (id, name, filter_json, created_at, updated_at) VALUES ('c', 'n', 'x', 0, 0)`, invalidJSON},
 		{"consumer acked_seq", `INSERT INTO consumer (id, name, acked_seq, created_at, updated_at) VALUES ('c', 'n', -1, 0, 0)`, check},
+		{"api_token scope", `INSERT INTO api_token (id, name, scope, hash, created_at, created_by) VALUES ('a', 'n', 'root', decode(repeat('00', 32), 'hex'), 0, 'local')`, check},
+		{"api_token hash length", `INSERT INTO api_token (id, name, scope, hash, created_at, created_by) VALUES ('a', 'n', 'read', '\x00', 0, 'local')`, check},
+		{"api_token active name", `INSERT INTO api_token (id, name, scope, hash, created_at, created_by) VALUES ('a', 'n', 'read', decode(repeat('00', 32), 'hex'), 0, 'local'), ('b', 'n', 'read', decode(repeat('00', 32), 'hex'), 0, 'local')`, unique},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

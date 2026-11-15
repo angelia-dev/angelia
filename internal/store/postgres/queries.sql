@@ -489,3 +489,37 @@ RETURNING *;
 -- name: MaxEventSeq :one
 SELECT greatest(coalesce((SELECT max(seq) FROM event), 0),
                 coalesce((SELECT highest_pruned_seq FROM event_prune WHERE id = 1), 0))::bigint AS seq;
+
+-- API tokens (story #72, ADR 0030 T3). Every write is one statement and takes
+-- no config lock: the races (same active name, same id) end on the primary
+-- key and the partial unique index.
+
+-- name: CreateAPIToken :exec
+INSERT INTO api_token (id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL, NULL);
+
+-- name: GetAPIToken :one
+SELECT * FROM api_token WHERE id = $1;
+
+-- name: ListAPITokensPage :many
+SELECT * FROM api_token WHERE id > sqlc.arg(after_id)::text ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: ListActiveAPITokensPage :many
+SELECT * FROM api_token WHERE id > sqlc.arg(after_id)::text AND revoked_at IS NULL ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: CountAPITokens :one
+SELECT count(*) FROM api_token;
+
+-- name: CountActiveAdminTokens :one
+SELECT count(*) FROM api_token
+WHERE scope = 'admin' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > sqlc.arg(now)::bigint);
+
+-- name: RevokeAPIToken :execrows
+UPDATE api_token SET revoked_at = sqlc.arg(revoked_at)::bigint, revoked_by = sqlc.arg(revoked_by)::text
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+
+-- last_used_at only moves forward; the UPDATE re-reads the newest row
+-- version under READ COMMITTED, so concurrent touches never move it back.
+-- name: TouchAPIToken :exec
+UPDATE api_token SET last_used_at = greatest(coalesce(last_used_at, 0), sqlc.arg(used_at)::bigint)
+WHERE id = sqlc.arg(id);

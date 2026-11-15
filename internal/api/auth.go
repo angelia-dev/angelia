@@ -49,7 +49,10 @@ func ParseScope(s string) (Scope, bool) {
 type Principal struct {
 	// ID names the token in logs and the audit trail. It must not be the
 	// token or derived from it in a reversible way.
-	ID    string
+	ID string
+	// Name is the token's operator label (ADR 0030 T9), for the access log
+	// and the audit trail; it may be empty.
+	Name  string
 	Scope Scope
 }
 
