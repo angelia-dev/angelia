@@ -410,6 +410,33 @@ func TestAPIAllowedEnv(t *testing.T) {
 	}
 }
 
+// api.bootstrap_token_file (ADR 0030 T4): a path from YAML or
+// ANGELIA_API_BOOTSTRAP_TOKEN_FILE, never the token itself, which is refused
+// without being echoed.
+func TestAPIBootstrapTokenFile(t *testing.T) {
+	cfg, err := load(t, "")
+	if err != nil || cfg.API.BootstrapTokenFile != "" {
+		t.Fatalf("default: %+v %v", cfg.API, err)
+	}
+	cfg, err = load(t, writeFile(t, "api:\n  bootstrap_token_file: /run/secrets/angelia-bootstrap\n"))
+	if err != nil || cfg.API.BootstrapTokenFile != "/run/secrets/angelia-bootstrap" {
+		t.Fatalf("yaml: %+v %v", cfg.API, err)
+	}
+	cfg, err = load(t, writeFile(t, "api:\n  bootstrap_token_file: /a\n"), "ANGELIA_API_BOOTSTRAP_TOKEN_FILE=/b")
+	if err != nil || cfg.API.BootstrapTokenFile != "/b" {
+		t.Fatalf("env: %+v %v", cfg.API, err)
+	}
+	const tok = "ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_" + "fakefakefakefakefakefakefakefakefakefakefakefakefake" + "7qt7acq"
+	_, err = load(t, "", "ANGELIA_API_BOOTSTRAP_TOKEN_FILE="+tok)
+	if err == nil || !strings.Contains(err.Error(), "api.bootstrap_token_file: holds a token") || strings.Contains(err.Error(), "fakefake") {
+		t.Fatalf("inline token: %v", err)
+	}
+	_, err = load(t, "", "ANGELIA_API_BOOTSTRAP_TOKEN_FILE=/a\nb")
+	if err == nil || !strings.Contains(err.Error(), "single-line") {
+		t.Fatalf("two lines: %v", err)
+	}
+}
+
 // ADR 0023 decided question 4: http.allow_networks and
 // http.allow_http_hosts, shared by sources and sinks.
 func TestHTTPAllowlists(t *testing.T) {

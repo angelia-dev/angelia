@@ -43,6 +43,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSecretCmd(), newSecretsCmd())
 	root.AddCommand(newWebhookCmd())
 	root.AddCommand(newMCPCmd())
+	root.AddCommand(newTokenCmd())
 	return root
 }
 
