@@ -35,6 +35,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0028](0028-postgres-event-cursor-and-write-concurrency.md) | On Postgres, event inserts take a transaction advisory lock so `event.seq` is in commit order; config, API and secret transactions share a second lock; the engine is `pgx` through `database/sql` | Accepted for D14–D22 (maintainer 2026-11-10); agent-decided items reviewed in the PR | #85 |
 | [0029](0029-mcp-server-go-sdk-rest-client.md) | The MCP server uses the official Go SDK, lives in `internal/mcp`, and every tool is a REST call made with the caller's token | Accepted for D8–D13 (maintainer 2026-11-10) and MIT-0 for `segmentio/asm` (maintainer 2026-11-13) | #81 |
 | [0030](0030-api-tokens.md) | API tokens are `ang_` bearer tokens stored as SHA-256 hashes in an `api_token` table on both engines; the first admin token comes from a bootstrap file or `angelia token create --local` | Accepted | #72 |
+| [0031](0031-postgres-concurrent-leasing-skip-locked.md) | On Postgres, lease transactions lock their rows with `FOR UPDATE SKIP LOCKED` instead of an advisory lock; lease times stay host times, checked against the database clock at start | Accepted for D21–D22 (maintainer 2026-11-10); implementation reviewed in the PR | #86 |
 
 ## Process
 

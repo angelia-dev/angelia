@@ -127,6 +127,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		defer func() { _ = st.Close() }()
+		// Leases compare host times across replicas: a host clock too far
+		// from the database's refuses these roles (D22, ADR 0031 §5).
+		if want["scheduler"] || want["dispatcher"] {
+			if err := open.CheckClock(cmd.Context(), st, nil, log); err != nil {
+				return err //nolint:wrapcheck // the message names the roles and the fix
+			}
+		}
 		if m != nil {
 			m.RegisterDeliveryCounts(st)
 		}

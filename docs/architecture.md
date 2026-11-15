@@ -53,7 +53,7 @@ The initial proposal was: a core API, verifier batches, an event "batch" that fa
 
 ### 3.2 Scheduler and workers
 - `target.next_check_at` is computed from `interval` (default 1h) ± jitter and adaptive backoff on errors.
-- Leasing: `SELECT … FOR UPDATE SKIP LOCKED` on Postgres (the Postgres engine of #85 serializes lease transactions with an advisory lock; concurrent leasing is #86, see [ADR 0028](adr/0028-postgres-event-cursor-and-write-concurrency.md) §3); a single-process lease on SQLite. No external queue is required.
+- Leasing: `SELECT … FOR UPDATE SKIP LOCKED` on Postgres, so several `scheduler` and `dispatcher` processes lease at once ([ADR 0031](adr/0031-postgres-concurrent-leasing-skip-locked.md)); a single-process lease on SQLite. No external queue is required.
 - **Per-host rate limiter** (e.g. `api.github.com`: 5,000 req/h with a token, 60 unauthenticated). Conditional requests (`ETag` / `If-None-Match`) are stored per target, in `target.fetch_state_json`, so every watch on that target shares them. A 304 costs almost nothing and on GitHub does not count against the limit.
 - Coalescing: 50 watches on the same upstream object (e.g. `pypi:requests` used by 50 subscriptions) mean **one** fetch. Watches reference a shared `target`.
 

@@ -4,7 +4,7 @@
 -- JSON text (json_array_elements_text) instead of sqlc.slice (ADR 0028 §5).
 
 -- Advisory locks (ADR 0028 §4): the first argument is the schema key, the
--- second the kind (1 config, 2 event, 3 lease).
+-- second the kind (1 config, 2 event). Lease transactions take none (ADR 0031).
 -- name: AdvisoryXactLock :exec
 SELECT pg_advisory_xact_lock(sqlc.arg(schema_key)::integer, sqlc.arg(kind)::integer);
 
@@ -183,20 +183,28 @@ WHERE seq > sqlc.arg(after_seq) AND seq <= sqlc.arg(up_to_seq) AND created_at < 
 -- name: HighestPrunedSeq :one
 SELECT highest_pruned_seq FROM event_prune WHERE id = 1;
 
--- name: DeleteExpiredLease :exec
-DELETE FROM lease WHERE name = $1 AND expires_at <= $2;
-
+-- One upsert takes a lease (ADR 0031 §2): a new row, a renewal by the same
+-- holder, or the takeover of an expired lease. A live lease of another holder
+-- matches no row of the WHERE, so the statement writes nothing. Under READ
+-- COMMITTED the WHERE is evaluated on the newest committed row, after waiting
+-- for a transaction that holds it.
 -- name: AcquireLease :execrows
-INSERT INTO lease (name, holder, expires_at) VALUES ($1, $2, $3)
-ON CONFLICT (name) DO UPDATE SET expires_at = excluded.expires_at
-WHERE lease.holder = excluded.holder;
+INSERT INTO lease (name, holder, expires_at) VALUES (sqlc.arg(name), sqlc.arg(holder), sqlc.arg(expires_at))
+ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+WHERE lease.holder = excluded.holder OR lease.expires_at <= sqlc.arg(now)::bigint;
 
 -- name: ReleaseLease :exec
 DELETE FROM lease WHERE name = $1 AND holder = $2;
 
+-- The lease row of a fenced write, locked until the write commits, so that a
+-- takeover commits either before the fence check or after the write (ADR
+-- 0031 §3). No row: the holder no longer owns the lease.
+-- name: LockHeldLease :one
+SELECT expires_at FROM lease WHERE name = $1 AND holder = $2 FOR UPDATE;
+
 -- Due targets that no unexpired lease covers ('target:' || id, see
--- store.TargetLeaseName), oldest due first. #86 adds FOR UPDATE SKIP LOCKED;
--- until then the lease lock serializes lease transactions (ADR 0028 §3).
+-- store.TargetLeaseName), oldest due first. Rows another lease transaction
+-- has locked are skipped, so concurrent callers get disjoint sets (ADR 0031).
 -- name: ListLeasableDueTargets :many
 SELECT id FROM target
 WHERE next_check_at <= sqlc.arg(now)
@@ -205,7 +213,8 @@ WHERE next_check_at <= sqlc.arg(now)
     WHERE lease.name = 'target:' || target.id AND lease.expires_at > sqlc.arg(now)
   )
 ORDER BY next_check_at, id
-LIMIT sqlc.arg(max_rows);
+LIMIT sqlc.arg(max_rows)
+FOR UPDATE SKIP LOCKED;
 
 -- name: CountLeasableDueTargets :one
 SELECT count(*) FROM target
@@ -238,11 +247,19 @@ WHERE id = sqlc.arg(id)
       AND lease.expires_at > sqlc.arg(now)
   );
 
--- name: TargetExists :one
-SELECT EXISTS (SELECT 1 FROM target WHERE id = $1);
+-- The target row of a fenced write, locked first: lease transactions lock the
+-- target and then its lease, so a fenced write does the same (ADR 0031 §3).
+-- name: LockTarget :one
+SELECT id FROM target WHERE id = $1 FOR UPDATE;
 
+-- Lease rows another transaction holds (a renewal or a takeover in progress)
+-- are skipped: they are not expired for long, and waiting on them could
+-- deadlock with a lease transaction (ADR 0031 §4).
 -- name: DeleteExpiredTargetLeases :execrows
-DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= $1;
+DELETE FROM lease WHERE name IN (
+  SELECT l.name FROM lease l WHERE l.name LIKE 'target:%' AND l.expires_at <= $1
+  FOR UPDATE SKIP LOCKED
+);
 
 -- name: AddPendingRelease :execrows
 INSERT INTO pending_release (watch_id, target_id, raw, held_at, release_json)
@@ -266,35 +283,49 @@ DELETE FROM pending_release WHERE watch_id = $1;
 
 -- Dispatcher (story #107, ADR 0017). The same three disjoint branches as on
 -- SQLite (story #232), each read in order from
--- delivery_status_next_attempt_at_id, which is built NULLS FIRST.
+-- delivery_status_next_attempt_at_id, which is built NULLS FIRST. Postgres
+-- refuses FOR UPDATE on a UNION, so each branch is a CTE that locks its rows
+-- and skips those another lease transaction holds (ADR 0031 §1). A branch
+-- locks up to max_rows rows; the rows the final LIMIT drops stay locked until
+-- the transaction ends, and are left alone.
 -- name: ListLeasableDueDeliveries :many
+WITH unscheduled AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT sqlc.arg(max_rows)
+  FOR UPDATE SKIP LOCKED
+), due AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now)::bigint
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT sqlc.arg(max_rows)
+  FOR UPDATE SKIP LOCKED
+), orphaned AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'in_flight'
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT sqlc.arg(max_rows)
+  FOR UPDATE SKIP LOCKED
+)
 SELECT u.id FROM (
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT sqlc.arg(max_rows))
+  SELECT id, next_attempt_at FROM unscheduled
   UNION ALL
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now)::bigint
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT sqlc.arg(max_rows))
+  SELECT id, next_attempt_at FROM due
   UNION ALL
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'in_flight'
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > sqlc.arg(now)::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT sqlc.arg(max_rows))
+  SELECT id, next_attempt_at FROM orphaned
 ) AS u
 ORDER BY u.next_attempt_at NULLS FIRST, u.id
 LIMIT sqlc.arg(max_rows);
@@ -313,10 +344,11 @@ SELECT EXISTS (
 
 -- Every lease of a delivery counts as an attempt, so an attempt cut short by
 -- a crash counts too. Unlike SQLite's, the update repeats the due predicate
--- of ListLeasableDueDeliveries (ADR 0028 §3): writers that take no lease lock
--- (FailPendingDeliveries, FailHeldDelivery, CancelHeldDeliveries) may have
--- changed or deleted the row since it was selected; then no row comes back
--- and the caller skips it. The holder's own new lease does not count.
+-- of ListLeasableDueDeliveries (ADR 0028 §3). The lease transaction holds the
+-- row lock since its select, so this is a second guard: no row comes back
+-- when the row no longer matches, and the caller skips it. The holder's own
+-- new lease does not count.
+
 -- name: StartDeliveryAttempt :one
 UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
 WHERE delivery.id = sqlc.arg(id)
@@ -337,6 +369,11 @@ SELECT * FROM subscription WHERE id = $1;
 
 -- name: GetSink :one
 SELECT * FROM sink WHERE id = $1;
+
+-- The delivery row of a fenced finish, locked before its lease row, in the
+-- order of the lease transaction (ADR 0031 §3). No row: it was deleted.
+-- name: LockDelivery :one
+SELECT id FROM delivery WHERE id = $1 FOR UPDATE;
 
 -- The end of an attempt, fenced by its lease: it applies only while holder
 -- still owns the lease row, expired or not, and the row is still at this

@@ -102,6 +102,24 @@ accepted; a keyword/value DSN (`host=… dbname=…`) is refused by `config chec
 `angelia secrets status` and `secrets rotate` work on both engines; on Postgres each row is re-encrypted only
 if its `revision` is unchanged, as on SQLite.
 
+### Several replicas (Postgres)
+
+On Postgres, several `angelia serve` processes can share one database ([ADR 0031](adr/0031-postgres-concurrent-leasing-skip-locked.md)).
+On SQLite, run one process.
+
+- **Roles that scale out.** `scheduler` and `dispatcher` run in as many processes as you like: each lease call
+  takes a disjoint set of due targets or deliveries (`FOR UPDATE SKIP LOCKED`), a target is never checked by
+  two processes at once, and a process that dies loses its leases when they expire. `api` scales out too: it
+  reads the database. Each process needs its own `listen` address or host.
+- **Rate limits are per process.** `http.host_limits` and the built-in budgets apply in each process
+  ([ADR 0027](adr/0027-configurable-per-host-rate-limits.md) §7). With N processes running `scheduler`, a
+  registry can receive N times the configured rate: divide the limits by N.
+- **Clocks.** Leases compare the host clocks of the processes. At start, a process that runs `scheduler` or
+  `dispatcher` measures its clock against the database's: it logs a warning above 10 s of skew and refuses to
+  start above 15 s, so that any two hosts stay within 30 s of each other. Keep the hosts synchronised (NTP).
+- **Watch file.** Several processes may start with the same `--watches` file: the applies take turns, and the
+  database ends with the file's configuration once.
+
 ## Outgoing HTTP and private networks
 
 Every request of a source or a sink goes through one HTTP client with an SSRF guard. It refuses

@@ -43,6 +43,9 @@ angelia serve --roles=api,scheduler,worker,dispatcher    # default: all
 - Is the role list final? architecture.md names four; whether SSE and MCP serve from `api` or need their own role is not stated.
 - Do `/healthz` and `/readyz` ([prd.md §7](../prd.md#7-non-functional-requirements)) report per role? Not specified.
 - Can several `scheduler` instances run at once? The docs only say "a single-process lease on SQLite" and `SKIP LOCKED` on Postgres.
+  *Answered by [ADR 0031](0031-postgres-concurrent-leasing-skip-locked.md) (#86): on Postgres, yes. Several
+  `scheduler` and `dispatcher` processes lease with `FOR UPDATE SKIP LOCKED` and get disjoint sets, provided
+  their host clocks pass the start-up skew check. On SQLite, one process runs them (one host, one file).*
 
 ## Alternatives considered
 
