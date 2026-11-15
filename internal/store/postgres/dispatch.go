@@ -11,12 +11,13 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 )
 
-// LeaseDueDeliveries implements [store.Store] under the lease lock (ADR 0028
-// §3). Writers that take no lease lock (FailPendingDeliveries,
-// FailHeldDelivery, CancelHeldDeliveries) can change or delete a selected row
-// before it is set in flight: StartDeliveryAttempt re-checks the due
-// predicate, and a row that no longer matches is skipped and its new lease
-// dropped, instead of being revived or failing the batch.
+// LeaseDueDeliveries implements [store.Store]. It locks the due deliveries
+// it selects with FOR UPDATE SKIP LOCKED and takes their leases in the same
+// transaction, without an advisory lock, so concurrent callers in any process
+// get disjoint sets (ADR 0031 §1). A delivery whose lease was taken by another
+// holder between the select and the upsert is skipped, never an error.
+// StartDeliveryAttempt re-checks the due predicate as a second guard; a row
+// that no longer matches is skipped and its new lease dropped.
 func (s *Store) LeaseDueDeliveries(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.LeasedDelivery, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -25,7 +26,7 @@ func (s *Store) LeaseDueDeliveries(ctx context.Context, holder string, now, unti
 		return nil, fmt.Errorf("store: lease due deliveries: empty holder or until not after now: %w", store.ErrInvalid)
 	}
 	var out []store.LeasedDelivery
-	err := s.withTx(ctx, lockLease, func(q *Queries) error {
+	err := s.withTx(ctx, lockNone, func(q *Queries) error {
 		ids, err := q.ListLeasableDueDeliveries(ctx, ListLeasableDueDeliveriesParams{Now: millis(now), MaxRows: maxRows(limit)})
 		if err != nil {
 			return wrap(err, "list due deliveries", holder)
@@ -34,13 +35,20 @@ func (s *Store) LeaseDueDeliveries(ctx context.Context, holder string, now, unti
 		out = make([]store.LeasedDelivery, 0, len(ids))
 		for _, id := range ids {
 			name := store.DeliveryLeaseName(id)
-			if err := acquire(ctx, q, name, holder, now, until); err != nil {
+			ok, err := acquire(ctx, q, name, holder, now, until)
+			if err != nil {
 				return err
+			}
+			if !ok {
+				continue
 			}
 			ld, ok, err := startAttempt(ctx, q, id, holder, now)
 			if err != nil {
 				return err
 			}
+			// Defensive only: the row lock taken by the select keeps the row
+			// due until this transaction ends, so StartDeliveryAttempt's
+			// re-check always matches and this branch is not reached.
 			if !ok {
 				if err := q.ReleaseLease(ctx, ReleaseLeaseParams{Name: name, Holder: holder}); err != nil {
 					return wrap(err, "release lease", name)
@@ -112,7 +120,10 @@ func (s *Store) CountDeliveriesByStatus(ctx context.Context) (map[string]int64, 
 	return out, nil
 }
 
-// FinishDelivery implements [store.Store], under the lease lock.
+// FinishDelivery implements [store.Store]. It locks the delivery, then its
+// lease row, in the order of LeaseDueDeliveries, so a takeover commits either
+// before the fence check, and the finish writes nothing, or after it (ADR
+// 0031 §3).
 func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, holder string) (bool, error) {
 	p := FinishLeasedDeliveryParams{
 		Status: f.Status, ID: f.ID, Attempt: f.Attempt, LeaseName: store.DeliveryLeaseName(f.ID), Holder: holder,
@@ -129,7 +140,18 @@ func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, hold
 		return false, fmt.Errorf("store: finish delivery %s: status %q: %w", f.ID, f.Status, store.ErrInvalid)
 	}
 	var held bool
-	err := s.withTx(ctx, lockLease, func(q *Queries) error {
+	err := s.withTx(ctx, lockNone, func(q *Queries) error {
+		_, err := q.LockDelivery(ctx, f.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // deleted: nothing to finish, as on SQLite
+		}
+		if err != nil {
+			return wrap(err, "finish delivery", f.ID)
+		}
+		ok, err := holdsLease(ctx, q, p.LeaseName, holder, time.Time{})
+		if err != nil || !ok {
+			return err
+		}
 		n, err := q.FinishLeasedDelivery(ctx, p)
 		if err != nil {
 			return wrap(err, "finish delivery", f.ID)

@@ -26,7 +26,8 @@ const (
 	lockNone   int32 = 0
 	lockConfig int32 = 1 // config, API and secret writes (§2)
 	lockEvent  int32 = 2 // before every event insert (§1)
-	lockLease  int32 = 3 // lease transactions, until #86 (§3)
+	// Kind 3, the lease lock of #85, is retired: lease transactions take no
+	// advisory lock (ADR 0031).
 )
 
 // poolMaxConnsParam is the DSN parameter of the pool size (ADR 0028 §8).
@@ -44,9 +45,10 @@ var poolOnlyParams = []string{
 //
 // Transactions run at READ COMMITTED. Config, API and secret transactions
 // (and the Store methods that write config rows) take the config lock as
-// their first statement; lease transactions take the lease lock as theirs;
-// a check transaction takes the event lock before each event insert, so
-// event.seq is in commit order (ADR 0028 §1-§4).
+// their first statement; a check transaction takes the event lock before each
+// event insert, so event.seq is in commit order (ADR 0028 §1-§4). Lease
+// transactions take no advisory lock: they lock the rows they lease with
+// FOR UPDATE SKIP LOCKED, so several processes lease at once (ADR 0031).
 type Store struct {
 	db  *sql.DB
 	q   *Queries
@@ -54,7 +56,7 @@ type Store struct {
 
 	// afterLeaseSelect, when set by a test, runs inside a lease transaction
 	// between the select of due rows and the writes, so a test can change
-	// those rows from another connection.
+	// those rows from another connection or hold the transaction open.
 	afterLeaseSelect func()
 }
 
@@ -497,11 +499,12 @@ func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delive
 	return wrap(o.q.CreateDeliveries(ctx, b), "create deliveries of event", e.ID)
 }
 
-// LeaseDueTargets implements [store.Store]. It runs under the lease lock, so
-// lease transactions of every process exclude each other (ADR 0028 §3). Each
-// target is read back after its lease is written: one deleted since the
-// select (DeleteTargetIfUnused takes no lease lock) is skipped and its new
-// lease dropped.
+// LeaseDueTargets implements [store.Store]. It locks the due targets it
+// selects with FOR UPDATE SKIP LOCKED and takes their leases in the same
+// transaction, without an advisory lock, so concurrent callers in any process
+// get disjoint sets (ADR 0031 §1). A target whose lease was taken by another
+// holder between the select and the upsert is skipped, never an error (ADR
+// 0009 §2): the call then returns fewer targets.
 func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until time.Time, limit int) ([]store.Target, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -510,7 +513,7 @@ func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until t
 		return nil, fmt.Errorf("store: lease due targets: empty holder or until not after now: %w", store.ErrInvalid)
 	}
 	var out []store.Target
-	err := s.withTx(ctx, lockLease, func(q *Queries) error {
+	err := s.withTx(ctx, lockNone, func(q *Queries) error {
 		ids, err := q.ListLeasableDueTargets(ctx, ListLeasableDueTargetsParams{Now: millis(now), MaxRows: maxRows(limit)})
 		if err != nil {
 			return wrap(err, "list due targets", holder)
@@ -518,17 +521,16 @@ func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until t
 		s.leaseSelected()
 		out = make([]store.Target, 0, len(ids))
 		for _, id := range ids {
-			name := store.TargetLeaseName(id)
-			if err := acquire(ctx, q, name, holder, now, until); err != nil {
+			ok, err := acquire(ctx, q, store.TargetLeaseName(id), holder, now, until)
+			if err != nil {
 				return err
 			}
-			r, err := q.GetTarget(ctx, id)
-			if errors.Is(err, sql.ErrNoRows) {
-				if err := q.ReleaseLease(ctx, ReleaseLeaseParams{Name: name, Holder: holder}); err != nil {
-					return wrap(err, "release lease", name)
-				}
+			if !ok {
 				continue
 			}
+			// The row lock of the select keeps the target: it cannot be
+			// deleted before this transaction ends.
+			r, err := q.GetTarget(ctx, id)
 			if err != nil {
 				return wrap(err, "get target", id)
 			}
@@ -546,20 +548,15 @@ func (s *Store) LeaseDueTargets(ctx context.Context, holder string, now, until t
 	return out, nil
 }
 
-// acquire replaces an expired lease and takes it for holder; the select
-// excluded live leases, so a refusal is a bug.
-func acquire(ctx context.Context, q *Queries, name, holder string, now, until time.Time) error {
-	if err := q.DeleteExpiredLease(ctx, DeleteExpiredLeaseParams{Name: name, ExpiresAt: millis(now)}); err != nil {
-		return wrap(err, "expire lease", name)
-	}
-	n, err := q.AcquireLease(ctx, AcquireLeaseParams{Name: name, Holder: holder, ExpiresAt: millis(until)})
+// acquire takes the lease name for holder until until: a new lease, a
+// renewal of its own, or the takeover of an expired one. It reports false,
+// with no error, when another holder owns a live lease.
+func acquire(ctx context.Context, q *Queries, name, holder string, now, until time.Time) (bool, error) {
+	n, err := q.AcquireLease(ctx, AcquireLeaseParams{Name: name, Holder: holder, ExpiresAt: millis(until), Now: millis(now)})
 	if err != nil {
-		return wrap(err, "acquire lease", name)
+		return false, wrap(err, "acquire lease", name)
 	}
-	if n != 1 {
-		return fmt.Errorf("store: lease %s held by another holder: %w", name, store.ErrConflict)
-	}
-	return nil
+	return n == 1, nil
 }
 
 func (s *Store) leaseSelected() {
@@ -574,43 +571,54 @@ func (s *Store) HasDueTargets(ctx context.Context, now time.Time) (bool, error) 
 	return ok, wrap(err, "has due targets", "")
 }
 
-// UpdateTargetLeased implements [store.Store], under the lease lock.
+// UpdateTargetLeased implements [store.Store]. It locks the target, then its
+// lease row, in the order of LeaseDueTargets, and writes only while holder
+// owns an unexpired lease. A takeover then commits either before the fence
+// check, and the write is dropped, or after the write (ADR 0031 §3).
 func (s *Store) UpdateTargetLeased(ctx context.Context, t store.Target, leaseName, holder string, now time.Time) (bool, error) {
 	fs, err := targetStateArgs(t)
 	if err != nil {
 		return false, err
 	}
 	var held bool
-	err = s.withTx(ctx, lockLease, func(q *Queries) error {
+	err = s.withTx(ctx, lockNone, func(q *Queries) error {
+		if _, err := q.LockTarget(ctx, t.ID); err != nil {
+			return wrap(err, "update target", t.ID)
+		}
+		ok, err := holdsLease(ctx, q, leaseName, holder, now)
+		if err != nil || !ok {
+			return err
+		}
 		n, err := q.UpdateTargetStateLeased(ctx, UpdateTargetStateLeasedParams{
 			FetchStateJson: fs, LastCheckedAt: nullMillis(t.LastCheckedAt), NextCheckAt: millis(t.NextCheckAt),
 			ErrorCount: t.ErrorCount, ID: t.ID, LeaseName: leaseName, Holder: holder, Now: millis(now),
 		})
-		if err != nil {
-			return wrap(err, "update target", t.ID)
-		}
-		if n == 1 {
-			held = true
-			return nil
-		}
-		exists, err := q.TargetExists(ctx, t.ID)
-		if err == nil && !exists {
-			err = sql.ErrNoRows
-		}
+		held = n == 1
 		return wrap(err, "update target", t.ID)
 	})
 	return held, err
 }
 
-// DeleteExpiredTargetLeases implements [store.Store], under the lease lock.
+// holdsLease locks the lease row name of holder until the transaction
+// ends. It reports false when holder owns no lease of that name, or, with a
+// non-zero now, when the lease expired at now.
+func holdsLease(ctx context.Context, q *Queries, name, holder string, now time.Time) (bool, error) {
+	exp, err := q.LockHeldLease(ctx, LockHeldLeaseParams{Name: name, Holder: holder})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, wrap(err, "lock lease", name)
+	}
+	return now.IsZero() || exp > millis(now), nil
+}
+
+// DeleteExpiredTargetLeases implements [store.Store] in one statement. It
+// skips lease rows another transaction holds, so two instances running it at
+// once neither wait for nor deadlock with each other or a lease transaction.
 func (s *Store) DeleteExpiredTargetLeases(ctx context.Context, now time.Time) (int64, error) {
-	var n int64
-	err := s.withTx(ctx, lockLease, func(q *Queries) error {
-		var err error
-		n, err = q.DeleteExpiredTargetLeases(ctx, millis(now))
-		return wrap(err, "delete expired target leases", "")
-	})
-	return n, err
+	n, err := s.q.DeleteExpiredTargetLeases(ctx, millis(now))
+	return n, wrap(err, "delete expired target leases", "")
 }
 
 // CountDueTargets implements [store.Store].
@@ -696,25 +704,14 @@ func deliveriesFromRows(rows []Delivery) []store.Delivery {
 	return out
 }
 
-// AcquireLease implements [store.Store], under the lease lock.
+// AcquireLease implements [store.Store] in one statement (ADR 0031 §2).
 func (s *Store) AcquireLease(ctx context.Context, name, holder string, now, until time.Time) (bool, error) {
-	var ok bool
-	err := s.withTx(ctx, lockLease, func(q *Queries) error {
-		if err := q.DeleteExpiredLease(ctx, DeleteExpiredLeaseParams{Name: name, ExpiresAt: millis(now)}); err != nil {
-			return wrap(err, "expire lease", name)
-		}
-		n, err := q.AcquireLease(ctx, AcquireLeaseParams{Name: name, Holder: holder, ExpiresAt: millis(until)})
-		ok = n == 1
-		return wrap(err, "acquire lease", name)
-	})
-	return ok, err
+	return acquire(ctx, s.q, name, holder, now, until)
 }
 
-// ReleaseLease implements [store.Store], under the lease lock.
+// ReleaseLease implements [store.Store] in one statement.
 func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
-	return s.withTx(ctx, lockLease, func(q *Queries) error {
-		return wrap(q.ReleaseLease(ctx, ReleaseLeaseParams{Name: name, Holder: holder}), "release lease", name)
-	})
+	return wrap(s.q.ReleaseLease(ctx, ReleaseLeaseParams{Name: name, Holder: holder}), "release lease", name)
 }
 
 // SQLSTATEs mapped onto store sentinels.

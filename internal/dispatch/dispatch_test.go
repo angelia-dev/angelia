@@ -284,6 +284,13 @@ func TestDeliverTimeout(t *testing.T) {
 // single write lock until it exceeds writeTimeout, and the outcome is lost.
 func TestConcurrentDispatchersNeverOverlap(t *testing.T) {
 	st, path := newStore(t)
+	dispatchersNeverOverlap(t, st, func() Store { return openStore(t, path) })
+}
+
+// dispatchersNeverOverlap runs 4 dispatchers, each on a store value from
+// open (its own process), over 200 deliveries written to st. Each delivery is
+// sent once, never by two at once, and recorded delivered.
+func dispatchersNeverOverlap(t *testing.T, st store.Store, open func() Store) {
 	const n = 200
 	addEvents(t, st, n)
 	ts := &testSink{fn: func(context.Context, sink.Request) error {
@@ -297,7 +304,7 @@ func TestConcurrentDispatchersNeverOverlap(t *testing.T) {
 	var finished atomic.Int32
 	allFinished := make(chan struct{})
 	for i := range 4 {
-		d := newDispatcher(t, &finishCounter{Store: openStore(t, path), count: &finished, want: n, done: allFinished}, sinks, Options{
+		d := newDispatcher(t, &finishCounter{Store: open(), count: &finished, want: n, done: allFinished}, sinks, Options{
 			Holder: fmt.Sprintf("d%d", i), Workers: 2, PollInterval: 20 * time.Millisecond,
 		})
 		go func() { done <- d.Run(ctx) }()

@@ -116,9 +116,15 @@ func newStore(t *testing.T) (*sqlite.Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "angelia.db")
 	st := openStore(t, path)
+	seedSink(t, st)
+	return st, path
+}
+
+// seedSink creates the sink k1 of the test kind and its subscription s1.
+func seedSink(t *testing.T, st store.Store) {
+	t.Helper()
 	must(t, st.CreateSink(t.Context(), store.Sink{ID: "k1", Kind: sinkKind, ConfigEncrypted: []byte(`{"url":"https://example.com/hook"}`)}))
 	must(t, st.CreateSubscription(t.Context(), store.Subscription{ID: "s1", SinkID: "k1"}))
-	return st, path
 }
 
 func payload(id string) []byte {
@@ -126,7 +132,7 @@ func payload(id string) []byte {
 }
 
 // addEvents writes n events with one delivery each for s1, due at t0.
-func addEvents(t *testing.T, st *sqlite.Store, n int) {
+func addEvents(t *testing.T, st store.Store, n int) {
 	t.Helper()
 	for i := range n {
 		id := fmt.Sprintf("E%04d", i)
@@ -135,7 +141,7 @@ func addEvents(t *testing.T, st *sqlite.Store, n int) {
 	}
 }
 
-func delivery(t *testing.T, st *sqlite.Store, eventID string) store.Delivery {
+func delivery(t *testing.T, st store.Store, eventID string) store.Delivery {
 	t.Helper()
 	ds, err := st.ListDeliveries(t.Context(), eventID)
 	must(t, err)

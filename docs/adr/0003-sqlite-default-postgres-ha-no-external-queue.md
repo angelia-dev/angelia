@@ -39,8 +39,12 @@ lease due watches and due deliveries ([architecture.md §3.2](../architecture.md
 ### Open questions
 
 - Job leasing on Postgres: `River`, or "a small in-house lease table usable on both" engines. architecture.md §6 offers both and does not choose.
+  *Answered by [ADR 0031](0031-postgres-concurrent-leasing-skip-locked.md) (#86, D21, maintainer 2026-11-10):
+  the in-house lease table, with `FOR UPDATE SKIP LOCKED` on Postgres; River is not used.*
 - How far does single-node SQLite go? The target is 10,000 watches (architecture.md §10, question 2); a Phase 0 measurement.
 - Whether one schema and lease implementation serve both engines is implied by "usable on both" but not stated as a rule.
+  *Answered by ADR 0028 and [ADR 0031](0031-postgres-concurrent-leasing-skip-locked.md): one schema (one twin
+  migration per engine) and one `store.Store` lease interface with the same semantics on both engines.*
 - Secret encryption at rest (`sink.config_json` holding references only, see ADR 0024) is a security decision outside this ADR.
 - Migration policy for data-dropping or data-rewriting migrations is not covered; AGENTS.md sends those to the maintainer.
 

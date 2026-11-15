@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -294,5 +297,74 @@ func TestHelperContextCarriesTheBound(t *testing.T) {
 	defer cancel()
 	if d, ok := ctx.Deadline(); !ok || time.Until(d) > helperTimeoutDefault {
 		t.Fatalf("deadline = %v, %v", d, ok)
+	}
+}
+
+// AC 86-A: two `serve --watches` processes started at once with the same file
+// on one Postgres database both start, and the database holds the file's
+// configuration once (#85's config lock serializes the two applies).
+func TestConcurrentServeWatchesOnPostgres(t *testing.T) {
+	dsn, db, _ := pgSchema(t)
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv("ANGELIA_WATCHES", "")
+	t.Setenv(config.KeyEnv, "")
+	t.Setenv("HOOK", envSecret)
+	watches := writeFile(t, "w.yaml", cliWatches)
+	type replica struct {
+		listen, cfg string
+		logs        *syncBuf
+	}
+	var rs []replica
+	for range 2 {
+		listen := freeAddr(t)
+		rs = append(rs, replica{listen: listen, cfg: writeCfg(t, fmt.Sprintf("listen: %q\n", listen)+yamlDSN(dsn))})
+	}
+	for i := range rs {
+		rs[i].logs = startServe(t, "--config", rs[i].cfg, "--watches", watches, "--roles=api")
+	}
+	for i, r := range rs {
+		waitFor(t, fmt.Sprintf("replica %d ready", i), r.logs, func() bool {
+			resp, err := http.Get("http://" + r.listen + "/readyz") //nolint:noctx // test poll on loopback
+			if err != nil {
+				return false
+			}
+			_ = resp.Body.Close()
+			return resp.StatusCode == http.StatusOK
+		})
+		if !strings.Contains(r.logs.String(), "watch file applied") {
+			t.Errorf("replica %d did not apply the file:\n%s", i, r.logs.String())
+		}
+	}
+	for q, want := range map[string]int64{
+		`SELECT count(*) FROM watch`:        2,
+		`SELECT count(*) FROM target`:       2,
+		`SELECT count(*) FROM sink`:         1,
+		`SELECT count(*) FROM subscription`: 1,
+	} {
+		if n := queryInt(t, db, q); n != want {
+			t.Errorf("%s = %d, want %d", q, n, want)
+		}
+	}
+}
+
+// AC 86-A (D22): `serve --roles=dispatcher` on Postgres runs the clock-skew
+// check before any role starts. A host clock 20 s off, injected through the
+// command's context, makes serve refuse with ErrClockSkew.
+func TestServeRefusesASkewedClockOnPostgres(t *testing.T) {
+	dsn, _, _ := pgSchema(t)
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv("ANGELIA_WATCHES", "")
+	t.Setenv(config.KeyEnv, "")
+	cfg := writeCfg(t, fmt.Sprintf("listen: %q\n", freeAddr(t))+yamlDSN(dsn))
+	var logs syncBuf
+	root := newRootCmd()
+	root.SetOut(&logs)
+	root.SetErr(&logs)
+	root.SetArgs([]string{"serve", "--config", cfg, "--roles=dispatcher", "--drain-timeout=2s"})
+	skewed := func() time.Time { return time.Now().Add(20 * time.Second) }
+	ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), serveClockKey{}, skewed), 30*time.Second)
+	defer cancel()
+	if err := root.ExecuteContext(ctx); !errors.Is(err, open.ErrClockSkew) {
+		t.Fatalf("serve with a skewed clock = %v, want ErrClockSkew\n%s", err, logs.String())
 	}
 }

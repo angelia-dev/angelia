@@ -44,18 +44,29 @@ func (q *Queries) AckConsumer(ctx context.Context, arg AckConsumerParams) (Consu
 
 const acquireLease = `-- name: AcquireLease :execrows
 INSERT INTO lease (name, holder, expires_at) VALUES ($1, $2, $3)
-ON CONFLICT (name) DO UPDATE SET expires_at = excluded.expires_at
-WHERE lease.holder = excluded.holder
+ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+WHERE lease.holder = excluded.holder OR lease.expires_at <= $4::bigint
 `
 
 type AcquireLeaseParams struct {
 	Name      string
 	Holder    string
 	ExpiresAt int64
+	Now       int64
 }
 
+// One upsert takes a lease (ADR 0031 §2): a new row, a renewal by the same
+// holder, or the takeover of an expired lease. A live lease of another holder
+// matches no row of the WHERE, so the statement writes nothing. Under READ
+// COMMITTED the WHERE is evaluated on the newest committed row, after waiting
+// for a transaction that holds it.
 func (q *Queries) AcquireLease(ctx context.Context, arg AcquireLeaseParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, acquireLease, arg.Name, arg.Holder, arg.ExpiresAt)
+	result, err := q.db.ExecContext(ctx, acquireLease,
+		arg.Name,
+		arg.Holder,
+		arg.ExpiresAt,
+		arg.Now,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -139,7 +150,7 @@ type AdvisoryXactLockParams struct {
 // greatest, NULLS FIRST), booleans for the 0/1 flags, and lists passed as
 // JSON text (json_array_elements_text) instead of sqlc.slice (ADR 0028 §5).
 // Advisory locks (ADR 0028 §4): the first argument is the schema key, the
-// second the kind (1 config, 2 event, 3 lease).
+// second the kind (1 config, 2 event). Lease transactions take none (ADR 0031).
 func (q *Queries) AdvisoryXactLock(ctx context.Context, arg AdvisoryXactLockParams) error {
 	_, err := q.db.ExecContext(ctx, advisoryXactLock, arg.SchemaKey, arg.Kind)
 	return err
@@ -507,24 +518,16 @@ func (q *Queries) DeleteConsumer(ctx context.Context, id string) (int64, error) 
 	return result.RowsAffected()
 }
 
-const deleteExpiredLease = `-- name: DeleteExpiredLease :exec
-DELETE FROM lease WHERE name = $1 AND expires_at <= $2
-`
-
-type DeleteExpiredLeaseParams struct {
-	Name      string
-	ExpiresAt int64
-}
-
-func (q *Queries) DeleteExpiredLease(ctx context.Context, arg DeleteExpiredLeaseParams) error {
-	_, err := q.db.ExecContext(ctx, deleteExpiredLease, arg.Name, arg.ExpiresAt)
-	return err
-}
-
 const deleteExpiredTargetLeases = `-- name: DeleteExpiredTargetLeases :execrows
-DELETE FROM lease WHERE name LIKE 'target:%' AND expires_at <= $1
+DELETE FROM lease WHERE name IN (
+  SELECT l.name FROM lease l WHERE l.name LIKE 'target:%' AND l.expires_at <= $1
+  FOR UPDATE SKIP LOCKED
+)
 `
 
+// Lease rows another transaction holds (a renewal or a takeover in progress)
+// are skipped: they are not expired for long, and waiting on them could
+// deadlock with a lease transaction (ADR 0031 §4).
 func (q *Queries) DeleteExpiredTargetLeases(ctx context.Context, expiresAt int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredTargetLeases, expiresAt)
 	if err != nil {
@@ -1449,48 +1452,62 @@ func (q *Queries) ListHeldDeliveries(ctx context.Context, arg ListHeldDeliveries
 }
 
 const listLeasableDueDeliveries = `-- name: ListLeasableDueDeliveries :many
+WITH unscheduled AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $2::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT $1
+  FOR NO KEY UPDATE SKIP LOCKED
+), due AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'pending' AND d.next_attempt_at <= $2::bigint
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $2::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT $1
+  FOR NO KEY UPDATE SKIP LOCKED
+), orphaned AS (
+  SELECT d.id, d.next_attempt_at FROM delivery d
+  WHERE d.status = 'in_flight'
+    AND NOT EXISTS (
+      SELECT 1 FROM lease
+      WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $2::bigint
+    )
+  ORDER BY d.next_attempt_at NULLS FIRST, d.id
+  LIMIT $1
+  FOR NO KEY UPDATE SKIP LOCKED
+)
 SELECT u.id FROM (
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'pending' AND d.next_attempt_at IS NULL
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $1::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT $2)
+  SELECT id, next_attempt_at FROM unscheduled
   UNION ALL
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'pending' AND d.next_attempt_at <= $1::bigint
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $1::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT $2)
+  SELECT id, next_attempt_at FROM due
   UNION ALL
-  (SELECT d.id, d.next_attempt_at FROM delivery d
-   WHERE d.status = 'in_flight'
-     AND NOT EXISTS (
-       SELECT 1 FROM lease
-       WHERE lease.name = 'delivery:' || d.id AND lease.expires_at > $1::bigint
-     )
-   ORDER BY d.next_attempt_at NULLS FIRST, d.id
-   LIMIT $2)
+  SELECT id, next_attempt_at FROM orphaned
 ) AS u
 ORDER BY u.next_attempt_at NULLS FIRST, u.id
-LIMIT $2
+LIMIT $1
 `
 
 type ListLeasableDueDeliveriesParams struct {
-	Now     int64
 	MaxRows int32
+	Now     int64
 }
 
 // Dispatcher (story #107, ADR 0017). The same three disjoint branches as on
 // SQLite (story #232), each read in order from
-// delivery_status_next_attempt_at_id, which is built NULLS FIRST.
+// delivery_status_next_attempt_at_id, which is built NULLS FIRST. Postgres
+// refuses FOR UPDATE on a UNION, so each branch is a CTE that locks its rows
+// and skips those another lease transaction holds (ADR 0031 §1). A branch
+// locks up to max_rows rows; the rows the final LIMIT drops stay locked until
+// the transaction ends, and are left alone.
 func (q *Queries) ListLeasableDueDeliveries(ctx context.Context, arg ListLeasableDueDeliveriesParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listLeasableDueDeliveries, arg.Now, arg.MaxRows)
+	rows, err := q.db.QueryContext(ctx, listLeasableDueDeliveries, arg.MaxRows, arg.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -1521,6 +1538,7 @@ WHERE next_check_at <= $1
   )
 ORDER BY next_check_at, id
 LIMIT $2
+FOR NO KEY UPDATE SKIP LOCKED
 `
 
 type ListLeasableDueTargetsParams struct {
@@ -1529,8 +1547,11 @@ type ListLeasableDueTargetsParams struct {
 }
 
 // Due targets that no unexpired lease covers ('target:' || id, see
-// store.TargetLeaseName), oldest due first. #86 adds FOR UPDATE SKIP LOCKED;
-// until then the lease lock serializes lease transactions (ADR 0028 §3).
+// store.TargetLeaseName), oldest due first. Rows another lease transaction
+// has locked are skipped, so concurrent callers get disjoint sets (ADR 0031).
+// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes other lease
+// transactions, updates and deletes, but not the FOR KEY SHARE that an
+// insert of a watch or version referencing the target takes.
 func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDueTargetsParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listLeasableDueTargets, arg.Now, arg.MaxRows)
 	if err != nil {
@@ -2156,6 +2177,53 @@ func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([
 	return items, nil
 }
 
+const lockDelivery = `-- name: LockDelivery :one
+SELECT id FROM delivery WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// The delivery row of a fenced finish, locked before its lease row, in the
+// order of the lease transaction (ADR 0031 §3). No row: it was deleted.
+func (q *Queries) LockDelivery(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, lockDelivery, id)
+	var id_2 string
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const lockHeldLease = `-- name: LockHeldLease :one
+SELECT expires_at FROM lease WHERE name = $1 AND holder = $2 FOR UPDATE
+`
+
+type LockHeldLeaseParams struct {
+	Name   string
+	Holder string
+}
+
+// The lease row of a fenced write, locked until the write commits, so that a
+// takeover commits either before the fence check or after the write (ADR
+// 0031 §3). No row: the holder no longer owns the lease.
+func (q *Queries) LockHeldLease(ctx context.Context, arg LockHeldLeaseParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockHeldLease, arg.Name, arg.Holder)
+	var expires_at int64
+	err := row.Scan(&expires_at)
+	return expires_at, err
+}
+
+const lockTarget = `-- name: LockTarget :one
+SELECT id FROM target WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// The target row of a fenced write, locked first: lease transactions lock the
+// target and then its lease, so a fenced write does the same (ADR 0031 §3).
+// FOR NO KEY UPDATE, the lock the UPDATE itself takes: a concurrent insert of
+// a row referencing the target does not block it.
+func (q *Queries) LockTarget(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, lockTarget, id)
+	var id_2 string
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const markBaselineDone = `-- name: MarkBaselineDone :execrows
 UPDATE watch SET baseline_done = true WHERE id = $1
 `
@@ -2402,10 +2470,10 @@ type StartDeliveryAttemptParams struct {
 
 // Every lease of a delivery counts as an attempt, so an attempt cut short by
 // a crash counts too. Unlike SQLite's, the update repeats the due predicate
-// of ListLeasableDueDeliveries (ADR 0028 §3): writers that take no lease lock
-// (FailPendingDeliveries, FailHeldDelivery, CancelHeldDeliveries) may have
-// changed or deleted the row since it was selected; then no row comes back
-// and the caller skips it. The holder's own new lease does not count.
+// of ListLeasableDueDeliveries (ADR 0028 §3). The lease transaction holds the
+// row lock since its select, so this is a second guard: no row comes back
+// when the row no longer matches, and the caller skips it. The holder's own
+// new lease does not count.
 func (q *Queries) StartDeliveryAttempt(ctx context.Context, arg StartDeliveryAttemptParams) (Delivery, error) {
 	row := q.db.QueryRowContext(ctx, startDeliveryAttempt, arg.ID, arg.Now, arg.Holder)
 	var i Delivery
@@ -2439,17 +2507,6 @@ func (q *Queries) SubscriptionGeneration(ctx context.Context) (int64, error) {
 	var generation int64
 	err := row.Scan(&generation)
 	return generation, err
-}
-
-const targetExists = `-- name: TargetExists :one
-SELECT EXISTS (SELECT 1 FROM target WHERE id = $1)
-`
-
-func (q *Queries) TargetExists(ctx context.Context, id string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, targetExists, id)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const touchAPIToken = `-- name: TouchAPIToken :exec

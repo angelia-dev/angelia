@@ -24,6 +24,11 @@ type Engine struct {
 	// OpenSecond opens a second store value on the same database as first,
 	// the stand-in for a second process. It is required.
 	OpenSecond func(t *testing.T, first store.APIStore) store.APIStore
+	// ScaleOut is true for an engine that several processes lease from at
+	// once (Postgres, story #86). The load case across store instances runs
+	// only then: SQLite is one process (ADR 0003), and its second store value
+	// stands in for a short overlap, not for replicas.
+	ScaleOut bool
 }
 
 // Run runs every case of the suite as a subtest. It fails at once when the

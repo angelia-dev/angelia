@@ -49,6 +49,13 @@ func fixture(t *testing.T) (*sqlite.Store, store.Target) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	return st, seedFixture(t, st)
+}
+
+// seedFixture writes the fixture to st and returns its target.
+func seedFixture(t *testing.T, st store.Store) store.Target {
+	t.Helper()
+	ctx := t.Context()
 	tg := store.Target{ID: "t-requests", Kind: "pypi", Coordinates: map[string]string{"name": "requests"}, NextCheckAt: check1}
 	must(t, st.CreateTarget(ctx, tg))
 	must(t, st.CreateWatch(ctx, store.Watch{
@@ -73,7 +80,7 @@ func fixture(t *testing.T) (*sqlite.Store, store.Target) {
 	if err != nil || n != (Emitted{}) {
 		t.Fatalf("baseline check: %+v, %v", n, err)
 	}
-	return st, tg
+	return tg
 }
 
 // secondCheck lists a new final release and a new pre-release.

@@ -23,17 +23,29 @@ import (
 // AC: a target is never fetched by two workers at the same time, with
 // several schedulers (holders) of several workers each racing on one store.
 func TestNoTargetCheckedTwiceConcurrently(t *testing.T) {
+	noTargetCheckedTwice(t, openStore(t))
+}
+
+// sharedStore is a store value the schedulers lease from and the test seeds.
+type sharedStore interface {
+	Store
+	store.Store
+}
+
+// noTargetCheckedTwice runs 4 schedulers of 3 workers each, spread over the
+// given store values (one per process), for 3 rounds over 40 due targets.
+// Every target is checked once per round, never by two workers at once.
+func noTargetCheckedTwice(t *testing.T, stores ...sharedStore) {
 	const schedulers, workers, targets, rounds = 4, 3, 40, 3
-	st := openStore(t)
 	clk := newFakeClock(t0)
 	for i := range targets {
-		addTarget(t, st, fmt.Sprintf("t%02d", i), fmt.Sprint("pkg", i), t0)
+		addTarget(t, stores[0], fmt.Sprintf("t%02d", i), fmt.Sprint("pkg", i), t0)
 	}
 	c := newCounter()
 	c.hold = runtime.Gosched // widen the window for overlap
 	var ss []*Scheduler
 	for i := range schedulers {
-		ss = append(ss, newTestScheduler(t, st, c, clk, func(o *Options) {
+		ss = append(ss, newTestScheduler(t, stores[i%len(stores)], c, clk, func(o *Options) {
 			o.Workers = workers
 			o.Holder = fmt.Sprint("holder-", i)
 			o.Jitter = 0.1

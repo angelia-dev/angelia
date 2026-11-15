@@ -69,6 +69,7 @@ func TestStoreSuiteUnderRepeatableReadDefault(t *testing.T) {
 			t.Helper()
 			return openStoreDSN(t, opened[first])
 		},
+		ScaleOut: true,
 	})
 }
 
@@ -105,5 +106,6 @@ func TestStoreSuite(t *testing.T) {
 			t.Helper()
 			return openStoreDSN(t, opened[first])
 		},
+		ScaleOut: true,
 	})
 }
