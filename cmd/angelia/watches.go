@@ -18,7 +18,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -66,7 +66,7 @@ func parseWatchFile(cfg *config.Config, path string) (*watchfile.File, error) {
 	return f, nil
 }
 
-// applyWatchFile reconciles the watch file into the SQLite store named by the
+// applyWatchFile reconciles the watch file into the store named by the
 // instance configuration, before any role starts.
 func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *slog.Logger) error {
 	f, err := parseWatchFile(cfg, path)
@@ -76,11 +76,7 @@ func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *s
 	for _, w := range f.Warnings {
 		log.Warn(w)
 	}
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		return fmt.Errorf("--watches: only sqlite databases are supported in this phase: %w", err)
-	}
-	st, err := sqlite.Open(ctx, dbPath, log)
+	st, err := open.Open(ctx, cfg.Database.DSN, log)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}

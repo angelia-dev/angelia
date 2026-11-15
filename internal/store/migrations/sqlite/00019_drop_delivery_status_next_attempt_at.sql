@@ -7,9 +7,6 @@
 -- rewrites no row.
 --
 -- The down migration recreates the index exactly as 00002 defined it.
---
--- TODO(postgres, #85): the Postgres twin has no counterpart: it never creates
--- the prefix index, only the (status, next_attempt_at, id) btree.
 
 -- +goose Up
 DROP INDEX delivery_status_next_attempt_at;

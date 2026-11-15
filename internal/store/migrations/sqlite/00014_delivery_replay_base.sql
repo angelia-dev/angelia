@@ -6,8 +6,6 @@
 -- replay_base_attempts to it, so that the dispatcher counts the attempts of
 -- the replay, attempts - replay_base_attempts, against max_attempts. 0 means
 -- never replayed: the budget counts from the first attempt.
---
--- TODO(postgres, #85): the Postgres engine needs the same column (BIGINT).
 
 -- +goose Up
 ALTER TABLE delivery ADD COLUMN replay_base_attempts INTEGER NOT NULL DEFAULT 0;

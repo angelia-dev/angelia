@@ -452,13 +452,16 @@ func TestOpenStoreRunsStoredSinksCheck(t *testing.T) {
 	if _, err := openStore(t.Context(), cfg, plugins, slog.New(slog.DiscardHandler)); err == nil || !strings.Contains(err.Error(), "sink old /config/token") {
 		t.Fatalf("openStore: %v", err)
 	}
-	st, err = openStore(t.Context(), cfg, builtinPlugins(nil), slog.New(slog.DiscardHandler))
+	st2, err := openStore(t.Context(), cfg, builtinPlugins(nil), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("built-in kinds mark nothing x-angelia-secret: %v", err)
 	}
-	_ = st.Close()
-	if _, err := openStore(t.Context(), &config.Config{Database: config.Database{DSN: "postgres://db.example.org/a"}}, nil, nil); err == nil {
-		t.Fatal("postgres DSN")
+	_ = st2.Close()
+	// A Postgres DSN is opened by the same function; a server that is not
+	// there is an error that does not show the password.
+	deadPG := &config.Config{Database: config.Database{DSN: "postgres://angelia:" + deadPGPassword + "@127.0.0.1:1/a?sslmode=disable"}}
+	if _, err := openStore(t.Context(), deadPG, nil, slog.New(slog.DiscardHandler)); err == nil || strings.Contains(err.Error(), deadPGPassword) {
+		t.Fatalf("postgres DSN of a dead server: %v", err)
 	}
 }
 

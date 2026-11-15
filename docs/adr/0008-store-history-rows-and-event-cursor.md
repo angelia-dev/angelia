@@ -53,6 +53,8 @@ and the maintainer answered them on PR #128:
 - Postgres (Phase 2): a sequence is assigned at insert, not at commit, so concurrent transactions
   can still commit out of `seq` order. The Postgres engine needs a commit-ordered cursor (for
   example a single-writer append lock, or reading only below the oldest in-flight transaction).
+  **Answered by [ADR 0028](0028-postgres-event-cursor-and-write-concurrency.md) §1**: a transaction
+  advisory lock before every event insert.
 - The OpenAPI `after` parameter of `GET /v1/events` must carry `seq` (spec repository).
 
 ## Alternatives considered
@@ -72,3 +74,5 @@ and the maintainer answered them on PR #128:
 ## Amendment (2026-11-04, #186)
 
 The Postgres question under "Open questions" is still open: no commit-ordered cursor is chosen yet, so the no-skip guarantee above holds on SQLite only. The pull API relies on it: its `after` cursor and `next_after` are `seq` (OpenAPI spec, `docs/api.md`, item 11), so the API's no-skip promise is not yet met on Postgres.
+
+**Update (2026-11-15, #85):** [ADR 0028](0028-postgres-event-cursor-and-write-concurrency.md) §1 chooses an advisory lock taken before every event insert, so `seq` order is commit order on Postgres too, and the no-skip promise holds on both engines.

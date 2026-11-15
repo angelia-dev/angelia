@@ -35,8 +35,8 @@ Work is tracked on the [Angelia Roadmap](https://github.com/orgs/angelia-dev/pro
 ## Run it
 
 Container images and Docker Compose examples are in [deploy/compose/](deploy/compose/README.md):
-one container with SQLite on a volume, and a full stack with Postgres (placeholder until the
-Postgres store lands). The image is not published yet.
+one container with SQLite on a volume, and a full stack with Postgres. The image is not
+published yet.
 
 ## Development
 

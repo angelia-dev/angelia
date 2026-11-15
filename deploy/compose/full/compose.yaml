@@ -1,14 +1,13 @@
-# Full stack: Angelia with Postgres and an apprise-api sidecar. PLACEHOLDER, read the README first.
+# Full stack: Angelia on Postgres, plus an apprise-api sidecar that is not wired yet.
 #
 #   cd deploy/compose/full
 #   printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
-#   docker compose up -d        # starts postgres only: see the profiles below
+#   docker compose up -d        # starts postgres, then angelia once postgres is healthy
 #
-# Status of each part:
-# - postgres: running, but Angelia cannot use it yet. The store has a SQLite engine only,
-#   and `angelia serve` refuses a postgres DSN (Postgres store: #85).
-# - angelia: profile "placeholder". Start it with `--profile placeholder` only to see the
-#   wiring; it exits at start until #85 lands. Its healthcheck is the real one.
+# Parts:
+# - postgres: the store (Postgres 17; Angelia supports 15 to 18, ADR 0028).
+# - angelia: all roles in one container, on the Postgres store. It creates and migrates its
+#   schema at start. Its healthcheck is `angelia healthcheck`.
 # - apprise: profile "not-wired". It is not connected to anything: no sink calls it until a
 #   chat sink exists (#120). Start it with `--profile not-wired`.
 services:
@@ -27,11 +26,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # PLACEHOLDER: the DSN below is the intended shape. The password is interpolated here,
-  # not in angelia.yaml. It goes into the DSN unescaped, so use hex only (or URL-encode it).
-  # It is visible in `docker inspect` of this container. Secret references for DSNs: #75.
+  # The password is interpolated into the DSN here, not written in angelia.yaml. It goes into
+  # the DSN unescaped, so use hex only (or URL-encode it). It is visible in `docker inspect`
+  # of this container. sslmode=disable is for this private compose network only.
   angelia:
-    profiles: ["placeholder"]
     image: ghcr.io/angelia-dev/angelia:0.1.0
     command:
       - serve

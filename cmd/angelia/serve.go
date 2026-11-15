@@ -15,7 +15,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/metrics"
 	"github.com/angelia-dev/angelia/internal/secrets"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/supervisor"
 	"github.com/angelia-dev/angelia/internal/telemetry"
 )
@@ -202,14 +202,8 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 // key that is not configured, the instance does not start. A database that
 // does not exist yet holds no secret.
 func checkSecretsAtStartup(ctx context.Context, cfg *config.Config, keys *secrets.Keyring) error {
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		// TODO(postgres, #85): check the Postgres store too; no role runs on
-		// it in this phase.
-		return nil //nolint:nilerr // only sqlite stores exist in this phase
-	}
-	counts, err := sqlite.SecretKeyCounts(ctx, dbPath)
-	if errors.Is(err, sqlite.ErrNoDatabase) {
+	counts, err := open.SecretKeyCounts(ctx, cfg.Database.DSN)
+	if errors.Is(err, open.ErrNoDatabase) {
 		return nil
 	}
 	if err != nil {

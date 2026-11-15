@@ -3,9 +3,6 @@
 -- and the sink config holds only references, so the config is not encrypted
 -- and the old name was wrong. Only the column is renamed: no row is read,
 -- rewritten or dropped.
---
--- TODO(postgres, #85): the Postgres twin runs
--- ALTER TABLE sink RENAME COLUMN config_json_encrypted TO config_json;
 
 -- +goose Up
 ALTER TABLE sink RENAME COLUMN config_json_encrypted TO config_json;

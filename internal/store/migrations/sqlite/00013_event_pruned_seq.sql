@@ -13,9 +13,6 @@
 -- is the highest pruned one. That is the newest assigned seq when it is gone,
 -- else the seq just below the highest kept event that has a gap below it.
 -- 0 when nothing was pruned.
---
--- TODO(postgres, #85): the Postgres engine needs the same table and an
--- AFTER DELETE trigger.
 
 -- +goose Up
 CREATE TABLE event_prune (

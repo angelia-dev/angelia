@@ -7,9 +7,6 @@
 -- the kind of the source now registered under its name.
 --
 -- Purely additive: a nullable column. No row is read, rewritten or dropped.
---
--- TODO(postgres, #85): the Postgres twin runs
--- ALTER TABLE target ADD COLUMN source_kind TEXT;
 
 -- +goose Up
 ALTER TABLE target ADD COLUMN source_kind TEXT;

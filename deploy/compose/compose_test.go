@@ -180,9 +180,9 @@ func TestSQLiteComposeMountsItsConfigAndWatchFile(t *testing.T) {
 	}
 }
 
-// The full stack is a placeholder: angelia is gated behind a profile because
-// the store has no Postgres engine yet (#85), and apprise is not wired (#120).
-func TestFullComposeMarksThePlaceholdersAndKeepsTheDefaultUpSafe(t *testing.T) {
+// The full stack runs Angelia on Postgres in the default profile (#85); only
+// apprise is still gated behind a profile, because it is not wired (#120).
+func TestFullComposeRunsAngeliaOnPostgresAndKeepsAppriseUnwired(t *testing.T) {
 	f := load(t, "full/compose.yaml")
 
 	pg, ok := f.Services["postgres"]
@@ -197,15 +197,45 @@ func TestFullComposeMarksThePlaceholdersAndKeepsTheDefaultUpSafe(t *testing.T) {
 	}
 
 	angelia := f.Services["angelia"]
-	if strings.Join(angelia.Profiles, ",") != "placeholder" {
-		t.Fatalf("angelia profiles = %q, want the placeholder profile", angelia.Profiles)
+	if len(angelia.Profiles) != 0 {
+		t.Fatalf("angelia profiles = %q: the default `up` must start it", angelia.Profiles)
 	}
 	if !strings.HasPrefix(angelia.Environment["ANGELIA_DATABASE_DSN"], "postgres://") {
 		t.Fatalf("ANGELIA_DATABASE_DSN = %q, want a postgres:// DSN", angelia.Environment["ANGELIA_DATABASE_DSN"])
 	}
 	requireHealthcheck(t, "full angelia", angelia)
-	if _, ok := angelia.DependsOn["postgres"]; !ok {
-		t.Error("angelia does not depend on postgres")
+	if dep := angelia.DependsOn["postgres"]; dep.Condition != "service_healthy" {
+		t.Errorf("angelia depends_on postgres = %+v, want condition service_healthy", angelia.DependsOn)
+	}
+	if len(angelia.Command) == 0 || angelia.Command[0] != "serve" {
+		t.Errorf("command = %q, want serve", angelia.Command)
+	}
+	// The mounted files exist and the command names them.
+	for src := range mounts(angelia) {
+		if strings.HasPrefix(src, "./") {
+			if _, err := os.Stat(filepath.Join("full", src)); err != nil {
+				t.Errorf("bind mount source %s: %v", src, err)
+			}
+		}
+	}
+	for _, flag := range []string{"--config", "--watches"} {
+		if p := argAfter(angelia.Command, flag); p == "" || !targets(angelia)[p] {
+			t.Errorf("%s %q is not a mount target: %v", flag, p, mounts(angelia))
+		}
+	}
+	// The password lives in compose.yaml's environment, never in the config file.
+	raw, err := os.ReadFile("full/angelia.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := dsnWithPasswordRE.FindString(string(raw)); m != "" {
+		t.Errorf("full/angelia.yaml holds a DSN with a password: %s", m)
+	}
+	if !strings.Contains(string(raw), "postgres://") {
+		t.Error("full/angelia.yaml does not name a postgres:// DSN")
+	}
+	if !strings.Contains(angelia.Environment["ANGELIA_DATABASE_DSN"], "${POSTGRES_PASSWORD") {
+		t.Error("the DSN does not take its password from POSTGRES_PASSWORD")
 	}
 
 	apprise, ok := f.Services["apprise"]
@@ -297,6 +327,8 @@ func TestDockerfileHealthcheckRunsTheBinaryProbe(t *testing.T) {
 var (
 	// Images are pinned by digest: sha256 of a manifest, 64 lower-case hex digits.
 	digestRE = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+	// A DSN with a password: postgres://user:password@host.
+	dsnWithPasswordRE = regexp.MustCompile(`postgres(ql)?://[^\s/@:]+:[^\s/@]+@`)
 	// The Dockerfile HEALTHCHECK: optional flags, then the exec form of the probe.
 	healthcheckLineRE = regexp.MustCompile(`^HEALTHCHECK (--[\w-]+=\S+ )*CMD \["/usr/local/bin/angelia","healthcheck"\]$`)
 )

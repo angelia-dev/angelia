@@ -53,7 +53,7 @@ The initial proposal was: a core API, verifier batches, an event "batch" that fa
 
 ### 3.2 Scheduler and workers
 - `target.next_check_at` is computed from `interval` (default 1h) ± jitter and adaptive backoff on errors.
-- Leasing: `SELECT … FOR UPDATE SKIP LOCKED` on Postgres; a single-process lease on SQLite. No external queue is required.
+- Leasing: `SELECT … FOR UPDATE SKIP LOCKED` on Postgres (the Postgres engine of #85 serializes lease transactions with an advisory lock; concurrent leasing is #86, see [ADR 0028](adr/0028-postgres-event-cursor-and-write-concurrency.md) §3); a single-process lease on SQLite. No external queue is required.
 - **Per-host rate limiter** (e.g. `api.github.com`: 5,000 req/h with a token, 60 unauthenticated). Conditional requests (`ETag` / `If-None-Match`) are stored per target, in `target.fetch_state_json`, so every watch on that target shares them. A 304 costs almost nothing and on GitHub does not count against the limit.
 - Coalescing: 50 watches on the same upstream object (e.g. `pypi:requests` used by 50 subscriptions) mean **one** fetch. Watches reference a shared `target`.
 
@@ -180,7 +180,7 @@ pending_release(watch_id, target_id, raw, held_at, release_json)                
 ```
 Retention: `event` and `delivery` rows are pruned after N days (default 90). `version` is kept.
 
-Store conventions ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)): `event.seq` is the pull-API cursor. History rows (`event`, `delivery`) keep `watch_id` and `subscription_id` without a foreign key, so a watch, subscription or sink can be deleted while its history is retained. Foreign keys remain between config tables and from `delivery` to `event`. Timestamps are unix milliseconds in UTC (`INTEGER` on SQLite, `BIGINT` on Postgres). Delivery status is one of `pending`, `in_flight`, `delivered`, `dead`.
+Store conventions ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)): `event.seq` is the pull-API cursor; on Postgres it is commit-ordered by an advisory lock ([ADR 0028](adr/0028-postgres-event-cursor-and-write-concurrency.md) §1). History rows (`event`, `delivery`) keep `watch_id` and `subscription_id` without a foreign key, so a watch, subscription or sink can be deleted while its history is retained. Foreign keys remain between config tables and from `delivery` to `event`. Timestamps are unix milliseconds in UTC (`INTEGER` on SQLite, `BIGINT` on Postgres). Delivery status is one of `pending`, `in_flight`, `delivered`, `dead`.
 
 ## 6. Language and framework (Phase 0 assumptions)
 

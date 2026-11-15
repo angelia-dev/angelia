@@ -6,7 +6,7 @@ pipeline, see [docs/operations/release.md](../../docs/operations/release.md)):
 | Directory | What it runs | Status |
 |---|---|---|
 | [`sqlite/`](sqlite/compose.yaml) | One Angelia container, SQLite on a named volume (the "homelab" mode of [architecture.md §7](../../docs/architecture.md#7-deployment)) | Ready, once the image is published |
-| [`full/`](full/compose.yaml) | Angelia with Postgres, plus an apprise-api sidecar | **Placeholder**: see below |
+| [`full/`](full/compose.yaml) | Angelia with Postgres, plus an apprise-api sidecar that is not wired yet | Ready, once the image is published; not run by CI (see below) |
 
 ## Before you start
 
@@ -59,25 +59,30 @@ angelia config check --config angelia.yaml --watches watches.yaml
   delivered. Add one with a [webhook sink](../../docs/webhooks.md); the CI check below does,
   in its own copy of the example.
 
-## Full stack (placeholder)
+## Full stack (Postgres)
 
 ```sh
 cd deploy/compose/full
 printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
-docker compose up -d       # starts postgres only
+docker compose up -d       # postgres first, then angelia when postgres is healthy
+docker compose ps          # both "healthy" after the first probes
 ```
 
-- **postgres** runs, but Angelia cannot use it yet. The store has a SQLite engine only, and
-  `angelia serve` refuses a `postgres://` DSN. Tracked in #85.
-- **angelia** is in the `placeholder` profile, so the default `up` does not start it. The
-  service shows the intended wiring (DSN, healthcheck, depends on postgres). Start it with
-  `docker compose --profile placeholder up` only to see the wiring; it exits until #85 lands.
+- **postgres** (17, pinned by digest) holds the store in the named volume `postgres-data`. Angelia
+  supports Postgres 15 to 18 ([ADR 0028](../../docs/adr/0028-postgres-event-cursor-and-write-concurrency.md)).
+- **angelia** runs every role in one container on that store. `angelia serve` creates and
+  migrates the schema at start, under a lock. The DSN is `postgres://angelia@postgres:5432/angelia?sslmode=disable` in
+  [`angelia.yaml`](full/angelia.yaml); the compose file adds the password with
+  `ANGELIA_DATABASE_DSN`. See [docs/configuration.md](../../docs/configuration.md#database).
+- **This stack is not run by CI.** The `quickstart` job covers the SQLite example only; the Go
+  tests check this file's structure and the Postgres store itself runs in the `test` job.
+  Run `docker compose up` on it once yourself before you rely on it.
 - **apprise** (`caronc/apprise`, the apprise-api image) is in the `not-wired` profile. Nothing
   calls it: the chat sink that would use it does not exist yet (#120).
 - The password is interpolated into `ANGELIA_DATABASE_DSN` from `.env`, unescaped. Use hex only
   (the `openssl rand -hex` above), or URL-encode it: characters such as `@ : / #` break the DSN.
   The password is visible in `docker inspect` of the angelia container. That is acceptable for
-  a placeholder; secret references for DSNs are not decided (#75). Do not commit `.env`.
+  a first deployment; secret references for DSNs are not decided (#75). Do not commit `.env`.
 
 ## Checks
 

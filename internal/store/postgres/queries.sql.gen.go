@@ -1815,6 +1815,72 @@ func (q *Queries) ListSubscriptionsManagedBy(ctx context.Context, managedBy stri
 	return items, nil
 }
 
+const listTargetDemand = `-- name: ListTargetDemand :many
+SELECT kind, interval_ms, count(*) AS targets FROM target GROUP BY kind, interval_ms ORDER BY kind, interval_ms
+`
+
+type ListTargetDemandRow struct {
+	Kind       string
+	IntervalMs sql.NullInt64
+	Targets    int64
+}
+
+func (q *Queries) ListTargetDemand(ctx context.Context) ([]ListTargetDemandRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTargetDemand)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTargetDemandRow
+	for rows.Next() {
+		var i ListTargetDemandRow
+		if err := rows.Scan(&i.Kind, &i.IntervalMs, &i.Targets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTargetSources = `-- name: ListTargetSources :many
+SELECT kind, source_kind, count(*) AS targets FROM target GROUP BY kind, source_kind ORDER BY kind, source_kind
+`
+
+type ListTargetSourcesRow struct {
+	Kind       string
+	SourceKind sql.NullString
+	Targets    int64
+}
+
+func (q *Queries) ListTargetSources(ctx context.Context) ([]ListTargetSourcesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTargetSources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTargetSourcesRow
+	for rows.Next() {
+		var i ListTargetSourcesRow
+		if err := rows.Scan(&i.Kind, &i.SourceKind, &i.Targets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVersions = `-- name: ListVersions :many
 SELECT target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at FROM version WHERE target_id = $1 ORDER BY first_seen_at, raw
 `

@@ -369,6 +369,21 @@ do not take.
   comes from configuration or the API, and on Postgres a NUL or invalid UTF-8 there is refused with
   `ErrInvalid` where SQLite stores it.
 
+- **As built in 85-E (2026-11-15).** `internal/store/open` chooses the engine from the scheme of
+  `database.dsn` (`sqlite`, `postgres` or `postgresql`, case-insensitive) and offers `Open`, `Exists` and
+  the read-only helpers (`SecretKeyCounts`, `SecretHosts`, `StoredTargetSources`, `SecretReader`) for
+  both engines; `cmd/angelia` uses nothing else. Only the URL form is accepted: a keyword/value Postgres
+  DSN, a bare path and a `file:` URI are refused, as `config check` already refused them (`config` still
+  requires a URL with a scheme). The Postgres helpers use `postgres.OpenReader`: connections with
+  `default_transaction_read_only=on`, no migration and no schema creation; a missing database (`3D000`) is
+  `open.ErrNoDatabase`, and a database without the Angelia tables reads as empty, like a SQLite file the
+  secret migration has not reached. `secrets status|rotate` call `open.Exists` first (a missing SQLite file,
+  or a Postgres schema without `schema_migrations`, is an error), so a mistyped DSN never creates a store.
+  The Postgres engine gained `TargetSources` and `TargetDemand` (as on SQLite, outside the store
+  interfaces); `open.Store` is `store.APIStore` plus those two, so no store interface changed. The password
+  of a DSN never reaches an error or a log line: `parseDSN` and `redact` of 85-D cover `Open` and
+  `OpenReader` alike. The start-up clock-skew check of §9 is not part of 85-E.
+
 ### 8. Configuration surface and pool size (D20)
 
 No new YAML keys. `database.dsn` already accepts `postgres://` and `postgresql://`. TLS (`sslmode`, …) and

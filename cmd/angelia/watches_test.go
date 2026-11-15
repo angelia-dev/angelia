@@ -76,10 +76,10 @@ func TestApplyWatchFileOnRestart(t *testing.T) {
 
 func TestApplyWatchFileErrors(t *testing.T) {
 	cfg := config.Default()
-	cfg.Database.DSN = "postgres://db.example.org/angelia"
+	cfg.Database.DSN = "postgres://angelia:" + deadPGPassword + "@127.0.0.1:1/angelia?sslmode=disable"
 	log := newLogger(&syncBuf{}, cfg.Log)
 	ctx := context.Background()
-	if err := applyWatchFile(ctx, cfg, writeFile(t, "w.yaml", cliWatches), log); err == nil || !strings.Contains(err.Error(), "only sqlite") {
+	if err := applyWatchFile(ctx, cfg, writeFile(t, "w.yaml", cliWatches), log); err == nil || strings.Contains(err.Error(), deadPGPassword) {
 		t.Fatalf("postgres: %v", err)
 	}
 	if err := applyWatchFile(ctx, cfg, writeFile(t, "w.yaml", "version: 1\nwatches: [{name: a}]\n"), log); err == nil || !strings.Contains(err.Error(), "line 2: watches[0].source: missing required key") {

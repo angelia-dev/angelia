@@ -11,8 +11,6 @@
 -- rows per key without decrypting. hosts_json is the host binding of
 -- ADR 0024 §2 (not secret). revision is the optimistic lock of rotation on
 -- Postgres (ADR 0024 §5).
---
--- TODO(postgres, #85): the Postgres twin uses BYTEA, BIGINT and JSONB.
 
 -- +goose Up
 CREATE TABLE secret (

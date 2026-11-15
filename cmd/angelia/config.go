@@ -15,7 +15,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
 
@@ -241,14 +241,9 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 		_, _ = fmt.Fprintln(warn, "warning:", w)
 	}
 	counts := map[string]int64{}
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		// TODO(postgres, #85): count the Postgres store too.
-		return keysLine(keys) + "; stored secrets not checked (postgres)", nil //nolint:nilerr // only sqlite stores are counted in this phase
-	}
-	c, err := sqlite.SecretKeyCounts(ctx, dbPath)
+	c, err := open.SecretKeyCounts(ctx, cfg.Database.DSN)
 	switch {
-	case errors.Is(err, sqlite.ErrNoDatabase):
+	case errors.Is(err, open.ErrNoDatabase):
 	case err != nil:
 		_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
 	default:
@@ -260,35 +255,17 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 	return secrets.Summary(counts, keys), nil
 }
 
-// keysLine names the configured keys, for a store whose secrets are not
-// counted.
-func keysLine(keys *secrets.Keyring) string {
-	if keys == nil {
-		return "secrets: no key configured"
-	}
-	s := "secrets: key " + keys.PrimaryID()
-	if prev := len(keys.IDs()) - 1; prev > 0 {
-		s += fmt.Sprintf(" and %d previous key%s", prev, plural(prev))
-	}
-	return s
-}
-
 // checkSourceSecretsOnDisk checks the stored secrets named by
 // sources.<kind>.auth against the database, read-only and by metadata (name
-// and hosts) as serve does at start. With no sqlite database yet there is
+// and hosts) as serve does at start. With no database yet there is
 // nothing to check against, which is a warning when a source names one.
 func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.Writer) error {
 	if len(sourceRefs(cfg)) == 0 {
 		return nil
 	}
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked (postgres)")
-		return nil //nolint:nilerr // only sqlite stores are read in this phase
-	}
-	hosts, err := sqlite.SecretHosts(ctx, dbPath)
+	hosts, err := open.SecretHosts(ctx, cfg.Database.DSN)
 	switch {
-	case errors.Is(err, sqlite.ErrNoDatabase):
+	case errors.Is(err, open.ErrNoDatabase):
 		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked: the database does not exist yet; store the secrets named by sources.<kind>.auth before serve")
 		return nil
 	case err != nil:
@@ -303,16 +280,12 @@ func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.W
 
 // storedTargetWarnings reads the sources of the stored targets read-only,
 // like the secrets check, and warns about those that are no longer
-// configured or changed kind. A database that is missing, unreadable or not
-// sqlite is not an error here.
+// configured or changed kind. A database that is missing or unreadable is
+// not an error here.
 func storedTargetWarnings(ctx context.Context, cfg *config.Config, plugins []config.InstalledPlugin) []string {
-	dbPath, err := cfg.Database.SQLitePath()
+	stored, err := open.StoredTargetSources(ctx, cfg.Database.DSN)
 	if err != nil {
-		return nil
-	}
-	stored, err := sqlite.StoredTargetSources(ctx, dbPath)
-	if err != nil {
-		if !errors.Is(err, sqlite.ErrNoDatabase) {
+		if !errors.Is(err, open.ErrNoDatabase) {
 			return []string{fmt.Sprintf("stored targets not checked against the sources: %v", err)}
 		}
 		return nil

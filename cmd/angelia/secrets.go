@@ -14,7 +14,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/secrets"
-	"github.com/angelia-dev/angelia/internal/store/sqlite"
+	"github.com/angelia-dev/angelia/internal/store/open"
 )
 
 // `angelia secrets …`: the instance-side commands of ADR 0024 §5. They read
@@ -119,11 +119,10 @@ func newSecretsStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dbPath, err := instanceDBPath(cfg)
-			if err != nil {
+			if err := open.Exists(cmd.Context(), cfg.Database.DSN); err != nil {
 				return err
 			}
-			counts, err := sqlite.SecretKeyCounts(cmd.Context(), dbPath)
+			counts, err := open.SecretKeyCounts(cmd.Context(), cfg.Database.DSN)
 			if err != nil {
 				return err
 			}
@@ -165,7 +164,7 @@ func printSecretsStatus(w io.Writer, counts map[string]int64, keys *secrets.Keyr
 type instance struct {
 	cfg   *config.Config
 	keys  *secrets.Keyring
-	store *sqlite.Store
+	store open.Store
 	log   *slog.Logger
 }
 
@@ -186,31 +185,18 @@ func loadInstanceKeys(cmd *cobra.Command) (*config.Config, *secrets.Keyring, *sl
 	return cfg, keys, log, nil
 }
 
-// instanceDBPath is the path of the instance's SQLite database, which must
-// exist: the instance-side commands never create one.
-func instanceDBPath(cfg *config.Config) (string, error) {
-	dbPath, err := cfg.Database.SQLitePath()
-	if err != nil {
-		return "", fmt.Errorf("only sqlite databases are supported in this phase: %w", err)
-	}
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("%w: %s (check database.dsn)", sqlite.ErrNoDatabase, dbPath)
-	}
-	return dbPath, nil
-}
-
 // openInstance loads the instance configuration and its keys (then unsets
-// ANGELIA_SECRETS_KEY) and opens the SQLite store, which must exist.
+// ANGELIA_SECRETS_KEY) and opens the store, which must exist: the instance-side commands never
+// create one (open.Exists).
 func openInstance(cmd *cobra.Command) (*instance, error) {
 	cfg, keys, log, err := loadInstanceKeys(cmd)
 	if err != nil {
 		return nil, err
 	}
-	dbPath, err := instanceDBPath(cfg)
-	if err != nil {
+	if err := open.Exists(cmd.Context(), cfg.Database.DSN); err != nil {
 		return nil, err
 	}
-	st, err := sqlite.Open(cmd.Context(), dbPath, log)
+	st, err := open.Open(cmd.Context(), cfg.Database.DSN, log)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}

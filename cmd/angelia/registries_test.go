@@ -466,11 +466,11 @@ func TestStartAndConfigCheckVerifySourceSecrets(t *testing.T) {
 	e := &regEnv{st: st, keys: keys}
 	e.put(t, "nexus-npm", regCanary, "nexus.example.com")
 	_ = st.Close()
-	st, err = openStore(t.Context(), cfg, nil, slog.New(slog.DiscardHandler))
+	st2, err := openStore(t.Context(), cfg, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("openStore with the secret: %v", err)
 	}
-	_ = st.Close()
+	_ = st2.Close()
 	// (config check as a whole would now ask for a secrets key.)
 	if err := checkSourceSecretsOnDisk(t.Context(), cfg, io.Discard); err != nil {
 		t.Fatalf("source check with the secret: %v", err)

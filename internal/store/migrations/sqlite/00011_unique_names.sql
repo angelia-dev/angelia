@@ -8,9 +8,6 @@
 -- delete one row of each duplicate, then start again. SQLite has no RAISE
 -- outside a trigger, so a temporary trigger raises the message.
 -- NULL names (rows without a name) never collide.
---
--- TODO(postgres, #85): the Postgres engine needs the same unique indexes and
--- the same refusal (a DO block that raises the list).
 
 -- +goose Up
 CREATE TEMP TABLE migration_00011_check (x INTEGER);
