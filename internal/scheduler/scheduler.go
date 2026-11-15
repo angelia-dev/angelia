@@ -430,6 +430,13 @@ func (s *Scheduler) check(ctx context.Context, t store.Target, leasedUntil time.
 		}
 	}()
 
+	// The two debug lines bracket the check for benchmark 5 on Postgres,
+	// which reads them from every replica's log to verify that no target is
+	// checked by two holders at once (bench/crash). The finish line is
+	// written after the result is recorded and before the lease is released.
+	log.DebugContext(ctx, "check started", "lease_until", leasedUntil)
+	defer log.DebugContext(context.WithoutCancel(ctx), "check finished")
+
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	renewDone := make(chan struct{})
