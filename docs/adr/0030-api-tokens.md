@@ -81,6 +81,12 @@ character, so `\b` would not delimit the token from a neighbouring identifier):
 (?:^|[^A-Za-z0-9_])(ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59})(?:$|[^A-Za-z0-9_])
 ```
 
+Clarification (72-C, matching the spec): the check is the CRC-32 (IEEE) of the ASCII bytes
+`ang_<id>_<secret>`, written as 4 big-endian bytes in lower-case RFC 4648 base32 without padding,
+which gives 7 characters. Test vector: the spec's example token
+`ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_` + `fake` × 13 + `7qt7acq` has a valid check
+(`internal/apitoken`, `TestSpecExampleParses`).
+
 | Part | Options | Recommendation |
 |---|---|---|
 | Prefix | (a) `ang_`; (b) `angelia_`; (c) none | **(a) `ang_`.** Short, greppable, and with the fixed length and alphabets the regex above has practically no false positives. A visible prefix is what GitHub, GitLab and npm secret scanning key on, and what our own redaction needs. (b) is more unique but longer for no gain once the body is structured. The prefix also versions the format: a later format gets a new prefix (for example `ang2_`), so the table needs no version column. |

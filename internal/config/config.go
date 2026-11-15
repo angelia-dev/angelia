@@ -54,6 +54,11 @@ var (
 	// angelia://<instance>/watches/<watch_id> (spec envelope profile v1).
 	instanceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,62}$`)
 	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
+	// apiTokenRE finds an Angelia API token anywhere in a value: the full
+	// format of ADR 0030 T1, delimited explicitly because "_" is a word
+	// character. A bare "ang_" prefix is deliberately not in tokenStart: it
+	// would refuse ordinary names such as "ang_team" (ADR 0030 T9).
+	apiTokenRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])(ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59})(?:$|[^A-Za-z0-9_])`)
 )
 
 // secret holds a credential: a [secrets.Value], which prints as [REDACTED]
@@ -790,9 +795,10 @@ func ReservedEnvName(s string) bool { return strings.HasPrefix(s, envPrefix) }
 // ReservedEnvRefusal starts the error of a reference to an ANGELIA_ name.
 const ReservedEnvRefusal = "names starting with " + envPrefix + " are always refused"
 
-// LooksLikeToken reports whether v starts with a well-known credential prefix.
-// Callers must not echo v when it does.
-func LooksLikeToken(v string) bool { return hasTokenPrefix(v) }
+// LooksLikeToken reports whether v starts with a well-known credential prefix
+// or holds an Angelia API token (ADR 0030 T1). Callers must not echo v when
+// it does.
+func LooksLikeToken(v string) bool { return hasTokenPrefix(v) || apiTokenRE.MatchString(v) }
 
 func hasTokenPrefix(v string) bool {
 	for _, p := range tokenStart {

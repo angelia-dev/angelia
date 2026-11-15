@@ -446,3 +446,30 @@ func TestHTTPAllowlists(t *testing.T) {
 		t.Errorf("/0: %v %v", cfg.Warnings(), err)
 	}
 }
+
+// TestLooksLikeTokenAPIToken: an Angelia API token (ADR 0030 T1) is refused
+// wherever it appears in a value, but a bare "ang_" prefix is not: ordinary
+// names such as "ang_team" stay allowed (ADR 0030 T9).
+func TestLooksLikeTokenAPIToken(t *testing.T) {
+	// The spec's example token: the right shape, not a real token.
+	const tok = "ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA_" +
+		"fakefakefakefakefakefakefakefakefakefakefakefakefake" + "7qt7acq"
+	for _, v := range []string{tok, "Bearer " + tok, "x/" + tok + "/y", tok + "\n", "a-" + tok} {
+		if !LooksLikeToken(v) {
+			t.Errorf("LooksLikeToken(%.40q...) = false", v)
+		}
+	}
+	for _, v := range []string{
+		"ang_team", "ang_", "ANG_TEAM", "ang_01JCZ8W3T6Q9N2H4K7M5R0V8XA",
+		tok[:len(tok)-1],     // one character short
+		tok + "x",            // a word character after it
+		"x" + tok,            // a word character before it
+		strings.ToLower(tok), // the id must be upper case
+		strings.Replace(tok, "ang_0", "ang_8", 1), // the first id character is 0-7
+		strings.Replace(tok, "fake", "FAKE", 1),   // the secret must be lower case
+	} {
+		if LooksLikeToken(v) {
+			t.Errorf("LooksLikeToken(%q) = true", v)
+		}
+	}
+}
