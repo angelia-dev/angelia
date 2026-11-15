@@ -314,6 +314,7 @@ func (s *Server) applyWatch(ctx context.Context, tx store.APITx, w watchfile.Wat
 			if moved {
 				// As in the file apply: a moved watch starts a new baseline,
 				// and versions held on the old target must not come back.
+				// The delete stays after UpdateWatch (ADR 0028 §2).
 				if _, err := tx.DeletePendingReleasesOfWatch(ctx, cur.ID); err != nil {
 					return "", err
 				}

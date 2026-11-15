@@ -209,3 +209,22 @@ func okErr(ok bool, err error) error {
 	}
 	return err
 }
+
+// testFinishDeliveryCleansLastError: an error text with a NUL or invalid
+// UTF-8 is stored with U+FFFD in their place, on every engine, instead of
+// failing the finish (Postgres TEXT holds neither).
+func testFinishDeliveryCleansLastError(t *testing.T, open opener) {
+	s := open(t)
+	seedDeliveries(t, s)
+	ctx := t.Context()
+	leaseIDs(t, s, "a", t0.Add(time.Minute), 10)
+	f := store.DeliveryFinish{ID: "d-s1", Attempt: 1, Status: store.DeliveryDead, LastError: "bad\x00byte\xff!"}
+	if ok, err := s.FinishDelivery(ctx, f, "a"); err != nil || !ok {
+		t.Fatalf("FinishDelivery = %v, %v", ok, err)
+	}
+	d, err := s.GetDelivery(ctx, "d-s1")
+	must(t, err)
+	if d.Status != store.DeliveryDead || d.LastError != "bad\uFFFDbyte\uFFFD!" {
+		t.Fatalf("delivery = %+v", d)
+	}
+}

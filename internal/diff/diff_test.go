@@ -399,6 +399,11 @@ func TestComputeDetails(t *testing.T) {
 		}
 	}
 
+	// Raw strings no engine can store as text are skipped, not added.
+	if r := Compute("t", nil, fetched("1.0.0", "1.1.0\x00", "1.2.0\xff"), semver.Scheme{}, t0); r.Skipped != 2 || len(r.Add) != 1 ||
+		r.Add[0].Raw != "1.0.0" || r.Usable != 1 {
+		t.Errorf("NUL or invalid UTF-8: %+v", r)
+	}
 	// A lexical primary reports no fallbacks.
 	if r := Compute("t", nil, fetched("a", "b"), lexical.Scheme{}, t0); len(r.Fallbacks) != 0 || len(r.Add) != 2 {
 		t.Errorf("lexical: %+v", r)

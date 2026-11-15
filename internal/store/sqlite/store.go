@@ -182,7 +182,12 @@ func (s *Store) DeletePendingReleasesOfWatch(ctx context.Context, watchID string
 }
 
 // txOps runs the [store.Tx] writes on q, which may be bound to a transaction.
-type txOps struct{ q *Queries }
+// config is set in config, API and secret transactions, which append no event
+// (ADR 0028 agent-decided item 1, the same rule as on Postgres).
+type txOps struct {
+	q      *Queries
+	config bool
+}
 
 func (o txOps) AddVersion(ctx context.Context, v store.Version) (bool, error) {
 	if v.FirstSeenAt.IsZero() {
@@ -331,6 +336,9 @@ func (o txOps) UpdateTarget(ctx context.Context, t store.Target) error {
 }
 
 func (o txOps) AppendEvent(ctx context.Context, e store.Event, ds []store.Delivery) error {
+	if o.config {
+		return fmt.Errorf("store: event %s: AppendEvent in a config or API transaction: %w", e.ID, store.ErrInvalid)
+	}
 	payload, err := rawJSON(e.Payload, true)
 	if err != nil {
 		return fmt.Errorf("store: event %s payload: %w", e.ID, err)

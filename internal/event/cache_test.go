@@ -193,7 +193,7 @@ func TestEmitNeverCachesWhatATransactionSees(t *testing.T) {
 	errRollback := errors.New("rollback")
 	err := st.InConfigTx(ctx, func(tx store.ConfigTx) error {
 		must(t, tx.CreateSubscription(ctx, store.Subscription{ID: "s-ghost", SinkID: "k"}))
-		n, err := Emit(ctx, tx, rel, EmitInput{Target: tg, Instance: "angelia", Now: check2, Matcher: cache})
+		n, err := Emit(ctx, discardAppends{tx}, rel, EmitInput{Target: tg, Instance: "angelia", Now: check2, Matcher: cache})
 		if err != nil || n.Deliveries != 5 { // the three above, s-ghost and the dead s-broken
 			t.Errorf("in-transaction emit = %+v, %v", n, err)
 		}
@@ -526,3 +526,9 @@ func BenchmarkEmit10kSubscriptions(b *testing.B) {
 		})
 	}
 }
+
+// discardAppends lets Emit run in a config transaction, which refuses
+// AppendEvent (ADR 0028): the test needs only what Emit reads there.
+type discardAppends struct{ store.ConfigTx }
+
+func (discardAppends) AppendEvent(context.Context, store.Event, []store.Delivery) error { return nil }

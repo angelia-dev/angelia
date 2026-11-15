@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/store"
@@ -114,7 +115,7 @@ func (s *Store) CountDeliveriesByStatus(ctx context.Context) (map[string]int64, 
 func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, holder string) (bool, error) {
 	p := FinishLeasedDeliveryParams{
 		Status: f.Status, ID: f.ID, Attempt: f.Attempt, LeaseName: store.DeliveryLeaseName(f.ID), Holder: holder,
-		LastError: sql.NullString{String: f.LastError, Valid: f.LastError != ""},
+		LastError: sql.NullString{String: cleanText(f.LastError), Valid: f.LastError != ""},
 	}
 	switch f.Status {
 	case store.DeliveryPending:
@@ -139,4 +140,10 @@ func (s *Store) FinishDelivery(ctx context.Context, f store.DeliveryFinish, hold
 		return wrap(q.ReleaseLease(ctx, ReleaseLeaseParams{Name: p.LeaseName, Holder: holder}), "release lease", p.LeaseName)
 	})
 	return held, err
+}
+
+// cleanText replaces invalid UTF-8 and NUL with U+FFFD, so that an error
+// text is stored the same on every engine (Postgres TEXT holds neither).
+func cleanText(s string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
 }

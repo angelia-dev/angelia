@@ -12,7 +12,7 @@ import (
 
 // InConfigTx implements [store.Store].
 func (s *Store) InConfigTx(ctx context.Context, fn func(tx store.ConfigTx) error) error {
-	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q}) })
+	return s.withTx(ctx, func(q *Queries) error { return fn(txOps{q: q, config: true}) })
 }
 
 // The single-statement config writes of [store.Store] run on the shared

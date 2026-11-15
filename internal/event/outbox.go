@@ -124,9 +124,9 @@ func Emit(ctx context.Context, tx store.Tx, rel []policy.WatchReleases, in EmitI
 			if err != nil {
 				return n, fmt.Errorf("event: watch %s version %q: %w", wr.Watch.ID, r.Raw, err)
 			}
-			payload, err := json.Marshal(env)
+			payload, err := encodePayload(env)
 			if err != nil {
-				return n, fmt.Errorf("event: encode %s: %w", env.ID, err)
+				return n, err
 			}
 			short := ShortType(env.Type)
 			match := subscription.Input{

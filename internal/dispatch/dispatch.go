@@ -11,6 +11,7 @@ import (
 	mrand "math/rand/v2"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -531,8 +532,11 @@ func (d *Dispatcher) send(ctx context.Context, ld store.LeasedDelivery) (sink.Re
 	return res, err
 }
 
-// truncate cuts s to maxErrorLen bytes at a rune boundary.
+// truncate cuts s to maxErrorLen bytes at a rune boundary, after replacing
+// invalid UTF-8 and NUL with U+FFFD: Postgres stores neither in TEXT, and
+// the error is for display only.
 func truncate(s string) string {
+	s = strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
 	if len(s) <= maxErrorLen {
 		return s
 	}
