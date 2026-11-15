@@ -1,6 +1,6 @@
 # ADR 0030: API tokens are `ang_` bearer tokens stored as SHA-256 hashes in an `api_token` table on both engines; the first admin token comes from a bootstrap file or `angelia token create --local`
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-15, the maintainer accepted every recommendation under "Questions for the maintainer")
 - **Date:** 2026-11-15
 - **Story:** angelia-dev/angelia#72
 
@@ -455,6 +455,8 @@ Review of the first draft (commit `55eb175`) removed these as over-engineering:
 - **Separate `angelia tokens` group** for instance-side commands (mirroring `secrets`): see T7.
 
 ## Questions for the maintainer
+
+> **Answered 2026-11-15:** the maintainer accepted every recommendation below as written.
 
 1. **T1 prefix and format**: `ang_<ULID>_<52 base32><7 CRC-32>` (90 chars), strict ULID parse, the
    regex with explicit delimiters. Approve, or prefer `angelia_` / no checksum? (Recommendation:
