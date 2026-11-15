@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/angelia-dev/angelia/internal/store/postgres"
 )
 
 // The clock-skew limits of the start-up check (ADR 0028 §9, ADR 0031 §5).
@@ -26,18 +28,31 @@ type clockSkewer interface {
 	ClockSkew(ctx context.Context, now func() time.Time) (skew, uncertainty time.Duration, err error)
 }
 
+var _ clockSkewer = (*postgres.Store)(nil)
+
 // CheckClock compares the host clock now with the database clock before the
 // scheduler or dispatcher role starts. Lease times are host times (D22), so a
 // host that is off by more than [ClockSkewRefuse] would break the lease
 // fences of other hosts: CheckClock then returns an error wrapping
 // [ErrClockSkew]. Above [ClockSkewWarn] it logs a warning. The measured skew
-// counts with the measurement's uncertainty (half the round trip) added. On
-// SQLite, one process on one host, there is nothing to check. A nil now means
-// time.Now, a nil log [slog.Default].
-func CheckClock(ctx context.Context, st Store, now func() time.Time, log *slog.Logger) error {
+// counts with the measurement's uncertainty (half the round trip) added.
+//
+// The engine comes from dsn, the DSN st was opened on. On SQLite, one process
+// on one host, there is nothing to check. On Postgres the check fails closed:
+// a store that cannot measure the skew (a wrapper that hides the engine's
+// method, say) is an error, not a pass. A nil now means time.Now, a nil log
+// [slog.Default].
+func CheckClock(ctx context.Context, dsn string, st Store, now func() time.Time, log *slog.Logger) error {
+	e, err := EngineOf(dsn)
+	if err != nil {
+		return err
+	}
+	if e != Postgres {
+		return nil
+	}
 	c, ok := st.(clockSkewer)
 	if !ok {
-		return nil
+		return fmt.Errorf("store: the clock-skew check cannot run on this Postgres store (%T); refusing to start", st)
 	}
 	if log == nil {
 		log = slog.Default()

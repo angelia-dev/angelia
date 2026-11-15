@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -342,5 +344,27 @@ func TestConcurrentServeWatchesOnPostgres(t *testing.T) {
 		if n := queryInt(t, db, q); n != want {
 			t.Errorf("%s = %d, want %d", q, n, want)
 		}
+	}
+}
+
+// AC 86-A (D22): `serve --roles=dispatcher` on Postgres runs the clock-skew
+// check before any role starts. A host clock 20 s off, injected through the
+// command's context, makes serve refuse with ErrClockSkew.
+func TestServeRefusesASkewedClockOnPostgres(t *testing.T) {
+	dsn, _, _ := pgSchema(t)
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv("ANGELIA_WATCHES", "")
+	t.Setenv(config.KeyEnv, "")
+	cfg := writeCfg(t, fmt.Sprintf("listen: %q\n", freeAddr(t))+yamlDSN(dsn))
+	var logs syncBuf
+	root := newRootCmd()
+	root.SetOut(&logs)
+	root.SetErr(&logs)
+	root.SetArgs([]string{"serve", "--config", cfg, "--roles=dispatcher", "--drain-timeout=2s"})
+	skewed := func() time.Time { return time.Now().Add(20 * time.Second) }
+	ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), serveClockKey{}, skewed), 30*time.Second)
+	defer cancel()
+	if err := root.ExecuteContext(ctx); !errors.Is(err, open.ErrClockSkew) {
+		t.Fatalf("serve with a skewed clock = %v, want ErrClockSkew\n%s", err, logs.String())
 	}
 }

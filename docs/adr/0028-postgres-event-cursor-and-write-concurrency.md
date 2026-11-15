@@ -407,7 +407,8 @@ option: it would give the interface arguments a different meaning per engine and
 tests.
 
 **Start-up skew check.** When the `scheduler`, `worker` or `dispatcher` role starts on Postgres, it measures
-its skew against the database clock:
+its skew against the database clock (*[ADR 0031](0031-postgres-concurrent-leasing-skip-locked.md) §5 supersedes
+the `worker` mention: that role opens no store and is not checked*):
 
 - It takes a few samples (for example 5) of `SELECT clock_timestamp()`, noting the host time before and
   after each, and keeps the sample with the smallest round trip. `clock_timestamp()`, not `now()`: `now()`

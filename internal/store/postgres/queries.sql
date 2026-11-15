@@ -205,6 +205,9 @@ SELECT expires_at FROM lease WHERE name = $1 AND holder = $2 FOR UPDATE;
 -- Due targets that no unexpired lease covers ('target:' || id, see
 -- store.TargetLeaseName), oldest due first. Rows another lease transaction
 -- has locked are skipped, so concurrent callers get disjoint sets (ADR 0031).
+-- FOR NO KEY UPDATE, not FOR UPDATE: it still excludes other lease
+-- transactions, updates and deletes, but not the FOR KEY SHARE that an
+-- insert of a watch or version referencing the target takes.
 -- name: ListLeasableDueTargets :many
 SELECT id FROM target
 WHERE next_check_at <= sqlc.arg(now)
@@ -214,7 +217,7 @@ WHERE next_check_at <= sqlc.arg(now)
   )
 ORDER BY next_check_at, id
 LIMIT sqlc.arg(max_rows)
-FOR UPDATE SKIP LOCKED;
+FOR NO KEY UPDATE SKIP LOCKED;
 
 -- name: CountLeasableDueTargets :one
 SELECT count(*) FROM target
@@ -249,8 +252,10 @@ WHERE id = sqlc.arg(id)
 
 -- The target row of a fenced write, locked first: lease transactions lock the
 -- target and then its lease, so a fenced write does the same (ADR 0031 §3).
+-- FOR NO KEY UPDATE, the lock the UPDATE itself takes: a concurrent insert of
+-- a row referencing the target does not block it.
 -- name: LockTarget :one
-SELECT id FROM target WHERE id = $1 FOR UPDATE;
+SELECT id FROM target WHERE id = $1 FOR NO KEY UPDATE;
 
 -- Lease rows another transaction holds (a renewal or a takeover in progress)
 -- are skipped: they are not expired for long, and waiting on them could
@@ -298,7 +303,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT sqlc.arg(max_rows)
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 ), due AS (
   SELECT d.id, d.next_attempt_at FROM delivery d
   WHERE d.status = 'pending' AND d.next_attempt_at <= sqlc.arg(now)::bigint
@@ -308,7 +313,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT sqlc.arg(max_rows)
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 ), orphaned AS (
   SELECT d.id, d.next_attempt_at FROM delivery d
   WHERE d.status = 'in_flight'
@@ -318,7 +323,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT sqlc.arg(max_rows)
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 )
 SELECT u.id FROM (
   SELECT id, next_attempt_at FROM unscheduled
@@ -348,7 +353,6 @@ SELECT EXISTS (
 -- row lock since its select, so this is a second guard: no row comes back
 -- when the row no longer matches, and the caller skips it. The holder's own
 -- new lease does not count.
-
 -- name: StartDeliveryAttempt :one
 UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
 WHERE delivery.id = sqlc.arg(id)
@@ -373,7 +377,7 @@ SELECT * FROM sink WHERE id = $1;
 -- The delivery row of a fenced finish, locked before its lease row, in the
 -- order of the lease transaction (ADR 0031 §3). No row: it was deleted.
 -- name: LockDelivery :one
-SELECT id FROM delivery WHERE id = $1 FOR UPDATE;
+SELECT id FROM delivery WHERE id = $1 FOR NO KEY UPDATE;
 
 -- The end of an attempt, fenced by its lease: it applies only while holder
 -- still owns the lease row, expired or not, and the row is still at this

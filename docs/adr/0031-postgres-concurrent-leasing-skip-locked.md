@@ -42,11 +42,11 @@ database clock, warns above 10 s and refuses to start above the refusal limit (�
 ### 1. The lease queries ([internal/store/postgres/queries.sql](../../internal/store/postgres/queries.sql))
 
 - `ListLeasableDueTargets` selects due targets with no unexpired lease,
-  `ORDER BY next_check_at, id LIMIT n FOR UPDATE SKIP LOCKED`.
+  `ORDER BY next_check_at, id LIMIT n FOR NO KEY UPDATE SKIP LOCKED`.
 - `ListLeasableDueDeliveries` keeps the three disjoint branches of #232/#235 (pending with a NULL
   `next_attempt_at`, pending and due, in flight), each read in order from
   `delivery_status_next_attempt_at_id`. Postgres refuses `FOR UPDATE` on a `UNION`, so each branch is a CTE
-  with `LIMIT n FOR UPDATE SKIP LOCKED`, and the final `ORDER BY next_attempt_at NULLS FIRST, id LIMIT n`
+  with `LIMIT n FOR NO KEY UPDATE SKIP LOCKED`, and the final `ORDER BY next_attempt_at NULLS FIRST, id LIMIT n`
   merges them. The order is SQLite's: the storetest case `LeaseDueDeliveriesKeepsTheOrder` (#235's order
   test, run through the interface against a reference model) runs on both engines.
 - A branch locks up to `n` rows, so a call locks at most `3n` rows and leases at most `n`. The rows the final
@@ -79,7 +79,7 @@ released (ADR 0028 §3).
 A fenced write must not apply after a takeover has committed. A plain `UPDATE … WHERE EXISTS (lease of
 holder)` reads the lease from its statement snapshot and could miss a takeover that commits meanwhile, so:
 
-- `UpdateTargetLeased` locks the target (`SELECT … FOR UPDATE`), then the holder's lease row
+- `UpdateTargetLeased` locks the target (`SELECT … FOR NO KEY UPDATE`), then the holder's lease row
   (`SELECT expires_at FROM lease WHERE name = $1 AND holder = $2 FOR UPDATE`), checks that it has not
   expired at `now`, and only then updates the target.
 - `FinishDelivery` locks the delivery, then the holder's lease row (expired or not, as on SQLite, with the
@@ -88,6 +88,11 @@ holder)` reads the lease from its statement snapshot and could miss a takeover t
   either commits before the fence check, and the fenced write returns `false` and writes nothing, or waits
   for the fenced write to commit. The common order (row, then lease) keeps the two from deadlocking.
 - `ReleaseLease` is a single fenced `DELETE`.
+- Target and delivery rows are locked `FOR NO KEY UPDATE`, the lock an `UPDATE` of non-key columns takes,
+  not `FOR UPDATE`. It still excludes other lease transactions, updates and deletes, so the fence argument
+  holds, but not the `FOR KEY SHARE` that an insert of a referencing row (`watch.target_id`,
+  `version.target_id`) takes: a config or check transaction inserting a watch or version neither hides the
+  target from lease calls nor blocks `UpdateTargetLeased`. No foreign key references `delivery`.
 
 ### 4. Lease cleanup and the other writers
 
@@ -111,7 +116,8 @@ process runs the `scheduler` or `dispatcher` role on Postgres, and before any ro
   uncertainty counts against the host;
 - above **10 s**: a warning in the log; above **15 s**: `serve` stops with an error wrapping
   `open.ErrClockSkew` that says to synchronise the host clock;
-- on SQLite (one process, one host) there is nothing to check.
+- the engine comes from `database.dsn`: on SQLite (one process, one host) there is nothing to check; on
+  Postgres the check fails closed, so a store that cannot measure the skew is refused, not passed.
 
 The refusal limit is the 15 s per host of ADR 0028 §9 (agent-decided item 4 there, merged with that ADR),
 not the 30 s first written in #86: each host is measured against the database, so a per-host limit of 15 s

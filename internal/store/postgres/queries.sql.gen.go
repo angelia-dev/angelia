@@ -1461,7 +1461,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT $1
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 ), due AS (
   SELECT d.id, d.next_attempt_at FROM delivery d
   WHERE d.status = 'pending' AND d.next_attempt_at <= $2::bigint
@@ -1471,7 +1471,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT $1
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 ), orphaned AS (
   SELECT d.id, d.next_attempt_at FROM delivery d
   WHERE d.status = 'in_flight'
@@ -1481,7 +1481,7 @@ WITH unscheduled AS (
     )
   ORDER BY d.next_attempt_at NULLS FIRST, d.id
   LIMIT $1
-  FOR UPDATE SKIP LOCKED
+  FOR NO KEY UPDATE SKIP LOCKED
 )
 SELECT u.id FROM (
   SELECT id, next_attempt_at FROM unscheduled
@@ -1538,7 +1538,7 @@ WHERE next_check_at <= $1
   )
 ORDER BY next_check_at, id
 LIMIT $2
-FOR UPDATE SKIP LOCKED
+FOR NO KEY UPDATE SKIP LOCKED
 `
 
 type ListLeasableDueTargetsParams struct {
@@ -1549,6 +1549,9 @@ type ListLeasableDueTargetsParams struct {
 // Due targets that no unexpired lease covers ('target:' || id, see
 // store.TargetLeaseName), oldest due first. Rows another lease transaction
 // has locked are skipped, so concurrent callers get disjoint sets (ADR 0031).
+// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes other lease
+// transactions, updates and deletes, but not the FOR KEY SHARE that an
+// insert of a watch or version referencing the target takes.
 func (q *Queries) ListLeasableDueTargets(ctx context.Context, arg ListLeasableDueTargetsParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listLeasableDueTargets, arg.Now, arg.MaxRows)
 	if err != nil {
@@ -2175,7 +2178,7 @@ func (q *Queries) ListWatchesManagedBy(ctx context.Context, managedBy string) ([
 }
 
 const lockDelivery = `-- name: LockDelivery :one
-SELECT id FROM delivery WHERE id = $1 FOR UPDATE
+SELECT id FROM delivery WHERE id = $1 FOR NO KEY UPDATE
 `
 
 // The delivery row of a fenced finish, locked before its lease row, in the
@@ -2207,11 +2210,13 @@ func (q *Queries) LockHeldLease(ctx context.Context, arg LockHeldLeaseParams) (i
 }
 
 const lockTarget = `-- name: LockTarget :one
-SELECT id FROM target WHERE id = $1 FOR UPDATE
+SELECT id FROM target WHERE id = $1 FOR NO KEY UPDATE
 `
 
 // The target row of a fenced write, locked first: lease transactions lock the
 // target and then its lease, so a fenced write does the same (ADR 0031 §3).
+// FOR NO KEY UPDATE, the lock the UPDATE itself takes: a concurrent insert of
+// a row referencing the target does not block it.
 func (q *Queries) LockTarget(ctx context.Context, id string) (string, error) {
 	row := q.db.QueryRowContext(ctx, lockTarget, id)
 	var id_2 string
@@ -2445,7 +2450,6 @@ func (q *Queries) SetTargetInterval(ctx context.Context, arg SetTargetIntervalPa
 }
 
 const startDeliveryAttempt = `-- name: StartDeliveryAttempt :one
-
 UPDATE delivery SET status = 'in_flight', attempts = attempts + 1
 WHERE delivery.id = $1
   AND ((delivery.status = 'pending' AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= $2::bigint))

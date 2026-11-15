@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -130,7 +131,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Leases compare host times across replicas: a host clock too far
 		// from the database's refuses these roles (D22, ADR 0031 §5).
 		if want["scheduler"] || want["dispatcher"] {
-			if err := open.CheckClock(cmd.Context(), st, nil, log); err != nil {
+			if err := open.CheckClock(cmd.Context(), cfg.Database.DSN, st, serveClock(cmd.Context()), log); err != nil {
 				return err //nolint:wrapcheck // the message names the roles and the fix
 			}
 		}
@@ -222,4 +223,15 @@ func checkSecretsAtStartup(ctx context.Context, cfg *config.Config, keys *secret
 		return err
 	}
 	return secrets.CheckCounts(counts, keys)
+}
+
+// serveClockKey carries a host clock for the start-up clock-skew check in the
+// command's context. Only tests set it, to stand for a host whose clock is
+// off; serve uses time.Now otherwise.
+type serveClockKey struct{}
+
+// serveClock returns the clock the context carries, or nil for time.Now.
+func serveClock(ctx context.Context) func() time.Time {
+	now, _ := ctx.Value(serveClockKey{}).(func() time.Time)
+	return now
 }

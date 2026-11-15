@@ -46,6 +46,9 @@ func (s *Store) LeaseDueDeliveries(ctx context.Context, holder string, now, unti
 			if err != nil {
 				return err
 			}
+			// Defensive only: the row lock taken by the select keeps the row
+			// due until this transaction ends, so StartDeliveryAttempt's
+			// re-check always matches and this branch is not reached.
 			if !ok {
 				if err := q.ReleaseLease(ctx, ReleaseLeaseParams{Name: name, Holder: holder}); err != nil {
 					return wrap(err, "release lease", name)

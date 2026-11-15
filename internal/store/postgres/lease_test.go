@@ -256,11 +256,11 @@ func TestFencedWritesWaitForATakeover(t *testing.T) {
 		err error
 	}
 	for name, c := range map[string]struct {
-		takeover func() int
+		takeover func(t *testing.T) int
 		fenced   func() (bool, error)
 	}{
 		"target": {
-			func() int {
+			func(t *testing.T) int {
 				got, err := b.LeaseDueTargets(ctx, "new", later, later.Add(time.Minute), 1)
 				must(t, err)
 				return len(got)
@@ -272,13 +272,17 @@ func TestFencedWritesWaitForATakeover(t *testing.T) {
 			},
 		},
 		"delivery": {
-			func() int {
+			func(t *testing.T) int {
 				got, err := b.LeaseDueDeliveries(ctx, "new", later, later.Add(time.Minute), 1)
 				must(t, err)
 				return len(got)
 			},
+			// The attempt fence alone would refuse the old holder's finish of
+			// attempt 1, since the takeover starts attempt 2. The finish here
+			// names attempt 2, so only the lease fence, read after the
+			// takeover commits thanks to the lock order, refuses it.
 			func() (bool, error) {
-				return a.FinishDelivery(ctx, store.DeliveryFinish{ID: ds[0].Delivery.ID, Attempt: ds[0].Delivery.Attempts, Status: store.DeliveryDelivered}, "old")
+				return a.FinishDelivery(ctx, store.DeliveryFinish{ID: ds[0].Delivery.ID, Attempt: ds[0].Delivery.Attempts + 1, Status: store.DeliveryDelivered}, "old")
 			},
 		},
 	} {
@@ -296,7 +300,7 @@ func TestFencedWritesWaitForATakeover(t *testing.T) {
 				}
 			}
 			defer func() { b.afterLeaseSelect = nil }()
-			if n := c.takeover(); n != 1 {
+			if n := c.takeover(t); n != 1 {
 				t.Fatalf("took over %d rows, want 1", n)
 			}
 			w := <-done
@@ -348,4 +352,34 @@ func TestDeleteExpiredTargetLeasesSkipsHeldRows(t *testing.T) {
 	if n != 5 {
 		t.Fatalf("deleted %d leases after the release, want 5", n)
 	}
+}
+
+// Inserting a watch or a version takes FOR KEY SHARE on its target. The lease
+// row locks are FOR NO KEY UPDATE, so a transaction that holds such an insert
+// open neither hides the target from LeaseDueTargets nor blocks the fenced
+// UpdateTargetLeased.
+func TestReferencingInsertDoesNotBlockTargetLeases(t *testing.T) {
+	a, b := twoStores(t)
+	ctx := t.Context()
+	addDueTargets(t, a, "t1")
+	tx, err := b.db.BeginTx(ctx, nil)
+	must(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `INSERT INTO watch (id, target_id) VALUES ('w-open', 't1')`)
+	must(t, err)
+
+	wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ts, err := a.LeaseDueTargets(wctx, "h", t0, t0.Add(time.Minute), 10)
+	must(t, err)
+	if len(ts) != 1 || ts[0].ID != "t1" {
+		t.Fatalf("leased %+v while a watch insert is open, want t1", ts)
+	}
+	tg := ts[0]
+	tg.NextCheckAt = t0.Add(time.Hour)
+	ok, err := a.UpdateTargetLeased(wctx, tg, store.TargetLeaseName("t1"), "h", t0)
+	if err != nil || !ok {
+		t.Fatalf("UpdateTargetLeased while a watch insert is open = %v, %v", ok, err)
+	}
+	must(t, tx.Commit())
 }
