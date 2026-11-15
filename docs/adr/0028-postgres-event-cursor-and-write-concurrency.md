@@ -379,6 +379,8 @@ do not take.
   `open.ErrNoDatabase`, and a database without the Angelia tables reads as empty, like a SQLite file the
   secret migration has not reached. `secrets status|rotate` call `open.Exists` first (a missing SQLite file,
   or a Postgres schema without `schema_migrations`, is an error), so a mistyped DSN never creates a store.
+  `Exists` differs by engine on purpose: SQLite only checks that the file exists, Postgres also requires
+  `schema_migrations`, since a Postgres database can exist without being Angelia's.
   The Postgres engine gained `TargetSources` and `TargetDemand` (as on SQLite, outside the store
   interfaces); `open.Store` is `store.APIStore` plus those two, so no store interface changed. The password
   of a DSN never reaches an error or a log line: `parseDSN` and `redact` of 85-D cover `Open` and

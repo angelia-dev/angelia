@@ -126,3 +126,19 @@ func currentSchema(t *testing.T, dsn string) string {
 	}
 	return s.String
 }
+
+func TestToURL(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"postgres://u@h/db?sslmode=disable", "postgres://u@h/db?sslmode=disable"},
+		{"host=/var/run/postgresql user=u dbname=d", "postgres://u@localhost/d?host=%2Fvar%2Frun%2Fpostgresql&port=5432"},
+		{"host=db.example port=5433 user=u password='p w' dbname=d search_path=s", "postgres://u:p%20w@db.example:5433/d?search_path=s"},
+	} {
+		got, err := ToURL(c.in)
+		if err != nil || got != c.want {
+			t.Errorf("ToURL(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+	if _, err := ToURL("host=h password='unterminated"); err == nil || strings.Contains(err.Error(), "unterminated") {
+		t.Errorf("a bad DSN: %v", err)
+	}
+}

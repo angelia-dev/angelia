@@ -108,9 +108,13 @@ func TestStoreTargetDemand(t *testing.T) {
 }
 
 func TestReaderMissingDatabase(t *testing.T) {
-	server, err := url.Parse(pgtest.ServerDSN(t))
-	if err != nil || server.Scheme == "" {
-		t.Skip("needs a URL-form ANGELIA_TEST_POSTGRES_DSN")
+	asURL, err := pgtest.ToURL(pgtest.ServerDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := url.Parse(asURL)
+	if err != nil {
+		t.Fatal(err)
 	}
 	server.Path = "/angelia_no_such_database"
 	if _, err := OpenReader(t.Context(), server.String()); !errors.Is(err, ErrNoDatabase) {

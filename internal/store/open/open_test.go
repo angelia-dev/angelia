@@ -27,6 +27,9 @@ func TestEngineChoosesFromTheDSNScheme(t *testing.T) {
 		{"postgres://u@h/db", Postgres, false},
 		{"postgresql://u@h/db", Postgres, false},
 		{"POSTGRES://u@h/db", Postgres, false},
+		{"postgres:foo", "", true},
+		{"POSTGRES:foo", "", true},
+		{"postgres:/db", "", true},
 		// Not URLs: config validation refuses them at load, and so does the opener.
 		{"host=/var/run/postgresql dbname=angelia", "", true},
 		{"/var/lib/angelia/angelia.db", "", true},
@@ -41,6 +44,13 @@ func TestEngineChoosesFromTheDSNScheme(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "host=") {
 			t.Errorf("EngineOf(%q) error shows the DSN: %v", c.dsn, err)
 		}
+	}
+}
+
+func TestPostgresDSNLowercasesTheSchemeOnly(t *testing.T) {
+	got := postgresDSN("POSTGRESQL://u:p%40ss@h:5432/db?sslmode=disable")
+	if got != "postgresql://u:p%40ss@h:5432/db?sslmode=disable" { //nolint:gosec // a fixture, not a credential
+		t.Fatalf("postgresDSN = %q", got)
 	}
 }
 
@@ -68,10 +78,7 @@ func TestOpenRefusesANonDSN(t *testing.T) {
 // opener takes; a keyword/value test DSN skips the test.
 func pgDSN(t *testing.T) (dsn, schema string) {
 	t.Helper()
-	dsn, schema = pgtest.Schema(t)
-	if _, err := EngineOf(dsn); err != nil {
-		t.Skip("needs a URL-form ANGELIA_TEST_POSTGRES_DSN: " + err.Error())
-	}
+	dsn, schema = pgtest.URLSchema(t)
 	return dsn, schema
 }
 

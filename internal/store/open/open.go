@@ -59,7 +59,8 @@ var (
 // The error never shows the DSN, which may hold a password.
 func EngineOf(dsn string) (Engine, error) {
 	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" {
+	// An opaque URL (postgres:foo) has no "//" authority: not a DSN of ours.
+	if err != nil || u.Scheme == "" || u.Opaque != "" || !strings.Contains(dsn, "://") {
 		return "", errors.New("database.dsn must be a URL: sqlite:///path or postgres://host/db")
 	}
 	switch strings.ToLower(u.Scheme) {
@@ -77,9 +78,14 @@ func sqlitePath(dsn string) (string, error) {
 }
 
 // postgresDSN returns dsn for pgx, which reads only the lower-case scheme.
+// The DSN is rebuilt from the parsed URL; callers have passed it to [EngineOf].
 func postgresDSN(dsn string) string {
-	i := strings.Index(dsn, "://")
-	return strings.ToLower(dsn[:i]) + dsn[i:]
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn // not reached after EngineOf; pgx then refuses it without echoing it
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	return u.String()
 }
 
 // Open opens (creating and migrating if needed) the store named by dsn. A nil
@@ -144,7 +150,7 @@ func Exists(ctx context.Context, dsn string) error {
 // noDB maps an engine's missing-database error onto [ErrNoDatabase].
 func noDB(err error) error {
 	if errors.Is(err, sqlite.ErrNoDatabase) || errors.Is(err, postgres.ErrNoDatabase) {
-		return ErrNoDatabase
+		return fmt.Errorf("%w: the database named by database.dsn does not exist", ErrNoDatabase)
 	}
 	return err
 }

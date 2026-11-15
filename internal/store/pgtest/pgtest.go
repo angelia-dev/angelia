@@ -137,3 +137,54 @@ func WithSearchPath(dsn, schema string) (string, error) {
 	// Keyword/value form: a later keyword overrides an earlier one.
 	return fmt.Sprintf("%s search_path='%s'", dsn, strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(schema)), nil
 }
+
+// URLSchema is [Schema] with the DSN in URL form, the only form
+// `database.dsn` accepts. A URL server DSN is used as it is; a keyword/value
+// one (host, port, user, password, dbname, search_path) is converted. A unix
+// socket host goes in the host query parameter, with localhost as the URL's
+// host (the configuration wants one). It fails the test when it cannot
+// convert, so a REQUIRED run never skips for the DSN's form.
+func URLSchema(t testing.TB) (dsn, name string) {
+	t.Helper()
+	dsn, name = Schema(t)
+	out, err := ToURL(dsn)
+	if err != nil {
+		t.Fatalf("pgtest: %v", err)
+	}
+	return out, name
+}
+
+// ToURL returns dsn as a postgres:// URL. A URL is returned unchanged; the
+// error never includes the DSN.
+func ToURL(dsn string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		return dsn, nil
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return "", errors.New("the DSN cannot be parsed")
+	}
+	u := &url.URL{Scheme: "postgres", Host: cfg.Host, Path: "/" + cfg.Database}
+	if cfg.Port != 0 {
+		u.Host = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	}
+	q := url.Values{}
+	if strings.HasPrefix(cfg.Host, "/") {
+		u.Host = "localhost"
+		q.Set("host", cfg.Host)
+		if cfg.Port != 0 {
+			q.Set("port", fmt.Sprint(cfg.Port))
+		}
+	}
+	switch {
+	case cfg.Password != "":
+		u.User = url.UserPassword(cfg.User, cfg.Password)
+	case cfg.User != "":
+		u.User = url.User(cfg.User)
+	}
+	for k, v := range cfg.RuntimeParams {
+		q.Set(k, v)
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}

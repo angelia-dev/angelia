@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -241,11 +242,15 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 		_, _ = fmt.Fprintln(warn, "warning:", w)
 	}
 	counts := map[string]int64{}
-	c, err := open.SecretKeyCounts(ctx, cfg.Database.DSN)
+	bctx, cancel := helperContext(ctx)
+	c, err := open.SecretKeyCounts(bctx, cfg.Database.DSN)
+	cancel()
 	switch {
 	case errors.Is(err, open.ErrNoDatabase):
 	case err != nil:
+		// Not counted: say so, instead of a summary that claims 0 stored.
 		_, _ = fmt.Fprintf(warn, "warning: secrets: stored secrets not checked: %v\n", err)
+		return keysLine(keys) + "; stored secrets not checked", nil
 	default:
 		counts = c
 	}
@@ -253,6 +258,33 @@ func checkSecretsConfig(ctx context.Context, cfg *config.Config, warn io.Writer)
 		return "", err
 	}
 	return secrets.Summary(counts, keys), nil
+}
+
+// keysLine names the configured keys, for a store whose secrets are not
+// counted.
+func keysLine(keys *secrets.Keyring) string {
+	if keys == nil {
+		return "secrets: no key configured"
+	}
+	s := "secrets: key " + keys.PrimaryID()
+	if prev := len(keys.IDs()) - 1; prev > 0 {
+		s += fmt.Sprintf(" and %d previous key%s", prev, plural(prev))
+	}
+	return s
+}
+
+// helperTimeoutDefault bounds each read-only store helper of `config check`
+// and of the start-up secrets check: a database that accepts the connection
+// and never answers must not hang them. The DSN's own connect_timeout (or
+// PGCONNECT_TIMEOUT) bounds the connect on its own.
+const helperTimeoutDefault = 10 * time.Second
+
+// helperTimeout is a variable so that a test can shorten it.
+var helperTimeout = helperTimeoutDefault
+
+// helperContext returns ctx bounded by helperTimeout.
+func helperContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, helperTimeout)
 }
 
 // checkSourceSecretsOnDisk checks the stored secrets named by
@@ -263,7 +295,9 @@ func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.W
 	if len(sourceRefs(cfg)) == 0 {
 		return nil
 	}
-	hosts, err := open.SecretHosts(ctx, cfg.Database.DSN)
+	bctx, cancel := helperContext(ctx)
+	defer cancel()
+	hosts, err := open.SecretHosts(bctx, cfg.Database.DSN)
 	switch {
 	case errors.Is(err, open.ErrNoDatabase):
 		_, _ = fmt.Fprintln(warn, "warning: source credentials not checked: the database does not exist yet; store the secrets named by sources.<kind>.auth before serve")
@@ -283,7 +317,9 @@ func checkSourceSecretsOnDisk(ctx context.Context, cfg *config.Config, warn io.W
 // configured or changed kind. A database that is missing or unreadable is
 // not an error here.
 func storedTargetWarnings(ctx context.Context, cfg *config.Config, plugins []config.InstalledPlugin) []string {
-	stored, err := open.StoredTargetSources(ctx, cfg.Database.DSN)
+	bctx, cancel := helperContext(ctx)
+	defer cancel()
+	stored, err := open.StoredTargetSources(bctx, cfg.Database.DSN)
 	if err != nil {
 		if !errors.Is(err, open.ErrNoDatabase) {
 			return []string{fmt.Sprintf("stored targets not checked against the sources: %v", err)}

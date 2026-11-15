@@ -43,7 +43,9 @@ func shoutrrrWarnings(ctx context.Context, cfg *config.Config, sinks []watchfile
 			storeErr = err
 			return nil, err
 		}
-		r, err := open.SecretReader(ctx, cfg.Database.DSN)
+		bctx, cancel := helperContext(ctx)
+		defer cancel()
+		r, err := open.SecretReader(bctx, cfg.Database.DSN)
 		if err != nil {
 			storeErr = err
 			return nil, err

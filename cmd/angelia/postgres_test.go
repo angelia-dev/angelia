@@ -3,8 +3,10 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,10 +27,7 @@ const deadPGPassword = "s3cr3t-pg-pa55w0rd" //nolint:gosec // a canary for these
 // accepts, and a connection to it.
 func pgSchema(t *testing.T) (dsn string, db *sql.DB, schema string) {
 	t.Helper()
-	dsn, schema = pgtest.Schema(t)
-	if _, err := open.EngineOf(dsn); err != nil {
-		t.Skip("needs a URL-form ANGELIA_TEST_POSTGRES_DSN: " + err.Error())
-	}
+	dsn, schema = pgtest.URLSchema(t)
 	db, err := sql.Open(pgtest.DriverName, dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -219,5 +218,81 @@ func TestServeOnADeadPostgresFailsWithoutThePassword(t *testing.T) {
 	_, errOut, err := runServeWithin(t, "--config", cfg, "--roles", "all")
 	if err == nil || strings.Contains(err.Error()+errOut, deadPGPassword) {
 		t.Fatalf("serve on a dead Postgres: %v\n%s", err, errOut)
+	}
+}
+
+// silentPG accepts connections and never answers, like a server that is hung
+// or a firewall that drops packets after the handshake. It returns a DSN.
+func silentPG(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return "postgres://angelia:" + deadPGPassword + "@" + ln.Addr().String() + "/angelia?sslmode=disable"
+}
+
+// The read-only helpers of `config check` and of the start-up check are
+// bounded: against a server that never answers they return when the bound
+// (shortened here) expires, with an error and no hang.
+func TestPostgresHelpersAreBoundedAgainstAHungServer(t *testing.T) {
+	t.Setenv("ANGELIA_CONFIG", "")
+	t.Setenv(config.KeyEnv, "")
+	old := helperTimeout
+	helperTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { helperTimeout = old })
+	dsn := silentPG(t)
+	cfg := writeCfg(t, yamlDSN(dsn)+"secrets:\n  key_file: "+writeKeyFile(t, 1)+"\n")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		out, errOut, err := runCLI(t, "config", "check", "--config", cfg)
+		if err != nil || !strings.Contains(errOut, "stored secrets not checked") || strings.Contains(out, "(0 stored)") {
+			t.Errorf("config check: %v\n%s\n%s", err, out, errOut)
+		}
+		if strings.Contains(out+errOut, deadPGPassword) {
+			t.Errorf("the password is shown: %s %s", out, errOut)
+		}
+		if err := checkSecretsAtStartup(t.Context(), mustLoad(t, cfg), nil); err == nil || strings.Contains(err.Error(), deadPGPassword) {
+			t.Errorf("checkSecretsAtStartup on a hung server: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a helper is not bounded: it is still waiting for a hung server")
+	}
+}
+
+func TestHelperContextCarriesTheBound(t *testing.T) {
+	if helperTimeoutDefault != 10*time.Second {
+		t.Fatalf("helperTimeoutDefault = %v, want 10s", helperTimeoutDefault)
+	}
+	ctx, cancel := helperContext(t.Context())
+	defer cancel()
+	if d, ok := ctx.Deadline(); !ok || time.Until(d) > helperTimeoutDefault {
+		t.Fatalf("deadline = %v, %v", d, ok)
 	}
 }

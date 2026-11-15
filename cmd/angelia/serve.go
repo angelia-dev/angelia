@@ -202,7 +202,9 @@ func newLogger(w io.Writer, c config.Log) *slog.Logger {
 // key that is not configured, the instance does not start. A database that
 // does not exist yet holds no secret.
 func checkSecretsAtStartup(ctx context.Context, cfg *config.Config, keys *secrets.Keyring) error {
-	counts, err := open.SecretKeyCounts(ctx, cfg.Database.DSN)
+	bctx, cancel := helperContext(ctx)
+	defer cancel()
+	counts, err := open.SecretKeyCounts(bctx, cfg.Database.DSN)
 	if errors.Is(err, open.ErrNoDatabase) {
 		return nil
 	}
