@@ -294,6 +294,32 @@ secrets per key, read-only; see [Rotating the key](configuration.md#rotating-the
 Neither prints a value, and neither creates a database: a `database.dsn` that
 names no file is an error.
 
+## API tokens
+
+```
+angelia token generate [--out FILE]
+angelia token create --local --name NAME [--scope read|write|admin] [--expires-in D | --expires-at T] [--config FILE]
+```
+
+Both run on the instance and need no API token (ADR 0030 T7).
+
+- `generate` prints a new token and a newline, for
+  [`api.bootstrap_token_file`](configuration.md#api-tokens). Nothing is stored. With `--out` the token is
+  written to a new file with mode `0600` (an existing file is never overwritten) and only its id is
+  printed, on stderr. The file is an admin credential once the instance has stored it.
+- `create --local` creates a token in the instance's database directly. It reads `database.dsn` from the
+  instance configuration (`--config` or `ANGELIA_CONFIG`), loads no secrets key, and never creates or
+  migrates the database: a database that does not exist, or whose schema is older than migration 00021,
+  is an error. It is how the first admin token is made, and the recovery path when none is left. The
+  creator is recorded as `local`.
+  - The token is printed **alone on stdout**, one line, so `TOKEN=$(angelia token create --local …)`
+    works. Its id, name, scope and expiry, and "shown once", go to stderr. The token is never printed
+    again: store it now.
+  - `--name` is required and matches `^[a-z0-9][a-z0-9._-]{0,62}$`; it must be unique among active
+    tokens. `--scope` defaults to `admin`.
+  - `--expires-at` takes an RFC 3339 time and `--expires-in` a duration from now (`90d`, `720h`); either
+    must be in the future, and at most one is given. Without them the token never expires.
+
 ## Output
 
 `-o table` (default) prints aligned columns for a list and a `FIELD VALUE`

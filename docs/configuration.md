@@ -36,6 +36,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `sources.<kind>.auth.password_ref` | none | empty | name of a stored secret (basic) |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
+| `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
 
 - `<kind>` in the `sources.*` keys is a built-in source kind or, with `kind` set, the name of a named
   instance of one (`npm-internal`). A watch selects either by its `source`. The settings of an instance are
@@ -279,6 +280,46 @@ under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
   Replays, secret writes, token creates and revocations, and consumer creates, filter changes and
   deletes also write an `api audit` record (with the actor's token id and name; never a token or a
   hash); consumer acks are frequent and are only in the access log.
+
+## API tokens
+
+API tokens are `ang_…` bearer tokens (ADR 0030). The instance stores only a hash of each token, so a
+token is shown once, when it is created. Managing tokens through the API needs an `admin` token, so the
+first admin token comes from one of two instance-side paths:
+
+- **`angelia token create --local --name NAME`** ([CLI](cli.md#api-tokens)) runs where the instance
+  configuration is: it reads `database.dsn`, writes the token to the database directly and prints it on
+  stdout. It needs no secrets key and never creates or migrates the database (the schema must be at
+  migration 00021 or newer: start `angelia serve` once after an upgrade). It is also the recovery path
+  when no admin token is left. With Docker Compose:
+  `docker compose exec angelia angelia token create --local --name me`.
+- **`api.bootstrap_token_file`**, for unattended installs. Put a token made with
+  `angelia token generate --out FILE` in a file (a Kubernetes or Docker secret mount works) and name the
+  file in `api.bootstrap_token_file` or `ANGELIA_API_BOOTSTRAP_TOKEN_FILE`. When the `api` role starts
+  and the token table has **never held a row** (revoked and expired tokens count), it stores the file's
+  token as the admin token `bootstrap` and logs `bootstrap admin token stored` with its id, never the
+  token. Otherwise the file is not used; if its token is not in the table, the role logs that the file
+  is ignored. Several replicas given the same file store it once.
+  - The file holds one token and at most one newline (`\n` or `\r\n`). Anything else, a missing file or
+    one that is not a regular file fails the start, and the error never shows the content. Symbolic
+    links are followed (Kubernetes secret volumes are links).
+  - On Unix, a file that group or others can **read** is accepted with a warning, since Kubernetes secret
+    volumes default to `0644`. Prefer `0600` or `defaultMode: 0400`.
+  - The bootstrap file is refused if it is group- or other-writable: this goes beyond ADR 0030 T4, and
+    was decided so that no other user can plant an admin token of their own.
+  - A FIFO, device or directory is refused before it is opened, so it cannot block the start. A path
+    that looks like part of a token is not shown in errors.
+  - There is no inline form: the key names a file, and a value that looks like a token is refused
+    without being echoed.
+
+> **The bootstrap file is a live admin credential until it is revoked.** Once the instance runs, create a
+> named admin token, then revoke the `bootstrap` token (or at least remove the file from the instance).
+> **A wiped or restored-empty database re-arms an old file:** the table is empty again, so the next start
+> stores the file's token again.
+
+While no admin token is active (none, or only revoked or expired ones), every start of the `api` role
+logs one warning, which holds no secret:
+`no active admin API token; create one with "angelia token create --local --scope admin --name admin"`.
 
 ## Installed plugins
 

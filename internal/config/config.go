@@ -224,6 +224,11 @@ type API struct {
 	// default, so the API cannot name any. Names starting with ANGELIA_ are
 	// always refused.
 	AllowedEnv []string `yaml:"allowed_env"`
+	// BootstrapTokenFile names a file holding one API token (ADR 0030 T4).
+	// The api role stores it as an admin token named "bootstrap" when the
+	// token table has never held a row. There is no inline form: the key
+	// names a file, never the token.
+	BootstrapTokenFile string `yaml:"bootstrap_token_file"`
 }
 
 // AllowsEnv reports whether a *_env key written through the API may name the
@@ -518,6 +523,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	str("LOG_FORMAT", &cfg.Log.Format)
 	str("HTTP_USER_AGENT", &cfg.HTTP.UserAgent)
 	str("PLUGINS_DIR", &cfg.PluginsDir)
+	str("API_BOOTSTRAP_TOKEN_FILE", &cfg.API.BootstrapTokenFile)
 	list := func(name string, dst *[]string) {
 		if v, ok := env[envPrefix+name]; ok {
 			*dst = nil
@@ -719,6 +725,13 @@ func (c *Config) Validate() error {
 		case ReservedEnvName(n):
 			bad("api.allowed_env[%d]: names starting with %s are always refused", i, envPrefix)
 		}
+	}
+	switch f := c.API.BootstrapTokenFile; {
+	case LooksLikeToken(f):
+		// Never echoed: the value is a credential put in the wrong place.
+		bad("api.bootstrap_token_file: holds a token, not a path; write the token into a file (mode 0600) and name the file here")
+	case strings.ContainsAny(f, "\r\n"):
+		bad("api.bootstrap_token_file: must be a single-line path")
 	}
 	return errors.Join(errs...)
 }
