@@ -128,7 +128,7 @@ func uiAuth(cfg *config.Config, st store.APIStore, m *metrics.Metrics, log *slog
 			log.Warn(warning)
 		}
 		p, err := webauth.NewOIDC(webauth.OIDCConfig{
-			Name: o.Name, Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: secret,
+			Name: o.Name, Label: o.Label(), Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: secret,
 			RedirectURL: webauth.RedirectURL(cfg.UI, o.Name), Scopes: o.EffectiveScopes(), Algs: o.EffectiveAlgs(),
 			HTTP: client.HTTPClient(),
 		})

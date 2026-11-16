@@ -42,6 +42,9 @@ var oidcEmailRE = regexp.MustCompile(`^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\
 type OIDCConfig struct {
 	// Name is the provider's name (config ui.oidc[].name).
 	Name string
+	// Label is the text of its sign-in button (config ui.oidc[].display_name);
+	// empty: Name.
+	Label string
 	// Issuer is the issuer URL; the discovery document is read from
 	// <Issuer>/.well-known/openid-configuration and must state the same
 	// issuer.
@@ -150,6 +153,14 @@ func isLoopback(h string) bool {
 
 // Name implements [IdentityProvider].
 func (o *OIDC) Name() string { return o.cfg.Name }
+
+// Label implements [Labeler]: the configured display name, else Name.
+func (o *OIDC) Label() string {
+	if o.cfg.Label == "" {
+		return o.cfg.Name
+	}
+	return o.cfg.Label
+}
 
 func (o *OIDC) err(format string, a ...any) error {
 	return &ProviderError{provider: o.cfg.Name, msg: fmt.Sprintf(format, a...)}

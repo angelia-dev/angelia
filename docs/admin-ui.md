@@ -76,6 +76,9 @@ sessions keep the old list.
 - A session ends at `ui.session.max_lifetime` after the sign-in, whatever its use. The default is `168h`
   (7 days). Idle timeout must not be longer than the max lifetime.
 - **Sign-out** ends the current session: `POST /ui/auth/logout`.
+- The **sign-in page** shows one button per configured provider (GitHub, then each `ui.oidc` provider). It
+  reads the list from `GET /ui/auth/providers`, which needs no session and returns each provider's `name`
+  and `label` only (`Cache-Control: no-store`), never a client id, an issuer or a secret.
 - **Admins revoke** sessions through the API: `GET /v1/sessions` lists them, and
   `DELETE /v1/sessions/{id}` ends one. The Admin page does the same.
 

@@ -77,6 +77,9 @@ func NewGitHub(cfg GitHubConfig) (*GitHub, error) {
 // Name implements [IdentityProvider].
 func (g *GitHub) Name() string { return GitHubName }
 
+// Label implements [Labeler].
+func (g *GitHub) Label() string { return "GitHub" }
+
 // AuthCodeURL implements [IdentityProvider]. It asks for no scope: the
 // public profile (id, login, name, avatar) needs none.
 func (g *GitHub) AuthCodeURL(_ context.Context, state, codeChallenge, _ string) (string, error) {

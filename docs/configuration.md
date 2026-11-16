@@ -477,6 +477,9 @@ verifier, the nonce, a provider's access or ID token or the client secret.
 `ui.oidc` lists OpenID Connect providers, next to GitHub or instead of it ([ADR 0034](adr/0034-generic-oidc-sign-in.md)).
 Each one gets a sign-in route, `/ui/auth/login/<name>`, and a callback, `<public_url>/ui/auth/callback/<name>`,
 to register as the redirect URI of a confidential client (with a client secret) at the provider.
+The sign-in page shows one button per provider, GitHub first, then `ui.oidc` in order, labelled with
+`display_name` (else `name`). It reads them from `GET /ui/auth/providers`, which needs no sign-in and
+returns only `[{"name": "...", "label": "..."}]`: never a client id, an issuer or a secret.
 
 ```yaml
 ui:
