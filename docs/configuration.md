@@ -44,7 +44,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `ui.github.client_secret_file` | none | empty | path of a file holding the client secret (one of the two) |
 | `ui.github.web_url`, `ui.github.api_url` | none | `https://github.com`, `https://api.github.com` | https URLs of GitHub Enterprise Server (`https://HOST`, `https://HOST/api/v3`) |
 | `ui.access` | none | empty | list of `{github_user or github_id, role}`; `role` is `viewer`, `editor` or `admin` |
-| `ui.session.idle_timeout` | none | `12h` | duration, at least `1m`, at most `max_lifetime` |
+| `ui.session.idle_timeout` | none | `12h` | duration, at least `15m`, at most `max_lifetime` |
 | `ui.session.max_lifetime` | none | `168h` | duration, at least `1m` |
 
 - `<kind>` in the `sources.*` keys is a built-in source kind or, with `kind` set, the name of a named
@@ -384,8 +384,9 @@ PKCE (S256) and a `state` bound to a short-lived cookie. GitHub Enterprise Serve
 **The client secret** is never configured inline: `ui.github.client_secret` is refused (even with the UI
 disabled), and so is a `client_secret_env` value that is not a variable name. Set exactly one of
 `client_secret_env` and `client_secret_file`. The file must be a regular file of one line that group and
-others cannot write; one they can read is accepted with a warning. `angelia config check` reads the file
-and warns when the variable is unset; the `api` role does not start without the secret. Unlike source
+others cannot write; one they can read is accepted with a warning. `angelia config check` reads the file,
+but only **warns** when the `client_secret_env` variable is unset (the check may run where the secret is
+not set); the `api` role refuses to start without the secret. Unlike source
 `token_env`, `client_secret_env` may name an `ANGELIA_` variable (such as
 `ANGELIA_UI_GITHUB_CLIENT_SECRET`): the secret goes only to GitHub's token endpoint.
 
@@ -401,7 +402,9 @@ lowering a role applies to open sessions at their next request (a removed user's
 matches, Angelia pins the login to that account's id (in the database, shared by every replica). Later, a
 different account with that login gets nothing from the entry (logged at WARN with both ids, and
 counted as `identity_mismatch`); other entries can still match it. `github_id` entries need no pin. To
-move a login to a new account, use a `github_id` entry.
+move a login to a new account, use a `github_id` entry. Every replica caches the pins it has read
+until it restarts: after deleting a row of the `ui_identity_pin` table (to pin a login again),
+restart **every** replica, or a replica that still caches the old pin keeps refusing the new account.
 
 **Cookies.** The session cookie is `__Host-angelia_session`: `Secure`, `HttpOnly`, `SameSite=Lax`,
 `Path=/`, no `Domain`. It holds a random 256-bit secret; the database stores only its hash, so a
@@ -409,12 +412,34 @@ database dump cannot be replayed. With a loopback `http://` `public_url` (local 
 cookies are named `angelia_session` and `angelia_oauth` and are not `Secure`.
 
 **Sessions** end after `idle_timeout` without a request, at `max_lifetime` after the sign-in (a lower
-`max_lifetime` applies to existing sessions too), at sign-out (`POST /ui/auth/logout`), or when an admin
-revokes them. Every request reads the session from the database, so a revocation applies at once on
-every replica. The last-seen time is written at most every 5 minutes per session. Admins list sessions
+`max_lifetime` applies to existing sessions too), at sign-out (`POST /ui/auth/logout`), when the same
+browser signs in again (the previous session is revoked), or when an admin revokes them. Every request
+reads the session from the database, so a revocation applies at once on every replica. The last-seen
+time is written at most every 5 minutes per session, by a flush that runs every minute: with **several
+replicas**, a request served by one replica reaches the database, and so the others, up to 6 minutes
+later. So that a session in use on another replica is not ended early, a session ends between
+`idle_timeout` and `idle_timeout` + 6 minutes after its last request, and `idle_timeout` must be at
+least `15m`. An open event stream (`GET /v1/events/stream`) re-checks its session every minute but does
+not count as use: only the request that opened it does, so a browser left on a stream still signs out
+at the idle timeout. Ended sessions (expired, idle or revoked) stay in the database and are listed with
+`include_ended=true`; they are not pruned yet. Admins list sessions
 with `GET /v1/sessions` (active ones by default, `include_ended=true` for all) and revoke one with
 `DELETE /v1/sessions/{id}`. `GET /v1/me` describes the caller, token or session. Audit records name a
 session's principal as `github:<account id>`, which survives a rename of the login.
+
+**Removing someone's access (offboarding).** Removing a person's entry from `ui.access` ends their
+sessions at their next request, but **not the API tokens they created** while signed in: a token
+belongs to no session and keeps its scope. To remove someone completely:
+
+1. Remove (or change) their `ui.access` entry and restart every `api` replica with the new configuration.
+2. List the tokens with `angelia token list -o json` (or `GET /v1/tokens`): `created_by` is the creator's
+   principal, `github:<account id>` for a signed-in user.
+3. Revoke each active token whose `created_by` is their principal: `angelia token revoke ID`.
+
+At start, the `api` role logs one WARN, `active api tokens were created by ui users that ui.access no
+longer lists`, with the ids (`token_ids`, never a token) of the active tokens whose `created_by` is a
+`github:<id>` principal that no entry of `ui.access` lists now (a `github_user` entry lists the account
+its login is pinned to).
 
 **CSRF.** A request authenticated by the cookie that changes something (any method other than `GET`,
 `HEAD` and `OPTIONS`) must carry `Origin` equal to `public_url` and `X-Angelia-CSRF: 1`, or it is

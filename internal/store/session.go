@@ -72,6 +72,10 @@ type SessionStore interface {
 	// of the pin that holds: subject itself, or the one pinned before. A
 	// pin is never changed. ErrInvalid for an empty field or a zero time.
 	PinUIIdentity(ctx context.Context, provider, login, subject string, at time.Time) (string, error)
+	// UIIdentityPin returns the subject that login (already in lower case)
+	// of a provider is pinned to, or ErrNotFound when it is not pinned. It
+	// never pins.
+	UIIdentityPin(ctx context.Context, provider, login string) (string, error)
 }
 
 // ValidateNewUISession checks the fields CreateUISession stores; engines

@@ -77,7 +77,8 @@ func TestUIValidation(t *testing.T) {
 		"bad login":         {strings.Replace(uiOK, "mmornati", "-bad-", 1), "not a GitHub login"},
 		"negative id":       {strings.Replace(uiOK, "139323", "-5", 1), "positive"},
 		"idle > max":        {uiOK + "  session:\n    idle_timeout: 48h\n    max_lifetime: 24h\n", "longer than"},
-		"short idle":        {uiOK + "  session:\n    idle_timeout: 1s\n", "at least 1m"},
+		"short idle":        {uiOK + "  session:\n    idle_timeout: 1s\n", "at least 15m"},
+		"idle under 15m":    {uiOK + "  session:\n    idle_timeout: 14m\n", "at least 15m"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := load(t, writeFile(t, tc.yaml), "UI_GITHUB_SECRET=x")

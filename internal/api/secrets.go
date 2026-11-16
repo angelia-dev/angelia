@@ -416,8 +416,8 @@ func checkRefScope(ctx context.Context, before, after any) error {
 	if maps.Equal(refs(before), refs(after)) {
 		return nil
 	}
-	p := problem(SlugForbidden, "this request adds, removes or changes a *_ref key (a reference to a stored secret), which needs the admin scope; the token has %s",
-		principalFrom(ctx).Scope)
+	p := problem(SlugForbidden, "this request adds, removes or changes a *_ref key (a reference to a stored secret), which needs the admin scope; the %s has %s",
+		principalFrom(ctx).credential(), principalFrom(ctx).Scope)
 	p.RequiredScope = ScopeAdmin.String()
 	return p
 }
