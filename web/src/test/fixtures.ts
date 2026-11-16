@@ -113,3 +113,13 @@ export const sink = (name: string, over: Partial<S['Sink']> = {}): S['Sink'] => 
   masked_fields: ['secret_ref'],
   ...over,
 })
+
+export const plugin = (kind: string, iface: 'source' | 'sink', config_schema: object | null = null): S['Plugin'] => ({
+  kind,
+  interface: iface,
+  runtime: 'builtin',
+  version: null,
+  abi: null,
+  config_schema: config_schema as S['Plugin']['config_schema'],
+  allowed_hosts: [],
+})

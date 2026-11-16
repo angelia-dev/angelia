@@ -1,10 +1,16 @@
 import { useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { deleteWatch, invalidateWatches } from '@/api/mutations'
+import { hasRole, useMe } from '@/api/me'
 import { fetchVersions, fetchWatch, fetchWatches, useCursorList } from '@/api/queries'
 import type { Watch } from '@/api/types'
 import { ErrorCount, LabelList, ManagedByBadge, RelativeTime } from '@/components/badges'
 import { FilterBar, TextFilter } from '@/components/filters'
+import { ConfirmDelete } from '@/components/form'
+import { WatchForm } from '@/components/watch-form'
+import { Button } from '@/components/ui/button'
+import { watchToYaml } from '@/lib/yaml'
 import { EmptyState, ErrorState, Head, ListFrame, PageHeader, Skeleton } from '@/components/states'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableRow } from '@/components/ui/table'
@@ -29,10 +35,16 @@ export function WatchesPage() {
   }
   const list = useCursorList(['watches', filters], fetchWatches(filters))
   const filtered = Boolean(filters.source || filters.label)
+  const me = useMe()
+  const canWrite = me.data ? hasRole(me.data, 'editor') : false
+  const [creating, setCreating] = useState(false)
 
   return (
     <>
-      <PageHeader title="Watches" />
+      <PageHeader title="Watches">
+        {canWrite && !creating && <Button onClick={() => setCreating(true)}>New watch</Button>}
+      </PageHeader>
+      {canWrite && creating && <WatchForm onDone={() => setCreating(false)} onCancel={() => setCreating(false)} />}
       <FilterBar label="Filter watches">
         <TextFilter
           label="Source"
@@ -124,6 +136,22 @@ export function WatchDetailPage() {
     queryFn: () => fetchWatch(name),
   })
   const versions = useCursorList(['watch-versions', name], fetchVersions(name))
+  const me = useMe()
+  const canWrite = me.data ? hasRole(me.data, 'editor') : false
+  const [editing, setEditing] = useState(false)
+  const [showYaml, setShowYaml] = useState(false)
+  const client = useQueryClient()
+  const navigate = useNavigate()
+  const remove = useMutation({
+    mutationFn: () => deleteWatch(name),
+    onSuccess: async () => {
+      // Leave the page and drop the deleted watch first; refetching it while it is shown would flash a 404.
+      await navigate({ to: '/watches' })
+      client.removeQueries({ queryKey: ['watch', name] })
+      client.removeQueries({ queryKey: ['watch-versions', name] })
+      await invalidateWatches(client)
+    },
+  })
 
   if (watch.isPending) return <Skeleton className="h-40 w-full" />
   if (watch.isError) return <ErrorState error={watch.error} onRetry={() => void watch.refetch()} />
@@ -135,6 +163,32 @@ export function WatchDetailPage() {
       <PageHeader title={w.name}>
         <ManagedByBadge value={w.managed_by} />
       </PageHeader>
+      {w.managed_by === 'file' && (
+        <p className="mb-4 text-sm text-muted-foreground">
+          This watch is managed by the watch file, so it is read-only here. Change the file and apply it instead.
+        </p>
+      )}
+      {w.managed_by === 'api' && (
+        <div className="mb-4 flex flex-wrap items-start gap-2">
+          {canWrite && !editing && <Button onClick={() => setEditing(true)}>Edit</Button>}
+          <Button variant="outline" aria-pressed={showYaml} onClick={() => setShowYaml((v) => !v)}>
+            {showYaml ? 'Hide YAML' : 'Show as YAML'}
+          </Button>
+          {canWrite && (
+            <ConfirmDelete
+              what={`watch ${w.name}`}
+              consequence="Its events and deliveries stay as history until retention prunes them."
+              busy={remove.isPending}
+              error={remove.error}
+              onConfirm={() => remove.mutate()}
+            />
+          )}
+        </div>
+      )}
+      {showYaml && w.managed_by === 'api' && <YamlView yaml={watchToYaml(w)} />}
+      {editing && w.managed_by === 'api' && canWrite && (
+        <WatchForm initial={w} onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />
+      )}
       <p className="mb-4 text-sm">
         <Link to="/watches" className="underline">
           All watches
@@ -221,5 +275,36 @@ export function WatchDetailPage() {
         </Table>
       </ListFrame>
     </>
+  )
+}
+
+function YamlView({ yaml }: { yaml: string }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(yaml)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <Card className="mb-4">
+      <CardHeader>
+        <CardTitle>Watch file entry</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="mb-2 text-sm text-muted-foreground">
+          Add this to the file you pass to <code>--watches</code> to manage the watch from Git. Remove the API watch first, or the
+          names clash (<code>409 managed-by-file</code>).
+        </p>
+        <pre aria-label="Watch file YAML" className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
+          {yaml}
+        </pre>
+        <Button variant="outline" size="sm" className="mt-2" onClick={() => void copy()}>
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
