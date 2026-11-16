@@ -1,0 +1,63 @@
+import { useId } from 'react'
+
+const control =
+  'h-9 rounded-md border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary'
+
+/** A labelled text filter; the value is committed on every change. */
+export function TextFilter({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+}) {
+  const id = useId()
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
+        {label}
+      </label>
+      <input id={id} className={control} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  )
+}
+
+export function SelectFilter({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  const id = useId()
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
+        {label}
+      </label>
+      <select id={id} className={control} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+export function FilterBar({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <form role="search" aria-label={label} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(e) => e.preventDefault()}>
+      {children}
+    </form>
+  )
+}
