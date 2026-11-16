@@ -88,7 +88,7 @@ Nobody offers a **self-hosted, multi-ecosystem service that emits a structured, 
 | F11 | Manifest import: `requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`, `Dockerfile` | Should |
 | F12 | Release notes enrichment (GitHub release body, changelog URL) | Should |
 | F13 | Third-party plugins (WASM) with SDK and conformance kit | Should (v1.x) |
-| F14 | Web UI: watches, events timeline, deliveries, DLQ | Could (v1.x) |
+| F14 | Web UI: watches, events timeline, deliveries, DLQ; GitHub sign-in with viewer/editor/admin roles ([ADR 0033](adr/0033-admin-web-ui.md)) | Should (moved ahead by the maintainer, 2026-11-16) |
 | F15 | OSV advisory enrichment and `release.advisory` event | Could |
 | F16 | Private registries and mirrors (custom base URLs, auth) | Must |
 
