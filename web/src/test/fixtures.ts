@@ -123,3 +123,13 @@ export const plugin = (kind: string, iface: 'source' | 'sink', config_schema: ob
   config_schema: config_schema as S['Plugin']['config_schema'],
   allowed_hosts: [],
 })
+
+export const secret = (name: string, over: Partial<S['Secret']> = {}): S['Secret'] => ({
+  name,
+  hosts: [],
+  key_id: '0123456789abcdef',
+  created_at: new Date(Date.now() - 86_400_000).toISOString(),
+  updated_at: new Date(Date.now() - 3_600_000).toISOString(),
+  referenced_by: [],
+  ...over,
+})

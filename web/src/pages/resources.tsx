@@ -1,3 +1,12 @@
+import { useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { hasRole, useMe } from '@/api/me'
+import { deleteSink, deleteSubscription, invalidateSinks, invalidateSubscriptions } from '@/api/mutations'
+import type { Sink, Subscription } from '@/api/types'
+import { ConfirmDelete } from '@/components/form'
+import { SinkForm } from '@/components/sink-form'
+import { SubscriptionForm } from '@/components/subscription-form'
+import { Button } from '@/components/ui/button'
 import { fetchConsumers, fetchPlugins, fetchSinks, fetchSubscriptions, useCursorList } from '@/api/queries'
 import { LabelList, ManagedByBadge, RelativeTime } from '@/components/badges'
 import { EmptyState, Head, ListFrame, PageHeader } from '@/components/states'
@@ -8,20 +17,88 @@ function csv(values: readonly string[]) {
   return values.length ? values.join(', ') : 'any'
 }
 
+/** Edit and delete for an API-managed row; file-managed rows get nothing. */
+function RowActions({
+  managedBy,
+  what,
+  consequence,
+  onEdit,
+  remove,
+}: {
+  managedBy: 'api' | 'file'
+  what: string
+  consequence?: string
+  onEdit: () => void
+  remove: { mutate: () => void; isPending: boolean; error: unknown }
+}) {
+  if (managedBy === 'file') return <span className="text-xs text-muted-foreground">read-only</span>
+  return (
+    <div className="flex flex-col gap-2">
+      <Button variant="outline" size="sm" onClick={onEdit}>
+        Edit
+        <span className="sr-only"> {what}</span>
+      </Button>
+      <ConfirmDelete what={what} consequence={consequence} busy={remove.isPending} error={remove.error} onConfirm={() => remove.mutate()} />
+    </div>
+  )
+}
+
+function SinkRowActions({ sink, onEdit }: { sink: Sink; onEdit: () => void }) {
+  const client = useQueryClient()
+  const remove = useMutation({ mutationFn: () => deleteSink(sink.name), onSuccess: () => invalidateSinks(client) })
+  return (
+    <RowActions
+      managedBy={sink.managed_by}
+      what={`sink ${sink.name}`}
+      consequence="The API refuses while a subscription still uses it."
+      onEdit={onEdit}
+      remove={remove}
+    />
+  )
+}
+
+function SubscriptionRowActions({ subscription, onEdit }: { subscription: Subscription; onEdit: () => void }) {
+  const client = useQueryClient()
+  const remove = useMutation({
+    mutationFn: () => deleteSubscription(subscription.name),
+    onSuccess: () => invalidateSubscriptions(client),
+  })
+  return (
+    <RowActions
+      managedBy={subscription.managed_by}
+      what={`subscription ${subscription.name}`}
+      consequence="Its pending deliveries become dead; delivered ones stay as history."
+      onEdit={onEdit}
+      remove={remove}
+    />
+  )
+}
+
 export function SinksPage() {
   const list = useCursorList(['sinks'], fetchSinks())
+  const me = useMe()
+  const isAdmin = me.data ? hasRole(me.data, 'admin') : false
+  const [form, setForm] = useState<'new' | Sink | null>(null)
   return (
     <>
-      <PageHeader title="Sinks" />
+      <PageHeader title="Sinks">{isAdmin && !form && <Button onClick={() => setForm('new')}>New sink</Button>}</PageHeader>
+      {isAdmin && form && (
+        <SinkForm
+          key={form === 'new' ? 'new' : form.name}
+          initial={form === 'new' ? undefined : form}
+          onDone={() => setForm(null)}
+          onCancel={() => setForm(null)}
+        />
+      )}
       <ListFrame
         label="sinks"
         query={list}
         count={list.items.length}
-        columns={5}
+        columns={isAdmin ? 6 : 5}
         empty={<EmptyState title="No sinks">Add a sink to deliver events somewhere.</EmptyState>}
       >
         <Table aria-label="Sinks">
-          <Head columns={['Name', 'Kind', 'Managed by', 'URL', 'Masked fields']} />
+          <Head columns={['Name', 'Kind', 'Managed by', 'URL', 'Masked fields', ...(isAdmin ? ['Actions'] : [])]} />
           <TableBody>
             {list.items.map((s) => (
               <TableRow key={s.id}>
@@ -35,6 +112,11 @@ export function SinksPage() {
                   {s.url_redacted && <Badge variant="outline" className="ml-2">URL redacted</Badge>}
                 </TableCell>
                 <TableCell>{s.masked_fields.length ? s.masked_fields.join(', ') : '—'}</TableCell>
+                {isAdmin && (
+                  <TableCell>
+                    <SinkRowActions sink={s} onEdit={() => setForm(s)} />
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -46,18 +128,29 @@ export function SinksPage() {
 
 export function SubscriptionsPage() {
   const list = useCursorList(['subscriptions'], fetchSubscriptions())
+  const me = useMe()
+  const canWrite = me.data ? hasRole(me.data, 'editor') : false
+  const [form, setForm] = useState<'new' | Subscription | null>(null)
   return (
     <>
-      <PageHeader title="Subscriptions" />
+      <PageHeader title="Subscriptions">{canWrite && !form && <Button onClick={() => setForm('new')}>New subscription</Button>}</PageHeader>
+      {canWrite && form && (
+        <SubscriptionForm
+          key={form === 'new' ? 'new' : form.name}
+          initial={form === 'new' ? undefined : form}
+          onDone={() => setForm(null)}
+          onCancel={() => setForm(null)}
+        />
+      )}
       <ListFrame
         label="subscriptions"
         query={list}
         count={list.items.length}
-        columns={6}
+        columns={canWrite ? 8 : 7}
         empty={<EmptyState title="No subscriptions">A subscription routes matching events to a sink.</EmptyState>}
       >
         <Table aria-label="Subscriptions">
-          <Head columns={['Name', 'Sink', 'Managed by', 'Types', 'Sources', 'Labels', 'Cooldown']} />
+          <Head columns={['Name', 'Sink', 'Managed by', 'Types', 'Sources', 'Labels', 'Cooldown', ...(canWrite ? ['Actions'] : [])]} />
           <TableBody>
             {list.items.map((s) => (
               <TableRow key={s.id}>
@@ -72,6 +165,11 @@ export function SubscriptionsPage() {
                   <LabelList labels={s.filter.labels} />
                 </TableCell>
                 <TableCell>{s.policy.cooldown || '—'}</TableCell>
+                {canWrite && (
+                  <TableCell>
+                    <SubscriptionRowActions subscription={s} onEdit={() => setForm(s)} />
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>

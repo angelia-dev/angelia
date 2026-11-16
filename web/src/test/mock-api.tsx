@@ -37,7 +37,7 @@ export function mockApi(routes: Record<string, Handler>) {
     const key = request.method === 'GET' ? url.pathname : `${request.method} ${url.pathname}`
     if (!(key in routes)) return Promise.resolve(problem(404, 'Not found', `no mock for ${key}`))
     const h = routes[key]
-    const out = typeof h === 'function' ? (h as (c: Call) => unknown)(call) : h
+    const out = await (typeof h === 'function' ? (h as (c: Call) => unknown)(call) : h)
     if (out instanceof Response) return Promise.resolve(out)
     return Promise.resolve(
       new Response(JSON.stringify(out), { status: 200, headers: { 'Content-Type': 'application/json' } }),
@@ -47,9 +47,8 @@ export function mockApi(routes: Record<string, Handler>) {
   return { calls, fetchMock, count: (path: string) => calls.filter((c) => c.url.pathname === path).length }
 }
 
-export function renderApp(path = '/ui/') {
+export function renderApp(path = '/ui/', client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }))
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
       <RouterProvider router={router} />

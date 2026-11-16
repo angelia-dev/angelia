@@ -12,6 +12,7 @@ import { OverviewPage } from '@/pages/overview'
 import { ConsumersPage, PluginsPage, SinksPage, SubscriptionsPage } from '@/pages/resources'
 import { WatchDetailPage, WatchesPage } from '@/pages/watches'
 import { PlaceholderPage } from '@/pages/placeholder'
+import { SecretsPage } from '@/pages/secrets'
 import { SignInPage } from '@/pages/sign-in'
 
 /** The root asks who is signed in: the sign-in page on 401, else the app shell. */
@@ -64,6 +65,7 @@ const routeTree = rootRoute.addChildren([
   route('/deliveries/$id', DeliveryDetailPage),
   route('/sinks', SinksPage),
   route('/subscriptions', SubscriptionsPage),
+  route('/secrets', SecretsPage),
   route('/consumers', ConsumersPage),
   route('/plugins', PluginsPage),
   route('/admin', AdminPage),
