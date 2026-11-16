@@ -151,4 +151,4 @@ export const fetchSessions = () => (cursor: string | undefined) =>
 export const revokeSession = (id: string) =>
   unwrap(api.DELETE('/v1/sessions/{id}', { params: { path: { id } } }).then((r) => ({ ...r, data: r.data ?? (r.response.ok ? true : undefined) })))
 
-export const createReplay =(selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))
+export const createReplay = (selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))
