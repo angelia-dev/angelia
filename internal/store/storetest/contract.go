@@ -65,6 +65,7 @@ var covers = map[string]string{
 	"ListConsumers":                "ConsumerCRUD",
 	"ListDeliveries":               "FinishDelivery",
 	"ListDeliveryPage":             "EventAndDeliveryReads",
+	"ListEventsBefore":             "EventsBeforeAndDeliveryTimeWindow",
 	"ListEventsAfter":              "HighestPrunedSeq",
 	"ListHeldDeliveries":           "HeldDeliveryOperations",
 	"ListManagedSinks":             "InAPITxLookupsAndSinkUpdate",

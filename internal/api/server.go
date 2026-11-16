@@ -121,6 +121,9 @@ type Options struct {
 	// UI, if set, is the admin UI's handler: the api role mounts it at
 	// /ui/ and redirects GET / to /ui/. Nil: /ui/ is 404 (ui.enabled).
 	UI http.Handler
+	// UIAccess is the instance's ui.access list, which GET /v1/access shows
+	// (read-only; the pins of its login entries are read from Store).
+	UIAccess []config.UIAccess
 }
 
 // UIAuthPath is where the api role mounts Options.UIAuth.

@@ -1452,8 +1452,9 @@ WHERE d.status IN (SELECT json_array_elements_text($1::json))
        OR d.subscription_id IN (SELECT json_array_elements_text($2::json)))
   AND ($3::text = '' OR d.event_id = $3::text)
   AND (e.seq < $4::bigint OR (e.seq = $4::bigint AND d.id > $5::text))
+  AND e.created_at >= $6::bigint AND e.created_at < $7::bigint
 ORDER BY e.seq DESC, d.id
-LIMIT $6
+LIMIT $8
 `
 
 type ListDeliveriesPageParams struct {
@@ -1462,6 +1463,8 @@ type ListDeliveriesPageParams struct {
 	EventID             string
 	BeforeSeq           int64
 	BeforeID            string
+	SinceMs             int64
+	UntilMs             int64
 	MaxRows             int32
 }
 
@@ -1479,6 +1482,8 @@ func (q *Queries) ListDeliveriesPage(ctx context.Context, arg ListDeliveriesPage
 		arg.EventID,
 		arg.BeforeSeq,
 		arg.BeforeID,
+		arg.SinceMs,
+		arg.UntilMs,
 		arg.MaxRows,
 	)
 	if err != nil {
@@ -1531,6 +1536,47 @@ type ListEventsAfterParams struct {
 
 func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error) {
 	rows, err := q.db.QueryContext(ctx, listEventsAfter, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Event
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.Seq,
+			&i.ID,
+			&i.WatchID,
+			&i.Type,
+			&i.PayloadJson,
+			&i.CreatedAt,
+			&i.RefEventID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEventsBefore = `-- name: ListEventsBefore :many
+SELECT seq, id, watch_id, type, payload_json, created_at, ref_event_id FROM event WHERE seq < $1 ORDER BY seq DESC LIMIT $2
+`
+
+type ListEventsBeforeParams struct {
+	Seq   int64
+	Limit int32
+}
+
+// Newest first, for GET /v1/events?order=desc (story #274).
+func (q *Queries) ListEventsBefore(ctx context.Context, arg ListEventsBeforeParams) ([]Event, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsBefore, arg.Seq, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

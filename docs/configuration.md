@@ -424,6 +424,8 @@ counted as `identity_mismatch`); other entries can still match it. `github_id` e
 move a login to a new account, use a `github_id` entry. Every replica caches the pins it has read
 until it restarts: after deleting a row of the `ui_identity_pin` table (to pin a login again),
 restart **every** replica, or a replica that still caches the old pin keeps refusing the new account.
+`GET /v1/access` (`admin` scope) lists the entries with the account id each login is pinned to, read
+from the database (it pins nothing, and never shows the OAuth client id or secret).
 
 **Cookies.** The session cookie is `__Host-angelia_session`: `Secure`, `HttpOnly`, `SameSite=Lax`,
 `Path=/`, no `Domain`. It holds a random 256-bit secret; the database stores only its hash, so a

@@ -1,9 +1,19 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `a5d861a` ("feat(openapi): /v1/me and browser sessions under
-/v1/sessions (spec 0.8.0) (#19)") on the spec repository's `main`.
-Since spec 0.7.0, spec 0.8.0 adds `getMe` (`GET /v1/me`, `read`), the `admin` operations `listSessions`
+`openapi/angelia.v1.yaml` is at commit `24c87ad` ("feat(openapi): API gaps found by the admin UI
+(spec 0.9.0)") on the spec repository's branch `story/274-ui-api-gaps`, **not yet merged** into its
+`main` (angelia-dev/spec PR #20): re-vendor from `main` once it merges.
+Since spec 0.8.0, spec 0.9.0 adds `order=desc` and `before` to `listEvents` with
+`EventPage.next_before`; the `sink`, `since` and `until` filters of `listDeliveries` and
+`Delivery.sink`; `listAccess` (`GET /v1/access`, `admin`); `Me.session_id`; `ETag` on `GET` and `PUT`
+of watches, sinks and subscriptions with the optional `If-Match` and `If-None-Match: *` headers and the
+`precondition-failed` problem (`412`); the `JsonSchema` type of `Plugin.config_schema`;
+`previewTemplate` (`POST /v1/template-previews`, `admin`); and corrects the event stream's text on
+`EventSource` (spec docs/api.md decisions 47 to 54). The MCP tool contract and the event schemas are
+unchanged by 0.9.0.
+Before that, spec 0.8.0 (commit `a5d861a`, "feat(openapi): /v1/me and browser sessions under
+/v1/sessions (spec 0.8.0) (#19)") added `getMe` (`GET /v1/me`, `read`), the `admin` operations `listSessions`
 and `revokeSession` under `/v1/sessions`, the schemas `Me`, `Session`, `SessionPage`, `SessionUser`,
 `UiRole` and `PrincipalId`, the `sessionCookie` security scheme (documentation only: every operation
 still declares `bearerAuth`), the `csrf` problem, and widens `TokenActor` to a session principal
