@@ -8,6 +8,8 @@ export interface Call {
   method: string
   url: URL
   headers: Headers
+  /** The request body text, empty when there is none. */
+  body: string
 }
 
 type Handler = Response | ((call: Call) => unknown) | Record<string, unknown> | unknown[]
@@ -27,10 +29,10 @@ export function problem(status: number, title: string, detail?: string) {
  */
 export function mockApi(routes: Record<string, Handler>) {
   const calls: Call[] = []
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(typeof input === 'string' && input.startsWith('/') ? location.origin + input : input, init)
     const url = new URL(request.url)
-    const call = { method: request.method, url, headers: request.headers }
+    const call = { method: request.method, url, headers: request.headers, body: await request.clone().text() }
     calls.push(call)
     const key = request.method === 'GET' ? url.pathname : `${request.method} ${url.pathname}`
     if (!(key in routes)) return Promise.resolve(problem(404, 'Not found', `no mock for ${key}`))
@@ -99,3 +101,15 @@ export class MockEventSource {
     return MockEventSource.instances[MockEventSource.instances.length - 1]
   }
 }
+
+/** A problem+json response with extra members (`errors`, `required_scope`). */
+export function problemWith(status: number, title: string, extra: Record<string, unknown> = {}) {
+  return new Response(JSON.stringify({ type: 'about:blank', title, status, ...extra }), {
+    status,
+    headers: { 'Content-Type': 'application/problem+json' },
+  })
+}
+
+/** A JSON response with a status other than 200 (`201` on create). */
+export const jsonResponse = (status: number, body?: unknown) =>
+  new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
