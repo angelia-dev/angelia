@@ -39,6 +39,10 @@ go.work.sum
 # GoReleaser output
 /dist/
 
+# Admin UI: the Vite build embedded by internal/webui (make web); the placeholder dist/index.html stays committed
+/internal/webui/dist/app/
+node_modules/
+
 # Built by deploy/compose/ci/run.sh
 /deploy/compose/ci/bin/
 

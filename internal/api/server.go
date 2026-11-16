@@ -118,6 +118,9 @@ type Options struct {
 	// UIAuth, if set, is the handler of the admin UI's sign-in routes, which
 	// the api role mounts at UIAuthPath (internal/webauth).
 	UIAuth http.Handler
+	// UI, if set, is the admin UI's handler: the api role mounts it at
+	// /ui/ and redirects GET / to /ui/. Nil: /ui/ is 404 (ui.enabled).
+	UI http.Handler
 }
 
 // UIAuthPath is where the api role mounts Options.UIAuth.

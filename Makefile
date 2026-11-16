@@ -31,10 +31,16 @@ FUZZ_TARGETS := \
 	./internal/version/schemes:FuzzFallbackParse \
 	./internal/version/schemes:FuzzFallbackTransitive
 
-.PHONY: help build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle bench-github bench-github-repos bench-crash clean
+.PHONY: help web build test fuzz lint lint-tools vuln generate bench-ordering bench-ordering-snapshot bench-scale bench-idle bench-github bench-github-repos bench-crash clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# The UI is built into internal/webui/dist/app (git-ignored; the committed
+# placeholder next to it is untouched, so the tree stays clean). See
+# internal/webui/webui.go. Needs Node 22.
+web: ## Build the admin UI (web/) into internal/webui/dist/app
+	cd web && npm ci --ignore-scripts && npm run build
 
 build: ## Build bin/angelia (CGO disabled, version info injected)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/angelia
