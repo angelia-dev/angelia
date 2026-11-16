@@ -106,6 +106,9 @@ type Options struct {
 	// MCP, if set, builds the handler of POST /mcp (MCPPath), which the api
 	// role then mounts next to /v1/. Nil: /mcp is not served.
 	MCP MCPFactory
+	// UI, if set, is the admin UI's handler: the api role mounts it at
+	// /ui/ and redirects GET / to /ui/. Nil: /ui/ is 404 (ui.enabled).
+	UI http.Handler
 }
 
 // StreamMetrics observes the open event streams. metrics.Metrics implements

@@ -77,6 +77,7 @@ type Config struct {
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
 	API      API               `yaml:"api"`
+	UI       UI                `yaml:"ui"`
 	// PluginsDir holds one folder per installed plugin,
 	// <plugins_dir>/<kind>/ with manifest.json, plugin.wasm and grants.yaml
 	// (ADR 0025); read it with LoadPlugins. Load sets it to
@@ -229,6 +230,13 @@ type API struct {
 	// token table has never held a row. There is no inline form: the key
 	// names a file, never the token.
 	BootstrapTokenFile string `yaml:"bootstrap_token_file"`
+}
+
+// UI configures the admin web UI (ADR 0033), served by the api role under
+// /ui/. Sign-in, the public URL and the access list are added by #262.
+type UI struct {
+	// Enabled serves the UI and redirects / to /ui/. Default false: /ui/ is 404.
+	Enabled bool `yaml:"enabled"`
 }
 
 // AllowsEnv reports whether a *_env key written through the API may name the

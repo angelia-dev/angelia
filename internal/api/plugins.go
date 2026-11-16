@@ -216,4 +216,10 @@ func (r apiRole) Mount(mux *http.ServeMux) {
 	if r.s.mcp != nil {
 		mux.Handle(MCPPath, r.s)
 	}
+	if r.s.opts.UI != nil {
+		mux.Handle("/ui/", r.s.opts.UI)
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusFound)
+		})
+	}
 }
