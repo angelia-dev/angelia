@@ -50,11 +50,12 @@ export function mockApi(routes: Record<string, Handler>) {
 export function renderApp(path = '/ui/') {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const result = render(
     <QueryClientProvider client={client}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return { ...result, client }
 }
 
 /** A controllable EventSource for the live-events tests. */
