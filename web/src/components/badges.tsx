@@ -32,9 +32,21 @@ export function DeliveryStatusBadge({ status }: { status: DeliveryStatus }) {
   )
 }
 
+export const WATCH_FILE_DOCS = 'https://github.com/angelia-dev/angelia/blob/main/docs/watch-file.md'
+
+/** `file` rows are read-only in the UI; their badge links to the watch-file docs. */
 export function ManagedByBadge({ value }: { value: 'api' | 'file' }) {
+  if (value === 'file') {
+    return (
+      <Badge variant="outline" title="Managed by the config file">
+        <a href={WATCH_FILE_DOCS} target="_blank" rel="noreferrer" aria-label="file: managed by the watch file (opens the docs)">
+          file
+        </a>
+      </Badge>
+    )
+  }
   return (
-    <Badge variant="outline" title={value === 'file' ? 'Managed by the config file' : 'Managed through the API'}>
+    <Badge variant="outline" title="Managed through the API">
       {value}
     </Badge>
   )
