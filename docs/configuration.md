@@ -30,7 +30,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
 | `http.host_limits.default` | none | unset (5 rps, burst 5) | `{rps, burst}` for every unlisted host: `rps` from 1/3600 to 20, `burst` from 1 to 20; see [Per-host rate limits](#per-host-rate-limits) |
 | `http.host_limits.hosts.<host>` | none | empty | `{rps, burst}` for one exact host: `rps` from 1/3600 to 100, `burst` from 1 to 200 (default `ceil(rps)`) |
-| `ui.enabled` | none | `false` | `true` or `false`; serves the [admin UI](#admin-ui) from the `api` role |
+| `ui.enabled` | none | `false` | `true` serves the [admin UI](#admin-ui) and its [sign-in](#admin-ui-sign-in) from the `api` role |
 | `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
 | `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
@@ -38,7 +38,6 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 | `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
-| `ui.enabled` | none | `false` | `true` turns on the admin UI's sign-in; see [Admin UI sign-in](#admin-ui-sign-in) |
 | `ui.public_url` | none | empty | `https://host[:port]`, no path; `http://` only for a loopback host |
 | `ui.github.client_id` | none | empty | the client id of a GitHub OAuth App |
 | `ui.github.client_secret_env` | none | empty | name of the environment variable holding the client secret |
@@ -322,11 +321,9 @@ under `/ui/` on the `listen` address, from files embedded in the binary, and red
 `/ui/`. With the default, `false`, `/ui/` answers `404` and `/` is not routed. The UI is a client of
 the REST API above and has no endpoints of its own.
 
-Sign-in arrives with [#262](https://github.com/angelia-dev/angelia/issues/262) (GitHub sign-in,
-sessions and roles, with further `ui.*` keys): until then the UI shows its sign-in page and cannot
-call the API, so leave it disabled in production. A binary built without the UI (`go build` with no
-`make web` first) serves a placeholder page that says so. Responses carry a strict
-`Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
+Enabling the UI needs the sign-in keys of [Admin UI sign-in](#admin-ui-sign-in) below. A binary built
+without the UI (`go build` with no `make web` first) serves a placeholder page that says so. Responses
+carry a strict `Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
 
 ## API tokens
 

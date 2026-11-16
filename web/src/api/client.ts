@@ -11,8 +11,13 @@ export const csrfMiddleware: Middleware = {
   },
 }
 
-export function createApiClient(baseUrl = '') {
-  const client = createClient<paths>({ baseUrl, credentials: 'same-origin' })
+export function createApiClient(baseUrl = globalThis.location?.origin ?? '') {
+  // Resolve fetch at call time, not at creation, so tests can stub it.
+  const client = createClient<paths>({
+    baseUrl,
+    credentials: 'same-origin',
+    fetch: (request) => globalThis.fetch(request),
+  })
   client.use(csrfMiddleware)
   return client
 }
