@@ -11,6 +11,7 @@ import { EventDetailPage, EventsPage } from '@/pages/events'
 import { OverviewPage } from '@/pages/overview'
 import { ConsumersPage, PluginsPage, SinksPage, SubscriptionsPage } from '@/pages/resources'
 import { WatchDetailPage, WatchesPage } from '@/pages/watches'
+import { SecretsPage } from '@/pages/secrets'
 import { AdminPage } from '@/pages/admin'
 import { SignInPage } from '@/pages/sign-in'
 
@@ -50,6 +51,7 @@ const routeTree = rootRoute.addChildren([
   route('/deliveries/$id', DeliveryDetailPage),
   route('/sinks', SinksPage),
   route('/subscriptions', SubscriptionsPage),
+  route('/secrets', SecretsPage),
   route('/consumers', ConsumersPage),
   route('/plugins', PluginsPage),
   route('/admin', AdminPage),

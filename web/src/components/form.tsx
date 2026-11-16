@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { ApiError } from '@/api/problem'
 import type { Problem } from '@/api/types'
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,23 @@ export function mergeErrors(...sets: FieldErrors[]): FieldErrors {
   const out: FieldErrors = {}
   for (const set of sets) for (const [p, m] of Object.entries(set)) out[p] = [...(out[p] ?? []), ...m]
   return out
+}
+
+/**
+ * After a refused submit, moves focus to the first control with an error, or to an error
+ * message (WCAG 3.3.1). Call `focusError()` when client checks fail; a failed write (`failed`
+ * turning true) does it too.
+ */
+export function useFocusFirstError(formRef: RefObject<HTMLFormElement | null>, failed: boolean) {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (tick === 0) return
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"], [role="alert"]')?.focus()
+  }, [tick, formRef])
+  useEffect(() => {
+    if (failed) setTick((t) => t + 1)
+  }, [failed])
+  return useCallback(() => setTick((t) => t + 1), [])
 }
 
 export interface ControlProps {
