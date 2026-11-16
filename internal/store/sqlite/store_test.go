@@ -293,8 +293,8 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 6 { // 00016 to 00021
-		t.Fatalf("applied %d migrations, want 6", applied)
+	if applied != 7 { // 00016 to 00022
+		t.Fatalf("applied %d migrations, want 7", applied)
 	}
 	var idx int // 00018 adds the lease order index (story #232)
 	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))
@@ -344,4 +344,50 @@ func TestForeignKeysHoldAfterConfigDeletes(t *testing.T) {
 		t.Fatal("foreign key violations after deletes")
 	}
 	must(t, rows.Err())
+}
+
+// 00022 only adds ui_session and ui_identity_pin (story #262, ADR 0033 §5):
+// a hash that is not 32 bytes is refused, a login is pinned once per
+// provider, and its down drops both tables and keeps 00021's.
+func TestUISessionMigration(t *testing.T) {
+	ctx := t.Context()
+	db, err := openDB(filepath.Join(t.TempDir(), "angelia.db"))
+	must(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = migrate(ctx, db, discard(), 22)
+	must(t, err)
+	const cols = `INSERT INTO ui_session (id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at) VALUES `
+	hash := "x'" + strings.Repeat("00", 32) + "'"
+	must(t, func() error {
+		_, err := db.ExecContext(ctx, cols+`('a',`+hash+`,'github','1','u','','','',1,1,2)`)
+		return err
+	}())
+	must(t, func() error {
+		_, err := db.ExecContext(ctx, `INSERT INTO ui_identity_pin (provider, login, subject, pinned_at) VALUES ('github','u','1',1)`)
+		return err
+	}())
+	for _, q := range []string{
+		cols + `('b',x'00','github','1','u','','','',1,1,2)`,
+		`INSERT INTO ui_identity_pin (provider, login, subject, pinned_at) VALUES ('github','u','2',1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err == nil {
+			t.Fatalf("%s: accepted", q)
+		}
+	}
+	tables := func(name string) (n int) {
+		t.Helper()
+		must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, name).Scan(&n))
+		return n
+	}
+	p, err := newProvider(db)
+	must(t, err)
+	if _, err := p.DownTo(ctx, 21); err != nil {
+		t.Fatal(err)
+	}
+	if tables("ui_session")+tables("ui_identity_pin") != 0 {
+		t.Fatal("ui tables present after down")
+	}
+	if tables("api_token") != 1 {
+		t.Fatal("down of 00022 removed the 00021 table")
+	}
 }

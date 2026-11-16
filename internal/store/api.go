@@ -18,6 +18,9 @@ type APIStore interface {
 	// TokenStore holds the API tokens of /v1/tokens (story #72, ADR 0030
 	// T3).
 	TokenStore
+	// SessionStore holds the admin UI's browser sessions and identity pins
+	// (story #262, ADR 0033 §5).
+	SessionStore
 	// InAPITx runs fn in one transaction like InConfigTx, with the API's
 	// lookups and replay writes too.
 	InAPITx(ctx context.Context, fn func(tx APITx) error) error
