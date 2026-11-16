@@ -182,6 +182,12 @@ func testPinUIIdentity(t *testing.T, open opener) {
 	if got != "139323" {
 		t.Fatalf("second pin replaced the first: %q", got)
 	}
+	if got, err := s.UIIdentityPin(ctx, "github", "mmornati"); err != nil || got != "139323" {
+		t.Fatalf("read pin = %q, %v", got, err)
+	}
+	if _, err := s.UIIdentityPin(ctx, "github", "nobody"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("read of no pin: %v", err)
+	}
 	got, err = s.PinUIIdentity(ctx, "other", "mmornati", "999", t0)
 	must(t, err)
 	if got != "999" {

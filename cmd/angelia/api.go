@@ -32,8 +32,9 @@ import (
 // flush once it drains.
 //
 // With ui.enabled, browsers also authenticate with an admin UI session
-// (ADR 0033): the api role serves the sign-in routes under /ui/auth/ and
-// runs the sessions' last-seen flush next to the tokens'.
+// (ADR 0033): the api role serves the sign-in routes under /ui/auth/, runs
+// the sessions' last-seen flush next to the tokens', and at start warns of
+// active tokens whose creator ui.access no longer lists.
 func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, drain time.Duration, log *slog.Logger) (*api.Server, error) {
 	opts, err := apiOptions(cfg, st, sources, keys, m, drain, log)
 	if err != nil {
@@ -74,9 +75,11 @@ func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry,
 		opts.Sessions, opts.UIAuth = sessions, handler
 		opts.SessionCookie, opts.PublicOrigin = webauth.SessionCookieName(cfg.UI), cfg.UI.PublicOrigin()
 		opts.AuthLoop = func(ctx context.Context) error {
+			// Tokens outlive their creator's access: say which ones, once.
+			sessions.WarnOrphanTokens(ctx, st)
 			return runBoth(ctx,
-				func(ctx context.Context) error { return auth.Run(ctx, tokenFlushTick, tokenFlushTimeout) },     //nolint:wrapcheck // the api role wraps it
-				func(ctx context.Context) error { return sessions.Run(ctx, tokenFlushTick, tokenFlushTimeout) }, //nolint:wrapcheck // the api role wraps it
+				func(ctx context.Context) error { return auth.Run(ctx, tokenFlushTick, tokenFlushTimeout) },        //nolint:wrapcheck // the api role wraps it
+				func(ctx context.Context) error { return sessions.Run(ctx, webauth.FlushTick, tokenFlushTimeout) }, //nolint:wrapcheck // the api role wraps it
 			)
 		}
 	}

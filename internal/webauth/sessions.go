@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,15 @@ type Store interface {
 // TouchInterval is the shortest time between two writes of one session's
 // last_seen_at (ADR 0033 §5, as ADR 0030 T6 for tokens).
 const TouchInterval = 5 * time.Minute
+
+// FlushTick is how often `angelia serve` writes the recorded uses ([Run]).
+const FlushTick = time.Minute
+
+// IdleSlack is added to the idle timeout: a use on another replica reaches
+// the store only after up to TouchInterval plus FlushTick, so a session used
+// there is not ended early here. A session therefore ends between
+// idle_timeout and idle_timeout + IdleSlack after its last use.
+const IdleSlack = TouchInterval + FlushTick
 
 // maxUserAgent bounds the stored User-Agent (the Session schema's 256).
 const maxUserAgent = 256
@@ -101,8 +111,9 @@ func NewSessions(st Store, ui config.UI, log *slog.Logger, opts ...SessionsOptio
 	return s
 }
 
-// IdleTimeout implements [api.SessionAuthenticator].
-func (s *Sessions) IdleTimeout() time.Duration { return s.idle }
+// IdleTimeout implements [api.SessionAuthenticator]: the configured idle
+// timeout plus [IdleSlack], how long a session actually lives unused.
+func (s *Sessions) IdleTimeout() time.Duration { return s.idle + IdleSlack }
 
 // lookup reads the session of a cookie value and checks its hash. It
 // returns an *AuthError for a malformed value, an unknown id or a wrong
@@ -129,8 +140,20 @@ func (s *Sessions) lookup(ctx context.Context, cookie string) (store.UISession, 
 
 // AuthenticateSession implements [api.SessionAuthenticator]. It reads the
 // row on every call (no cache), so a revocation applies at the next request
-// on every replica, and evaluates the role from ui.access now.
+// on every replica, evaluates the role from ui.access now, and records the
+// use (last_seen_at).
 func (s *Sessions) AuthenticateSession(ctx context.Context, cookie string) (api.Principal, error) {
+	return s.authenticate(ctx, cookie, true)
+}
+
+// CheckSession implements [api.SessionAuthenticator]: AuthenticateSession
+// without recording a use, for the re-check of an open event stream, which
+// must not keep an otherwise idle session alive.
+func (s *Sessions) CheckSession(ctx context.Context, cookie string) (api.Principal, error) {
+	return s.authenticate(ctx, cookie, false)
+}
+
+func (s *Sessions) authenticate(ctx context.Context, cookie string, use bool) (api.Principal, error) {
 	row, err := s.lookup(ctx, cookie)
 	if err != nil {
 		return api.Principal{}, err
@@ -151,7 +174,9 @@ func (s *Sessions) AuthenticateSession(ctx context.Context, cookie string) (api.
 		// Removed from ui.access since the sign-in: the list withdrew it.
 		return api.Principal{}, &AuthError{Reason: api.AuthReasonRevoked, ID: row.ID}
 	}
-	s.recordUse(row.ID, now)
+	if use {
+		s.recordUse(row.ID, now)
+	}
 	return api.Principal{
 		ID: row.Provider + ":" + row.Subject, Name: row.Login, Scope: scope,
 		Session: &api.SessionInfo{
@@ -163,8 +188,9 @@ func (s *Sessions) AuthenticateSession(ctx context.Context, cookie string) (api.
 
 // ended reports whether a session is past its absolute end (its stored
 // expires_at, or its creation plus the maximum lifetime configured now,
-// whichever is first) or idle for the idle timeout. The idle check uses the
-// latest use this process recorded, which the store may not hold yet.
+// whichever is first) or idle for the idle timeout plus [IdleSlack]. The
+// idle check uses the latest use this process recorded, which the store may
+// not hold yet.
 func (s *Sessions) ended(row store.UISession, now time.Time) bool {
 	end := row.ExpiresAt
 	if e := row.CreatedAt.Add(s.max); e.Before(end) {
@@ -179,7 +205,7 @@ func (s *Sessions) ended(row store.UISession, now time.Time) bool {
 		seen = p
 	}
 	s.mu.Unlock()
-	return now.Sub(seen) >= s.idle
+	return now.Sub(seen) >= s.idle+IdleSlack
 }
 
 // signIn creates a session for an identity that ui.access lets in. It
@@ -209,6 +235,15 @@ func (s *Sessions) signIn(ctx context.Context, id Identity, userAgent string) (c
 // returns the session, or false when the value names no active session; an
 // error is a store failure.
 func (s *Sessions) signOut(ctx context.Context, cookie string) (store.UISession, bool, error) {
+	return s.revokeCookie(ctx, cookie, "")
+}
+
+// revokeCookie revokes the session of a cookie value by the principal by,
+// or by the session's own principal when by is "". Signing in again uses it
+// to end the session the browser held before. It returns the session, or
+// false when the value names no active session; an error is a store
+// failure.
+func (s *Sessions) revokeCookie(ctx context.Context, cookie, by string) (store.UISession, bool, error) {
 	row, err := s.lookup(ctx, cookie)
 	var ae *AuthError
 	switch {
@@ -217,7 +252,10 @@ func (s *Sessions) signOut(ctx context.Context, cookie string) (store.UISession,
 	case err != nil:
 		return store.UISession{}, false, err
 	}
-	changed, err := s.store.RevokeUISession(ctx, row.ID, s.now(), row.Provider+":"+row.Subject)
+	if by == "" {
+		by = row.Provider + ":" + row.Subject
+	}
+	changed, err := s.store.RevokeUISession(ctx, row.ID, s.now(), by)
 	if err != nil {
 		return store.UISession{}, false, fmt.Errorf("webauth: revoke session %s: %w", row.ID, err)
 	}
@@ -311,5 +349,57 @@ func (s *Sessions) Run(ctx context.Context, tick, shutdownTimeout time.Duration)
 			}
 			return nil
 		}
+	}
+}
+
+// TokenLister lists the API tokens ([store.TokenReader] has it).
+type TokenLister interface {
+	ListAPITokens(ctx context.Context, afterID string, limit int, includeRevoked bool) ([]store.APIToken, error)
+}
+
+// OrphanTokens returns the ids of the active API tokens that a signed-in
+// user created (created_by "<provider>:<subject>") whose identity ui.access
+// no longer lists: removing a person from ui.access ends their sessions but
+// not the tokens they created.
+func (s *Sessions) OrphanTokens(ctx context.Context, tokens TokenLister) ([]string, error) {
+	const page = 500
+	var out []string
+	now := s.now()
+	for after := ""; ; {
+		ts, err := tokens.ListAPITokens(ctx, after, page, false)
+		if err != nil {
+			return nil, fmt.Errorf("webauth: list api tokens: %w", err)
+		}
+		for _, t := range ts {
+			provider, subject, ok := strings.Cut(t.CreatedBy, ":")
+			if !ok || provider != GitHubName || subject == "" || (t.ExpiresAt != nil && !now.Before(*t.ExpiresAt)) {
+				continue
+			}
+			listed, err := s.access.listsSubject(ctx, provider, subject)
+			if err != nil {
+				return nil, err
+			}
+			if !listed {
+				out = append(out, t.ID)
+			}
+		}
+		if len(ts) < page {
+			return out, nil
+		}
+		after = ts[len(ts)-1].ID
+	}
+}
+
+// WarnOrphanTokens logs one warning that lists the ids of the
+// [Sessions.OrphanTokens], if any (the api role, at start). It logs ids
+// only, never a token or its hash. A failed read is logged too.
+func (s *Sessions) WarnOrphanTokens(ctx context.Context, tokens TokenLister) {
+	ids, err := s.OrphanTokens(ctx, tokens)
+	switch {
+	case err != nil:
+		s.log.WarnContext(ctx, "api tokens created by ui users not checked against ui.access", "err", err)
+	case len(ids) > 0:
+		s.log.WarnContext(ctx, "active api tokens were created by ui users that ui.access no longer lists; revoke them if those people left (angelia token revoke)",
+			"token_ids", ids)
 	}
 }
