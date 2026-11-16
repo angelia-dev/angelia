@@ -1,9 +1,8 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `24c87ad` ("feat(openapi): API gaps found by the admin UI
-(spec 0.9.0)") on the spec repository's branch `story/274-ui-api-gaps`, **not yet merged** into its
-`main` (angelia-dev/spec PR #20): re-vendor from `main` once it merges.
+`openapi/angelia.v1.yaml` is at commit `dbb439e` ("feat(openapi): API gaps found by the admin UI
+(spec 0.9.0) (#20)") on the spec repository's `main`.
 Since spec 0.8.0, spec 0.9.0 adds `order=desc` and `before` to `listEvents` with
 `EventPage.next_before`; the `sink`, `since` and `until` filters of `listDeliveries` and
 `Delivery.sink`; `listAccess` (`GET /v1/access`, `admin`); `Me.session_id`; `ETag` on `GET` and `PUT`
