@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -8,9 +8,12 @@ import {
   fetchSubscriptions,
   useCursorList,
 } from '@/api/queries'
-import type { DeliveryStatus } from '@/api/types'
+import { hasRole, useMe } from '@/api/me'
+import type { Delivery, DeliveryStatus } from '@/api/types'
 import { DeliveryStatusBadge, RelativeTime } from '@/components/badges'
 import { FilterBar, SelectFilter } from '@/components/filters'
+import { isReplayable, ReplayDeliveryDialog, ReplayRangeDialog } from '@/components/replay'
+import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Head, ListFrame, PageHeader, Skeleton } from '@/components/states'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 
@@ -35,22 +38,52 @@ export function useSubscriptionIndex() {
 }
 
 export function DeliveriesPage() {
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('dead')
+  const [subscription, setSubscription] = useState('')
+  const [sinkName, setSinkName] = useState('')
+  const [replaying, setReplaying] = useState<Delivery>()
+  const [range, setRange] = useState(false)
   const statuses = (status ? [status] : []) as DeliveryStatus[]
-  const list = useCursorList(['deliveries', status], fetchDeliveries(statuses))
+  const list = useCursorList(['deliveries', status, subscription], fetchDeliveries(statuses, undefined, subscription))
   const subs = useSubscriptionIndex()
+  const me = useMe()
+  const canWrite = !!me.data && hasRole(me.data, 'editor')
+  const subList = useMemo(() => [...(subs.data?.values() ?? [])], [subs.data])
+  const sinkNames = useMemo(() => [...new Set(subList.map((s) => s.sink))].sort(), [subList])
+  // The API has no sink filter: narrow what was loaded, by the sink of each subscription.
+  const items = sinkName ? list.items.filter((d) => subs.data?.get(d.subscription_id)?.sink === sinkName) : list.items
 
   return (
     <>
-      <PageHeader title="Deliveries" />
+      <PageHeader title="Deliveries">
+        {canWrite && (
+          <Button variant="outline" onClick={() => setRange(true)}>
+            Replay range
+          </Button>
+        )}
+      </PageHeader>
       <FilterBar label="Filter deliveries">
         <SelectFilter label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+        <SelectFilter
+          label="Subscription"
+          value={subscription}
+          onChange={setSubscription}
+          options={[{ value: '', label: 'All subscriptions' }, ...subList.map((s) => ({ value: s.id, label: s.name }))]}
+        />
+        <SelectFilter
+          label="Sink"
+          value={sinkName}
+          onChange={setSinkName}
+          options={[{ value: '', label: 'All sinks' }, ...sinkNames.map((n) => ({ value: n, label: n }))]}
+        />
       </FilterBar>
+      {replaying && <ReplayDeliveryDialog delivery={replaying} onClose={() => setReplaying(undefined)} />}
+      {range && <ReplayRangeDialog onClose={() => setRange(false)} />}
       <ListFrame
         label="deliveries"
         query={list}
-        count={list.items.length}
-        columns={7}
+        count={items.length}
+        columns={canWrite ? 8 : 7}
         empty={
           <EmptyState title={status === 'dead' ? 'No dead letters' : 'No deliveries'}>
             {status ? 'No delivery has this status.' : 'Deliveries appear when an event matches a subscription.'}
@@ -58,9 +91,9 @@ export function DeliveriesPage() {
         }
       >
         <Table aria-label="Deliveries">
-          <Head columns={['Status', 'Sink', 'Subscription', 'Attempts', 'Last error', 'Next attempt', 'Delivery']} />
+          <Head columns={['Status', 'Sink', 'Subscription', 'Attempts', 'Last error', 'Next attempt', 'Delivery', ...(canWrite ? ['Actions'] : [])]} />
           <TableBody>
-            {list.items.map((d) => (
+            {items.map((d) => (
               <TableRow key={d.id}>
                 <TableCell>
                   <DeliveryStatusBadge status={d.status} />
@@ -79,6 +112,15 @@ export function DeliveriesPage() {
                     {d.id.slice(-8)}
                   </Link>
                 </TableCell>
+                {canWrite && (
+                  <TableCell>
+                    {isReplayable(d) && (
+                      <Button variant="outline" size="sm" aria-label={`Replay delivery ${d.id}`} onClick={() => setReplaying(d)}>
+                        Replay
+                      </Button>
+                    )}
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -92,10 +134,13 @@ export function DeliveryDetailPage() {
   const { id } = useParams({ from: '/deliveries/$id' })
   const query = useQuery({ queryKey: ['delivery', id], queryFn: () => fetchDelivery(id) })
   const subs = useSubscriptionIndex()
+  const me = useMe()
+  const [replaying, setReplaying] = useState(false)
   if (query.isPending) return <Skeleton className="h-40 w-full" />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
   const d = query.data
   const sub = subs.data?.get(d.subscription_id)
+  const canWrite = !!me.data && hasRole(me.data, 'editor')
   const rows: [string, React.ReactNode][] = [
     ['Status', <DeliveryStatusBadge key="s" status={d.status} />],
     ['Sink', sub?.sink ?? '—'],
@@ -114,7 +159,10 @@ export function DeliveryDetailPage() {
   ]
   return (
     <>
-      <PageHeader title={`Delivery ${d.id}`} />
+      <PageHeader title={`Delivery ${d.id}`}>
+        {canWrite && isReplayable(d) && <Button onClick={() => setReplaying(true)}>Replay</Button>}
+      </PageHeader>
+      {replaying && <ReplayDeliveryDialog delivery={d} onClose={() => setReplaying(false)} />}
       <p className="mb-4 text-sm">
         <Link to="/deliveries" className="underline">
           All deliveries

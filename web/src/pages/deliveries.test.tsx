@@ -36,15 +36,14 @@ describe('deliveries list', () => {
     const api = mockApi({ ...base, '/v1/deliveries': page([delivery('D1')]) })
     renderApp('/ui/deliveries')
     await screen.findByRole('table', { name: 'Deliveries' })
-    await userEvent.selectOptions(screen.getByLabelText('Status'), 'dead')
-    await vi.waitFor(() => expect(api.calls.at(-1)?.url.searchParams.getAll('status')).toEqual(['dead']))
+    expect(api.calls.find((c) => c.url.pathname === '/v1/deliveries')?.url.searchParams.getAll('status')).toEqual(['dead'])
+    await userEvent.selectOptions(screen.getByLabelText('Status'), 'pending')
+    await vi.waitFor(() => expect(api.calls.at(-1)?.url.searchParams.getAll('status')).toEqual(['pending']))
   })
 
   it('shows the dead-letter empty state', async () => {
-    mockApi({ ...base, '/v1/deliveries': ({ url }) => page(url.searchParams.has('status') ? [] : [delivery('D1')]) })
+    mockApi({ ...base, '/v1/deliveries': () => page([]) })
     renderApp('/ui/deliveries')
-    await screen.findByRole('table', { name: 'Deliveries' })
-    await userEvent.selectOptions(screen.getByLabelText('Status'), 'dead')
     expect(await screen.findByText('No dead letters')).toBeInTheDocument()
   })
 
