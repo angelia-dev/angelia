@@ -1,13 +1,16 @@
 # Vendored API contract
 
-These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `874e3a8` ("feat(openapi): API tokens under /v1/tokens (spec 0.7.0) (#18)", the spec pull
-request of angelia-dev/angelia#72, merged on the spec repository's `main`). Since `fa3e413`
-("feat(mcp): MCP tool contract v1 (spec 0.6.0) (#17)"), spec 0.7.0 adds the four `admin` operations
-under `/v1/tokens` (`listTokens`, `createToken`, `getToken`, `revokeToken`), the schemas `Token`,
-`TokenCreate`, `TokenCreated`, `TokenPage`, `TokenScope` and `TokenActor`, the `ang_` token format in
-the `bearerAuth` description, and their examples. The MCP tool contract and the event schemas are
-unchanged (no MCP tool manages tokens).
+These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
+`openapi/angelia.v1.yaml` is at commit `81ca8fc` ("feat(openapi): /v1/me and browser sessions under
+/v1/sessions (spec 0.8.0)") on the spec branch `story/262-me-sessions`, the spec pull request of
+angelia-dev/angelia#262, **not yet merged**: re-vendor from the spec repository's `main` once it is.
+Since spec 0.7.0, spec 0.8.0 adds `getMe` (`GET /v1/me`, `read`), the `admin` operations `listSessions`
+and `revokeSession` under `/v1/sessions`, the schemas `Me`, `Session`, `SessionPage`, `SessionUser`,
+`UiRole` and `PrincipalId`, the `sessionCookie` security scheme (documentation only: every operation
+still declares `bearerAuth`), the `csrf` problem, and widens `TokenActor` to a session principal
+(`github:<id>`). The other files are at commit `874e3a8` ("feat(openapi): API tokens under /v1/tokens
+(spec 0.7.0) (#18)"), unchanged by 0.8.0: the MCP tool contract and the event schemas (no MCP tool
+manages sessions).
 
 | Here | In the spec repository |
 | --- | --- |

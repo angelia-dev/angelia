@@ -97,6 +97,24 @@ func (e ManagedBy) Valid() bool {
 	}
 }
 
+// Defines values for MeKind.
+const (
+	MeKindSession MeKind = "session"
+	MeKindToken   MeKind = "token"
+)
+
+// Valid indicates whether the value is a known member of the MeKind enum.
+func (e MeKind) Valid() bool {
+	switch e {
+	case MeKindSession:
+		return true
+	case MeKindToken:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PluginHostOrigin.
 const (
 	Manifest PluginHostOrigin = "manifest"
@@ -250,6 +268,27 @@ func (e TokenScope) Valid() bool {
 	case TokenScopeRead:
 		return true
 	case TokenScopeWrite:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UiRole.
+const (
+	UiRoleAdmin  UiRole = "admin"
+	UiRoleEditor UiRole = "editor"
+	UiRoleViewer UiRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the UiRole enum.
+func (e UiRole) Valid() bool {
+	switch e {
+	case UiRoleAdmin:
+		return true
+	case UiRoleEditor:
+		return true
+	case UiRoleViewer:
 		return true
 	default:
 		return false
@@ -445,6 +484,30 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
+// Me The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+type Me struct {
+	// Kind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+	Kind MeKind `json:"kind"`
+
+	// Name The token's name, or the signed-in user's login.
+	Name string `json:"name"`
+
+	// PrincipalId Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login.
+	PrincipalId PrincipalId `json:"principal_id"`
+
+	// Role For a session, the user's role in `ui.access` now; `null` for a token.
+	Role *UiRole `json:"role"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+
+	// User For a session, who signed in; `null` for a token.
+	User *SessionUser `json:"user"`
+}
+
+// MeKind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+type MeKind string
+
 // Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type Name = string
 
@@ -514,6 +577,9 @@ type PluginPage struct {
 
 // PrereleaseMode `none`: drop pre-releases. `only`: keep only pre-releases. `include`: keep both.
 type PrereleaseMode string
+
+// PrincipalId Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login.
+type PrincipalId = string
 
 // Problem RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
 // is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
@@ -701,6 +767,72 @@ type SecretWrite1 = interface{}
 // Examples: 4182
 type Seq = int64
 
+// Session A browser session of the admin UI as the server returns it: metadata only, never the cookie
+// or its hash.
+type Session struct {
+	// CreatedAt When the user signed in.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// ExpiresAt When the session ends whatever its use (sign-in plus the instance's maximum session lifetime).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	ExpiresAt Timestamp `json:"expires_at"`
+
+	// Id Generated at sign-in, never reused. It is the ULID inside the session cookie.
+	Id Ulid `json:"id"`
+
+	// LastSeenAt When the session last authenticated a request. Accurate to about 5 minutes, and a crash can lose the last interval. The session ends once it is unused for the instance's idle timeout.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	LastSeenAt Timestamp `json:"last_seen_at"`
+
+	// RevokedAt When the session was revoked (by an admin, or because the user signed out), or `null`.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the session (the user's own principal id when they signed out), or `null`.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// User The identity a browser session signed in with, as the identity provider reported it at sign-in.
+	User SessionUser `json:"user"`
+
+	// UserAgent The `User-Agent` of the browser that signed in (cut to 256 characters), or `null`.
+	UserAgent *string `json:"user_agent"`
+}
+
+// SessionPage defines model for SessionPage.
+type SessionPage struct {
+	Items []Session `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// SessionUser The identity a browser session signed in with, as the identity provider reported it at sign-in.
+type SessionUser struct {
+	// AvatarUrl The URL of the user's avatar at sign-in, or `null`.
+	AvatarUrl *string `json:"avatar_url"`
+
+	// Login The user's login at sign-in (GitHub's `login`). A login can be renamed and later taken by another account; `subject` cannot.
+	//
+	// Examples: mmornati
+	Login string `json:"login"`
+
+	// Name The user's display name at sign-in, or `null` if they have none.
+	Name *string `json:"name"`
+
+	// Provider The identity provider; today `github`.
+	//
+	// Examples: github
+	Provider string `json:"provider"`
+
+	// Subject The provider's stable id of the user (for GitHub, the numeric user id as a string). It never changes; the principal id is `<provider>:<subject>`.
+	//
+	// Examples: 139323
+	Subject string `json:"subject"`
+}
+
 // ShortEventType An event type without the `dev.angelia.` prefix and the `.v<major>` suffix.
 type ShortEventType string
 
@@ -887,7 +1019,7 @@ type Token struct {
 	// Examples: 2026-10-30T17:00:02.512Z
 	CreatedAt Timestamp `json:"created_at"`
 
-	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	// CreatedBy Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 	CreatedBy TokenActor `json:"created_by"`
 
 	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
@@ -912,7 +1044,7 @@ type Token struct {
 	Scope TokenScope `json:"scope"`
 }
 
-// TokenActor Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+// TokenActor Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 type TokenActor = string
 
 // TokenCreate The body of `POST /v1/tokens`. `name` is a label for operators and must be unique among
@@ -940,7 +1072,7 @@ type TokenCreated struct {
 	// Examples: 2026-10-30T17:00:02.512Z
 	CreatedAt Timestamp `json:"created_at"`
 
-	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	// CreatedBy Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 	CreatedBy TokenActor `json:"created_by"`
 
 	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
@@ -980,6 +1112,9 @@ type TokenPage struct {
 
 // TokenScope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
 type TokenScope string
+
+// UiRole A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+type UiRole string
 
 // Ulid ULID: 26 characters, Crockford base32, upper case.
 type Ulid = string
@@ -1157,6 +1292,9 @@ type DryRun = bool
 // EventLimit defines model for EventLimit.
 type EventLimit = int
 
+// IncludeEnded defines model for IncludeEnded.
+type IncludeEnded = bool
+
 // IncludeRevoked defines model for IncludeRevoked.
 type IncludeRevoked = bool
 
@@ -1168,6 +1306,9 @@ type Limit = int
 
 // SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SecretName = Name
+
+// SessionId ULID: 26 characters, Crockford base32, upper case.
+type SessionId = Ulid
 
 // SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SinkName = Name
@@ -1370,6 +1511,18 @@ type DeleteSecretParams struct {
 type PutSecretParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// ListSessionsParams defines parameters for ListSessions.
+type ListSessionsParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IncludeEnded List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+	IncludeEnded *IncludeEnded `form:"include_ended,omitempty" json:"include_ended,omitempty"`
 }
 
 // ListSinksParams defines parameters for ListSinks.
@@ -1950,6 +2103,9 @@ type ServerInterface interface {
 	// GetEvent Get an event
 	// (GET /v1/events/{id})
 	GetEvent(w http.ResponseWriter, r *http.Request, id Ulid)
+	// GetMe Get the caller's principal
+	// (GET /v1/me)
+	GetMe(w http.ResponseWriter, r *http.Request)
 	// ListPlugins List plugins
 	// (GET /v1/plugins)
 	ListPlugins(w http.ResponseWriter, r *http.Request, params ListPluginsParams)
@@ -1971,6 +2127,12 @@ type ServerInterface interface {
 	// PutSecret Create or replace a secret
 	// (PUT /v1/secrets/{name})
 	PutSecret(w http.ResponseWriter, r *http.Request, name SecretName, params PutSecretParams)
+	// ListSessions List browser sessions
+	// (GET /v1/sessions)
+	ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams)
+	// RevokeSession Revoke a browser session
+	// (DELETE /v1/sessions/{id})
+	RevokeSession(w http.ResponseWriter, r *http.Request, id SessionId)
 	// ListSinks List sinks
 	// (GET /v1/sinks)
 	ListSinks(w http.ResponseWriter, r *http.Request, params ListSinksParams)
@@ -2094,6 +2256,12 @@ func (_ Unimplemented) GetEvent(w http.ResponseWriter, r *http.Request, id Ulid)
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// GetMe Get the caller's principal
+// (GET /v1/me)
+func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListPlugins List plugins
 // (GET /v1/plugins)
 func (_ Unimplemented) ListPlugins(w http.ResponseWriter, r *http.Request, params ListPluginsParams) {
@@ -2133,6 +2301,18 @@ func (_ Unimplemented) GetSecret(w http.ResponseWriter, r *http.Request, name Se
 // PutSecret Create or replace a secret
 // (PUT /v1/secrets/{name})
 func (_ Unimplemented) PutSecret(w http.ResponseWriter, r *http.Request, name SecretName, params PutSecretParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSessions List browser sessions
+// (GET /v1/sessions)
+func (_ Unimplemented) ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeSession Revoke a browser session
+// (DELETE /v1/sessions/{id})
+func (_ Unimplemented) RevokeSession(w http.ResponseWriter, r *http.Request, id SessionId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2796,6 +2976,20 @@ func (siw *ServerInterfaceWrapper) GetEvent(w http.ResponseWriter, r *http.Reque
 	handler.ServeHTTP(w, r)
 }
 
+// GetMe operation middleware
+func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListPlugins operation middleware
 func (siw *ServerInterfaceWrapper) ListPlugins(w http.ResponseWriter, r *http.Request) {
 
@@ -3051,6 +3245,91 @@ func (siw *ServerInterfaceWrapper) PutSecret(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutSecret(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSessionsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "include_ended" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_ended", r.URL.Query(), &params.IncludeEnded, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "include_ended"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_ended", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeSession operation middleware
+func (siw *ServerInterfaceWrapper) RevokeSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id SessionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeSession(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4004,6 +4283,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/tokens/{id}", wrapper.GetToken)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/me", wrapper.GetMe)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/sessions", wrapper.ListSessions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/sessions/{id}", wrapper.RevokeSession)
+	})
 
 	return r
 }
@@ -4137,6 +4425,13 @@ type GetEventResponseObject interface {
 	VisitGetEventResponse(w http.ResponseWriter) error
 }
 
+type GetMeRequestObject struct {
+}
+
+type GetMeResponseObject interface {
+	VisitGetMeResponse(w http.ResponseWriter) error
+}
+
 type ListPluginsRequestObject struct {
 	Params ListPluginsParams
 }
@@ -4195,6 +4490,22 @@ type PutSecretRequestObject struct {
 
 type PutSecretResponseObject interface {
 	VisitPutSecretResponse(w http.ResponseWriter) error
+}
+
+type ListSessionsRequestObject struct {
+	Params ListSessionsParams
+}
+
+type ListSessionsResponseObject interface {
+	VisitListSessionsResponse(w http.ResponseWriter) error
+}
+
+type RevokeSessionRequestObject struct {
+	Id SessionId `json:"id"`
+}
+
+type RevokeSessionResponseObject interface {
+	VisitRevokeSessionResponse(w http.ResponseWriter) error
 }
 
 type ListSinksRequestObject struct {
@@ -4378,6 +4689,9 @@ type StrictServerInterface interface {
 	// GetEvent Get an event
 	// (GET /v1/events/{id})
 	GetEvent(ctx context.Context, request GetEventRequestObject) (GetEventResponseObject, error)
+	// GetMe Get the caller's principal
+	// (GET /v1/me)
+	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
 	// ListPlugins List plugins
 	// (GET /v1/plugins)
 	ListPlugins(ctx context.Context, request ListPluginsRequestObject) (ListPluginsResponseObject, error)
@@ -4399,6 +4713,12 @@ type StrictServerInterface interface {
 	// PutSecret Create or replace a secret
 	// (PUT /v1/secrets/{name})
 	PutSecret(ctx context.Context, request PutSecretRequestObject) (PutSecretResponseObject, error)
+	// ListSessions List browser sessions
+	// (GET /v1/sessions)
+	ListSessions(ctx context.Context, request ListSessionsRequestObject) (ListSessionsResponseObject, error)
+	// RevokeSession Revoke a browser session
+	// (DELETE /v1/sessions/{id})
+	RevokeSession(ctx context.Context, request RevokeSessionRequestObject) (RevokeSessionResponseObject, error)
 	// ListSinks List sinks
 	// (GET /v1/sinks)
 	ListSinks(ctx context.Context, request ListSinksRequestObject) (ListSinksResponseObject, error)
@@ -4803,6 +5123,30 @@ func (sh *strictHandler) GetEvent(w http.ResponseWriter, r *http.Request, id Uli
 	}
 }
 
+// GetMe operation middleware
+func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
+	var request GetMeRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMe(ctx, request.(GetMeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMe")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMeResponseObject); ok {
+		if err := validResponse.VisitGetMeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListPlugins operation middleware
 func (sh *strictHandler) ListPlugins(w http.ResponseWriter, r *http.Request, params ListPluginsParams) {
 	var request ListPluginsRequestObject
@@ -4993,6 +5337,58 @@ func (sh *strictHandler) PutSecret(w http.ResponseWriter, r *http.Request, name 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutSecretResponseObject); ok {
 		if err := validResponse.VisitPutSecretResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSessions operation middleware
+func (sh *strictHandler) ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams) {
+	var request ListSessionsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSessions(ctx, request.(ListSessionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSessions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSessionsResponseObject); ok {
+		if err := validResponse.VisitListSessionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeSession operation middleware
+func (sh *strictHandler) RevokeSession(w http.ResponseWriter, r *http.Request, id SessionId) {
+	var request RevokeSessionRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeSession(ctx, request.(RevokeSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeSessionResponseObject); ok {
+		if err := validResponse.VisitRevokeSessionResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

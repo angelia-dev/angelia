@@ -98,6 +98,24 @@ func (e ManagedBy) Valid() bool {
 	}
 }
 
+// Defines values for MeKind.
+const (
+	MeKindSession MeKind = "session"
+	MeKindToken   MeKind = "token"
+)
+
+// Valid indicates whether the value is a known member of the MeKind enum.
+func (e MeKind) Valid() bool {
+	switch e {
+	case MeKindSession:
+		return true
+	case MeKindToken:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PluginHostOrigin.
 const (
 	Manifest PluginHostOrigin = "manifest"
@@ -251,6 +269,27 @@ func (e TokenScope) Valid() bool {
 	case TokenScopeRead:
 		return true
 	case TokenScopeWrite:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UiRole.
+const (
+	UiRoleAdmin  UiRole = "admin"
+	UiRoleEditor UiRole = "editor"
+	UiRoleViewer UiRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the UiRole enum.
+func (e UiRole) Valid() bool {
+	switch e {
+	case UiRoleAdmin:
+		return true
+	case UiRoleEditor:
+		return true
+	case UiRoleViewer:
 		return true
 	default:
 		return false
@@ -446,6 +485,30 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
+// Me The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+type Me struct {
+	// Kind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+	Kind MeKind `json:"kind"`
+
+	// Name The token's name, or the signed-in user's login.
+	Name string `json:"name"`
+
+	// PrincipalId Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login.
+	PrincipalId PrincipalId `json:"principal_id"`
+
+	// Role For a session, the user's role in `ui.access` now; `null` for a token.
+	Role *UiRole `json:"role"`
+
+	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
+	Scope TokenScope `json:"scope"`
+
+	// User For a session, who signed in; `null` for a token.
+	User *SessionUser `json:"user"`
+}
+
+// MeKind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+type MeKind string
+
 // Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type Name = string
 
@@ -515,6 +578,9 @@ type PluginPage struct {
 
 // PrereleaseMode `none`: drop pre-releases. `only`: keep only pre-releases. `include`: keep both.
 type PrereleaseMode string
+
+// PrincipalId Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login.
+type PrincipalId = string
 
 // Problem RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
 // is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
@@ -702,6 +768,72 @@ type SecretWrite1 = interface{}
 // Examples: 4182
 type Seq = int64
 
+// Session A browser session of the admin UI as the server returns it: metadata only, never the cookie
+// or its hash.
+type Session struct {
+	// CreatedAt When the user signed in.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	CreatedAt Timestamp `json:"created_at"`
+
+	// ExpiresAt When the session ends whatever its use (sign-in plus the instance's maximum session lifetime).
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	ExpiresAt Timestamp `json:"expires_at"`
+
+	// Id Generated at sign-in, never reused. It is the ULID inside the session cookie.
+	Id Ulid `json:"id"`
+
+	// LastSeenAt When the session last authenticated a request. Accurate to about 5 minutes, and a crash can lose the last interval. The session ends once it is unused for the instance's idle timeout.
+	//
+	// Examples: 2026-10-30T17:00:02.512Z
+	LastSeenAt Timestamp `json:"last_seen_at"`
+
+	// RevokedAt When the session was revoked (by an admin, or because the user signed out), or `null`.
+	RevokedAt *Timestamp `json:"revoked_at"`
+
+	// RevokedBy Who revoked the session (the user's own principal id when they signed out), or `null`.
+	RevokedBy *TokenActor `json:"revoked_by"`
+
+	// User The identity a browser session signed in with, as the identity provider reported it at sign-in.
+	User SessionUser `json:"user"`
+
+	// UserAgent The `User-Agent` of the browser that signed in (cut to 256 characters), or `null`.
+	UserAgent *string `json:"user_agent"`
+}
+
+// SessionPage defines model for SessionPage.
+type SessionPage struct {
+	Items []Session `json:"items"`
+
+	// NextCursor The cursor of the next page, or `null` on the last page.
+	NextCursor *NextCursor `json:"next_cursor"`
+}
+
+// SessionUser The identity a browser session signed in with, as the identity provider reported it at sign-in.
+type SessionUser struct {
+	// AvatarUrl The URL of the user's avatar at sign-in, or `null`.
+	AvatarUrl *string `json:"avatar_url"`
+
+	// Login The user's login at sign-in (GitHub's `login`). A login can be renamed and later taken by another account; `subject` cannot.
+	//
+	// Examples: mmornati
+	Login string `json:"login"`
+
+	// Name The user's display name at sign-in, or `null` if they have none.
+	Name *string `json:"name"`
+
+	// Provider The identity provider; today `github`.
+	//
+	// Examples: github
+	Provider string `json:"provider"`
+
+	// Subject The provider's stable id of the user (for GitHub, the numeric user id as a string). It never changes; the principal id is `<provider>:<subject>`.
+	//
+	// Examples: 139323
+	Subject string `json:"subject"`
+}
+
 // ShortEventType An event type without the `dev.angelia.` prefix and the `.v<major>` suffix.
 type ShortEventType string
 
@@ -888,7 +1020,7 @@ type Token struct {
 	// Examples: 2026-10-30T17:00:02.512Z
 	CreatedAt Timestamp `json:"created_at"`
 
-	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	// CreatedBy Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 	CreatedBy TokenActor `json:"created_by"`
 
 	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
@@ -913,7 +1045,7 @@ type Token struct {
 	Scope TokenScope `json:"scope"`
 }
 
-// TokenActor Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+// TokenActor Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 type TokenActor = string
 
 // TokenCreate The body of `POST /v1/tokens`. `name` is a label for operators and must be unique among
@@ -941,7 +1073,7 @@ type TokenCreated struct {
 	// Examples: 2026-10-30T17:00:02.512Z
 	CreatedAt Timestamp `json:"created_at"`
 
-	// CreatedBy Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+	// CreatedBy Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
 	CreatedBy TokenActor `json:"created_by"`
 
 	// ExpiresAt When the token stops working, or `null` if it never expires. An expired token is `401`, like an unknown one, and stays listed.
@@ -981,6 +1113,9 @@ type TokenPage struct {
 
 // TokenScope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
 type TokenScope string
+
+// UiRole A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+type UiRole string
 
 // Ulid ULID: 26 characters, Crockford base32, upper case.
 type Ulid = string
@@ -1158,6 +1293,9 @@ type DryRun = bool
 // EventLimit defines model for EventLimit.
 type EventLimit = int
 
+// IncludeEnded defines model for IncludeEnded.
+type IncludeEnded = bool
+
 // IncludeRevoked defines model for IncludeRevoked.
 type IncludeRevoked = bool
 
@@ -1169,6 +1307,9 @@ type Limit = int
 
 // SecretName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SecretName = Name
+
+// SessionId ULID: 26 characters, Crockford base32, upper case.
+type SessionId = Ulid
 
 // SinkName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type SinkName = Name
@@ -1371,6 +1512,18 @@ type DeleteSecretParams struct {
 type PutSecretParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+}
+
+// ListSessionsParams defines parameters for ListSessions.
+type ListSessionsParams struct {
+	// Limit Page size.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The opaque `next_cursor` of the previous page. Absent for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IncludeEnded List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+	IncludeEnded *IncludeEnded `form:"include_ended,omitempty" json:"include_ended,omitempty"`
 }
 
 // ListSinksParams defines parameters for ListSinks.
@@ -2210,6 +2363,17 @@ type ClientInterface interface {
 	// Corresponds with GET /v1/events/{id} (the `GetEvent` operationId).
 	GetEvent(ctx context.Context, id Ulid, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetMe Get the caller's principal
+	//
+	// Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+	// admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+	// instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+	// `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+	// to show and which controls to offer. Never returns a token, a cookie or a hash.
+	//
+	// Corresponds with GET /v1/me (the `GetMe` operationId).
+	GetMe(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListPlugins List plugins
 	//
 	// Every source and sink kind this instance can use, built-in or installed, in ascending `kind` order.
@@ -2303,6 +2467,27 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
 	PutSecret(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSessions List browser sessions
+	//
+	// Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+	// in, when, from which user agent, when the session was last used and when it ends, **never the
+	// cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+	// used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+	// the list shows who can act on the instance.
+	//
+	// Corresponds with GET /v1/sessions (the `ListSessions` operationId).
+	ListSessions(ctx context.Context, params *ListSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeSession Revoke a browser session
+	//
+	// Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+	// with `401` from the next request on (an open event stream fails at its next re-check, at most
+	// 60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+	// already revoked session is `204` too and changes nothing. An unknown id is `404`.
+	//
+	// Corresponds with DELETE /v1/sessions/{id} (the `RevokeSession` operationId).
+	RevokeSession(ctx context.Context, id SessionId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListSinks List sinks
 	//
@@ -2908,6 +3093,27 @@ func (c *Client) GetEvent(ctx context.Context, id Ulid, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
+// GetMe Get the caller's principal
+//
+// Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+// admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+// instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+// `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+// to show and which controls to offer. Never returns a token, a cookie or a hash.
+//
+// Corresponds with GET /v1/me (the `GetMe` operationId).
+func (c *Client) GetMe(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetMeRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListPlugins List plugins
 //
 // Every source and sink kind this instance can use, built-in or installed, in ascending `kind` order.
@@ -3082,6 +3288,47 @@ func (c *Client) PutSecretWithBody(ctx context.Context, name SecretName, params 
 // Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
 func (c *Client) PutSecret(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutSecretRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListSessions List browser sessions
+//
+// Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+// in, when, from which user agent, when the session was last used and when it ends, **never the
+// cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+// used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+// the list shows who can act on the instance.
+//
+// Corresponds with GET /v1/sessions (the `ListSessions` operationId).
+func (c *Client) ListSessions(ctx context.Context, params *ListSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSessionsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RevokeSession Revoke a browser session
+//
+// Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+// with `401` from the next request on (an open event stream fails at its next re-check, at most
+// 60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+// already revoked session is `204` too and changes nothing. An unknown id is `404`.
+//
+// Corresponds with DELETE /v1/sessions/{id} (the `RevokeSession` operationId).
+func (c *Client) RevokeSession(ctx context.Context, id SessionId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeSessionRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -4275,6 +4522,33 @@ func NewGetEventRequest(server string, id Ulid) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetMeRequest constructs an http.Request for the GetMe method
+func NewGetMeRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/me")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListPluginsRequest constructs an http.Request for the ListPlugins method
 func NewListPluginsRequest(server string, params *ListPluginsParams) (*http.Request, error) {
 	var err error
@@ -4665,6 +4939,118 @@ func NewPutSecretRequestWithBody(server string, name SecretName, params *PutSecr
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListSessionsRequest constructs an http.Request for the ListSessions method
+func NewListSessionsRequest(server string, params *ListSessionsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/sessions")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.IncludeEnded != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "include_ended", *params.IncludeEnded, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRevokeSessionRequest constructs an http.Request for the RevokeSession method
+func NewRevokeSessionRequest(server string, id SessionId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/sessions/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -5985,6 +6371,19 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /v1/events/{id} (the `GetEvent` operationId).
 	GetEventWithResponse(ctx context.Context, id Ulid, reqEditors ...RequestEditorFn) (*GetEventResponse, error)
 
+	// GetMeWithResponse Get the caller's principal
+	//
+	// Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+	// admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+	// instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+	// `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+	// to show and which controls to offer. Never returns a token, a cookie or a hash.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/me (the `GetMe` operationId).
+	GetMeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetMeResponse, error)
+
 	// ListPluginsWithResponse List plugins
 	//
 	// Every source and sink kind this instance can use, built-in or installed, in ascending `kind` order.
@@ -6088,6 +6487,31 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with PUT /v1/secrets/{name} (the `PutSecret` operationId).
 	PutSecretWithResponse(ctx context.Context, name SecretName, params *PutSecretParams, body PutSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSecretResponse, error)
+
+	// ListSessionsWithResponse List browser sessions
+	//
+	// Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+	// in, when, from which user agent, when the session was last used and when it ends, **never the
+	// cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+	// used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+	// the list shows who can act on the instance.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/sessions (the `ListSessions` operationId).
+	ListSessionsWithResponse(ctx context.Context, params *ListSessionsParams, reqEditors ...RequestEditorFn) (*ListSessionsResponse, error)
+
+	// RevokeSessionWithResponse Revoke a browser session
+	//
+	// Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+	// with `401` from the next request on (an open event stream fails at its next re-check, at most
+	// 60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+	// already revoked session is `204` too and changes nothing. An unknown id is `404`.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /v1/sessions/{id} (the `RevokeSession` operationId).
+	RevokeSessionWithResponse(ctx context.Context, id SessionId, reqEditors ...RequestEditorFn) (*RevokeSessionResponse, error)
 
 	// ListSinksWithResponse List sinks
 	//
@@ -7462,6 +7886,89 @@ func (r GetEventResponse) ContentType() string {
 	return ""
 }
 
+// GetMeResponse401Headers the declared response headers of an HTTP 401 response for GetMe
+type GetMeResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// GetMeResponse503Headers the declared response headers of an HTTP 503 response for GetMe
+type GetMeResponse503Headers struct {
+	RetryAfter *int
+}
+
+type GetMeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Me
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *GetMeResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *GetMeResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetMeResponse) GetJSON200() *Me {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r GetMeResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r GetMeResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r GetMeResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r GetMeResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r GetMeResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetMeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetMeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetMeResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // ListPluginsResponse401Headers the declared response headers of an HTTP 401 response for ListPlugins
 type ListPluginsResponse401Headers struct {
 	WWWAuthenticate *string
@@ -8157,6 +8664,179 @@ func (r PutSecretResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r PutSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// ListSessionsResponse401Headers the declared response headers of an HTTP 401 response for ListSessions
+type ListSessionsResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// ListSessionsResponse503Headers the declared response headers of an HTTP 503 response for ListSessions
+type ListSessionsResponse503Headers struct {
+	RetryAfter *int
+}
+
+type ListSessionsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SessionPage
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *ListSessionsResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *ListSessionsResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListSessionsResponse) GetJSON200() *SessionPage {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r ListSessionsResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r ListSessionsResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r ListSessionsResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r ListSessionsResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r ListSessionsResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r ListSessionsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSessionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSessionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListSessionsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// RevokeSessionResponse401Headers the declared response headers of an HTTP 401 response for RevokeSession
+type RevokeSessionResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// RevokeSessionResponse503Headers the declared response headers of an HTTP 503 response for RevokeSession
+type RevokeSessionResponse503Headers struct {
+	RetryAfter *int
+}
+
+type RevokeSessionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *RevokeSessionResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *RevokeSessionResponse503Headers
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r RevokeSessionResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r RevokeSessionResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r RevokeSessionResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r RevokeSessionResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r RevokeSessionResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r RevokeSessionResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeSessionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeSessionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RevokeSessionResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -10212,6 +10892,25 @@ func (c *ClientWithResponses) GetEventWithResponse(ctx context.Context, id Ulid,
 	return ParseGetEventResponse(rsp)
 }
 
+// GetMeWithResponse Get the caller's principal
+//
+// Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+// admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+// instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+// `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+// to show and which controls to offer. Never returns a token, a cookie or a hash.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/me (the `GetMe` operationId).
+func (c *ClientWithResponses) GetMeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetMeResponse, error) {
+	rsp, err := c.GetMe(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetMeResponse(rsp)
+}
+
 // ListPluginsWithResponse List plugins
 //
 // Every source and sink kind this instance can use, built-in or installed, in ascending `kind` order.
@@ -10368,6 +11067,43 @@ func (c *ClientWithResponses) PutSecretWithResponse(ctx context.Context, name Se
 		return nil, err
 	}
 	return ParsePutSecretResponse(rsp)
+}
+
+// ListSessionsWithResponse List browser sessions
+//
+// Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+// in, when, from which user agent, when the session was last used and when it ends, **never the
+// cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+// used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+// the list shows who can act on the instance.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/sessions (the `ListSessions` operationId).
+func (c *ClientWithResponses) ListSessionsWithResponse(ctx context.Context, params *ListSessionsParams, reqEditors ...RequestEditorFn) (*ListSessionsResponse, error) {
+	rsp, err := c.ListSessions(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSessionsResponse(rsp)
+}
+
+// RevokeSessionWithResponse Revoke a browser session
+//
+// Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+// with `401` from the next request on (an open event stream fails at its next re-check, at most
+// 60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+// already revoked session is `204` too and changes nothing. An unknown id is `404`.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /v1/sessions/{id} (the `RevokeSession` operationId).
+func (c *ClientWithResponses) RevokeSessionWithResponse(ctx context.Context, id SessionId, reqEditors ...RequestEditorFn) (*RevokeSessionResponse, error) {
+	rsp, err := c.RevokeSession(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeSessionResponse(rsp)
 }
 
 // ListSinksWithResponse List sinks
@@ -11820,6 +12556,83 @@ func ParseGetEventResponse(rsp *http.Response) (*GetEventResponse, error) {
 	return response, nil
 }
 
+// ParseGetMeResponse parses an HTTP response from a GetMeWithResponse call
+func ParseGetMeResponse(rsp *http.Response) (*GetMeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetMeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Me
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers GetMeResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers GetMeResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
 // ParseListPluginsResponse parses an HTTP response from a ListPluginsWithResponse call
 func ParseListPluginsResponse(rsp *http.Response) (*ListPluginsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -12484,6 +13297,170 @@ func ParsePutSecretResponse(rsp *http.Response) (*PutSecretResponse, error) {
 		response.Headers401 = &headers
 	case rsp.StatusCode == 503:
 		var headers PutSecretResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseListSessionsResponse parses an HTTP response from a ListSessionsWithResponse call
+func ParseListSessionsResponse(rsp *http.Response) (*ListSessionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSessionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers ListSessionsResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers ListSessionsResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseRevokeSessionResponse parses an HTTP response from a RevokeSessionWithResponse call
+func ParseRevokeSessionResponse(rsp *http.Response) (*RevokeSessionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeSessionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers RevokeSessionResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers RevokeSessionResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
