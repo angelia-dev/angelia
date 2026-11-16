@@ -20,6 +20,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 	"github.com/angelia-dev/angelia/internal/webauth"
+	"github.com/angelia-dev/angelia/internal/webui"
 )
 
 // newAPIServer builds the REST API of the api role on the store st, which
@@ -59,6 +60,9 @@ func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry,
 	}
 	opts.MCP = func(rest http.RoundTripper) (http.Handler, error) {
 		return mcp.NewHTTPHandler(mcp.HTTPOptions{REST: rest, Version: buildinfo.Version(), Logger: log}) //nolint:wrapcheck // api.New wraps it
+	}
+	if cfg.UI.Enabled {
+		opts.UI = webui.Handler()
 	}
 	if m != nil { // a nil *Metrics in the interface field would panic
 		opts.Metrics = m

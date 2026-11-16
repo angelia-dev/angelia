@@ -87,10 +87,16 @@ func TestAPIOptionsUI(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	log := slog.New(slog.DiscardHandler)
 
+	if o, err := apiOptions(&config.Config{}, st, sources, nil, nil, 0, log); err != nil || o.UI != nil || o.UIAuth != nil {
+		t.Fatal("UI set with ui.enabled false", err)
+	}
 	cfg := loadUIConfig(t, "client_secret_env: AGL_TEST_UI_SECRET", "AGL_TEST_UI_SECRET=test-client-secret-0001")
 	o, err := apiOptions(cfg, st, sources, nil, metrics.New(nil), 0, log)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if o.UI == nil {
+		t.Fatal("UI handler not set with ui.enabled true")
 	}
 	if o.Sessions == nil || o.UIAuth == nil || o.SessionCookie != webauth.SessionCookie || o.PublicOrigin != "https://angelia.example.com" {
 		t.Fatalf("%+v", o)

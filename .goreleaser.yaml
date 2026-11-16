@@ -8,6 +8,9 @@ project_name: angelia
 before:
   hooks:
     - go mod download
+    # The admin UI (web/) is built into internal/webui/dist/app, which go:embed
+    # picks up; needs Node 22 (the release workflows set it up).
+    - make web
 
 builds:
   - id: angelia
