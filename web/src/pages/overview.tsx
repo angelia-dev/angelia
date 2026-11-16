@@ -1,39 +1,27 @@
-import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import {
-  EVENT_PAGE_SIZE,
-  fetchCapped,
-  fetchDeliveries,
-  fetchEvents,
-  fetchWatches,
-} from "@/api/queries";
-import type { EventRecord } from "@/api/types";
-import { ErrorCount, RelativeTime } from "@/components/badges";
-import {
-  EmptyState,
-  ErrorState,
-  Head,
-  PageHeader,
-  Skeleton,
-} from "@/components/states";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
-import { shortType } from "@/pages/events";
+import { Link } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { EVENT_PAGE_SIZE, fetchCapped, fetchDeliveries, fetchEvents, fetchWatches } from '@/api/queries'
+import type { EventRecord } from '@/api/types'
+import { ErrorCount, RelativeTime } from '@/components/badges'
+import { EmptyState, ErrorState, Head, PageHeader, Skeleton } from '@/components/states'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
+import { shortType } from '@/pages/events'
 
-export const REFRESH_MS = 30_000;
+export const REFRESH_MS = 30_000
 /** Pages fetched per count; a count that hits the cap is shown as "N+". */
-export const COUNT_PAGES = 3;
-export const EVENT_PAGES = 5;
+export const COUNT_PAGES = 3
+export const EVENT_PAGES = 5
 /** Walking the events costs up to EVENT_PAGES requests, so it runs at most once a minute. */
-export const EVENTS_REFRESH_MS = 60_000;
+export const EVENTS_REFRESH_MS = 60_000
 /** Events the capped walk covers (EVENT_PAGES full pages). */
-const EVENT_WALK_LIMIT = EVENT_PAGES * EVENT_PAGE_SIZE;
-const DAY_MS = 24 * 60 * 60 * 1000;
+const EVENT_WALK_LIMIT = EVENT_PAGES * EVENT_PAGE_SIZE
+const DAY_MS = 24 * 60 * 60 * 1000
 
-const poll = { refetchInterval: REFRESH_MS, staleTime: REFRESH_MS / 2 };
+const poll = { refetchInterval: REFRESH_MS, staleTime: REFRESH_MS / 2 }
 
 function countLabel(n: number, capped: boolean) {
-  return capped ? `${n}+` : String(n);
+  return capped ? `${n}+` : String(n)
 }
 
 function StatCard({
@@ -43,23 +31,21 @@ function StatCard({
   hint,
   unknown,
 }: {
-  label: string;
-  to: "/watches" | "/events" | "/deliveries";
+  label: string
+  to: '/watches' | '/events' | '/deliveries'
   query: {
-    isPending: boolean;
-    isError: boolean;
-    data?: { n: number; capped: boolean };
-  };
-  hint?: string;
+    isPending: boolean
+    isError: boolean
+    data?: { n: number; capped: boolean }
+  }
+  hint?: string
   /** Show "n/a" with this note instead of a count that cannot be exact. */
-  unknown?: string;
+  unknown?: string
 }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {label}
-        </CardTitle>
+        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
       </CardHeader>
       <CardContent>
         {query.isPending ? (
@@ -68,95 +54,78 @@ function StatCard({
           <span className="text-sm text-destructive">unavailable</span>
         ) : unknown ? (
           <>
-            <Link
-              to={to}
-              className="text-3xl font-semibold underline-offset-4 hover:underline"
-            >
+            <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
               n/a
             </Link>
             <p className="mt-1 text-xs text-muted-foreground">{unknown}</p>
           </>
         ) : (
-          <Link
-            to={to}
-            className="text-3xl font-semibold underline-offset-4 hover:underline"
-          >
+          <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
             {countLabel(query.data.n, query.data.capped)}
           </Link>
         )}
-        {hint && query.data?.capped && (
-          <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
-        )}
+        {hint && query.data?.capped && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
-  );
+  )
 }
 
 /** `capped`: the walk stopped before the newest event, so neither number is exact. */
 async function loadEvents(): Promise<{
-  recent: EventRecord[];
-  last24h: number;
-  capped: boolean;
+  recent: EventRecord[]
+  last24h: number
+  capped: boolean
 }> {
-  const day = Date.now() - DAY_MS;
+  const day = Date.now() - DAY_MS
   // Events list oldest first, so the newest are only reached at the end of the walk.
-  let after = 0;
-  let last24h = 0;
-  let recent: EventRecord[] = [];
+  let after = 0
+  let last24h = 0
+  let recent: EventRecord[] = []
   for (let i = 0; i < EVENT_PAGES; i++) {
-    const page = await fetchEvents({}, after);
-    last24h += page.items.filter((r) => Date.parse(r.event.time) >= day).length;
-    recent = [...recent, ...page.items].slice(-10);
-    if (!page.has_more)
-      return { recent: recent.reverse(), last24h, capped: false };
-    after = page.next_after;
+    const page = await fetchEvents({}, after)
+    last24h += page.items.filter((r) => Date.parse(r.event.time) >= day).length
+    recent = [...recent, ...page.items].slice(-10)
+    if (!page.has_more) return { recent: recent.reverse(), last24h, capped: false }
+    after = page.next_after
   }
-  return { recent: recent.reverse(), last24h, capped: true };
+  return { recent: recent.reverse(), last24h, capped: true }
 }
 
 export function OverviewPage() {
   const watches = useQuery({
-    queryKey: ["overview", "watches"],
+    queryKey: ['overview', 'watches'],
     queryFn: () => fetchCapped(fetchWatches({}, 100), COUNT_PAGES),
     ...poll,
-  });
+  })
   const events = useQuery({
-    queryKey: ["overview", "events"],
+    queryKey: ['overview', 'events'],
     queryFn: loadEvents,
     refetchInterval: EVENTS_REFRESH_MS,
     staleTime: EVENTS_REFRESH_MS,
-  });
-  const eventsNote = `More than ${EVENT_WALK_LIMIT} events retained; see Events.`;
+  })
+  const eventsNote = `More than ${EVENT_WALK_LIMIT} events retained; see Events.`
   const pending = useQuery({
-    queryKey: ["overview", "pending"],
-    queryFn: () =>
-      fetchCapped(fetchDeliveries(["pending", "in_flight"], 100), COUNT_PAGES),
+    queryKey: ['overview', 'pending'],
+    queryFn: () => fetchCapped(fetchDeliveries(['pending', 'in_flight'], 100), COUNT_PAGES),
     ...poll,
-  });
+  })
   const dead = useQuery({
-    queryKey: ["overview", "dead"],
-    queryFn: () => fetchCapped(fetchDeliveries(["dead"], 100), COUNT_PAGES),
+    queryKey: ['overview', 'dead'],
+    queryFn: () => fetchCapped(fetchDeliveries(['dead'], 100), COUNT_PAGES),
     ...poll,
-  });
+  })
 
-  const failing =
-    watches.data?.items.filter((w) => w.status.error_count > 0) ?? [];
-  const stat = (
-    q: { isPending: boolean; isError: boolean; data?: { capped: boolean } },
-    n: number | undefined,
-  ) => ({
+  const failing = watches.data?.items.filter((w) => w.status.error_count > 0) ?? []
+  const stat = (q: { isPending: boolean; isError: boolean; data?: { capped: boolean } }, n: number | undefined) => ({
     isPending: q.isPending,
     isError: q.isError,
     data: q.data && n !== undefined ? { n, capped: q.data.capped } : undefined,
-  });
+  })
 
   return (
     <>
       <PageHeader title="Overview" />
-      <section
-        aria-label="Counts"
-        className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5"
-      >
+      <section aria-label="Counts" className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard
           label="Watches"
           to="/watches"
@@ -183,16 +152,8 @@ export function OverviewPage() {
           }
           unknown={events.data?.capped ? eventsNote : undefined}
         />
-        <StatCard
-          label="Pending deliveries"
-          to="/deliveries"
-          query={stat(pending, pending.data?.items.length)}
-        />
-        <StatCard
-          label="Dead letters"
-          to="/deliveries"
-          query={stat(dead, dead.data?.items.length)}
-        />
+        <StatCard label="Pending deliveries" to="/deliveries" query={stat(pending, pending.data?.items.length)} />
+        <StatCard label="Dead letters" to="/deliveries" query={stat(dead, dead.data?.items.length)} />
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -203,13 +164,10 @@ export function OverviewPage() {
           {events.isPending ? (
             <Skeleton className="h-40 w-full" />
           ) : events.isError ? (
-            <ErrorState
-              error={events.error}
-              onRetry={() => void events.refetch()}
-            />
+            <ErrorState error={events.error} onRetry={() => void events.refetch()} />
           ) : events.data.capped ? (
             <p className="text-sm">
-              n/a. {eventsNote}{" "}
+              n/a. {eventsNote}{' '}
               <Link to="/events" className="underline">
                 Open Events
               </Link>
@@ -218,17 +176,13 @@ export function OverviewPage() {
             <EmptyState title="No events yet" />
           ) : (
             <Table aria-label="Latest events">
-              <Head columns={["Type", "Subject", "Time"]} />
+              <Head columns={['Type', 'Subject', 'Time']} />
               <TableBody>
                 {events.data.recent.map((r) => (
                   <TableRow key={r.seq}>
                     <TableCell>{shortType(r.event.type)}</TableCell>
                     <TableCell>
-                      <Link
-                        to="/events/$id"
-                        params={{ id: r.event.id }}
-                        className="underline"
-                      >
+                      <Link to="/events/$id" params={{ id: r.event.id }} className="underline">
                         {r.event.subject}
                       </Link>
                     </TableCell>
@@ -249,26 +203,17 @@ export function OverviewPage() {
           {watches.isPending ? (
             <Skeleton className="h-40 w-full" />
           ) : watches.isError ? (
-            <ErrorState
-              error={watches.error}
-              onRetry={() => void watches.refetch()}
-            />
+            <ErrorState error={watches.error} onRetry={() => void watches.refetch()} />
           ) : failing.length === 0 ? (
-            <EmptyState title="No failing watches">
-              Every watch checked without errors.
-            </EmptyState>
+            <EmptyState title="No failing watches">Every watch checked without errors.</EmptyState>
           ) : (
             <Table aria-label="Failing watches">
-              <Head columns={["Name", "Source", "Last check", "Errors"]} />
+              <Head columns={['Name', 'Source', 'Last check', 'Errors']} />
               <TableBody>
                 {failing.map((w) => (
                   <TableRow key={w.id}>
                     <TableCell>
-                      <Link
-                        to="/watches/$name"
-                        params={{ name: w.name }}
-                        className="underline"
-                      >
+                      <Link to="/watches/$name" params={{ name: w.name }} className="underline">
                         {w.name}
                       </Link>
                     </TableCell>
@@ -287,5 +232,5 @@ export function OverviewPage() {
         </section>
       </div>
     </>
-  );
+  )
 }
