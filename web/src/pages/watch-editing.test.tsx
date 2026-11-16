@@ -235,3 +235,49 @@ describe('editing and deleting a watch', () => {
     expect(screen.queryByRole('button', { name: 'Show as YAML' })).not.toBeInTheDocument()
   })
 })
+
+describe('watch form details', () => {
+  const optSchema = {
+    type: 'object',
+    required: ['package'],
+    properties: { package: { type: 'string' }, index: { type: 'string', description: 'Optional index URL.' } },
+  }
+
+  it('drops an optional coordinate that was typed and cleared again', async () => {
+    const api = mockApi({
+      '/v1/me': editor(),
+      '/v1/plugins': page([plugin('pypi', 'source', optSchema)]),
+      '/v1/watches': page([]),
+      'PUT /v1/watches/flask': jsonResponse(201, watch('flask')),
+    })
+    renderApp('/ui/watches')
+    const form = await fillNewWatch()
+    await userEvent.type(within(form).getByLabelText(/^index/), 'x')
+    await userEvent.clear(within(form).getByLabelText(/^index/))
+    await userEvent.click(within(form).getByRole('button', { name: 'Create watch' }))
+    await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'PUT')).toBe(true))
+    expect(JSON.parse(api.calls.find((c) => c.method === 'PUT')!.body).coordinates).toEqual({ package: 'Flask' })
+  })
+
+  it('moves focus to the first invalid field', async () => {
+    mockApi({ '/v1/me': editor(), '/v1/plugins': plugins, '/v1/watches': page([]) })
+    renderApp('/ui/watches')
+    await userEvent.click(await screen.findByRole('button', { name: 'New watch' }))
+    const form = await screen.findByRole('form', { name: 'New watch' })
+    await userEvent.click(within(form).getByRole('button', { name: 'Create watch' }))
+    await vi.waitFor(() => expect(within(form).getByLabelText(/^Name/)).toHaveFocus())
+  })
+
+  it('focuses Cancel in the delete confirmation and returns focus on Escape', async () => {
+    const w = watch('flask')
+    mockApi({ '/v1/me': editor(), '/v1/plugins': plugins, '/v1/watches': page([w]), '/v1/watches/flask': w, '/v1/watches/flask/versions': page([]) })
+    renderApp('/ui/watches/flask')
+    await userEvent.click(await screen.findByRole('button', { name: /^Delete/ }))
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog).toHaveAccessibleDescription(/Delete watch flask/)
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Delete/ })).toHaveFocus()
+  })
+})

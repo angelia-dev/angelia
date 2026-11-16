@@ -104,6 +104,13 @@ export function validateWatchForm(
   else if (!KIND_RE.test(f.source.trim())) add('/source', 'Not a valid source name.')
 
   const coords = pairsToMap(f.coordinates)
+  const coordKeys = new Set<string>()
+  for (const p of f.coordinates) {
+    const k = p.key.trim()
+    if (k === '') continue
+    if (coordKeys.has(k)) add('/coordinates', `Coordinate "${k}" is given twice.`)
+    coordKeys.add(k)
+  }
   if (Object.keys(coords).length === 0) add('/coordinates', 'At least one coordinate is required.')
   for (const k of opts.requiredCoordinates ?? []) if (!(coords[k] ?? '').trim()) add(`/coordinates/${k}`, 'Required.')
   for (const [k, v] of Object.entries(coords)) if (v === '' && !(opts.requiredCoordinates ?? []).includes(k)) add(`/coordinates/${k}`, 'Give a value or remove the entry.')

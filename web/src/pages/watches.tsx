@@ -119,8 +119,11 @@ export function WatchDetailPage() {
   const remove = useMutation({
     mutationFn: () => deleteWatch(name),
     onSuccess: async () => {
-      await invalidateWatches(client)
+      // Leave the page and drop the deleted watch first; refetching it while it is shown would flash a 404.
       await navigate({ to: '/watches' })
+      client.removeQueries({ queryKey: ['watch', name] })
+      client.removeQueries({ queryKey: ['watch-versions', name] })
+      await invalidateWatches(client)
     },
   })
 

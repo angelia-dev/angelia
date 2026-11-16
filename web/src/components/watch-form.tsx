@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invalidateWatches, putWatch } from '@/api/mutations'
 import { schemaFields, usePlugins } from '@/api/plugins'
@@ -74,21 +74,39 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
   const taken: FieldErrors = save.error instanceof NameTaken ? { '/name': ['A watch with this name already exists. Open it to edit it.'] } : {}
   const errors = mergeErrors(clientErrors, serverErrors, taken)
 
+  // After a refused submit, move focus to the first field that has an error (WCAG 3.3.1).
+  const formRef = useRef<HTMLFormElement>(null)
+  const [focusTick, setFocusTick] = useState(0)
+  useEffect(() => {
+    if (focusTick === 0) return
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"], [role="alert"]')?.focus()
+  }, [focusTick])
+  const failed = save.isError
+  useEffect(() => {
+    if (failed) setFocusTick((t) => t + 1)
+  }, [failed])
+
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     const found = validateWatchForm(form, { creating, requiredCoordinates })
     setClientErrors(found)
-    if (Object.keys(found).length > 0) return
+    if (Object.keys(found).length > 0) {
+      setFocusTick((t) => t + 1)
+      return
+    }
     save.mutate()
   }
 
   const coordValue = (key: string) => form.coordinates.find((c) => c.key === key)?.value ?? ''
+  // Clearing a schema field removes the coordinate, so an optional one left empty is not sent as "".
   const setCoord = (key: string, value: string) =>
     set(
       'coordinates',
-      form.coordinates.some((c) => c.key === key)
-        ? form.coordinates.map((c) => (c.key === key ? { ...c, value } : c))
-        : [...form.coordinates, newPair(key, value)],
+      value === ''
+        ? form.coordinates.filter((c) => c.key !== key)
+        : form.coordinates.some((c) => c.key === key)
+          ? form.coordinates.map((c) => (c.key === key ? { ...c, value } : c))
+          : [...form.coordinates, newPair(key, value)],
     )
 
   return (
@@ -97,7 +115,7 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
         <CardTitle>{creating ? 'New watch' : `Edit ${initial.name}`}</CardTitle>
       </CardHeader>
       <CardContent>
-        <form aria-label={creating ? 'New watch' : `Edit ${initial.name}`} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
+        <form ref={formRef} aria-label={creating ? 'New watch' : `Edit ${initial.name}`} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             Saving replaces the whole watch. The API has no version check, so the last write wins: changes made by someone else
             since you opened this form are overwritten.
@@ -157,7 +175,7 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
               />
             )}
             {(fields.length > 0 || extraCoordinates.length > 0) && errors['/coordinates'] && (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                 {errors['/coordinates'].join('; ')}
               </p>
             )}
@@ -220,7 +238,7 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">Keep only these bumps. None checked means all.</p>
                 {errorsFor(errors, '/policy/bump').length > 0 && (
-                  <p role="alert" className="text-xs text-destructive">
+                  <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                     {errorsFor(errors, '/policy/bump').join('; ')}
                   </p>
                 )}
