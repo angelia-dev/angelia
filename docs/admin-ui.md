@@ -9,8 +9,8 @@ The UI calls the same REST API as the CLI and tokens. Each action has the same s
 audit record. A browser session is a credential of its own: it stops at the sign-out, at its timeout, or
 when an admin revokes it.
 
-> **Status.** The sign-in and the page shell are in place. Some pages may still be placeholders in the
-> version you run. Check the release notes.
+> **Status.** The sign-in and the read-only pages are in place. Replay, editing and the admin pages
+> come in follow-up stories (#263-#266). Check the release notes for what your version has.
 
 ## What the UI shows
 
@@ -19,10 +19,15 @@ when an admin revokes it.
 | Overview | Angelia's state at a glance. |
 | Watches | Each watch with its status and versions. |
 | Events | The event log, with live updates. |
-| Deliveries | Each delivery attempt, with replay and dead letters. |
+| Deliveries | Each delivery attempt and the dead letters. Replay is coming in a follow-up story (#263-#266). |
 | Sinks | Each sink. Secret values are never shown. |
 | Subscriptions | Which sink gets which events. |
-| Admin | Sessions and API tokens (admins only). |
+| Consumers | Each consumer. |
+| Plugins | The installed plugins. |
+| Admin | Sessions and API tokens (admins only). Coming in a follow-up story (#263-#266). |
+
+The pages above are read-only. Replay, editing watches, subscriptions, sinks and consumers, and the admin
+pages are not there yet: they come in follow-up stories (#263-#266).
 
 Rows that come from the watch file (`managed_by: file`) show a badge and have no edit controls. Change
 them in the watch file and restart, or apply the file with `angelia apply`.
@@ -61,8 +66,9 @@ Each entry names one of these, and not both:
 
 Anyone else who signs in sees a "Not authorised" page. Their attempt is logged at `INFO`.
 
-A change to `ui.access` takes effect when Angelia starts with the new file. Until then, open sessions keep
-the old list.
+Angelia reads `ui.access` once, at start. After a restart with a changed file, the new list applies to open
+sessions at their next request: a user whose entry was removed is refused. Until the restart, open
+sessions keep the old list.
 
 ## Sessions
 
@@ -149,8 +155,9 @@ services:
 
 The `ui` keys are in `angelia.yaml`, which is already mounted. Give it `public_url` and the `ui` section of
 [examples/admin-ui.yaml](../examples/admin-ui.yaml). The secret is in the container's environment, so
-`docker inspect` shows it to anyone who can run it. The compose files pin `0.2.0`; see
-[deploy/compose/README.md](../deploy/compose/README.md).
+`docker inspect` shows it to anyone who can run it. The compose files pin `0.2.0`, which has no admin UI and rejects the `ui:` key. The UI needs the first
+release that includes it, which is not released yet. See
+[deploy/compose/README.md](../deploy/compose/README.md) for the tag.
 
 ### Coolify
 
@@ -168,7 +175,11 @@ These steps describe the general flow. Coolify's labels can change between versi
    instance keys) at `/etc/angelia/angelia.yaml`, and start the container with
    `serve --config /etc/angelia/angelia.yaml`.
 5. **Persistent storage.** Add a volume for `/var/lib/angelia`. The SQLite database is there, with the
-   sessions and the login pins. Without the volume, a redeploy loses them.
+   sessions and the login pins. Without the volume, a redeploy loses them. The image runs as uid `65532`,
+   and a new volume may be owned by root, so Angelia could not write the database. Make the volume writable
+   by uid `65532`. The compose files do it with a one-shot `volume-init` job (a pinned `busybox` image that
+   runs `chown -R 65532:65532 /var/lib/angelia` on the volume, and that `angelia` waits for). In Coolify,
+   run the same command once against the volume, for example with a one-off container that mounts it.
 6. **Forwarded headers.** At this version Angelia does not read `X-Forwarded-Proto` or any other forwarded
    header. The `Secure` flag of the cookie comes from the scheme of `public_url`, not from the request. So the
    scheme of `public_url` must be `https`, and the proxy's scheme does not change anything.
