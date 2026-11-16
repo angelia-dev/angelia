@@ -89,3 +89,17 @@ describe('delivery detail', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('no delivery X')
   })
 })
+
+describe('sink filter', () => {
+  it('is labelled as filtering loaded rows and keeps Load more while pages remain', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/subscriptions': page([subscription('to-slack', 'slack-main'), subscription('to-mail', 'email', 'SUB2')]),
+      '/v1/deliveries': page([delivery('D0000001')], 'C2'),
+    })
+    renderApp('/ui/deliveries')
+    await screen.findByText('D0000001'.slice(-8))
+    await userEvent.selectOptions(screen.getByLabelText('Sink (filters loaded rows)'), 'email')
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument()
+  })
+})
