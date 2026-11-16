@@ -158,41 +158,48 @@ func challengeS256(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// login starts a sign-in: a fresh state and PKCE verifier go into the oauth
-// cookie, and the browser goes to the provider.
+// login starts a sign-in: a fresh state, PKCE verifier and nonce go into
+// the oauth cookie, and the browser goes to the provider.
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.providers[r.PathValue("provider")]
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	state, verifier := random(32), random(32)
-	value := strings.Join([]string{p.Name(), strconv.FormatInt(h.now().Unix(), 10), state, verifier}, ".")
+	state, verifier, nonce := random(32), random(32), random(32)
+	target, err := p.AuthCodeURL(r.Context(), state, challengeS256(verifier), nonce)
+	if err != nil {
+		h.count(p.Name(), ResultProviderError)
+		h.log.WarnContext(r.Context(), "ui sign-in failed: the provider cannot be reached", "provider", p.Name(), "error", err)
+		h.page(w, http.StatusBadGateway, pageProviderError, "")
+		return
+	}
+	value := strings.Join([]string{p.Name(), strconv.FormatInt(h.now().Unix(), 10), state, verifier, nonce}, ".")
 	http.SetCookie(w, h.cookie(oauthCookieName, oauthCookieNameLocal, value, int(oauthCookieTTL/time.Second)))
-	http.Redirect(w, r, p.AuthCodeURL(state, challengeS256(verifier)), http.StatusFound)
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
-// oauthState reads the oauth cookie of a callback for provider: its state
-// and verifier, if the cookie is well-formed, for this provider, and not
-// older than oauthCookieTTL.
-func (h *Handler) oauthState(r *http.Request, provider string) (state, verifier string, ok bool) {
+// oauthState reads the oauth cookie of a callback for provider: its state,
+// verifier and nonce, if the cookie is well-formed, for this provider, and
+// not older than oauthCookieTTL.
+func (h *Handler) oauthState(r *http.Request, provider string) (state, verifier, nonce string, ok bool) {
 	cs := r.CookiesNamed(h.oauthName())
 	if len(cs) != 1 {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(cs[0].Value, ".")
-	if len(parts) != 4 || parts[0] != provider || len(parts[2]) != 43 || len(parts[3]) != 43 {
-		return "", "", false
+	if len(parts) != 5 || parts[0] != provider || len(parts[2]) != 43 || len(parts[3]) != 43 || len(parts[4]) != 43 {
+		return "", "", "", false
 	}
 	at, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	age := h.now().Sub(time.Unix(at, 0))
 	if age < -time.Minute || age > oauthCookieTTL {
-		return "", "", false
+		return "", "", "", false
 	}
-	return parts[2], parts[3], true
+	return parts[2], parts[3], parts[4], true
 }
 
 // callback ends a sign-in: it checks state against the oauth cookie (in
@@ -209,7 +216,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, h.cookie(oauthCookieName, oauthCookieNameLocal, "", -1))
 	ctx := r.Context()
 	q := r.URL.Query()
-	state, verifier, ok := h.oauthState(r, name)
+	state, verifier, nonce, ok := h.oauthState(r, name)
 	if !ok || len(q["state"]) != 1 || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
 		h.count(name, ResultInvalidState)
 		h.log.InfoContext(ctx, "ui sign-in refused: missing, expired or mismatched state", "provider", name)
@@ -233,7 +240,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.page(w, http.StatusBadRequest, pageSignInFailed, "")
 		return
 	}
-	id, err := p.Exchange(ctx, code, verifier)
+	id, err := p.Exchange(ctx, code, verifier, nonce)
 	if err != nil {
 		h.count(name, ResultProviderError)
 		h.log.WarnContext(ctx, "ui sign-in failed: the provider did not identify the user", "provider", name, "error", err)
@@ -249,7 +256,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	case cookie == "" && m.mismatch:
 		h.count(name, ResultIdentityMismatch)
-		h.log.WarnContext(ctx, "ui sign-in refused: the login is pinned to another account id",
+		h.log.WarnContext(ctx, "ui sign-in refused: the login or email is pinned to another account id",
 			"provider", name, "login", id.Login, "subject", id.Subject, "pinned_subject", m.pinnedTo)
 		h.page(w, http.StatusForbidden, pageNotAuthorised, id.Login)
 		return
@@ -260,7 +267,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.mismatch {
-		h.log.WarnContext(ctx, "ui access entry ignored: the login is pinned to another account id",
+		h.log.WarnContext(ctx, "ui access entry ignored: the login or email is pinned to another account id",
 			"provider", name, "login", id.Login, "subject", id.Subject, "pinned_subject", m.pinnedTo)
 	}
 	h.count(name, ResultSuccess)

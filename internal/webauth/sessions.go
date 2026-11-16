@@ -165,7 +165,7 @@ func (s *Sessions) authenticate(ctx context.Context, cookie string, use bool) (a
 	if s.ended(row, now) {
 		return api.Principal{}, &AuthError{Reason: api.AuthReasonExpired, ID: row.ID}
 	}
-	m, err := s.access.role(ctx, row.Provider, row.Subject, row.Login)
+	m, err := s.access.role(ctx, row.Provider, row.Subject, row.Login, "")
 	if err != nil {
 		return api.Principal{}, err
 	}
@@ -213,7 +213,7 @@ func (s *Sessions) ended(row store.UISession, now time.Time) bool {
 // refusal (ResultNotAuthorised, ResultIdentityMismatch) with the access
 // match; an error is a store failure.
 func (s *Sessions) signIn(ctx context.Context, id Identity, userAgent string) (cookie string, row store.UISession, m match, err error) {
-	m, err = s.access.role(ctx, id.Provider, id.Subject, id.Login)
+	m, err = s.access.role(ctx, id.Provider, id.Subject, id.Login, id.verifiedEmail())
 	if err != nil || RoleScope(m.role) == api.ScopeNone {
 		return "", store.UISession{}, m, err
 	}
@@ -358,9 +358,9 @@ type TokenLister interface {
 }
 
 // OrphanTokens returns the ids of the active API tokens that a signed-in
-// user created (created_by "<provider>:<subject>") whose identity ui.access
-// no longer lists: removing a person from ui.access ends their sessions but
-// not the tokens they created.
+// user created (created_by "<provider>:<subject>", any provider, configured
+// or not) whose identity ui.access no longer lists: removing a person from
+// ui.access ends their sessions but not the tokens they created.
 func (s *Sessions) OrphanTokens(ctx context.Context, tokens TokenLister) ([]string, error) {
 	const page = 500
 	var out []string
@@ -372,7 +372,7 @@ func (s *Sessions) OrphanTokens(ctx context.Context, tokens TokenLister) ([]stri
 		}
 		for _, t := range ts {
 			provider, subject, ok := strings.Cut(t.CreatedBy, ":")
-			if !ok || provider != GitHubName || subject == "" || (t.ExpiresAt != nil && !now.Before(*t.ExpiresAt)) {
+			if !ok || provider == "" || subject == "" || (t.ExpiresAt != nil && !now.Before(*t.ExpiresAt)) {
 				continue
 			}
 			listed, err := s.access.listsSubject(ctx, provider, subject)

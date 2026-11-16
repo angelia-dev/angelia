@@ -396,9 +396,9 @@ type movedKey struct {
 // which moved to the plugin folders, so that Load can name the new
 // location once plugins_dir is known.
 func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
-	if line := inlineClientSecret(data); line != 0 {
+	if line, key := inlineClientSecret(data); line != 0 {
 		// Never echoed: the value is a credential put in the wrong place.
-		return nil, fmt.Errorf("%s: line %d: ui.github.client_secret: an inline client secret is refused; put it in an environment variable named by ui.github.client_secret_env, or in a file (mode 0600) named by ui.github.client_secret_file", path, line)
+		return nil, fmt.Errorf("%s: line %d: %s.client_secret: an inline client secret is refused; put it in an environment variable named by %s.client_secret_env, or in a file (mode 0600) named by %s.client_secret_file", path, line, key, key, key)
 	}
 	f := fileConfig{Config: *cfg}
 	dec := yaml.NewDecoder(bytes.NewReader(data))

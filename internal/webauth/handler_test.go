@@ -24,17 +24,25 @@ type fakeProvider struct {
 	err       error
 	challenge string
 	verifier  string
+	nonce     string
+	urlErr    error
 }
 
 func (p *fakeProvider) Name() string { return p.name }
 
-func (p *fakeProvider) AuthCodeURL(state, challenge string) string {
-	p.challenge = challenge
-	return "https://idp.example/authorize?state=" + url.QueryEscape(state)
+func (p *fakeProvider) AuthCodeURL(_ context.Context, state, challenge, nonce string) (string, error) {
+	if p.urlErr != nil {
+		return "", p.urlErr
+	}
+	p.challenge, p.nonce = challenge, nonce
+	return "https://idp.example/authorize?state=" + url.QueryEscape(state), nil
 }
 
-func (p *fakeProvider) Exchange(_ context.Context, code, verifier string) (Identity, error) {
+func (p *fakeProvider) Exchange(_ context.Context, code, verifier, nonce string) (Identity, error) {
 	p.verifier = verifier
+	if nonce != p.nonce {
+		return Identity{}, &ProviderError{msg: "nonce"}
+	}
 	if p.err != nil {
 		return Identity{}, p.err
 	}

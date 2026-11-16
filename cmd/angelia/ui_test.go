@@ -140,3 +140,68 @@ func TestAPIOptionsUI(t *testing.T) {
 		t.Fatal(o.SessionCookie, err)
 	}
 }
+
+// oidcYAML is an enabled ui section with one OIDC provider only (#268).
+func oidcYAML(issuer, secret string) string {
+	return "ui:\n  enabled: true\n  public_url: https://angelia.example.com\n" +
+		"  oidc:\n    - name: kc\n      issuer: " + issuer + "\n      client_id: angelia\n      " + secret + "\n" +
+		"  access:\n    - provider: kc\n      subject: s-1\n      role: admin\n"
+}
+
+// An OIDC provider gets its sign-in route, its discovery goes through the
+// netguard client (which refuses a loopback issuer unless allowed), and
+// config check reads its secret file.
+func TestAPIOptionsOIDC(t *testing.T) {
+	sources, err := watchSources(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "a.db"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	log := slog.New(slog.DiscardHandler)
+	idp := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(idp.Close)
+	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, oidcYAML(idp.URL, "client_secret_env: AGL_TEST_OIDC")), Environ: []string{"AGL_TEST_OIDC=s"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := metrics.New(nil)
+	o, err := apiOptions(cfg, st, sources, nil, m, 0, log)
+	if err != nil || o.UIAuth == nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int{"/ui/auth/login/kc": http.StatusBadGateway, "/ui/auth/login/github": http.StatusNotFound} {
+		w := httptest.NewRecorder()
+		o.UIAuth.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != want {
+			t.Fatal(path, w.Code)
+		}
+	}
+	// The netguard refusal is counted under the provider's name.
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `angelia_ui_logins_total{provider="kc",result="provider_error"} 1`) {
+		t.Fatal("kc provider_error not counted")
+	}
+	if _, err := apiOptions(cfg, st, sources, nil, nil, 0, log); err != nil {
+		t.Fatal(err)
+	}
+	// No secret: the api role does not start.
+	cfg, err = config.Load(t.Context(), config.Options{Path: writeCfg(t, oidcYAML(idp.URL, "client_secret_env: AGL_TEST_OIDC"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apiOptions(cfg, st, sources, nil, nil, 0, log); err == nil || !strings.Contains(err.Error(), "AGL_TEST_OIDC") {
+		t.Fatal(err)
+	}
+	// config check reads the OIDC secret file.
+	if out, errb, err := runCheck(t, "--config", writeCfg(t, oidcYAML(idp.URL, "client_secret_file: "+writeSecret(t, 0o600)))); err != nil || !strings.Contains(out, "configuration OK") {
+		t.Fatal(out, errb, err)
+	}
+	if _, errb, err := runCheck(t, "--config", writeCfg(t, oidcYAML(idp.URL, "client_secret_file: "+writeSecret(t, 0o666)))); err == nil || !strings.Contains(errb, "ui.oidc[kc].client_secret_file") {
+		t.Fatal(errb, err)
+	}
+}

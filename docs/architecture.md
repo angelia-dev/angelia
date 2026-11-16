@@ -48,7 +48,7 @@ The initial proposal was: a core API, verifier batches, an event "batch" that fa
 - `GET /v1/events?after=<seq>&watch=…&type=…&source=…`: the pull API, with the filters and responses of the [OpenAPI spec](https://github.com/angelia-dev/spec/blob/main/docs/api.md) (`type` takes short types such as `release.published`, `source` takes source kinds). Cursors are a monotonic integer sequence assigned in commit order (`event.seq`), so a consumer can resume after downtime without skipping an event; the ULID stays the public event id ([ADR 0008](adr/0008-store-history-rows-and-event-cursor.md)).
 - `GET /v1/events/stream`: SSE, same filters.
 - **MCP server** (stdio and streamable HTTP) exposing tools such as `list_watches`, `latest_version`, `events_since`, `add_watch`, `ack_event`. This is the agent surface.
-- Auth: API tokens with scopes (read / write / admin), `ang_` bearer tokens stored as SHA-256 hashes and managed under `/v1/tokens` ([ADR 0030](adr/0030-api-tokens.md)). People use the admin UI with a GitHub sign-in and a server-side session whose role (`viewer`, `editor`, `admin`) from `ui.access` is one of these scopes ([ADR 0033](adr/0033-admin-web-ui.md)). Generic OIDC later.
+- Auth: API tokens with scopes (read / write / admin), `ang_` bearer tokens stored as SHA-256 hashes and managed under `/v1/tokens` ([ADR 0030](adr/0030-api-tokens.md)). People use the admin UI with a GitHub or OpenID Connect sign-in and a server-side session whose role (`viewer`, `editor`, `admin`) from `ui.access` is one of these scopes ([ADR 0033](adr/0033-admin-web-ui.md), [ADR 0034](adr/0034-generic-oidc-sign-in.md)).
 - Config-as-code: `angelia apply -f watches.yaml` is idempotent and upserts via the API (GitOps).
 
 ### 3.2 Scheduler and workers
@@ -210,6 +210,7 @@ Proposed stack [P0]:
 - Spike-only, not shipped: direct deps `hashicorp/go-plugin` (MPL-2.0), `hashicorp/go-hclog` (MIT) and `google.golang.org/grpc` (Apache-2.0), with their transitive deps (`hashicorp/yamux`, `oklog/run`, `fatih/color`, …; MPL-2.0, Apache-2.0, MIT, BSD; `google.golang.org/protobuf` was already indirect), for the go-plugin prototype of #60 under `bench/plugins/goplugin` only. Nothing under `internal/` or `cmd/` may import them unless [ADR 0013](adr/0013-go-plugin-subprocess-prototype.md) is accepted with go-plugin as the choice.
 - Observability: OpenTelemetry traces, Prometheus `/metrics` through `prometheus/client_golang` (Apache-2.0; accepted with [ADR 0019](adr/0019-prometheus-metrics-on-the-listen-address.md), which lists its transitive modules), `slog` JSON logs.
 - UI: React + TypeScript + Vite single-page app in `web/`, embedded in the binary with `go:embed` and served by the `api` role under `/ui/` ([ADR 0033](adr/0033-admin-web-ui.md)).
+- UI sign-in with OpenID Connect: `github.com/coreos/go-oidc/v3` v3.21.0 (Apache-2.0) and its `github.com/go-jose/go-jose/v4` v4.1.4 (Apache-2.0), with `golang.org/x/oauth2` (BSD-3-Clause, already shipped through the MCP SDK) now a direct dependency; only in `internal/webauth` (accepted by the maintainer for #268, [ADR 0034](adr/0034-generic-oidc-sign-in.md)).
 
 **Phase 0 benchmarks (pass/fail):**
 1. 10,000 watches over 5 ecosystems on 1 vCPU / 256 MB: P95 check lag < 2 min, RSS < 100 MB, CPU < 20%.
