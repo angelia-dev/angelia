@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/bench/fakereg"
+	"github.com/angelia-dev/angelia/internal/scheduler"
 )
 
 func main() {
@@ -50,7 +51,14 @@ type options struct {
 	stages                          int
 	stageEvery                      time.Duration
 	minDetection                    int
+	database                        string // sqlite or postgres
+	replicas                        int
+	postgresDSN                     string // from BENCH_POSTGRES_DSN, never printed or written down
 }
+
+// dsnVar is the variable that holds the Postgres DSN of a -database postgres
+// run. The database must be new: the run does not clear it.
+const dsnVar = "BENCH_POSTGRES_DSN"
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("crash", flag.ContinueOnError)
@@ -65,6 +73,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&o.w.Subscriptions, "subscriptions", 5, "webhook sinks, one subscription each; every event is delivered to each")
 	fs.Float64Var(&o.w.ReleasesPerH, "releases-per-hour", 36000, "new releases per hour over all packages (with -n 300 and 5 subscriptions, 15,000 deliveries per 5-minute check cycle)")
 	fs.IntVar(&o.w.History, "history", 3, "versions each package has at start (recorded as the baseline, without events)")
+	fs.DurationVar(&o.w.DelayMin, "registry-delay-min", 0, "least response delay of the fake registry; with -registry-delay-max, makes checks last long enough for a kill to land inside one (0: checks take milliseconds)")
+	fs.DurationVar(&o.w.DelayMax, "registry-delay-max", 0, "the registry's delay is uniform in [-registry-delay-min, this); 0 keeps the quick default")
 	fs.DurationVar(&o.receiverDelay, "receiver-delay", 250*time.Millisecond, "the receiver answers after a delay uniform in [0, this)")
 	fs.StringVar(&o.receiverHost, "receiver-host", "127.0.0.2", "loopback address of the receiver; another host than the registry's 127.0.0.1, so each has its own rate limit")
 	fs.IntVar(&o.minFlow, "min-flow", 200, "requests the receiver must have got before the first kill")
@@ -77,15 +87,35 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&o.stages, "stages", 8, "the watches are added in this many groups during the warm-up, so that their checks spread over the kill loop")
 	fs.DurationVar(&o.stageEvery, "stage-every", 30*time.Second, "time between two groups of watches")
 	fs.IntVar(&o.minDetection, "min-detection-kills", 30, "kills that must find a check committed since the previous kill")
+	fs.StringVar(&o.database, "database", "sqlite", "sqlite (one process, the default) or postgres (the DSN in $"+dsnVar+", a database with no tables)")
+	fs.IntVar(&o.replicas, "replicas", 1, "angelia serve processes with every role on one database, each with its own holder; more than one needs -database postgres; a kill takes down one random replica")
 	fs.Uint64Var(&o.seed, "seed", 0, "seed of the kill times; 0 picks one (the report records it)")
 	fs.StringVar(&o.envNote, "env-note", "", "description of the machine, for the report")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if o.kills < 1 || o.minPending < 1 || o.stages < 1 || o.stageEvery < 0 || o.fromStart < 0 || o.fromStart > 1 || o.fromStartMax < 0 || o.minUp <= 0 || o.maxUp < o.minUp || o.w.Packages < 1 || o.w.Subscriptions < 1 ||
-		o.w.ReleasesPerH <= 0 || o.w.History < 1 || o.receiverDelay < 0 || fs.NArg() != 0 {
+		o.w.ReleasesPerH <= 0 || o.w.DelayMin < 0 || (o.w.DelayMax > 0 && o.w.DelayMax <= o.w.DelayMin) || (o.w.DelayMax == 0 && o.w.DelayMin > 0) || o.w.History < 1 || o.receiverDelay < 0 || fs.NArg() != 0 {
 		_, _ = fmt.Fprintln(stderr, "crash: -kills, -n, -subscriptions, -releases-per-hour, -history and the uptimes must be positive, -max-uptime >= -min-uptime; no arguments")
 		return 2
+	}
+	if o.database != "sqlite" && o.database != "postgres" {
+		_, _ = fmt.Fprintf(stderr, "crash: -database %q: want sqlite or postgres\n", o.database)
+		return 2
+	}
+	if o.replicas < 1 || (o.replicas > 1 && o.database != "postgres") {
+		_, _ = fmt.Fprintln(stderr, "crash: -replicas must be at least 1, and more than 1 needs -database postgres (SQLite is one process)")
+		return 2
+	}
+	if o.database == "postgres" {
+		if o.postgresDSN = os.Getenv(dsnVar); o.postgresDSN == "" {
+			_, _ = fmt.Fprintf(stderr, "crash: -database postgres needs the DSN in $%s, for example postgres://user:password@localhost:5432/angelia_bench?sslmode=disable (a new, empty database)\n", dsnVar)
+			return 2
+		}
+		if !isPostgres(o.postgresDSN) {
+			_, _ = fmt.Fprintf(stderr, "crash: $%s must be a postgres:// URL\n", dsnVar)
+			return 2
+		}
 	}
 	if runtime.GOOS != "linux" {
 		_, _ = fmt.Fprintln(stderr, "crash: needs Linux (angelia runs as a child process on loopback addresses)")
@@ -154,6 +184,36 @@ func waitPending(ctx context.Context, dbPath string, n int, timeout time.Duratio
 			return fmt.Errorf("fewer than %d deliveries pending for %v (last: %d): %w", n, timeout, st.Pending, serr)
 		}
 	}
+}
+
+// replicaFile names a per-replica file: base+ext for a single replica (as
+// ever), base-<n>+ext, counted from 1, for several.
+func replicaFile(base, ext string, i, replicas int) string {
+	if replicas == 1 {
+		return base + ext
+	}
+	return fmt.Sprintf("%s-%d%s", base, i+1, ext)
+}
+
+// requireEmptyPostgres connects with dsn and returns the server version. It
+// refuses a database that has tables: the run does not clear anything, and
+// its checks count every row, so it needs a new database.
+func requireEmptyPostgres(ctx context.Context, dsn string) (string, error) {
+	db, err := openDB(dsn)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = db.Close() }()
+	var version string
+	var tables int
+	if err := db.QueryRowContext(ctx, `SELECT current_setting('server_version'),
+		(SELECT count(*) FROM pg_class WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p'))`).Scan(&version, &tables); err != nil {
+		return "", fmt.Errorf("connect to Postgres with $%s: %w", dsnVar, err)
+	}
+	if tables > 0 {
+		return "", fmt.Errorf("the database of $%s has %d tables: use a new database (dropdb and createdb), the benchmark counts every row", dsnVar, tables)
+	}
+	return version, nil
 }
 
 // freeAddr returns a loopback address whose port was free a moment ago.
@@ -230,22 +290,42 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	listen, err := freeAddr()
-	if err != nil {
-		return nil, err
+	watches := filepath.Join(o.out, "watches.yaml")
+	extraEnv := []string{secretEnv + "=" + secret}
+	dbRef := filepath.Join(dataDir, "angelia.db") // what readState and readSnapshot read
+	var pgVersion string
+	if o.database == "postgres" {
+		if pgVersion, err = requireEmptyPostgres(ctx, o.postgresDSN); err != nil {
+			return nil, err
+		}
+		dbRef = o.postgresDSN
+		extraEnv = append(extraEnv, dsnEnv+"="+o.postgresDSN)
 	}
-	cfgPath, watches := filepath.Join(o.out, "angelia.yaml"), filepath.Join(o.out, "watches.yaml")
-	if err := writeInstanceConfig(cfgPath, listen, dataDir, registry, receiver); err != nil {
-		return nil, err
+	env := childEnv(os.Environ(), extraEnv)
+	// One configuration, listen address and log per replica. With one
+	// replica the files are angelia.yaml and angelia.log, as always.
+	launchers := make([]launcher, o.replicas)
+	var logs []string
+	for i := range launchers {
+		listen, err := freeAddr()
+		if err != nil {
+			return nil, err
+		}
+		cfgPath := filepath.Join(o.out, replicaFile("angelia", ".yaml", i, o.replicas))
+		if o.database == "postgres" {
+			err = writePostgresConfig(cfgPath, listen, registry, receiver)
+		} else {
+			err = writeInstanceConfig(cfgPath, listen, dataDir, registry, receiver)
+		}
+		if err != nil {
+			return nil, err
+		}
+		launchers[i] = launcher{bin: o.bin, cfg: cfgPath, listen: listen, log: filepath.Join(o.out, replicaFile("angelia", ".log", i, o.replicas)), env: env}
+		logs = append(logs, launchers[i].log)
+		if err := os.Remove(launchers[i].log); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
-	l := launcher{
-		bin: o.bin, cfg: cfgPath, listen: listen, log: filepath.Join(o.out, "angelia.log"),
-		env: childEnv(os.Environ(), []string{secretEnv + "=" + secret}),
-	}
-	if err := os.Remove(l.log); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	dbPath := filepath.Join(dataDir, "angelia.db")
 
 	rep := &Report{
 		Benchmark: "kill-9", Started: t0, Environment: environment(ctx, o.bin, o.envNote),
@@ -253,7 +333,8 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 			Workload: o.w, Kills: o.kills, MinUp: o.minUp, MaxUp: o.maxUp,
 			Uptime:       fmt.Sprintf("uniform in [%s, %s) after /readyz; %.0f%% in [0, %s) after the start", o.minUp, o.maxUp, o.fromStart*100, o.fromStartMax),
 			ReceiverWait: o.receiverDelay, Seed: o.seed, MinFlow: o.minFlow, MinPending: o.minPending,
-			Stages: fmt.Sprintf("%d groups, %s apart", o.stages, o.stageEvery),
+			Stages:   fmt.Sprintf("%d groups, %s apart", o.stages, o.stageEvery),
+			Database: o.database, Replicas: o.replicas, PostgresVersion: pgVersion,
 		},
 	}
 	finish := func(err error, notes ...string) (*Report, error) {
@@ -264,38 +345,43 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		}
 		return rep, err
 	}
-	start := func() (*proc, error) { return l.start("--watches", watches) }
+	// The replicas share one rng stream for the choice of the victim, apart
+	// from the kill times' stream, so that a seed repeats the kill times
+	// whatever the number of replicas.
+	cl := newCluster(o.replicas, func(i int) (member, error) { return launchers[i].start("--watches", watches) },
+		mrand.New(mrand.NewPCG(o.seed, 0x7265706c))) //nolint:gosec // kill timing
+	defer cl.killAll() // a failed run leaves no replica behind
 
 	// Warm-up: the watches arrive in groups (a graceful restart each), so
 	// that their baselines, and so their later checks, are spread out. The
 	// first events come one interval after each group's baseline.
 	log.Info("starting angelia", "watches", o.w.Packages, "subscriptions", o.w.Subscriptions, "groups", o.stages, "out", o.out)
-	var p *proc
 	for g := 1; g <= o.stages; g++ {
 		if err := writeWatchFile(watches, receiver, o.w, (o.w.Packages*g+o.stages-1)/o.stages); err != nil {
 			return finish(err)
 		}
-		if p != nil {
-			if err := p.stop(40 * time.Second); err != nil {
+		if g > 1 {
+			if err := cl.stopAll(40 * time.Second); err != nil {
 				return finish(fmt.Errorf("warm-up restart: %w", err))
 			}
 		}
-		if p, err = start(); err != nil {
+		// With replicas, they all read the new watch file at once: the
+		// concurrent apply of one file is part of what the run covers.
+		if err := cl.startAll(); err != nil {
 			return finish(err)
 		}
-		if err := p.waitReady(ctx, 2*time.Minute); err != nil {
+		if err := cl.waitReady(ctx, 2*time.Minute); err != nil {
 			return finish(err)
 		}
 		if g < o.stages {
 			if err := sleepCtx(ctx, o.stageEvery); err != nil {
-				_ = p.kill()
 				return finish(err)
 			}
 		}
 	}
 	wctx, wcancel := context.WithTimeout(ctx, o.warmTimeout)
 	lastLog := time.Now()
-	for recv.Count() < o.minFlow && wctx.Err() == nil && !p.exited() {
+	for recv.Count() < o.minFlow && wctx.Err() == nil && !cl.exited() {
 		_ = sleepCtx(wctx, time.Second)
 		if time.Since(lastLog) >= 30*time.Second {
 			lastLog = time.Now()
@@ -305,8 +391,8 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	wcancel()
 	rep.Phases.Warmup = time.Since(t0)
 	if rep.Phases.ReceivedBeforeKills = recv.Count(); rep.Phases.ReceivedBeforeKills < o.minFlow {
-		_ = p.kill()
-		return finish(fmt.Errorf("only %d deliveries received after %v (exited: %v)", recv.Count(), o.warmTimeout, p.exited()))
+		exited := cl.exited()
+		return finish(fmt.Errorf("only %d deliveries received after %v (exited: %v)", recv.Count(), o.warmTimeout, exited))
 	}
 
 	// The kill loop.
@@ -316,16 +402,16 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		Kills: o.kills, MinUp: o.minUp, MaxUp: o.maxUp, ReadyTimeout: 2 * time.Minute,
 		FromStart: o.fromStart, FromStartMax: o.fromStartMax, MinPending: o.minPending,
 		Received: recv.Count, Open: recv.Open, Sleep: sleepCtx, Now: time.Now,
-		WaitBusy: func(ctx context.Context) error { return waitPending(ctx, dbPath, o.minPending, o.busyTimeout) },
-		State:    func(since time.Time) (State, error) { return readState(ctx, dbPath, since) },
-		Start:    func() (instance, error) { return start() },
+		WaitBusy: func(ctx context.Context) error { return waitPending(ctx, dbRef, o.minPending, o.busyTimeout) },
+		State:    func(since time.Time) (State, error) { return readState(ctx, dbRef, since) },
+		Start:    cl.restart,
 		Progress: func(k Kill) {
 			if k.Index%10 == 0 {
 				log.Info("killed", "kills", k.Index, "received", recv.Count(), "pending", k.Backlog.Pending, "in_flight", k.Backlog.InFlight)
 			}
 		},
 	}
-	kills, err := killLoop(ctx, cfg, mrand.New(mrand.NewPCG(o.seed, 0x6b696c6c)), p) //nolint:gosec // kill timing
+	kills, err := killLoop(ctx, cfg, mrand.New(mrand.NewPCG(o.seed, 0x6b696c6c)), instance(cl)) //nolint:gosec // kill timing
 	frozen := clk.freeze()
 	rep.Kills, rep.Phases.KillLoop = kills, time.Since(t1)
 	if err != nil {
@@ -338,18 +424,19 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	// delivery is pending or in flight (2-minute delivery leases).
 	log.Info("registry frozen; draining with every role", "received", recv.Count())
 	t2 := time.Now()
-	d, err := start()
-	if err != nil {
+	// Replicas that survived the last kill keep running; the killed one
+	// comes back, and every replica runs through the drain.
+	if err := cl.startAll(); err != nil {
 		return finish(err)
 	}
-	if err := d.waitReady(ctx, 2*time.Minute); err != nil {
+	if err := cl.waitReady(ctx, 2*time.Minute); err != nil {
 		return finish(err)
 	}
 	drained, last := false, State{}
 	dctx, dcancel := context.WithTimeout(ctx, o.drainTimeout)
 	lastLog = time.Now()
-	for dctx.Err() == nil && !d.exited() {
-		last, err = readState(dctx, dbPath, frozen)
+	for dctx.Err() == nil && !cl.exited() {
+		last, err = readState(dctx, dbRef, frozen)
 		if err == nil && last.OldestCheck.After(frozen.Add(checkMargin)) && last.Pending+last.InFlight == 0 {
 			drained = true
 			break
@@ -362,7 +449,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 	}
 	dcancel()
 	rep.Phases.Drain = time.Since(t2)
-	if err := d.stop(40 * time.Second); err != nil {
+	if err := cl.stopAll(40 * time.Second); err != nil {
 		return finish(fmt.Errorf("stop the drain process: %w", err))
 	}
 	var notes []string
@@ -371,7 +458,7 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 			o.drainTimeout, last.Checks, o.w.Packages, last.Pending, last.InFlight))
 	}
 
-	snap, err := readSnapshot(ctx, dbPath)
+	snap, err := readSnapshot(ctx, dbRef)
 	if err != nil {
 		return finish(err, notes...)
 	}
@@ -384,6 +471,13 @@ func bench(ctx context.Context, o options, log *slog.Logger) (*Report, error) {
 		truth.Sinks = append(truth.Sinks, sinkName(i))
 	}
 	verify, tally := Verify(snap, recv.Receipts(), truth)
+	if o.database == "postgres" {
+		runs, err := readCheckLogs(logs)
+		if err != nil {
+			return finish(fmt.Errorf("read the scheduler logs: %w", err), notes...)
+		}
+		verify = append(verify, checkOverlaps(runs, scheduler.DefaultLeaseTTL, snap.Targets))
+	}
 	rep.Tally = tally
 	rep.decide(verify, setupChecks(o.kills, o.minDetection, kills, tally, drained))
 	log.Info("done", "verdict", rep.Verdict, "events", tally.Events, "deliveries", tally.Deliveries, "received", tally.Received, "duplicates", tally.Duplicates)

@@ -980,6 +980,55 @@ func TestCheckLogsCarrySourceAndKind(t *testing.T) {
 	}
 }
 
+// Story #86 (86-B): benchmark 5 on Postgres reads these two debug lines to
+// check that no target is checked by two holders at once. Each carries the
+// holder (from the scheduler's logger), the target and, on the start line,
+// the instant the lease expires.
+func TestCheckLogsStartAndEnd(t *testing.T) {
+	st := openStore(t)
+	ctx := t.Context()
+	must(t, st.CreateTarget(ctx, store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "x"}, NextCheckAt: t0}))
+	var buf bytes.Buffer
+	c := CheckerFunc(func(context.Context, store.Target) (Outcome, error) { return Outcome{}, nil })
+	s := newTestScheduler(t, st, c, newFakeClock(t0), func(o *Options) {
+		o.Holder = "h1"
+		o.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	pollAndWait(ctx, s)
+	var started, finished map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		switch m["msg"] {
+		case "check started":
+			started = m
+		case "check finished":
+			finished = m
+		}
+	}
+	if started == nil || finished == nil {
+		t.Fatalf("want a check started and a check finished line, log = %s", buf.String())
+	}
+	for _, m := range []map[string]any{started, finished} {
+		if m["holder"] != "h1" || m["target"] != "t1" || m["role"] != "scheduler" {
+			t.Errorf("line %v: want holder h1, target t1, role scheduler", m)
+		}
+	}
+	if until, _ := started["lease_until"].(string); until == "" {
+		t.Errorf("check started has no lease_until: %v", started)
+	}
+	// At info level (the default) neither line is written.
+	buf.Reset()
+	s2 := newTestScheduler(t, st, c, newFakeClock(t0), func(o *Options) { o.Logger = slog.New(slog.NewJSONHandler(&buf, nil)) })
+	must(t, st.CreateTarget(ctx, store.Target{ID: "t2", Kind: "pypi", Coordinates: map[string]string{"name": "y"}, NextCheckAt: t0}))
+	pollAndWait(ctx, s2)
+	if strings.Contains(buf.String(), "check started") || strings.Contains(buf.String(), "check finished") {
+		t.Errorf("info level logs the check lines: %s", buf.String())
+	}
+}
+
 // Story #224: every finished check wakes the poll loop, also when the pool
 // was not full. Before, only a check that finished while every slot was busy
 // did, so once a poll leased fewer targets than it had free slots (a check
