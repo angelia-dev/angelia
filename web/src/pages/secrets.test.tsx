@@ -89,6 +89,32 @@ describe('secrets page', () => {
     expect(document.body.innerHTML).not.toContain(VALUE)
   })
 
+  it('never puts the typed value in the DOM or React state, even before submit', async () => {
+    mockApi(routes())
+    renderApp('/ui/secrets')
+    await userEvent.click(await screen.findByRole('button', { name: 'New secret' }))
+    const form = await screen.findByRole('form', { name: 'New secret' })
+    const input = within(form).getByLabelText(/^Value/)
+    await userEvent.type(input, VALUE)
+    expect(input).toHaveValue(VALUE) // the live property only
+    expect(input.getAttribute('value')).not.toBe(VALUE)
+    expect(document.body.innerHTML).not.toContain(VALUE)
+  })
+
+  it('refuses a URL in the hosts and focuses the first invalid field', async () => {
+    const api = mockApi(routes())
+    renderApp('/ui/secrets')
+    await userEvent.click(await screen.findByRole('button', { name: 'New secret' }))
+    const form = await screen.findByRole('form', { name: 'New secret' })
+    await userEvent.type(within(form).getByLabelText(/^Name/), 'ok')
+    await userEvent.type(within(form).getByLabelText(/^Value/), VALUE)
+    await userEvent.type(within(form).getByLabelText('Hosts'), 'https://ci.example/hook')
+    await userEvent.click(within(form).getByRole('button', { name: 'Store secret' }))
+    expect(await within(form).findByText(/not a URL/)).toBeInTheDocument()
+    await vi.waitFor(() => expect(within(form).getByLabelText('Hosts')).toHaveFocus())
+    expect(api.calls.some((c) => c.method === 'PUT')).toBe(false)
+  })
+
   it('maps 422 field errors for the hosts', async () => {
     mockApi(
       routes({

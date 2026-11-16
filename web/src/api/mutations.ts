@@ -68,7 +68,8 @@ export const putSecret = (name: string, body: SecretWrite) =>
 export const deleteSecret = (name: string) =>
   unwrapVoid(api.DELETE('/v1/secrets/{name}', { params: { path: { name } } }))
 
-export const invalidateSinks = (client: QueryClient) => invalidateRoots(client, ['sinks', 'sink-index'])
+// A sink names secrets with `*_ref` keys, so a sink write changes the secrets' `referenced_by`.
+export const invalidateSinks = (client: QueryClient) => invalidateRoots(client, ['sinks', 'sink-index', 'secrets'])
 export const invalidateSubscriptions = (client: QueryClient) =>
   invalidateRoots(client, ['subscriptions', 'subscription-index'])
 export const invalidateSecrets = (client: QueryClient) => invalidateRoots(client, ['secrets', 'sinks'])

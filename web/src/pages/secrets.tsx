@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { hasRole, useMe } from '@/api/me'
 import { deleteSecret, invalidateSecrets, putSecret, secretExists, type SecretWrite } from '@/api/mutations'
@@ -9,12 +9,15 @@ import { RelativeTime } from '@/components/badges'
 import {
   Checkbox,
   ConfirmDelete,
+  Field,
+  inputClass,
   ProblemSummary,
   TextArea,
   TextInput,
   errorsFor,
   mergeErrors,
   problemFieldErrors,
+  useFocusFirstError,
   type FieldErrors,
 } from '@/components/form'
 import { EmptyState, Head, ListFrame, PageHeader } from '@/components/states'
@@ -43,7 +46,7 @@ export function validateSecret(f: { name: string; value: string; base64: boolean
   if (f.value === '') add(valuePointer, 'Enter the secret value.')
   else if (f.base64) {
     if (f.value.length < 4 || !BASE64_RE.test(f.value)) add(valuePointer, 'Not valid padded base64.')
-    else if ((f.value.length / 4) * 3 > MAX_VALUE_BYTES) add(valuePointer, 'At most 64 KiB once decoded.')
+    else if ((f.value.length / 4) * 3 - (f.value.match(/=+$/)?.[0].length ?? 0) > MAX_VALUE_BYTES) add(valuePointer, 'At most 64 KiB once decoded.')
   } else if (new TextEncoder().encode(f.value).length > MAX_VALUE_BYTES) add(valuePointer, 'At most 64 KiB.')
   const hosts = parseHosts(f.hosts)
   if (hosts.length > 32) add('/hosts', 'At most 32 hosts.')
@@ -51,6 +54,7 @@ export function validateSecret(f: { name: string; value: string; base64: boolean
   for (const h of hosts) {
     if (h.length > 261) add('/hosts', `"${h}" is too long.`)
     else if (h.includes('*')) add('/hosts', `"${h}": wildcards are not allowed.`)
+    else if (/[/\s@?#]/.test(h)) add('/hosts', `"${h}": give a host or host:port, not a URL.`)
     else if (h !== h.toLowerCase()) add('/hosts', `"${h}": use lower case.`)
   }
   return e
@@ -59,28 +63,36 @@ export function validateSecret(f: { name: string; value: string; base64: boolean
 const SECRET_POINTERS = ['/name', '/value', '/value_base64', '/hosts']
 
 /**
- * Create or replace a secret. The value lives only in the password input: it is cleared the
- * moment the form is submitted, and the write is a plain call, not a mutation or a query, so
- * TanStack Query never holds the request body. Nothing returned by the API contains a value.
+ * Create or replace a secret. The value lives only in the password input, which is uncontrolled:
+ * it is never React state (so no `value` attribute in the DOM, nothing in dev tools) and is
+ * cleared the moment the form is submitted. The write is a plain call, not a mutation or a
+ * query, so TanStack Query never holds the request body. Nothing returned by the API contains a value.
  */
 function SecretForm({ initial, onDone, onCancel }: { initial?: Secret; onDone: () => void; onCancel: () => void }) {
   const creating = !initial
   const client = useQueryClient()
   const [name, setName] = useState(initial?.name ?? '')
-  const [value, setValue] = useState('')
+  const valueRef = useRef<HTMLInputElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
   const [base64, setBase64] = useState(false)
   const [hosts, setHosts] = useState(initial?.hosts.join('\n') ?? '')
   const [clientErrors, setClientErrors] = useState<FieldErrors>({})
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
+  const focusError = useFocusFirstError(formRef, error !== undefined && !busy)
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
+    const input = valueRef.current
+    const value = input?.value ?? ''
     const found = validateSecret({ name, value, base64, hosts }, creating)
     setClientErrors(found)
-    if (Object.keys(found).length > 0) return
+    if (Object.keys(found).length > 0) {
+      focusError()
+      return
+    }
     const body: SecretWrite = { hosts: parseHosts(hosts), ...(base64 ? { value_base64: value } : { value }) }
-    setValue('') // cleared on submit, whatever the answer: retype it to try again
+    if (input) input.value = '' // cleared on submit, whatever the answer: retype it to try again
     setError(undefined)
     setBusy(true)
     try {
@@ -109,22 +121,32 @@ function SecretForm({ initial, onDone, onCancel }: { initial?: Secret; onDone: (
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <form aria-label={title} noValidate onSubmit={(e) => void onSubmit(e)} className="flex flex-col gap-4" autoComplete="off">
+        <form ref={formRef} aria-label={title} noValidate onSubmit={(e) => void onSubmit(e)} className="flex flex-col gap-4" autoComplete="off">
           <p className="text-sm text-muted-foreground">
             The value is encrypted at rest and write-only: it is never shown again, by this page or by the API. The field is cleared
             when you submit.
           </p>
           <TextInput label="Name" required value={name} disabled={!creating} onChange={setName} errors={errorsFor(errors, '/name')} />
-          <TextInput
+          <Field
             label={creating ? 'Value' : 'New value'}
-            type="password"
             required
-            autoComplete="new-password"
-            value={value}
-            onChange={setValue}
             errors={[...errorsFor(errors, valuePointer), ...errorsFor(errors, base64 ? '/value' : '/value_base64')]}
             hint="Up to 64 KiB. Nothing is trimmed."
-          />
+          >
+            {(p) => (
+              <input
+                {...p}
+                ref={valueRef}
+                type="password"
+                className={inputClass}
+                defaultValue=""
+                autoComplete="new-password"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+            )}
+          </Field>
           <Checkbox label="The value is base64-encoded bytes" checked={base64} onChange={setBase64} />
           <TextArea
             label="Hosts"

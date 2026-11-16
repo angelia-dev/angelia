@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invalidateWatches, putWatch } from '@/api/mutations'
 import { schemaFields, usePlugins } from '@/api/plugins'
@@ -16,6 +16,7 @@ import {
   mergeErrors,
   newPair,
   problemFieldErrors,
+  useFocusFirstError,
   type FieldErrors,
 } from '@/components/form'
 import { Button } from '@/components/ui/button'
@@ -76,22 +77,14 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
 
   // After a refused submit, move focus to the first field that has an error (WCAG 3.3.1).
   const formRef = useRef<HTMLFormElement>(null)
-  const [focusTick, setFocusTick] = useState(0)
-  useEffect(() => {
-    if (focusTick === 0) return
-    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"], [role="alert"]')?.focus()
-  }, [focusTick])
-  const failed = save.isError
-  useEffect(() => {
-    if (failed) setFocusTick((t) => t + 1)
-  }, [failed])
+  const focusError = useFocusFirstError(formRef, save.isError)
 
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     const found = validateWatchForm(form, { creating, requiredCoordinates })
     setClientErrors(found)
     if (Object.keys(found).length > 0) {
-      setFocusTick((t) => t + 1)
+      focusError()
       return
     }
     save.mutate()

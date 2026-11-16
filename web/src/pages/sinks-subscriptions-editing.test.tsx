@@ -105,6 +105,18 @@ describe('sinks', () => {
     })
   })
 
+  it('refuses to save a sink whose URLs the server redacted', async () => {
+    const redacted = sink('cut', { managed_by: 'api', url_redacted: true, config: { url: 'https://ci.example' }, masked_fields: [] })
+    const api = mockApi({ ...base(), '/v1/sinks': page([redacted]) })
+    renderApp('/ui/sinks')
+    const table = await screen.findByRole('table', { name: 'Sinks' })
+    await userEvent.click(within(table).getByRole('button', { name: /Edit/ }))
+    const form = await screen.findByRole('form', { name: 'Edit cut' })
+    expect(within(form).getByText(/redacted for your token/)).toBeInTheDocument()
+    expect(within(form).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    expect(api.calls.some((c) => c.method === 'PUT')).toBe(false)
+  })
+
   it('shows the sink-in-use reason when a delete is refused', async () => {
     mockApi({
       ...base(),

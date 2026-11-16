@@ -4,6 +4,9 @@ import { pairsFrom, pairsToMap, type FieldErrors, type Pair } from '@/components
 import { parseDuration } from '@/lib/duration'
 import { BUMPS, LABEL_KEY_RE, NAME_RE, PRERELEASE } from '@/lib/watch-form'
 
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\x00-\x1F\x7F]/
+
 export const EVENT_TYPES = ['release.published', 'release.yanked', 'release.prerelease'] as const
 export const TEMPLATE_MAX = 32768
 
@@ -74,11 +77,12 @@ export function validateSubscriptionForm(f: SubscriptionFormState, opts: { creat
     if (seen.has(k)) add('/filter/labels', `Label key "${k}" is used twice.`)
     seen.add(k)
     if (p.value.length > 253) add('/filter/labels', `Value of label "${k}" is longer than 253 characters.`)
+    if (CONTROL_RE.test(p.value)) add('/filter/labels', `Value of label "${k}" has control characters.`)
   }
-  if (f.labels.length > 32) add('/filter/labels', 'At most 32 labels.')
+  if (f.labels.filter((x) => x.key.trim() !== '').length > 32) add('/filter/labels', 'At most 32 labels.')
   const cooldown = parseDuration(f.cooldown.trim() || '0')
   if (cooldown === null) add('/policy/cooldown', 'Use a duration such as 24h, or 0.')
-  else if (cooldown > 8760 * 3600) add('/policy/cooldown', 'At most 8760h.')
+  else if (cooldown < 0 || cooldown > 8760 * 3600) add('/policy/cooldown', 'Must be between 0 and 8760h.')
   if (f.template.length > TEMPLATE_MAX) add('/template', `At most ${TEMPLATE_MAX} characters.`)
   return e
 }

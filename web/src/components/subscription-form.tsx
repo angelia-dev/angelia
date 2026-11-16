@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invalidateSubscriptions, putSubscription, subscriptionExists } from '@/api/mutations'
 import { usePlugins } from '@/api/plugins'
@@ -14,6 +14,7 @@ import {
   errorsFor,
   mergeErrors,
   problemFieldErrors,
+  useFocusFirstError,
   type FieldErrors,
 } from '@/components/form'
 import { Button } from '@/components/ui/button'
@@ -61,9 +62,13 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
   const taken: FieldErrors = save.error instanceof NameTaken ? { '/name': ['A subscription with this name already exists. Edit it from the list.'] } : {}
   const errors = mergeErrors(clientErrors, problemFieldErrors(save.error), problemFieldErrors(check.error), taken)
 
+  const formRef = useRef<HTMLFormElement>(null)
+  const focusError = useFocusFirstError(formRef, save.isError || check.isError)
+
   function validate() {
     const found = validateSubscriptionForm(form, { creating })
     setClientErrors(found)
+    if (Object.keys(found).length > 0) focusError()
     return Object.keys(found).length === 0
   }
 
@@ -85,7 +90,7 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <form aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
+        <form ref={formRef} aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             Saving replaces the whole subscription. The API has no version check, so the last write wins. Editing the filter or policy
             decides held deliveries again.
@@ -113,7 +118,7 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
                 ))}
               </div>
               {errorsFor(errors, '/filter/type').length > 0 && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                   {errorsFor(errors, '/filter/type').join('; ')}
                 </p>
               )}
@@ -127,7 +132,7 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
               </div>
               <p className="mt-1 text-xs text-muted-foreground">None checked means any source.</p>
               {errorsFor(errors, '/filter/source').length > 0 && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                   {errorsFor(errors, '/filter/source').join('; ')}
                 </p>
               )}
@@ -142,7 +147,7 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
               </div>
               <p className="mt-1 text-xs text-muted-foreground">None checked means any. Narrows the watch&apos;s own bump filter.</p>
               {errorsFor(errors, '/filter/bump').length > 0 && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                   {errorsFor(errors, '/filter/bump').join('; ')}
                 </p>
               )}

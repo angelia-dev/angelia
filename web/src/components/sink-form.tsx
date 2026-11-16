@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invalidateSinks, putSink, sinkExists } from '@/api/mutations'
 import { schemaFields, usePlugins, type SchemaField } from '@/api/plugins'
@@ -14,6 +14,7 @@ import {
   errorsFor,
   mergeErrors,
   problemFieldErrors,
+  useFocusFirstError,
   type FieldErrors,
 } from '@/components/form'
 import { Skeleton } from '@/components/states'
@@ -82,11 +83,18 @@ function SinkFormBody({
   const errors = mergeErrors(clientErrors, problemFieldErrors(save.error), taken)
   const claimed = ['/name', '/kind', ...editableFields(fields).map((f) => `/config/${f.key}`), ...(fields.length === 0 ? ['/config'] : [])]
 
+  const formRef = useRef<HTMLFormElement>(null)
+  const focusError = useFocusFirstError(formRef, save.isError)
+  // Below the admin scope the server cuts URLs to scheme://host; saving that back would break the sink.
+  const redacted = Boolean(initial?.url_redacted)
+
   function onSubmit(e: FormEvent) {
     e.preventDefault()
+    if (redacted) return
     const found = validateSinkForm(form, fields, { creating })
     setClientErrors(found)
     if (Object.keys(found).length === 0) save.mutate()
+    else focusError()
   }
 
   function control(f: SchemaField) {
@@ -158,7 +166,7 @@ function SinkFormBody({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <form aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
+        <form ref={formRef} aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             The configuration is replaced as a whole and the next delivery uses it. The API has no version check, so the last write
             wins. A sink never takes a secret value: name a stored secret (<code>*_ref</code>) or an environment variable of the
@@ -195,9 +203,14 @@ function SinkFormBody({
           {initial && initial.masked_fields.length > 0 && (
             <p className="text-xs text-muted-foreground">Masked by the server, not editable here: {initial.masked_fields.join(', ')}.</p>
           )}
+          {redacted && (
+            <p role="alert" className="text-sm text-destructive">
+              The URLs of this sink were redacted for your token, so it cannot be saved from here without losing them.
+            </p>
+          )}
           <ProblemSummary error={save.error instanceof NameTaken ? undefined : save.error} claimed={claimed} />
           <div className="flex gap-2">
-            <Button type="submit" disabled={save.isPending}>
+            <Button type="submit" disabled={save.isPending || redacted}>
               {save.isPending ? 'Saving…' : creating ? 'Create sink' : 'Save changes'}
             </Button>
             <Button type="button" variant="outline" onClick={onCancel}>

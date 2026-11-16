@@ -26,4 +26,12 @@ describe('subscription form', () => {
     expect(Object.keys(e).sort()).toEqual(['/filter/labels', '/filter/type', '/name', '/policy/cooldown', '/sink', '/template'])
     expect(validateSubscriptionForm({ ...emptySubscriptionForm(), name: 'ok', sink: 's' }, { creating: true })).toEqual({})
   })
+
+  it('refuses a negative cooldown and control characters in label values', () => {
+    const e = validateSubscriptionForm(
+      { ...emptySubscriptionForm(), name: 'ok', sink: 's', cooldown: '-1h', labels: [newPair('team', 'a\nb')] },
+      { creating: true },
+    )
+    expect(Object.keys(e).sort()).toEqual(['/filter/labels', '/policy/cooldown'])
+  })
 })
