@@ -23,6 +23,7 @@ var wantScopes = map[string]Scope{
 	"listConsumers": ScopeRead, "getConsumer": ScopeRead, "putConsumer": ScopeWrite, "deleteConsumer": ScopeWrite,
 	"ackConsumer": ScopeWrite,
 	"listTokens":  ScopeAdmin, "createToken": ScopeAdmin, "getToken": ScopeAdmin, "revokeToken": ScopeAdmin,
+	"getMe": ScopeRead, "listSessions": ScopeAdmin, "revokeSession": ScopeAdmin,
 }
 
 func TestScopesFromSpec(t *testing.T) {

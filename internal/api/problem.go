@@ -17,6 +17,7 @@ const (
 	SlugBadRequest           = "bad-request"
 	SlugUnauthorized         = "unauthorized"
 	SlugForbidden            = "forbidden"
+	SlugCSRF                 = "csrf"
 	SlugNotFound             = "not-found"
 	SlugManagedByFile        = "managed-by-file"
 	SlugCrossOwnerReference  = "cross-owner-reference"
@@ -42,6 +43,7 @@ var problemKinds = map[string]struct {
 	SlugBadRequest:           {http.StatusBadRequest, "Bad request"},
 	SlugUnauthorized:         {http.StatusUnauthorized, "Unauthorized"},
 	SlugForbidden:            {http.StatusForbidden, "Forbidden"},
+	SlugCSRF:                 {http.StatusForbidden, "CSRF check failed"},
 	SlugNotFound:             {http.StatusNotFound, "Not found"},
 	SlugManagedByFile:        {http.StatusConflict, "Managed by the watch file"},
 	SlugCrossOwnerReference:  {http.StatusConflict, "Cross-owner reference"},

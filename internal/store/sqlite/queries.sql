@@ -517,3 +517,40 @@ WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
 -- name: TouchAPIToken :exec
 UPDATE api_token SET last_used_at = max(coalesce(last_used_at, 0), CAST(sqlc.arg(used_at) AS INTEGER))
 WHERE id = sqlc.arg(id);
+
+-- Browser sessions of the admin UI and identity pins (story #262, ADR 0033 section 5).
+-- Every write is one statement, like the API tokens'.
+
+-- name: CreateUISession :exec
+INSERT INTO ui_session (id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL);
+
+-- name: GetUISession :one
+SELECT * FROM ui_session WHERE id = ?;
+
+-- name: ListUISessionsPage :many
+SELECT * FROM ui_session WHERE id > sqlc.arg(after_id) ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- Active: not revoked, not past expires_at, used after idle_since.
+-- name: ListActiveUISessionsPage :many
+SELECT * FROM ui_session
+WHERE id > sqlc.arg(after_id) AND revoked_at IS NULL
+  AND expires_at > CAST(sqlc.arg(now) AS INTEGER) AND last_seen_at > CAST(sqlc.arg(idle_since) AS INTEGER)
+ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: RevokeUISession :execrows
+UPDATE ui_session SET revoked_at = CAST(sqlc.arg(revoked_at) AS INTEGER), revoked_by = CAST(sqlc.arg(revoked_by) AS TEXT)
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+
+-- last_seen_at only moves forward.
+-- name: TouchUISession :exec
+UPDATE ui_session SET last_seen_at = max(last_seen_at, CAST(sqlc.arg(seen_at) AS INTEGER))
+WHERE id = sqlc.arg(id);
+
+-- A pin is written once: a second pin of the same login keeps the first.
+-- name: InsertUIIdentityPin :exec
+INSERT INTO ui_identity_pin (provider, login, subject, pinned_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (provider, login) DO NOTHING;
+
+-- name: GetUIIdentityPin :one
+SELECT subject FROM ui_identity_pin WHERE provider = ? AND login = ?;

@@ -106,10 +106,25 @@ type Options struct {
 	// MCP, if set, builds the handler of POST /mcp (MCPPath), which the api
 	// role then mounts next to /v1/. Nil: /mcp is not served.
 	MCP MCPFactory
+
+	// Sessions, if set, authenticates the admin UI's session cookie named
+	// SessionCookie on a request without an Authorization header (ADR 0033
+	// §6). Nil: cookies are ignored. PublicOrigin is the origin of
+	// ui.public_url, which the Origin of a cookie request that changes
+	// something must equal (CSRFOK).
+	Sessions      SessionAuthenticator
+	SessionCookie string
+	PublicOrigin  string
+	// UIAuth, if set, is the handler of the admin UI's sign-in routes, which
+	// the api role mounts at UIAuthPath (internal/webauth).
+	UIAuth http.Handler
 	// UI, if set, is the admin UI's handler: the api role mounts it at
 	// /ui/ and redirects GET / to /ui/. Nil: /ui/ is 404 (ui.enabled).
 	UI http.Handler
 }
+
+// UIAuthPath is where the api role mounts Options.UIAuth.
+const UIAuthPath = "/ui/auth/"
 
 // StreamMetrics observes the open event streams. metrics.Metrics implements
 // it.
@@ -233,6 +248,9 @@ type reqState struct {
 	// report them together with the resource's own rules (deferredOps).
 	schemaErrs []fieldError
 	token      string // for the event stream's periodic recheck; never logged
+	// session is the session cookie's value when the request has no
+	// Authorization header (ADR 0033 §6); never logged.
+	session string
 	// authFailure is why the request got 401 (AuthReason*), and failedID
 	// the token id when the hash matched (revoked or expired), for the
 	// access log.
@@ -243,6 +261,24 @@ type reqState struct {
 }
 
 type reqStateKey struct{}
+
+// authenticate resolves the request's credential: the bearer token, or the
+// session cookie when the request has no Authorization header.
+func (s *Server) authenticate(ctx context.Context, st *reqState) (Principal, error) {
+	if st.session != "" {
+		return s.opts.Sessions.AuthenticateSession(ctx, st.session) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+	}
+	return s.opts.Auth.Authenticate(ctx, st.token) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+}
+
+// recheck is authenticate for the periodic re-check of an open event
+// stream: a session is checked without recording a use.
+func (s *Server) recheck(ctx context.Context, st *reqState) (Principal, error) {
+	if st.session != "" {
+		return s.opts.Sessions.CheckSession(ctx, st.session) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+	}
+	return s.opts.Auth.Authenticate(ctx, st.token) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+}
 
 func stateFrom(ctx context.Context) *reqState {
 	st, _ := ctx.Value(reqStateKey{}).(*reqState)
@@ -289,7 +325,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	token, sent := bearerToken(r)
 	st.token = token // also for the access log: never logged, only compared
-	if token == "" {
+	// Without an Authorization header, the admin UI's session cookie
+	// (ADR 0033 §6). Never on /mcp, nor on an MCP tool's in-memory call.
+	if !sent && s.opts.Sessions != nil && s.opts.SessionCookie != "" && !st.mcp && !fromMCP(r.Context()) {
+		st.session, sent = sessionCookie(r, s.opts.SessionCookie)
+		if sent && !CSRFOK(r, s.opts.PublicOrigin) {
+			// Checked before the cookie is: a cross-site request neither
+			// reaches the store nor keeps the session alive.
+			csrfProblem().write(rec, r)
+			return
+		}
+	}
+	if token == "" && st.session == "" {
 		reason := AuthReasonMissing
 		if sent {
 			reason = AuthReasonMalformed
@@ -304,7 +351,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// request.
 	s.inflight.enter()
 	defer s.inflight.leave()
-	p, err := s.opts.Auth.Authenticate(r.Context(), token)
+	p, err := s.authenticate(r.Context(), st)
 	switch {
 	case errors.Is(err, ErrUnauthenticated):
 		reason, id := AuthReasonUnknown, ""
@@ -345,7 +392,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.Scope < op.Scope {
-		pr := problem(SlugForbidden, "this operation needs the %s scope; the token has %s", op.Scope, p.Scope)
+		pr := problem(SlugForbidden, "this operation needs the %s scope; the %s has %s", op.Scope, p.credential(), p.Scope)
 		pr.RequiredScope = op.Scope.String()
 		pr.write(rec, r)
 		return
@@ -605,7 +652,7 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 	attrs := []slog.Attr{
 		slog.String("request_id", st.id),
 		slog.String("method", r.Method),
-		slog.String("path", safePath(r.URL.Path, st.token)),
+		slog.String("path", safePath(r.URL.Path, st.token, st.session)),
 		slog.String("route", route),
 		slog.Int("status", status),
 		slog.Int64("bytes", rec.bytes),
@@ -633,15 +680,26 @@ func (s *Server) accessLog(r *http.Request, rec *recorder, st *reqState, p Princ
 }
 
 // safePath returns the request path, with every segment that looks like a
-// credential or equals the request's bearer token replaced, so a token pasted
-// into a URL never reaches the log.
-func safePath(p, token string) string {
+// credential or equals one of the request's credentials (its bearer token,
+// its session cookie) replaced, so a credential pasted into a URL never
+// reaches the log.
+func safePath(p string, creds ...string) string {
 	segs := strings.Split(p, "/")
 	for i, seg := range segs {
-		if config.LooksLikeToken(seg) || len(seg) > 128 ||
-			(token != "" && subtle.ConstantTimeCompare([]byte(seg), []byte(token)) == 1) {
+		if config.LooksLikeToken(seg) || len(seg) > 128 || equalsAny(seg, creds) {
 			segs[i] = "[redacted]"
 		}
 	}
 	return strings.Join(segs, "/")
+}
+
+// equalsAny compares seg with each non-empty credential in constant time.
+func equalsAny(seg string, creds []string) bool {
+	found := false
+	for _, c := range creds {
+		if c != "" && subtle.ConstantTimeCompare([]byte(seg), []byte(c)) == 1 {
+			found = true
+		}
+	}
+	return found
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.7.0
+  version: 0.8.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -24,6 +24,9 @@ info:
       by name with a `*_ref` key; no response ever carries a value.
     - API tokens are managed through `/v1/tokens` (`admin`). A token's secret appears once, in the
       `201` response of `POST /v1/tokens`, and never again.
+    - The instance's admin web UI signs people in (GitHub) and authenticates their requests with a
+      session cookie instead of a token, with the scope of their role. `GET /v1/me` says who is
+      calling; browser sessions are listed and revoked through `/v1/sessions` (`admin`).
   contact:
     name: Angelia maintainers
     url: https://github.com/angelia-dev/spec/issues
@@ -56,6 +59,10 @@ tags:
     description: Installed source and sink kinds (read-only).
   - name: tokens
     description: API tokens (`ang_...`), one scope each. The secret is returned once, when the token is created.
+  - name: me
+    description: The caller's own principal, token or browser session.
+  - name: sessions
+    description: Browser sessions of the admin web UI, signed in with an identity provider (GitHub).
 
 paths:
   /v1/watches:
@@ -1611,6 +1618,106 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v1/me:
+    get:
+      operationId: getMe
+      summary: Get the caller's principal
+      description: |
+        Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+        admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+        instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+        `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+        to show and which controls to offer. Never returns a token, a cookie or a hash.
+      tags: [me]
+      security:
+        - bearerAuth: [read]
+      responses:
+        '200':
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+              examples:
+                token:
+                  $ref: '#/components/examples/MeToken'
+                session:
+                  $ref: '#/components/examples/MeSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/sessions:
+    get:
+      operationId: listSessions
+      summary: List browser sessions
+      description: |
+        Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+        in, when, from which user agent, when the session was last used and when it ends, **never the
+        cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+        used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+        the list shows who can act on the instance.
+      tags: [sessions]
+      security:
+        - bearerAuth: [admin]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IncludeEnded'
+      responses:
+        '200':
+          description: One page of sessions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/SessionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/sessions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    delete:
+      operationId: revokeSession
+      summary: Revoke a browser session
+      description: |
+        Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+        with `401` from the next request on (an open event stream fails at its next re-check, at most
+        60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+        already revoked session is `204` too and changes nothing. An unknown id is `404`.
+      tags: [sessions]
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '204':
+          description: The session is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1633,6 +1740,29 @@ components:
         `(?:^|[^A-Za-z0-9_])(ang_[0-7][0-9A-HJKMNP-TV-Z]{25}_[a-z2-7]{59})(?:$|[^A-Za-z0-9_])`.
         Tokens are created with `POST /v1/tokens` (or `angelia token create`); the token is
         returned once.
+
+        **Browser sessions (`sessionCookie`).** A request with no `Authorization` header may instead
+        carry the session cookie of the instance's admin web UI, set when a person signs in with an
+        identity provider (GitHub). The session's scope comes from the role that the instance's
+        `ui.access` list gives the user, evaluated on every request: `viewer` is `read`, `editor` is
+        `write`, `admin` is `admin`. The same scope requirements apply as for a token; when both are
+        sent, the `Authorization` header wins and the cookie is ignored. A request that changes
+        something (`POST`, `PUT`, `PATCH`, `DELETE`) authenticated by the cookie also needs an
+        `Origin` header equal to the origin of the instance's `ui.public_url` **and** the header
+        `X-Angelia-CSRF: 1`, else it is `403 csrf`. The cookie is never accepted on the MCP endpoint.
+        Operations list only `bearerAuth` in their `security` requirement: a session satisfies the
+        same scope.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-angelia_session
+      description: |
+        The admin web UI's session cookie, `angs_<id>_<secret>` (the prefix `angs_`, the session's
+        26-character ULID, an underscore and 52 characters of random secret in lower-case base32), set
+        `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` when a person signs in. The server keeps a hash
+        only. An instance whose `ui.public_url` is a loopback `http://` URL (local development) names
+        it `angelia_session` without `Secure`. See `bearerAuth` for the scope and the CSRF rule;
+        operations do not list this scheme.
 
   headers:
     AngeliaChange:
@@ -1686,6 +1816,14 @@ components:
       schema:
         $ref: '#/components/schemas/Name'
       example: platform-ci
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: The session's id, a ULID. Never the cookie.
+      schema:
+        $ref: '#/components/schemas/Ulid'
+      example: 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
     TokenId:
       name: id
       in: path
@@ -1724,6 +1862,14 @@ components:
       name: include_revoked
       in: query
       description: List revoked tokens too. Expired tokens are always listed.
+      schema:
+        type: boolean
+        default: false
+      example: false
+    IncludeEnded:
+      name: include_ended
+      in: query
+      description: List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
       schema:
         type: boolean
         default: false
@@ -1845,7 +1991,7 @@ components:
             unauthorized:
               $ref: '#/components/examples/ProblemUnauthorized'
     Forbidden:
-      description: The token's scope is below the one the operation needs.
+      description: The token's scope is below the one the operation needs (`forbidden`), or a request that changes something was authenticated by the admin UI's session cookie without the CSRF headers (`csrf`).
       content:
         application/problem+json:
           schema:
@@ -1853,6 +1999,8 @@ components:
           examples:
             insufficientScope:
               $ref: '#/components/examples/ProblemForbidden'
+            csrf:
+              $ref: '#/components/examples/ProblemCsrf'
     NotFound:
       description: No resource with this name or id.
       content:
@@ -2378,9 +2526,9 @@ components:
       type: string
       enum: [read, write, admin]
     TokenActor:
-      description: Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
+      description: Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command).
       type: string
-      pattern: '^([0-7][0-9A-HJKMNP-TV-Z]{25}|bootstrap|local)$'
+      pattern: '^([0-7][0-9A-HJKMNP-TV-Z]{25}|bootstrap|local|[a-z][a-z0-9-]{0,31}:[!-~]{1,255})$'
     Token:
       description: |
         An API token as the server returns it: metadata only. No scope, flag or parameter returns
@@ -2447,6 +2595,124 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Token'
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    PrincipalId:
+      description: Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login.
+      type: string
+      pattern: '^([0-7][0-9A-HJKMNP-TV-Z]{25}|[a-z][a-z0-9-]{0,31}:[!-~]{1,255})$'
+    UiRole:
+      description: A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+      type: string
+      enum: [viewer, editor, admin]
+    SessionUser:
+      description: The identity a browser session signed in with, as the identity provider reported it at sign-in.
+      type: object
+      required: [provider, subject, login, name, avatar_url]
+      properties:
+        provider:
+          description: The identity provider; today `github`.
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,31}$'
+          examples: [github]
+        subject:
+          description: The provider's stable id of the user (for GitHub, the numeric user id as a string). It never changes; the principal id is `<provider>:<subject>`.
+          type: string
+          pattern: '^[!-~]{1,255}$'
+          examples: ['139323']
+        login:
+          description: The user's login at sign-in (GitHub's `login`). A login can be renamed and later taken by another account; `subject` cannot.
+          type: string
+          minLength: 1
+          maxLength: 255
+          examples: [mmornati]
+        name:
+          description: The user's display name at sign-in, or `null` if they have none.
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        avatar_url:
+          description: The URL of the user's avatar at sign-in, or `null`.
+          oneOf:
+            - type: string
+              format: uri
+              maxLength: 2048
+            - type: 'null'
+    Me:
+      description: |
+        The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+      type: object
+      required: [principal_id, name, scope, kind, role, user]
+      properties:
+        principal_id:
+          $ref: '#/components/schemas/PrincipalId'
+        name:
+          description: The token's name, or the signed-in user's login.
+          type: string
+          maxLength: 255
+        scope:
+          $ref: '#/components/schemas/TokenScope'
+        kind:
+          description: How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+          type: string
+          enum: [token, session]
+        role:
+          description: For a session, the user's role in `ui.access` now; `null` for a token.
+          oneOf:
+            - $ref: '#/components/schemas/UiRole'
+            - type: 'null'
+        user:
+          description: For a session, who signed in; `null` for a token.
+          oneOf:
+            - $ref: '#/components/schemas/SessionUser'
+            - type: 'null'
+    Session:
+      description: |
+        A browser session of the admin UI as the server returns it: metadata only, never the cookie
+        or its hash.
+      type: object
+      required: [id, user, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by]
+      properties:
+        id:
+          $ref: '#/components/schemas/Ulid'
+          description: Generated at sign-in, never reused. It is the ULID inside the session cookie.
+        user:
+          $ref: '#/components/schemas/SessionUser'
+        user_agent:
+          description: The `User-Agent` of the browser that signed in (cut to 256 characters), or `null`.
+          oneOf:
+            - type: string
+              maxLength: 256
+            - type: 'null'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the user signed in.
+        last_seen_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the session last authenticated a request. Accurate to about 5 minutes, and a crash can lose the last interval. The session ends once it is unused for the instance's idle timeout.
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the session ends whatever its use (sign-in plus the instance's maximum session lifetime).
+        revoked_at:
+          description: When the session was revoked (by an admin, or because the user signed out), or `null`.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        revoked_by:
+          description: Who revoked the session (the user's own principal id when they signed out), or `null`.
+          oneOf:
+            - $ref: '#/components/schemas/TokenActor'
+            - type: 'null'
+    SessionPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
         next_cursor:
           $ref: '#/components/schemas/NextCursor'
 
@@ -3649,6 +3915,60 @@ components:
             revoked_at: null
             revoked_by: null
         next_cursor: null
+    MeToken:
+      summary: An API token
+      value:
+        principal_id: 01JCZ8W3T6Q9N2H4K7M5R0V8XA
+        name: grafana
+        scope: read
+        kind: token
+        role: null
+        user: null
+    MeSession:
+      summary: A person signed in to the admin UI with GitHub
+      value:
+        principal_id: github:139323
+        name: mmornati
+        scope: admin
+        kind: session
+        role: admin
+        user:
+          provider: github
+          subject: '139323'
+          login: mmornati
+          name: Marco Mornati
+          avatar_url: https://avatars.githubusercontent.com/u/139323?v=4
+    SessionPage:
+      summary: A page with `include_ended=true`, a session the user signed out of and an active one
+      value:
+        items:
+          - id: 01JD08F2K5M8P1R4T7W0Y3B6C9
+            user:
+              provider: github
+              subject: '583231'
+              login: octocat
+              name: null
+              avatar_url: https://avatars.githubusercontent.com/u/583231?v=4
+            user_agent: null
+            created_at: '2026-11-16T07:00:00.000Z'
+            last_seen_at: '2026-11-16T07:20:00.000Z'
+            expires_at: '2026-11-23T07:00:00.000Z'
+            revoked_at: '2026-11-16T07:25:00.000Z'
+            revoked_by: github:583231
+          - id: 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+            user:
+              provider: github
+              subject: '139323'
+              login: mmornati
+              name: Marco Mornati
+              avatar_url: https://avatars.githubusercontent.com/u/139323?v=4
+            user_agent: Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0
+            created_at: '2026-11-16T08:00:00.000Z'
+            last_seen_at: '2026-11-16T09:40:00.000Z'
+            expires_at: '2026-11-23T08:00:00.000Z'
+            revoked_at: null
+            revoked_by: null
+        next_cursor: null
 
     SubscriptionPut:
       summary: Minor and major releases of the platform team's watches, to CI
@@ -3845,6 +4165,14 @@ components:
         detail: this operation needs the write scope; the token has read
         instance: /v1/watches/requests
         required_scope: write
+    ProblemCsrf:
+      summary: A write from the admin UI's session cookie without the CSRF headers
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-csrf
+        title: CSRF check failed
+        status: 403
+        detail: 'a request authenticated by the session cookie needs an Origin equal to the instance public URL and X-Angelia-CSRF: 1'
+        instance: /v1/watches/requests
     ProblemNotFound:
       summary: No such watch
       value:

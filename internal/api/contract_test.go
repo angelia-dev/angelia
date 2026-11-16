@@ -353,7 +353,7 @@ func seedExamples(c *contract) {
 
 // TestContract runs every operation of the specification.
 func TestContract(t *testing.T) {
-	e := newEnv(t, withKeys, func(o *Options) {
+	e := newEnv(t, withKeys, withSessions(newFakeSessions()), func(o *Options) {
 		o.Plugins = append(o.Plugins, PluginInfo{
 			Kind: "crates", Interface: "source", Runtime: "wasm", Version: "0.3.1", ABI: "angelia:host/v0",
 			ConfigSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
@@ -556,6 +556,32 @@ func TestContract(t *testing.T) {
 	}
 	c.call("getToken", 404, "/v1/tokens/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
 	c.call("revokeToken", 404, "/v1/tokens/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
+
+	// The caller and browser sessions (spec 0.8.0): a token, then a session
+	// cookie, as the examples' principals.
+	e.auth.mu.Lock()
+	e.auth.tokens[tokMe] = Principal{ID: "01JCZ8W3T6Q9N2H4K7M5R0V8XA", Name: "grafana", Scope: ScopeRead}
+	e.auth.mu.Unlock()
+	_, v = c.call("getMe", 200, "/v1/me", tokMe, nil)
+	c.sameAsExample("MeToken", v)
+	_, v = c.call("getMe", 200, "/v1/me", "", nil, "Cookie", testSessionCookie+"="+sessMe)
+	c.sameAsExample("MeSession", v)
+	seedSessions(c)
+	e.now = time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	_, v = c.call("listSessions", 200, "/v1/sessions?include_ended=true", tokULID, nil)
+	c.sameAsExample("SessionPage", v)
+	_, v = c.call("listSessions", 200, "/v1/sessions?limit=1", tokULID, nil)
+	items = v.(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != "01JD0B6Q1W4E7R9T2Y5V8X0Z3A" || v.(map[string]any)["next_cursor"] != nil {
+		t.Errorf("listSessions, active only: %v", v)
+	}
+	c.call("revokeSession", 204, "/v1/sessions/01JD0B6Q1W4E7R9T2Y5V8X0Z3A", tokULID, nil)
+	c.call("revokeSession", 204, "/v1/sessions/01JD0B6Q1W4E7R9T2Y5V8X0Z3A", tokULID, nil)
+	_, v = c.call("listSessions", 200, "/v1/sessions", tokULID, nil)
+	if items := v.(map[string]any)["items"].([]any); len(items) != 0 {
+		t.Errorf("listSessions after the revoke: %v", v)
+	}
+	c.call("revokeSession", 404, "/v1/sessions/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
 
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)

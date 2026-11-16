@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,10 +14,12 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/mcp"
 	"github.com/angelia-dev/angelia/internal/metrics"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/watchfile"
+	"github.com/angelia-dev/angelia/internal/webauth"
 	"github.com/angelia-dev/angelia/internal/webui"
 )
 
@@ -27,8 +30,17 @@ import (
 // Requests authenticate with the stored API tokens (ADR 0030): the api role
 // runs the authenticator's last-use flush for its lifetime, with a final
 // flush once it drains.
+//
+// With ui.enabled, browsers also authenticate with an admin UI session
+// (ADR 0033): the api role serves the sign-in routes under /ui/auth/, runs
+// the sessions' last-seen flush next to the tokens', and at start warns of
+// active tokens whose creator ui.access no longer lists.
 func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, drain time.Duration, log *slog.Logger) (*api.Server, error) {
-	srv, err := api.New(apiOptions(cfg, st, sources, keys, m, drain, log))
+	opts, err := apiOptions(cfg, st, sources, keys, m, drain, log)
+	if err != nil {
+		return nil, fmt.Errorf("api role: %w", err)
+	}
+	srv, err := api.New(opts)
 	if err != nil {
 		return nil, fmt.Errorf("api role: %w", err)
 	}
@@ -37,7 +49,7 @@ func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registr
 
 // apiOptions is the api role's configuration; drain is serve's
 // --drain-timeout (see apiDrainWait).
-func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, drain time.Duration, log *slog.Logger) api.Options {
+func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, drain time.Duration, log *slog.Logger) (api.Options, error) {
 	auth := apitoken.NewAuthenticator(st, log)
 	opts := api.Options{
 		Store: st, Auth: auth, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
@@ -55,7 +67,69 @@ func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry,
 	if m != nil { // a nil *Metrics in the interface field would panic
 		opts.Metrics = m
 	}
-	return opts
+	if cfg.UI.Enabled {
+		sessions, handler, err := uiAuth(cfg, st, m, log)
+		if err != nil {
+			return api.Options{}, err
+		}
+		opts.Sessions, opts.UIAuth = sessions, handler
+		opts.SessionCookie, opts.PublicOrigin = webauth.SessionCookieName(cfg.UI), cfg.UI.PublicOrigin()
+		opts.AuthLoop = func(ctx context.Context) error {
+			// Tokens outlive their creator's access: say which ones, once.
+			sessions.WarnOrphanTokens(ctx, st)
+			return runBoth(ctx,
+				func(ctx context.Context) error { return auth.Run(ctx, tokenFlushTick, tokenFlushTimeout) },        //nolint:wrapcheck // the api role wraps it
+				func(ctx context.Context) error { return sessions.Run(ctx, webauth.FlushTick, tokenFlushTimeout) }, //nolint:wrapcheck // the api role wraps it
+			)
+		}
+	}
+	return opts, nil
+}
+
+// uiAuth builds the admin UI's sessions and sign-in handler (ADR 0033 §4):
+// the GitHub OAuth App, whose requests go through the netguard client.
+func uiAuth(cfg *config.Config, st store.APIStore, m *metrics.Metrics, log *slog.Logger) (*webauth.Sessions, *webauth.Handler, error) {
+	secret, warning, err := cfg.UI.GitHub.ClientSecret()
+	if err != nil {
+		return nil, nil, fmt.Errorf("ui.github: %w", err)
+	}
+	if warning != "" {
+		log.Warn(warning)
+	}
+	var obs netguard.Observer
+	if m != nil { // a typed nil would panic in netguard
+		obs = m
+	}
+	client, err := newNetClient(cfg, log, obs)
+	if err != nil {
+		return nil, nil, err
+	}
+	gh, err := webauth.NewGitHub(webauth.GitHubConfig{
+		ClientID: cfg.UI.GitHub.ClientID, ClientSecret: secret,
+		RedirectURL: webauth.RedirectURL(cfg.UI, webauth.GitHubName),
+		WebURL:      cfg.UI.GitHub.WebURL, APIURL: cfg.UI.GitHub.APIURL, HTTP: client.HTTPClient(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("ui: %w", err)
+	}
+	sessions := webauth.NewSessions(st, cfg.UI, log)
+	hopts := webauth.HandlerOptions{Providers: []webauth.IdentityProvider{gh}, Sessions: sessions, UI: cfg.UI, Logger: log}
+	if m != nil {
+		hopts.Metrics = m
+	}
+	h, err := webauth.NewHandler(hopts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ui: %w", err)
+	}
+	return sessions, h, nil
+}
+
+// runBoth runs a and b until both return, and returns the first error.
+func runBoth(ctx context.Context, a, b func(context.Context) error) error {
+	errs := make(chan error, 2)
+	go func() { errs <- a(ctx) }()
+	go func() { errs <- b(ctx) }()
+	return errors.Join(<-errs, <-errs)
 }
 
 // apiDrainWait is how long the api role waits for in-flight requests once it

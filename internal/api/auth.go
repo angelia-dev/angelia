@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Scope is the scope of an API token. Scopes are ordered: a token may call
@@ -45,15 +46,59 @@ func ParseScope(s string) (Scope, bool) {
 	return ScopeNone, false
 }
 
-// Principal is who a token belongs to.
+// Principal is who a request is authenticated as: an API token, or a
+// browser session of the admin UI (ADR 0033 §2).
 type Principal struct {
-	// ID names the token in logs and the audit trail. It must not be the
-	// token or derived from it in a reversible way.
+	// ID names the principal in logs and the audit trail: the token's id,
+	// or "<provider>:<subject>" for a session (such as github:139323). It
+	// must not be the token or the cookie, or derived from them in a
+	// reversible way.
 	ID string
-	// Name is the token's operator label (ADR 0030 T9), for the access log
-	// and the audit trail; it may be empty.
+	// Name is the token's operator label (ADR 0030 T9) or the signed-in
+	// user's login, for the access log and the audit trail; it may be empty.
 	Name  string
 	Scope Scope
+	// Session is set for a browser session and nil for a token.
+	Session *SessionInfo
+}
+
+// credential names the principal's kind of credential in messages: "token"
+// or "session".
+func (p Principal) credential() string {
+	if p.Session != nil {
+		return "session"
+	}
+	return "token"
+}
+
+// SessionInfo is what a browser session principal adds (GET /v1/me).
+type SessionInfo struct {
+	// ID is the session's id (a ULID), never the cookie.
+	ID string
+	// Provider, Subject, Login, Name and AvatarURL are the identity the
+	// session signed in with; Name and AvatarURL may be empty.
+	Provider, Subject, Login, Name, AvatarURL string
+	// Role is the user's role in ui.access now: viewer, editor or admin.
+	Role string
+}
+
+// SessionAuthenticator resolves the admin UI's session cookie to its
+// principal (ADR 0033 §6). internal/webauth implements it. The server calls
+// it on a request without an Authorization header that carries the cookie,
+// and again (CheckSession) at least every 60 seconds on an open event stream. The role, and
+// so the scope, is evaluated from the current access list on every call.
+type SessionAuthenticator interface {
+	// AuthenticateSession returns the session's principal, or an error
+	// wrapping ErrUnauthenticated (an AuthFailure says why). Any other
+	// error is a server failure (500).
+	AuthenticateSession(ctx context.Context, cookie string) (Principal, error)
+	// CheckSession is AuthenticateSession without recording a use: the
+	// re-check of an open event stream, which must not keep an otherwise
+	// idle session alive. The request that opened the stream counted.
+	CheckSession(ctx context.Context, cookie string) (Principal, error)
+	// IdleTimeout is how long a session lives without a request: the
+	// active filter of GET /v1/sessions.
+	IdleTimeout() time.Duration
 }
 
 // ErrUnauthenticated is returned (wrapped) by an Authenticator for a token it
@@ -150,6 +195,49 @@ func bearerToken(r *http.Request) (token string, ok bool) {
 		return "", true
 	}
 	return tok, true
+}
+
+// sessionCookie reads the session cookie named name. ok is false when the
+// request has none; several cookies of that name give "" and true (a
+// malformed credential).
+func sessionCookie(r *http.Request, name string) (value string, ok bool) {
+	cs := r.CookiesNamed(name)
+	switch {
+	case len(cs) == 0:
+		return "", false
+	case len(cs) > 1:
+		return "", true
+	}
+	return cs[0].Value, true
+}
+
+// CSRFHeader is the header that a request authenticated by the session
+// cookie must send, with the value "1", to change anything (ADR 0033 §6). A
+// cross-site form cannot set it, and a cross-site script cannot send it
+// without a CORS preflight that the server never grants.
+const CSRFHeader = "X-Angelia-CSRF"
+
+// safeMethod reports whether a method changes nothing, so needs no CSRF
+// check. Every other method, unknown ones included, needs it.
+func safeMethod(m string) bool {
+	return m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions
+}
+
+// CSRFOK applies the CSRF rule of ADR 0033 §6 to a request authenticated by
+// the session cookie: a safe method passes; any other needs an Origin header
+// equal to origin (the public URL's) and the header X-Angelia-CSRF: 1, each
+// sent exactly once. internal/webauth applies it to the sign-out too.
+func CSRFOK(r *http.Request, origin string) bool {
+	if safeMethod(r.Method) {
+		return true
+	}
+	o, x := r.Header.Values("Origin"), r.Header.Values(CSRFHeader)
+	return origin != "" && len(o) == 1 && o[0] == origin && len(x) == 1 && x[0] == "1"
+}
+
+// csrfProblem is the 403 of a cookie request that fails CSRFOK.
+func csrfProblem() *ProblemDetail {
+	return problem(SlugCSRF, "a request authenticated by the session cookie that changes something needs an Origin equal to the instance's public URL and %s: 1", CSRFHeader)
 }
 
 // unauthorized is the 401 problem, with the RFC 6750 challenge.

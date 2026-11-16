@@ -21,7 +21,8 @@ func (s *Server) StreamEvents(ctx context.Context, req StreamEventsRequestObject
 		return nil, problem(SlugUnavailable, "too many open event streams; retry later").
 			withHeader("Retry-After", fmt.Sprint(RetryAfterSeconds))
 	}
-	return &eventStream{s: s, ctx: ctx, after: after, filter: f, token: stateFrom(ctx).token}, nil
+	st := stateFrom(ctx)
+	return &eventStream{s: s, ctx: ctx, after: after, filter: f, cred: reqState{token: st.token, session: st.session}}, nil
 }
 
 // streamStart returns where a stream starts and its filter. Last-Event-ID
@@ -97,7 +98,7 @@ type eventStream struct {
 	ctx    context.Context
 	after  int64
 	filter *eventFilter
-	token  string
+	cred   reqState // the credential to check again: token or session
 
 	w         http.ResponseWriter
 	rc        *http.ResponseController
@@ -194,7 +195,7 @@ func (e *eventStream) idle() error {
 	default:
 	}
 	if !time.Now().Before(e.nextAuth) {
-		p, err := e.s.opts.Auth.Authenticate(e.ctx, e.token)
+		p, err := e.s.recheck(e.ctx, &e.cred)
 		if err != nil || p.Scope < ScopeRead {
 			return errStreamClosed // revoked
 		}

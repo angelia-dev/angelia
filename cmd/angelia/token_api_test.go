@@ -280,12 +280,12 @@ func TestAPIOptionsDrainWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	o := apiOptions(&config.Config{}, st, sources, nil, nil, 45*time.Second, slog.New(slog.DiscardHandler))
-	if o.DrainWait != 40*time.Second {
+	o, err := apiOptions(&config.Config{}, st, sources, nil, nil, 45*time.Second, slog.New(slog.DiscardHandler))
+	if err != nil || o.DrainWait != 40*time.Second {
 		t.Errorf("DrainWait = %v", o.DrainWait)
 	}
-	o = apiOptions(&config.Config{}, st, sources, nil, nil, 0, slog.New(slog.DiscardHandler))
-	if o.DrainWait != 0 { // api.New reads 0 as api.DefaultDrainWait
+	o, err = apiOptions(&config.Config{}, st, sources, nil, nil, 0, slog.New(slog.DiscardHandler))
+	if err != nil || o.DrainWait != 0 { // api.New reads 0 as api.DefaultDrainWait
 		t.Errorf("DrainWait = %v", o.DrainWait)
 	}
 }

@@ -476,6 +476,46 @@ func (q *Queries) CreateTarget(ctx context.Context, arg CreateTargetParams) erro
 	return err
 }
 
+const createUISession = `-- name: CreateUISession :exec
+
+INSERT INTO ui_session (id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL)
+`
+
+type CreateUISessionParams struct {
+	ID         string
+	Hash       []byte
+	Provider   string
+	Subject    string
+	Login      string
+	Name       string
+	AvatarUrl  string
+	UserAgent  string
+	CreatedAt  int64
+	LastSeenAt int64
+	ExpiresAt  int64
+}
+
+// Browser sessions of the admin UI and identity pins (story #262, ADR 0033 section 5).
+// Every write is one statement and takes no config lock, like the API
+// tokens'.
+func (q *Queries) CreateUISession(ctx context.Context, arg CreateUISessionParams) error {
+	_, err := q.db.ExecContext(ctx, createUISession,
+		arg.ID,
+		arg.Hash,
+		arg.Provider,
+		arg.Subject,
+		arg.Login,
+		arg.Name,
+		arg.AvatarUrl,
+		arg.UserAgent,
+		arg.CreatedAt,
+		arg.LastSeenAt,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
 const createWatch = `-- name: CreateWatch :exec
 INSERT INTO watch (id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -1008,6 +1048,47 @@ func (q *Queries) GetTargetByCoordinates(ctx context.Context, arg GetTargetByCoo
 	return i, err
 }
 
+const getUIIdentityPin = `-- name: GetUIIdentityPin :one
+SELECT subject FROM ui_identity_pin WHERE provider = $1 AND login = $2
+`
+
+type GetUIIdentityPinParams struct {
+	Provider string
+	Login    string
+}
+
+func (q *Queries) GetUIIdentityPin(ctx context.Context, arg GetUIIdentityPinParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getUIIdentityPin, arg.Provider, arg.Login)
+	var subject string
+	err := row.Scan(&subject)
+	return subject, err
+}
+
+const getUISession = `-- name: GetUISession :one
+SELECT id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by FROM ui_session WHERE id = $1
+`
+
+func (q *Queries) GetUISession(ctx context.Context, id string) (UiSession, error) {
+	row := q.db.QueryRowContext(ctx, getUISession, id)
+	var i UiSession
+	err := row.Scan(
+		&i.ID,
+		&i.Hash,
+		&i.Provider,
+		&i.Subject,
+		&i.Login,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.UserAgent,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+	)
+	return i, err
+}
+
 const getWatch = `-- name: GetWatch :one
 SELECT id, target_id, policy_json, labels_json, baseline_done, name, managed_by, interval_ms FROM watch WHERE id = $1
 `
@@ -1109,6 +1190,29 @@ func (q *Queries) HighestPrunedSeq(ctx context.Context) (int64, error) {
 	return highest_pruned_seq, err
 }
 
+const insertUIIdentityPin = `-- name: InsertUIIdentityPin :exec
+INSERT INTO ui_identity_pin (provider, login, subject, pinned_at) VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, login) DO NOTHING
+`
+
+type InsertUIIdentityPinParams struct {
+	Provider string
+	Login    string
+	Subject  string
+	PinnedAt int64
+}
+
+// A pin is written once: a second pin of the same login keeps the first.
+func (q *Queries) InsertUIIdentityPin(ctx context.Context, arg InsertUIIdentityPinParams) error {
+	_, err := q.db.ExecContext(ctx, insertUIIdentityPin,
+		arg.Provider,
+		arg.Login,
+		arg.Subject,
+		arg.PinnedAt,
+	)
+	return err
+}
+
 const listAPITokensPage = `-- name: ListAPITokensPage :many
 SELECT id, name, scope, hash, created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by FROM api_token WHERE id > $1::text ORDER BY id LIMIT $2
 `
@@ -1179,6 +1283,63 @@ func (q *Queries) ListActiveAPITokensPage(ctx context.Context, arg ListActiveAPI
 			&i.CreatedBy,
 			&i.ExpiresAt,
 			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.RevokedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveUISessionsPage = `-- name: ListActiveUISessionsPage :many
+SELECT id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by FROM ui_session
+WHERE id > $1::text AND revoked_at IS NULL
+  AND expires_at > $2::bigint AND last_seen_at > $3::bigint
+ORDER BY id LIMIT $4
+`
+
+type ListActiveUISessionsPageParams struct {
+	AfterID   string
+	Now       int64
+	IdleSince int64
+	MaxRows   int32
+}
+
+// Active: not revoked, not past expires_at, used after idle_since.
+func (q *Queries) ListActiveUISessionsPage(ctx context.Context, arg ListActiveUISessionsPageParams) ([]UiSession, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveUISessionsPage,
+		arg.AfterID,
+		arg.Now,
+		arg.IdleSince,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UiSession
+	for rows.Next() {
+		var i UiSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hash,
+			&i.Provider,
+			&i.Subject,
+			&i.Login,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.UserAgent,
+			&i.CreatedAt,
+			&i.LastSeenAt,
+			&i.ExpiresAt,
 			&i.RevokedAt,
 			&i.RevokedBy,
 		); err != nil {
@@ -2065,6 +2226,52 @@ func (q *Queries) ListTargetSources(ctx context.Context) ([]ListTargetSourcesRow
 	return items, nil
 }
 
+const listUISessionsPage = `-- name: ListUISessionsPage :many
+SELECT id, hash, provider, subject, login, name, avatar_url, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_by FROM ui_session WHERE id > $1::text ORDER BY id LIMIT $2
+`
+
+type ListUISessionsPageParams struct {
+	AfterID string
+	MaxRows int32
+}
+
+func (q *Queries) ListUISessionsPage(ctx context.Context, arg ListUISessionsPageParams) ([]UiSession, error) {
+	rows, err := q.db.QueryContext(ctx, listUISessionsPage, arg.AfterID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UiSession
+	for rows.Next() {
+		var i UiSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hash,
+			&i.Provider,
+			&i.Subject,
+			&i.Login,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.UserAgent,
+			&i.CreatedAt,
+			&i.LastSeenAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+			&i.RevokedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVersions = `-- name: ListVersions :many
 SELECT target_id, raw, normalized, published_at, prerelease, yanked, first_seen_at, removed_at FROM version WHERE target_id = $1 ORDER BY first_seen_at, raw
 `
@@ -2431,6 +2638,25 @@ func (q *Queries) RevokeAPIToken(ctx context.Context, arg RevokeAPITokenParams) 
 	return result.RowsAffected()
 }
 
+const revokeUISession = `-- name: RevokeUISession :execrows
+UPDATE ui_session SET revoked_at = $1::bigint, revoked_by = $2::text
+WHERE id = $3 AND revoked_at IS NULL
+`
+
+type RevokeUISessionParams struct {
+	RevokedAt int64
+	RevokedBy string
+	ID        string
+}
+
+func (q *Queries) RevokeUISession(ctx context.Context, arg RevokeUISessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeUISession, arg.RevokedAt, arg.RevokedBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setTargetInterval = `-- name: SetTargetInterval :execrows
 UPDATE target SET interval_ms = $1, next_check_at = $2 WHERE id = $3
 `
@@ -2523,6 +2749,23 @@ type TouchAPITokenParams struct {
 // version under READ COMMITTED, so concurrent touches never move it back.
 func (q *Queries) TouchAPIToken(ctx context.Context, arg TouchAPITokenParams) error {
 	_, err := q.db.ExecContext(ctx, touchAPIToken, arg.UsedAt, arg.ID)
+	return err
+}
+
+const touchUISession = `-- name: TouchUISession :exec
+UPDATE ui_session SET last_seen_at = greatest(last_seen_at, $1::bigint)
+WHERE id = $2
+`
+
+type TouchUISessionParams struct {
+	SeenAt int64
+	ID     string
+}
+
+// last_seen_at only moves forward; the UPDATE re-reads the newest row
+// version under READ COMMITTED, so concurrent touches never move it back.
+func (q *Queries) TouchUISession(ctx context.Context, arg TouchUISessionParams) error {
+	_, err := q.db.ExecContext(ctx, touchUISession, arg.SeenAt, arg.ID)
 	return err
 }
 

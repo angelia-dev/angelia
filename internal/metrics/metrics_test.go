@@ -24,6 +24,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/webauth"
 )
 
 // Compile-time checks: *Metrics plugs into the hooks of the other packages.
@@ -118,7 +119,7 @@ func TestCardinalityBounded(t *testing.T) {
 	}
 	allowed := map[string]bool{
 		"source": true, "result": true, "host": true, "outcome": true, "status": true, "version": true, "le": true,
-		"bucket": true, "origin": true, "reason": true, "class": true,
+		"bucket": true, "origin": true, "reason": true, "class": true, "provider": true,
 	}
 	series := 0
 	for _, f := range gather(t, m) {
@@ -557,4 +558,38 @@ func TestAuthFailures(t *testing.T) {
 		return
 	}
 	t.Fatal("angelia_api_auth_failures_total is missing")
+}
+
+// The UI sign-in counter has closed label sets, every github result from 0,
+// and anything else counts as other or error.
+func TestUILogins(t *testing.T) {
+	m := New(nil)
+	var _ webauth.LoginMetrics = m
+	m.UILogin("github", webauth.ResultSuccess)
+	m.UILogin("github", webauth.ResultSuccess)
+	m.UILogin("github", "weird")
+	m.UILogin("gitlab", webauth.ResultCancelled)
+	want := map[string]float64{}
+	for _, r := range webauth.LoginResults() {
+		want["github/"+r] = 0
+	}
+	want["github/success"], want["github/error"], want["other/cancelled"] = 2, 1, 1
+	for _, f := range gather(t, m) {
+		if f.GetName() != "angelia_ui_logins_total" {
+			continue
+		}
+		got := map[string]float64{}
+		for _, s := range f.GetMetric() {
+			l := map[string]string{}
+			for _, p := range s.GetLabel() {
+				l[p.GetName()] = p.GetValue()
+			}
+			got[l["provider"]+"/"+l["result"]] = s.GetCounter().GetValue()
+		}
+		if !maps.Equal(got, want) {
+			t.Fatalf("counter = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("angelia_ui_logins_total is missing")
 }

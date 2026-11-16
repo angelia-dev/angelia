@@ -125,6 +125,29 @@ type Target struct {
 	SourceKind      sql.NullString
 }
 
+type UiIdentityPin struct {
+	Provider string
+	Login    string
+	Subject  string
+	PinnedAt int64
+}
+
+type UiSession struct {
+	ID         string
+	Hash       []byte
+	Provider   string
+	Subject    string
+	Login      string
+	Name       string
+	AvatarUrl  string
+	UserAgent  string
+	CreatedAt  int64
+	LastSeenAt int64
+	ExpiresAt  int64
+	RevokedAt  sql.NullInt64
+	RevokedBy  sql.NullString
+}
+
 type Version struct {
 	TargetID    string
 	Raw         string

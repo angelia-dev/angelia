@@ -1,5 +1,5 @@
 // Package storetest is the engine-independent test suite of the store
-// contracts (store.Store, store.APIStore, store.SecretStore and store.TokenStore). An engine
+// contracts (store.Store, store.APIStore, store.SecretStore, store.TokenStore and store.SessionStore). An engine
 // calls Run from its own tests with a function that opens an empty store;
 // the SQLite engine does so today and the Postgres engine will (#85).
 //
