@@ -137,7 +137,8 @@ type IdentityProvider interface {
   **openapi-fetch**; tests with **Vitest** and **Playwright**. Runtime packages and licences (#261 pins
   the versions): React, React DOM, TanStack Router and Query, openapi-fetch, Radix Slot, clsx and
   tailwind-merge (MIT), lucide-react (ISC), class-variance-authority (Apache-2.0). TanStack Router pulls
-  in `isbot` (Unlicense), which is outside the AGENTS.md licence list and needs the maintainer's OK.
+  in `isbot` (Unlicense), which is outside the AGENTS.md licence list; the maintainer accepted it on 2026-11-16 (public-domain
+  dedication, used only by TanStack's server rendering code, not shipped in the bundle).
 - **`web/` in this repository** (D7), not a separate `ui` repository: an endpoint and its screen change in
   one PR, and the UI version is always the binary's.
 - **Embedded**: Vite builds into `internal/webui/dist/app/` (git-ignored) and `internal/webui` embeds it
