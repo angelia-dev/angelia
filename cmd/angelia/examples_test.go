@@ -3,10 +3,21 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/config"
 )
+
+// The admin UI example (docs/admin-ui.md) passes config check once its client
+// secret variable is set; the secret itself is a test value.
+func TestAdminUIExampleConfigChecks(t *testing.T) {
+	t.Setenv("ANGELIA_UI_GITHUB_CLIENT_SECRET", "test-client-secret-0001")
+	out, errb, err := runCheck(t, "--config", filepath.Join("..", "..", "examples", "admin-ui.yaml"))
+	if err != nil || !strings.Contains(out, "configuration OK") {
+		t.Fatalf("out=%q err=%q %v", out, errb, err)
+	}
+}
 
 // AC (review S6): the example configs of deploy/compose load with the real
 // instance-config loader and the real watch-file parser, so they cannot drift

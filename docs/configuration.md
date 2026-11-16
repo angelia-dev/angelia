@@ -321,7 +321,7 @@ under `/ui/` on the `listen` address, from files embedded in the binary, and red
 `/ui/`. With the default, `false`, `/ui/` answers `404` and `/` is not routed. The UI is a client of
 the REST API above and has no endpoints of its own.
 
-Enabling the UI needs the sign-in keys of [Admin UI sign-in](#admin-ui-sign-in) below. A binary built
+The setup steps, the roles and the troubleshooting are in [admin-ui.md](admin-ui.md). Enabling the UI needs the sign-in keys of [Admin UI sign-in](#admin-ui-sign-in) below. A binary built
 without the UI (`go build` with no `make web` first) serves a placeholder page that says so. Responses
 carry a strict `Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
 
@@ -410,8 +410,7 @@ without case) or an account id (`github_id`), and a role: `viewer` gets the `rea
 `write`, `admin` `admin`, exactly as a token of that scope. When several entries match, the highest role
 wins. At least one entry must be an `admin`. Anyone else who signs in with GitHub sees a "Not authorised"
 page; the attempt is logged at INFO. The list is evaluated on **every request**: removing an entry or
-lowering a role applies to open sessions at their next request (a removed user's session is refused as
-`revoked`).
+lowering a role takes effect only when Angelia starts with the changed file, for open sessions too.
 
 **Login pinning.** GitHub logins can be renamed and re-registered. The first time a `github_user` entry
 matches, Angelia pins the login to that account's id (in the database, shared by every replica). Later, a

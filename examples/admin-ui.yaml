@@ -1,0 +1,16 @@
+# Example instance configuration for the admin web UI (docs/admin-ui.md). It is not a watch file:
+# the watch file examples are watches.yaml and apply.yaml. Check it without starting anything:
+#
+#   ANGELIA_UI_GITHUB_CLIENT_SECRET=... angelia config check --config examples/admin-ui.yaml
+#
+# Before you run it, replace the client id, the host name and the GitHub id with your own. The
+# client secret is never in this file: it is read from the variable named below.
+ui:
+  enabled: true
+  public_url: https://angelia.example.com
+  github:
+    client_id: Ov23liEXAMPLE
+    client_secret_env: ANGELIA_UI_GITHUB_CLIENT_SECRET
+  access:
+    - github_id: 139323      # a numeric GitHub account id (docs/admin-ui.md, "Who can sign in")
+      role: admin
