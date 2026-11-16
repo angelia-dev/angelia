@@ -39,7 +39,7 @@ const Prefix = "/ui/"
 const (
 	// CSP is the Content-Security-Policy of every UI response.
 	CSP = "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; " +
-		"style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 	immutable = "public, max-age=31536000, immutable"
 	noCache   = "no-cache"
 )
@@ -86,7 +86,10 @@ func handler(files fs.FS) http.Handler {
 			name = "index.html"
 		}
 		if st, err := fs.Stat(files, name); err != nil || st.IsDir() {
-			if path.Ext(name) != "" {
+			// A missing build asset is a 404; any other path is a client-side
+			// route (names may hold dots, such as /ui/watches/django-4.2) and
+			// gets the SPA's index.html.
+			if strings.HasPrefix(name, "assets/") {
 				http.NotFound(w, r)
 				return
 			}

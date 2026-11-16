@@ -56,6 +56,20 @@ func TestMissingFileWithExtensionIs404(t *testing.T) {
 	}
 }
 
+func TestRouteWithDotFallsBackToIndex(t *testing.T) {
+	rec := get(testHandler(), "GET", "/ui/watches/django-4.2")
+	if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("status %d, cache %q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestCSPIsTheIssueString(t *testing.T) {
+	const want = "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	if CSP != want {
+		t.Errorf("CSP\n got %q\nwant %q", CSP, want)
+	}
+}
+
 func TestAuthPathsAreNotServed(t *testing.T) {
 	for _, p := range []string{"/ui/auth/login/github", "/ui/auth/", "/ui/auth", "/ui/x/../auth/callback"} {
 		if rec := get(testHandler(), "GET", p); rec.Code != 404 {
