@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '@/api/problem'
 import type { Problem } from '@/api/types'
 import { Button } from '@/components/ui/button'
@@ -259,7 +259,7 @@ export function PairsEditor({
       </div>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
       {errors.length > 0 && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" tabIndex={-1} className="text-xs text-destructive">
           {errors.join('; ')}
         </p>
       )}
@@ -292,7 +292,7 @@ export function ProblemSummary({ error, claimed = [] }: { error: unknown; claime
   }
   const loose = (problem?.errors ?? []).filter((e) => !claimed.some((c) => e.pointer === c || e.pointer.startsWith(c + '/')))
   return (
-    <div role="alert" className="rounded-lg border border-destructive p-3 text-sm">
+    <div role="alert" tabIndex={-1} className="rounded-lg border border-destructive p-3 text-sm">
       <p className="font-semibold text-destructive">{title}</p>
       <p className="mt-1">{detail}</p>
       {status === 422 && loose.length > 0 && (
@@ -325,17 +325,35 @@ export function ConfirmDelete({
   error?: unknown
 }) {
   const [asking, setAsking] = useState(false)
+  // Focus moves into the confirmation (on Cancel, the safe choice) and back to Delete when it closes.
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const opened = useRef(false)
+  useEffect(() => {
+    if (asking) cancelRef.current?.focus()
+    else if (opened.current) deleteRef.current?.focus()
+    opened.current = opened.current || asking
+  }, [asking])
+  const descId = useId()
   if (!asking) {
     return (
-      <Button variant="destructive" onClick={() => setAsking(true)}>
+      <Button ref={deleteRef} variant="destructive" onClick={() => setAsking(true)}>
         Delete
         <span className="sr-only"> {what}</span>
       </Button>
     )
   }
   return (
-    <div role="alertdialog" aria-label={`Confirm delete of ${what}`} className="flex flex-col gap-2 rounded-lg border border-destructive p-3 text-sm">
-      <p>
+    <div
+      role="alertdialog"
+      aria-label={`Confirm delete of ${what}`}
+      aria-describedby={descId}
+      className="flex flex-col gap-2 rounded-lg border border-destructive p-3 text-sm"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && !busy) setAsking(false)
+      }}
+    >
+      <p id={descId}>
         Delete <strong>{what}</strong>? {consequence ?? 'This cannot be undone.'}
       </p>
       {error ? <ProblemSummary error={error} /> : null}
@@ -343,7 +361,7 @@ export function ConfirmDelete({
         <Button variant="destructive" size="sm" disabled={busy} onClick={onConfirm}>
           {busy ? 'Deleting…' : 'Confirm delete'}
         </Button>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => setAsking(false)}>
+        <Button ref={cancelRef} variant="outline" size="sm" disabled={busy} onClick={() => setAsking(false)}>
           Cancel
         </Button>
       </div>

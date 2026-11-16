@@ -60,6 +60,11 @@ describe('watch form validation', () => {
     expect(e['/coordinates/package']).toBeDefined()
   })
 
+  it('refuses a coordinate key given twice instead of dropping one', () => {
+    const e = validateWatchForm({ ...ok, coordinates: [newPair('package', 'flask'), newPair('package', 'django')] }, { creating: false })
+    expect(e['/coordinates']).toEqual(['Coordinate "package" is given twice.'])
+  })
+
   it('does not check the name when editing', () => {
     expect(validateWatchForm({ ...ok, name: '' }, { creating: false })).toEqual({})
   })
