@@ -33,6 +33,7 @@ const (
 	SlugValidationFailed     = "validation-failed"
 	SlugInternalError        = "internal-error"
 	SlugUnavailable          = "unavailable"
+	SlugPreconditionFailed   = "precondition-failed"
 )
 
 // problemKinds gives each slug its status and fixed title.
@@ -59,6 +60,7 @@ var problemKinds = map[string]struct {
 	SlugValidationFailed:     {http.StatusUnprocessableEntity, "Validation failed"},
 	SlugInternalError:        {http.StatusInternalServerError, "Internal error"},
 	SlugUnavailable:          {http.StatusServiceUnavailable, "Unavailable"},
+	SlugPreconditionFailed:   {http.StatusPreconditionFailed, "Precondition failed"},
 }
 
 // ProblemDetail is an RFC 9457 problem detail. It is also the error the handlers

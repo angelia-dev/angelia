@@ -127,6 +127,10 @@ ORDER BY seq DESC LIMIT 1;
 -- name: ListEventsAfter :many
 SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?;
 
+-- Newest first, for GET /v1/events?order=desc (story #274).
+-- name: ListEventsBefore :many
+SELECT * FROM event WHERE seq < ? ORDER BY seq DESC LIMIT ?;
+
 -- name: CreateDelivery :exec
 INSERT INTO delivery (id, event_id, subscription_id, status, attempts, next_attempt_at, last_error,
                       held_until, hold_started_at, hold_watch_cooldown_ms, hold_prerelease, hold_watch_id, hold_raw, hold_input,
@@ -396,6 +400,7 @@ WHERE d.status IN (SELECT value FROM json_each(sqlc.arg(statuses_json)))
        OR d.subscription_id IN (SELECT value FROM json_each(sqlc.arg(subscription_ids_json))))
   AND (CAST(sqlc.arg(event_id) AS TEXT) = '' OR d.event_id = sqlc.arg(event_id))
   AND (e.seq < sqlc.arg(before_seq) OR (e.seq = sqlc.arg(before_seq) AND d.id > sqlc.arg(before_id)))
+  AND e.created_at >= sqlc.arg(since_ms) AND e.created_at < sqlc.arg(until_ms)
 ORDER BY e.seq DESC, d.id
 LIMIT sqlc.arg(max_rows);
 

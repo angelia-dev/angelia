@@ -30,6 +30,7 @@ func cases(e Engine) []testCase {
 		{"EventCursorFollowsCommitOrder", testEventCursorFollowsCommitOrder},
 		{"EventImmutable", testEventImmutable},
 		{"EventRefEventIDRoundTrip", testEventRefEventIDRoundTrip},
+		{"EventsBeforeAndDeliveryTimeWindow", testEventsBeforeAndDeliveryTimeWindow},
 		{"FinishDelivery", testFinishDelivery},
 		{"FinishDeliveryCleansLastError", testFinishDeliveryCleansLastError},
 		{"FinishDeliveryFencesStaleAttemptOfSameHolder", testFinishDeliveryFencesStaleAttemptOfSameHolder},

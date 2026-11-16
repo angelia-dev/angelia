@@ -1468,8 +1468,9 @@ WHERE d.status IN (SELECT value FROM json_each(?1))
        OR d.subscription_id IN (SELECT value FROM json_each(?2)))
   AND (CAST(?3 AS TEXT) = '' OR d.event_id = ?3)
   AND (e.seq < ?4 OR (e.seq = ?4 AND d.id > ?5))
+  AND e.created_at >= ?6 AND e.created_at < ?7
 ORDER BY e.seq DESC, d.id
-LIMIT ?6
+LIMIT ?8
 `
 
 type ListDeliveriesPageParams struct {
@@ -1478,6 +1479,8 @@ type ListDeliveriesPageParams struct {
 	EventID             string
 	BeforeSeq           int64
 	BeforeID            string
+	SinceMs             int64
+	UntilMs             int64
 	MaxRows             int64
 }
 
@@ -1495,6 +1498,8 @@ func (q *Queries) ListDeliveriesPage(ctx context.Context, arg ListDeliveriesPage
 		arg.EventID,
 		arg.BeforeSeq,
 		arg.BeforeID,
+		arg.SinceMs,
+		arg.UntilMs,
 		arg.MaxRows,
 	)
 	if err != nil {
@@ -1547,6 +1552,47 @@ type ListEventsAfterParams struct {
 
 func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error) {
 	rows, err := q.db.QueryContext(ctx, listEventsAfter, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Event
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.Seq,
+			&i.ID,
+			&i.WatchID,
+			&i.Type,
+			&i.PayloadJson,
+			&i.CreatedAt,
+			&i.RefEventID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEventsBefore = `-- name: ListEventsBefore :many
+SELECT seq, id, watch_id, type, payload_json, created_at, ref_event_id FROM event WHERE seq < ? ORDER BY seq DESC LIMIT ?
+`
+
+type ListEventsBeforeParams struct {
+	Seq   int64
+	Limit int64
+}
+
+// Newest first, for GET /v1/events?order=desc (story #274).
+func (q *Queries) ListEventsBefore(ctx context.Context, arg ListEventsBeforeParams) ([]Event, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsBefore, arg.Seq, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
