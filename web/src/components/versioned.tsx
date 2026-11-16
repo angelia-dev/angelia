@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Versioned } from '@/api/problem'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,9 @@ export function VersionedEdit<T>({
   fetch: (name: string) => Promise<Versioned<T>>
   children: (v: Versioned<T>, reload: () => void) => ReactNode
 }) {
+  // Bumped by each reload, so the form starts afresh even when the tag did not change (a 412
+  // for another reason, or a proxy that weakened the tag): the reload never looks like a no-op.
+  const [generation, setGeneration] = useState(0)
   const query = useQuery({
     queryKey: ['versioned', kind, name],
     queryFn: () => fetch(name),
@@ -30,8 +33,9 @@ export function VersionedEdit<T>({
   })
   if (query.isPending) return <Skeleton className="mb-6 h-40 w-full" />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
-  // Keyed by the tag, so a reload that finds a new version starts a new form.
-  return <div key={query.data.etag ?? 'none'}>{children(query.data, () => void query.refetch())}</div>
+  const reload = () => void query.refetch().then(() => setGeneration((g) => g + 1))
+  // Keyed by the tag and the reload count, so a reload always starts a new form.
+  return <div key={`${query.data.etag ?? 'none'}:${generation}`}>{children(query.data, reload)}</div>
 }
 
 /** The 412 of an edit: someone else saved first. The user's input stays until they reload. */

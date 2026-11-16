@@ -147,6 +147,29 @@ describe('sinks', () => {
     await vi.waitFor(() => expect(within(screen.getByRole('form', { name: 'Edit ci' })).getByLabelText(/^url/)).toHaveValue('https://ci.example/v2'))
   })
 
+  it('reloads into a fresh form even when the ETag did not change', async () => {
+    mockApi({
+      ...base(),
+      '/v1/sinks/ci': () => etagged(ciSink('https://ci.example/v1'), '"s1"'),
+      'PUT /v1/sinks/ci': problemWith(412, 'Precondition failed'),
+    })
+    renderApp('/ui/sinks')
+    const table = await screen.findByRole('table', { name: 'Sinks' })
+    await userEvent.click(within(within(table).getAllByRole('row')[2]!).getByRole('button', { name: /Edit/ }))
+    const form = await screen.findByRole('form', { name: 'Edit ci' })
+    await vi.waitFor(() => expect(within(form).getByLabelText(/^url/)).toHaveValue('https://ci.example/v1'))
+    await userEvent.clear(within(form).getByLabelText(/^url/))
+    await userEvent.type(within(form).getByLabelText(/^url/), 'https://mine.example/hook')
+    await userEvent.click(within(form).getByRole('button', { name: 'Save changes' }))
+    expect(await within(form).findByText('Changed by someone else')).toBeInTheDocument()
+    await userEvent.click(within(form).getByRole('button', { name: 'Reload sink' }))
+    await vi.waitFor(() => {
+      const fresh = screen.getByRole('form', { name: 'Edit ci' })
+      expect(within(fresh).getByLabelText(/^url/)).toHaveValue('https://ci.example/v1')
+      expect(within(fresh).queryByText('Changed by someone else')).not.toBeInTheDocument()
+    })
+  })
+
   it('previews a template-valued key with the sample event, as text', async () => {
     const api = mockApi({
       ...base(),

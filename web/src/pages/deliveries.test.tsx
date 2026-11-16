@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { delivery, me, page, sink, subscription } from '@/test/fixtures'
 import { mockApi, problem, renderApp } from '@/test/mock-api'
+import { timeRange } from '@/pages/deliveries'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -127,5 +128,23 @@ describe('server-side filters', () => {
       const q = api.calls.filter((c) => c.url.pathname === '/v1/deliveries').at(-1)?.url.searchParams
       expect(q?.has('until')).toBe(false)
     })
+  })
+})
+
+describe('timeRange', () => {
+  // The other tests compare with the same conversion; this pins the offset in a zone that is not UTC.
+  it('reads datetime-local values in the browser time zone and sends them as UTC instants', () => {
+    const tz = process.env.TZ
+    process.env.TZ = 'Asia/Kolkata' // UTC+05:30, no daylight saving time
+    try {
+      expect(timeRange('2026-11-01T08:00', '2026-11-01T08:30')).toEqual({
+        since: '2026-11-01T02:30:00.000Z',
+        until: '2026-11-01T03:00:00.000Z',
+      })
+      expect(timeRange('', '')).toEqual({ since: undefined, until: undefined })
+    } finally {
+      if (tz === undefined) delete process.env.TZ
+      else process.env.TZ = tz
+    }
   })
 })
