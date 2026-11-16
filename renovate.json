@@ -11,6 +11,21 @@
       "schedule": ["before 6am on monday"]
     },
     {
+      "description": "Group the remaining admin UI (web/) npm updates, weekly",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["web/package.json"],
+      "groupName": "web: npm packages",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Group the admin UI's React and TanStack packages (web/)",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["web/package.json"],
+      "matchPackageNames": ["react", "react-dom", "@types/react", "@types/react-dom", "/^@tanstack\\//"],
+      "groupName": "web: React and TanStack",
+      "schedule": ["before 6am on monday"]
+    },
+    {
       "description": "Pin GitHub Action references by full commit SHA and keep the SHAs updated",
       "matchManagers": ["github-actions"],
       "pinDigests": true,

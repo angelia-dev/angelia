@@ -30,6 +30,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
 | `http.host_limits.default` | none | unset (5 rps, burst 5) | `{rps, burst}` for every unlisted host: `rps` from 1/3600 to 20, `burst` from 1 to 20; see [Per-host rate limits](#per-host-rate-limits) |
 | `http.host_limits.hosts.<host>` | none | empty | `{rps, burst}` for one exact host: `rps` from 1/3600 to 100, `burst` from 1 to 200 (default `ceil(rps)`) |
+| `ui.enabled` | none | `false` | `true` or `false`; serves the [admin UI](#admin-ui) from the `api` role |
 | `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
 | `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
@@ -299,6 +300,24 @@ under `/v1/` on the `listen` address. The vendored copy is in `api/openapi/`.
   Replays, secret writes, token creates and revocations, and consumer creates, filter changes and
   deletes also write an `api audit` record (with the actor's token id and name; never a token or a
   hash); consumer acks are frequent and are only in the access log.
+
+## Admin UI
+
+```yaml
+ui:
+  enabled: true
+```
+
+With `ui.enabled: true` the `api` role serves the admin web UI ([ADR 0033](adr/0033-admin-web-ui.md))
+under `/ui/` on the `listen` address, from files embedded in the binary, and redirects `GET /` to
+`/ui/`. With the default, `false`, `/ui/` answers `404` and `/` is not routed. The UI is a client of
+the REST API above and has no endpoints of its own.
+
+Sign-in arrives with [#262](https://github.com/angelia-dev/angelia/issues/262) (GitHub sign-in,
+sessions and roles, with further `ui.*` keys): until then the UI shows its sign-in page and cannot
+call the API, so leave it disabled in production. A binary built without the UI (`go build` with no
+`make web` first) serves a placeholder page that says so. Responses carry a strict
+`Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
 
 ## API tokens
 

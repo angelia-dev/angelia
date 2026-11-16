@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - ".goreleaser.yaml"
+      - "web/**"
       - "Dockerfile"
       - ".github/workflows/release.yml"
       - ".github/workflows/release-snapshot.yml"
@@ -42,6 +43,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # GoReleaser's before hook runs `make web` (the admin UI, internal/webui).
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
       - name: Install goreleaser and syft
         run: |
           scripts/install-release-tools.sh goreleaser syft
