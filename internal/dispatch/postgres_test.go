@@ -9,7 +9,7 @@ import (
 
 var _ Store = (*postgres.Store)(nil)
 
-func openPostgres(t *testing.T, dsn string) *postgres.Store {
+func openPostgres(t testing.TB, dsn string) *postgres.Store {
 	t.Helper()
 	st, err := postgres.Open(t.Context(), dsn, discard())
 	if err != nil {

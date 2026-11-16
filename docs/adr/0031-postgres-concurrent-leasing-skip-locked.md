@@ -155,6 +155,18 @@ own and does not open the store, so it is not checked. Both limits are constants
 
 - Batching the per-row statements of a lease call, if the benchmark on the CI runner or in 86-B shows the
   round trips matter.
+  - *Note, 2026-11-16 (#258):* the Postgres dispatch gap of benchmark 5 (about 23% of the worker
+    ceiling) was the dispatcher's poll-loop wake-up, not the lease round trips: a finished attempt woke
+    the loop only when the pool had been full, so free workers waited for the 1 s poll timer. With a
+    wake-up on every finished attempt, `BenchmarkDispatchThroughput` (8 workers, receiver mean 125 ms)
+    goes from 20% to 92–94% of the ceiling on Postgres with one and two dispatchers, and from 48–64%
+    to 94% on SQLite, at about one row leased per poll and a lease call of 1.6–1.8 ms locally ([result](../../bench/results/dispatch-throughput-2026-11-16.md)).
+    A poll is about 9 round trips whatever the batching (the `HasDueDeliveries` read, then `BEGIN`, the
+    leasable read, 5 statements per row, `COMMIT`), and the poll loop is serial per process, so it caps
+    a process at about 1 ÷ (9 × RTT) polls per second: several hundred locally, about 110 deliveries
+    per second against a database 1 ms away. That binds only with fast receivers (8 workers at 20 ms
+    would need 400/s). Batching stays open for remote databases with fast receivers; the network delay
+    could not be simulated here, so that figure is an estimate.
 - A periodic skew re-check, or the database clock in the lease queries (D22 b).
 
 ## Alternatives considered
