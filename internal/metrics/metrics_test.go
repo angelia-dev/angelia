@@ -569,11 +569,14 @@ func TestUILogins(t *testing.T) {
 	m.UILogin("github", webauth.ResultSuccess)
 	m.UILogin("github", "weird")
 	m.UILogin("gitlab", webauth.ResultCancelled)
+	m.UIProviders("authentik")
+	m.UILogin("authentik", webauth.ResultSuccess)
 	want := map[string]float64{}
 	for _, r := range webauth.LoginResults() {
 		want["github/"+r] = 0
+		want["authentik/"+r] = 0
 	}
-	want["github/success"], want["github/error"], want["other/cancelled"] = 2, 1, 1
+	want["github/success"], want["github/error"], want["other/cancelled"], want["authentik/success"] = 2, 1, 1, 1
 	for _, f := range gather(t, m) {
 		if f.GetName() != "angelia_ui_logins_total" {
 			continue

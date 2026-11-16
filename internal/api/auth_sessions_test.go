@@ -25,11 +25,11 @@ type fakeIDP struct{ who webauth.Identity }
 
 func (*fakeIDP) Name() string { return webauth.GitHubName }
 
-func (*fakeIDP) AuthCodeURL(state, _ string) string {
-	return "https://idp.example/authorize?state=" + url.QueryEscape(state)
+func (*fakeIDP) AuthCodeURL(_ context.Context, state, _, _ string) (string, error) {
+	return "https://idp.example/authorize?state=" + url.QueryEscape(state), nil
 }
 
-func (p *fakeIDP) Exchange(context.Context, string, string) (webauth.Identity, error) {
+func (p *fakeIDP) Exchange(context.Context, string, string, string) (webauth.Identity, error) {
 	return p.who, nil
 }
 

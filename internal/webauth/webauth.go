@@ -13,7 +13,7 @@
 // callback and sign-out.
 //
 // Nothing here logs or returns a cookie, an OAuth code, state or verifier,
-// a provider access token or the client secret.
+// nonce, a provider access token, an ID token or the client secret.
 package webauth
 
 import (
@@ -27,30 +27,47 @@ import (
 // Identity is who a provider says signed in.
 type Identity struct {
 	// Provider is the provider's Name. Subject is its stable id of the
-	// user (GitHub's numeric id); Login the user's login, which can change.
+	// user (GitHub's numeric id, an OIDC sub); Login the user's login,
+	// which can change (an OIDC preferred_username, else the email, else
+	// the subject). Login is matched by GitHub entries only.
 	Provider, Subject, Login string
 	// Name and AvatarURL may be empty.
 	Name, AvatarURL string
+	// Email is the OIDC email claim, EmailVerified its email_verified.
+	// Only a verified email matches an email entry of ui.access. Neither
+	// is stored with the session.
+	Email         string
+	EmailVerified bool
+}
+
+// verifiedEmail is the identity's email if the provider verified it, else "".
+func (i Identity) verifiedEmail() string {
+	if i.EmailVerified {
+		return i.Email
+	}
+	return ""
 }
 
 // PrincipalID is the principal id of an identity: "<provider>:<subject>"
 // (ADR 0033 §5), so audit records survive a rename of the login.
 func (i Identity) PrincipalID() string { return i.Provider + ":" + i.Subject }
 
-// IdentityProvider is an OAuth 2.0 identity provider (ADR 0033 §4). A new
-// provider (generic OIDC, #268) implements it and gets its own callback
-// route; ui.access entries name their provider.
+// IdentityProvider is an OAuth 2.0 identity provider (ADR 0033 §4): GitHub,
+// or a generic OIDC provider (#268). Each has its own login and callback
+// routes; ui.access entries name their provider.
 type IdentityProvider interface {
 	// Name names the provider in routes, cookies, metrics and principal
 	// ids: lower-case letters, digits and hyphens ("github").
 	Name() string
 	// AuthCodeURL is the provider's authorization URL for this sign-in,
-	// with state and the PKCE S256 challenge.
-	AuthCodeURL(state, codeChallenge string) string
+	// with state, the PKCE S256 challenge and, for OIDC, the nonce. An
+	// error is a provider that cannot be reached (OIDC discovery).
+	AuthCodeURL(ctx context.Context, state, codeChallenge, nonce string) (string, error)
 	// Exchange trades the authorization code and the PKCE verifier for the
-	// user's identity. Any credential the provider returns is used for this
-	// call only: it is never stored, logged or returned.
-	Exchange(ctx context.Context, code, codeVerifier string) (Identity, error)
+	// user's identity; an OIDC provider checks that the ID token carries
+	// nonce. Any credential the provider returns is used for this call
+	// only: it is never stored, logged or returned.
+	Exchange(ctx context.Context, code, codeVerifier, nonce string) (Identity, error)
 }
 
 // roleRank orders the roles of ui.access; 0 is no role.
@@ -130,9 +147,19 @@ func LoginResults() []string {
 	}
 }
 
-// Providers lists the providers this build knows, the closed set of the
-// provider label of angelia_ui_logins_total.
-func Providers() []string { return []string{GitHubName} }
+// ProviderNames lists the names of the providers of a UI configuration, the
+// closed set of the provider label of angelia_ui_logins_total: github when
+// ui.github is configured, then the ui.oidc names in order.
+func ProviderNames(ui config.UI) []string {
+	var out []string
+	if ui.GitHub.Configured() {
+		out = append(out, GitHubName)
+	}
+	for _, o := range ui.OIDC {
+		out = append(out, o.Name)
+	}
+	return out
+}
 
 // LoginMetrics counts sign-ins (angelia_ui_logins_total). metrics.Metrics
 // implements it.
@@ -142,3 +169,21 @@ type LoginMetrics interface {
 
 // githubSubject is the subject of a github_id entry.
 func githubSubject(id int64) string { return strconv.FormatInt(id, 10) }
+
+// emailPinKey is the pin key of an email entry of an OIDC provider, in the
+// login column of ui_identity_pin: "email:" and the address with its ASCII
+// letters in lower case.
+func emailPinKey(email string) string { return "email:" + asciiLower(email) }
+
+// asciiLower lowers the ASCII letters of s only. Email entries fold case
+// this way, not with Unicode folding, under which the Kelvin sign or the
+// long s would match (and pin) the address of an ASCII k or s.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}

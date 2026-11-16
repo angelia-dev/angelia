@@ -192,3 +192,141 @@ func TestUILocalDevAndOrigin(t *testing.T) {
 		t.Fatalf("loopback http: %v", err)
 	}
 }
+
+// A ui section with OIDC providers only (#268).
+const uiOIDC = `
+ui:
+  enabled: true
+  public_url: https://angelia.example.com
+  oidc:
+    - name: authentik
+      display_name: Company SSO
+      issuer: https://auth.example.com/application/o/angelia/
+      client_id: angelia
+      client_secret_env: UI_OIDC_SECRET
+    - name: google
+      issuer: https://accounts.google.com
+      client_id: 123.apps.googleusercontent.com
+      client_secret_env: UI_GOOGLE_SECRET
+      scopes: [openid, email]
+      allowed_algs: [RS256]
+  access:
+    - provider: authentik
+      subject: 5f1c0a7e-0000-4000-8000-000000000001
+      role: admin
+    - provider: google
+      email: Alice@Example.com
+      role: viewer
+`
+
+func TestUIOIDC(t *testing.T) {
+	cfg, err := load(t, writeFile(t, uiOIDC), "UI_OIDC_SECRET=oidc-secret", "UI_GOOGLE_SECRET=g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.GitHub.Configured() || len(cfg.UI.OIDC) != 2 || len(cfg.UI.Access) != 2 {
+		t.Fatalf("%+v", cfg.UI)
+	}
+	a, g := cfg.UI.OIDC[0], cfg.UI.OIDC[1]
+	if strings.Join(a.EffectiveScopes(), " ") != "openid email profile" || len(a.EffectiveAlgs()) != 10 || a.Label() != "Company SSO" {
+		t.Fatalf("%+v", a)
+	}
+	if strings.Join(g.EffectiveScopes(), " ") != "openid email" || strings.Join(g.EffectiveAlgs(), " ") != "RS256" || g.Label() != "google" {
+		t.Fatalf("%+v", g)
+	}
+	v, w, err := a.ClientSecret()
+	if err != nil || w != "" || string(v.Reveal()) != "oidc-secret" {
+		t.Fatal(err)
+	}
+	if s := fmt.Sprintf("%+v", cfg.UI); strings.Contains(s, "oidc-secret") {
+		t.Fatal("the client secret leaks in formatting")
+	}
+	// An unset variable warns, as for GitHub.
+	cfg, err = load(t, writeFile(t, uiOIDC), "UI_GOOGLE_SECRET=g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := cfg.Warnings(); len(w) != 1 || !strings.Contains(w[0], "ui.oidc[0].client_secret_env: environment variable UI_OIDC_SECRET") {
+		t.Fatal(w)
+	}
+	if _, _, err := cfg.UI.OIDC[0].ClientSecret(); err == nil || !strings.Contains(err.Error(), "ui.oidc[authentik]") {
+		t.Fatal(err)
+	}
+	// Both GitHub and OIDC, with a loopback http issuer.
+	both := strings.Replace(uiOK, "  access:\n", "  oidc:\n    - name: kc\n      issuer: http://127.0.0.1:8080/realms/x\n      client_id: a\n      client_secret_file: /run/s\n  access:\n    - provider: kc\n      email: a@b.example\n      role: editor\n", 1)
+	if _, err := load(t, writeFile(t, both), "UI_GITHUB_SECRET=x"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUIOIDCValidation(t *testing.T) {
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"no provider":       {strings.Replace(uiOK, "  github:\n    client_id: Ov23liEXAMPLE\n    client_secret_env: UI_GITHUB_SECRET\n", "", 1), "configure ui.github or at least one ui.oidc"},
+		"no name":           {strings.Replace(uiOIDC, "    - name: authentik\n      display_name: Company SSO\n", "    - display_name: x\n", 1), "ui.oidc[0].name: required"},
+		"bad name":          {strings.Replace(uiOIDC, "name: authentik", "name: Auth_entik", 1), "lower-case letters"},
+		"github name":       {strings.Replace(uiOIDC, "name: google", "name: github", 1), "github is reserved"},
+		"twice":             {strings.Replace(uiOIDC, "name: google", "name: authentik", 1), "listed twice"},
+		"long display":      {strings.Replace(uiOIDC, "Company SSO", strings.Repeat("x", 65), 1), "display_name"},
+		"no issuer":         {strings.Replace(uiOIDC, "      issuer: https://accounts.google.com\n", "", 1), "ui.oidc[1].issuer: required"},
+		"http issuer":       {strings.Replace(uiOIDC, "https://accounts.google.com", "http://accounts.google.com", 1), "loopback host only"},
+		"issuer scheme":     {strings.Replace(uiOIDC, "https://accounts.google.com", "ftp://accounts.google.com", 1), "absolute https URL"},
+		"issuer query":      {strings.Replace(uiOIDC, "https://accounts.google.com", "https://accounts.google.com?x=1", 1), "query"},
+		"no client id":      {strings.Replace(uiOIDC, "      client_id: angelia\n", "", 1), "ui.oidc[0].client_id: required"},
+		"client id space":   {strings.Replace(uiOIDC, "client_id: angelia", "client_id: an gelia", 1), "one word"},
+		"no secret":         {strings.Replace(uiOIDC, "      client_secret_env: UI_OIDC_SECRET\n", "", 1), "ui.oidc[0]: set client_secret_env"},
+		"secret env value":  {strings.Replace(uiOIDC, "UI_OIDC_SECRET", "abc-def", 1), "ui.oidc[0].client_secret_env: must be an environment variable name"},
+		"no openid":         {strings.Replace(uiOIDC, "[openid, email]", "[email]", 1), "must contain openid"},
+		"bad scope":         {strings.Replace(uiOIDC, "[openid, email]", "[openid, \"a b\"]", 1), "not a scope token"},
+		"HS256":             {strings.Replace(uiOIDC, "[RS256]", "[RS256, HS256]", 1), `"HS256" is not accepted`},
+		"none":              {strings.Replace(uiOIDC, "[RS256]", "[none]", 1), `"none" is not accepted`},
+		"unknown provider":  {strings.Replace(uiOIDC, "provider: google", "provider: gitlab", 1), `provider "gitlab": no ui.oidc provider`},
+		"provider github":   {strings.Replace(uiOIDC, "provider: google", "provider: github", 1), "use github_user or github_id"},
+		"subject and email": {strings.Replace(uiOIDC, "      email: Alice@Example.com\n", "      email: a@b.c\n      subject: x\n", 1), "not both"},
+		"neither":           {strings.Replace(uiOIDC, "      email: Alice@Example.com\n", "", 1), "set subject"},
+		"bad subject":       {strings.Replace(uiOIDC, "5f1c0a7e-0000-4000-8000-000000000001", "\"a b\"", 1), "printable ASCII"},
+		"bad email":         {strings.Replace(uiOIDC, "Alice@Example.com", "alice", 1), "not an email address"},
+		"mixed entry":       {strings.Replace(uiOIDC, "      email: Alice@Example.com\n", "      email: a@b.c\n      github_id: 5\n", 1), "not both"},
+		"email no provider": {strings.Replace(uiOIDC, "    - provider: google\n      email:", "    - email:", 1), "need provider"},
+		"github entry":      {strings.Replace(uiOIDC, "    - provider: google\n      email: Alice@Example.com\n", "    - github_id: 5\n", 1), "needs ui.github"},
+		"empty entry":       {strings.Replace(uiOIDC, "    - provider: google\n      email: Alice@Example.com\n", "    -\n", 1), "set github_user"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, writeFile(t, tc.yaml), "UI_OIDC_SECRET=x", "UI_GOOGLE_SECRET=y")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// An inline client_secret in an OIDC entry is refused without its value.
+func TestUIOIDCInlineClientSecretRefused(t *testing.T) {
+	y := "ui:\n  oidc:\n    - name: a\n      client_secret: hunter2-secret-value\n"
+	_, err := load(t, writeFile(t, y))
+	if err == nil || !strings.Contains(err.Error(), "line 4: ui.oidc[0].client_secret: an inline client secret is refused") ||
+		strings.Contains(err.Error(), "hunter2") {
+		t.Fatal(err)
+	}
+}
+
+func TestUIOIDCClientSecretFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s")
+	if err := os.WriteFile(p, []byte("file-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, _, err := UIOIDC{Name: "kc", ClientSecretFile: p}.ClientSecret()
+	if err != nil || string(v.Reveal()) != "file-secret" {
+		t.Fatal(err)
+	}
+	if _, _, err := (UIOIDC{Name: "kc"}).ClientSecret(); err == nil || !strings.Contains(err.Error(), "ui.oidc[kc]: no client secret") {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(p, 0o666); err != nil { //nolint:gosec // G302: the test makes the file writable by others
+			t.Fatal(err)
+		}
+		if _, _, err := (UIOIDC{Name: "kc", ClientSecretFile: p}).ClientSecret(); err == nil || !strings.Contains(err.Error(), "ui.oidc[kc].client_secret_file") {
+			t.Fatal(err)
+		}
+	}
+}

@@ -117,7 +117,11 @@ func TestGitHubAuthCodeURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := url.Parse(g.AuthCodeURL("st", "ch"))
+	raw, err := g.AuthCodeURL(t.Context(), "st", "ch", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +144,7 @@ func TestGitHubExchange(t *testing.T) {
 	f := newFakeGitHub(t)
 	g := f.provider(t)
 	verifier := strings.Repeat("v", 43)
-	id, err := g.Exchange(t.Context(), fakeCode, verifier)
+	id, err := g.Exchange(t.Context(), fakeCode, verifier, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +181,7 @@ func TestGitHubExchangeFailures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeGitHub(t)
 			f.tokenStatus, f.userStatus, f.tokenBody, f.userBody = tc.tokenStatus, tc.userStatus, tc.tokenBody, tc.userBody
-			_, err := f.provider(t).Exchange(t.Context(), tc.code, verifier)
+			_, err := f.provider(t).Exchange(t.Context(), tc.code, verifier, "")
 			var pe *ProviderError
 			if !errors.As(err, &pe) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
@@ -194,12 +198,12 @@ func TestGitHubExchangeFailures(t *testing.T) {
 	g := f.provider(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := g.Exchange(ctx, fakeCode, verifier); !errors.Is(err, context.Canceled) {
+	if _, err := g.Exchange(ctx, fakeCode, verifier, ""); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
 	}
 	f.srv.Close()
 	var pe *ProviderError
-	_, err := g.Exchange(t.Context(), fakeCode, verifier)
+	_, err := g.Exchange(t.Context(), fakeCode, verifier, "")
 	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "request failed") {
 		t.Fatalf("closed server: %v", err)
 	}
@@ -248,7 +252,7 @@ func TestGitHubNoRedirect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = g.Exchange(t.Context(), fakeCode, strings.Repeat("v", 43))
+			_, err = g.Exchange(t.Context(), fakeCode, strings.Repeat("v", 43), "")
 			var pe *ProviderError
 			if !errors.As(err, &pe) || !strings.Contains(err.Error(), "HTTP 307") {
 				t.Fatalf("err = %v, want HTTP 307", err)
@@ -268,7 +272,7 @@ func TestGitHubNoRedirect(t *testing.T) {
 func TestGitHubUserFieldsAreCleaned(t *testing.T) {
 	f := newFakeGitHub(t)
 	f.userBody = `{"login":"octocat","id":583231,"name":"Octo\u0000cat` + strings.Repeat("x", 300) + `","avatar_url":"javascript:alert(1)"}`
-	id, err := f.provider(t).Exchange(t.Context(), fakeCode, strings.Repeat("v", 43))
+	id, err := f.provider(t).Exchange(t.Context(), fakeCode, strings.Repeat("v", 43), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +280,7 @@ func TestGitHubUserFieldsAreCleaned(t *testing.T) {
 		t.Fatalf("%+v", id)
 	}
 	f.userBody = `{"login":"octocat","id":583231,"name":null,"avatar_url":"https://avatars.example/u"}`
-	id, err = f.provider(t).Exchange(t.Context(), fakeCode, strings.Repeat("v", 43))
+	id, err = f.provider(t).Exchange(t.Context(), fakeCode, strings.Repeat("v", 43), "")
 	if err != nil || id.Name != "" || id.AvatarURL != "https://avatars.example/u" {
 		t.Fatalf("%+v %v", id, err)
 	}

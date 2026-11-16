@@ -37,6 +37,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0030](0030-api-tokens.md) | API tokens are `ang_` bearer tokens stored as SHA-256 hashes in an `api_token` table on both engines; the first admin token comes from a bootstrap file or `angelia token create --local` | Accepted | #72 |
 | [0031](0031-postgres-concurrent-leasing-skip-locked.md) | On Postgres, lease transactions lock their rows with `FOR UPDATE SKIP LOCKED` instead of an advisory lock; lease times stay host times, checked against the database clock at start | Accepted for D21–D22 (maintainer 2026-11-10); implementation reviewed in the PR | #86 |
 | [0033](0033-admin-web-ui.md) | The admin web UI is a React SPA in `web/`, embedded in the binary; users sign in with GitHub, and their role from `ui.access` is one of the three API scopes | Accepted | #99 |
+| [0034](0034-generic-oidc-sign-in.md) | The admin UI signs in with any OpenID Connect provider through `go-oidc`, with PKCE, state and nonce; access entries match a subject or a verified email pinned to its subject | Accepted | #268 |
 
 ## Process
 

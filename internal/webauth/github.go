@@ -79,7 +79,7 @@ func (g *GitHub) Name() string { return GitHubName }
 
 // AuthCodeURL implements [IdentityProvider]. It asks for no scope: the
 // public profile (id, login, name, avatar) needs none.
-func (g *GitHub) AuthCodeURL(state, codeChallenge string) string {
+func (g *GitHub) AuthCodeURL(_ context.Context, state, codeChallenge, _ string) (string, error) {
 	q := url.Values{
 		"client_id":             {g.cfg.ClientID},
 		"redirect_uri":          {g.cfg.RedirectURL},
@@ -87,21 +87,27 @@ func (g *GitHub) AuthCodeURL(state, codeChallenge string) string {
 		"code_challenge":        {codeChallenge},
 		"code_challenge_method": {"S256"},
 	}
-	return g.cfg.WebURL + "/login/oauth/authorize?" + q.Encode()
+	return g.cfg.WebURL + "/login/oauth/authorize?" + q.Encode(), nil
 }
 
-// ProviderError is an error of the provider. It never holds the code, the
-// verifier, the client secret or an access token.
-type ProviderError struct{ msg string }
+// ProviderError is an error of a provider. It never holds the code, the
+// verifier, the nonce, the client secret, an access token or an ID token.
+type ProviderError struct{ provider, msg string }
 
-func (e *ProviderError) Error() string { return "webauth: github: " + e.msg }
+func (e *ProviderError) Error() string {
+	p := e.provider
+	if p == "" {
+		p = GitHubName
+	}
+	return "webauth: " + p + ": " + e.msg
+}
 
 func providerErr(format string, a ...any) error {
-	return &ProviderError{msg: fmt.Sprintf(format, a...)}
+	return &ProviderError{provider: GitHubName, msg: fmt.Sprintf(format, a...)}
 }
 
-// Exchange implements [IdentityProvider].
-func (g *GitHub) Exchange(ctx context.Context, code, codeVerifier string) (Identity, error) {
+// Exchange implements [IdentityProvider]. GitHub has no nonce.
+func (g *GitHub) Exchange(ctx context.Context, code, codeVerifier, _ string) (Identity, error) {
 	token, err := g.token(ctx, code, codeVerifier)
 	if err != nil {
 		return Identity{}, err
