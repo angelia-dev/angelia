@@ -87,6 +87,11 @@ func TestEventsNewestFirst(t *testing.T) {
 	if len(p.Items) != 0 || p.HasMore || *p.NextBefore != seqs[0] || p.NextAfter != seqs[0]-1 {
 		t.Fatalf("below the oldest: %+v", p)
 	}
+	// before=0: nothing is below it, so an empty page, not the newest one.
+	p = e.descPage("order=desc&before=0")
+	if len(p.Items) != 0 || p.HasMore || p.NextBefore == nil || *p.NextBefore != 0 || p.NextAfter != 0 {
+		t.Fatalf("before=0: %+v", p)
+	}
 	// The filters apply as in commit order.
 	p = e.descPage("order=desc&type=release.yanked")
 	if fmt.Sprint(p.seqs()) != fmt.Sprint([]int64{seqs[2]}) || p.HasMore || *p.NextBefore != seqs[0] {
@@ -238,6 +243,8 @@ func TestTemplatePreview(t *testing.T) {
 		"parse":       {"{{", "parse", float64(1)},
 		"not allowed": {`{{define "x"}}{{end}}`, "not_allowed", nil},
 		"timeout":     {"{{range 1000000000}}{{end}}", "timeout", nil},
+		// 300,000 bytes is past the 256 KiB output limit.
+		"output too large": {`{{printf "%300000s" "x"}}`, "output_too_large", float64(1)},
 	} {
 		start := time.Now()
 		m := preview(map[string]any{"template": tc.template})
@@ -260,6 +267,7 @@ func TestTemplatePreview(t *testing.T) {
 		"event_id and sample": {"template": tmpl, "event_id": ev.ID, "sample": "full"},
 		"event not an object": {"template": tmpl, "event": "x"},
 		"empty template":      {"template": ""},
+		"template too long":   {"template": strings.Repeat("x", 32<<10+1)},
 		"unknown member":      {"template": tmpl, "secret_ref": "x"},
 	} {
 		r := e.do("POST", "/v1/template-previews", tokAdmin, body)

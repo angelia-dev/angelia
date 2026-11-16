@@ -199,9 +199,15 @@ func (s *Server) listEventsDesc(ctx context.Context, p ListEventsParams, limit i
 	if err != nil {
 		return eventPageJSON{}, err
 	}
-	items, low, high, more, err := s.scanEventsBackward(ctx, before, limit, max(s.opts.EventScan, limit), f)
-	if err != nil {
-		return eventPageJSON{}, err
+	var items []store.Event
+	var low, high int64
+	var more bool
+	// before=0 names no position below it: an empty page, never the head of
+	// the log (the store reads a beforeSeq of 0 as "from the newest").
+	if p.Before == nil || before > 0 {
+		if items, low, high, more, err = s.scanEventsBackward(ctx, before, limit, max(s.opts.EventScan, limit), f); err != nil {
+			return eventPageJSON{}, err
+		}
 	}
 	page := eventPageJSON{Items: make([]eventRecordJSON, 0, len(items)), NextAfter: high, HasMore: more}
 	switch {
