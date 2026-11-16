@@ -1,6 +1,6 @@
 # ADR 0034: The admin UI signs in with any OpenID Connect provider through `go-oidc`, with PKCE, state and nonce; access entries match a subject or a verified email pinned to its subject
 
-- **Status:** Proposed (dependencies accepted by the maintainer, 2026-11-16)
+- **Status:** Accepted (2026-11-16, by the maintainer)
 - **Date:** 2026-11-16
 - **Story:** angelia-dev/angelia#268 (UI-9)
 
