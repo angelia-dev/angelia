@@ -12,8 +12,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -24,9 +24,19 @@ import (
 // discoveryTimeout bounds the discovery request of a sign-in.
 const discoveryTimeout = 15 * time.Second
 
+// discoveryRetry is how long a failed discovery is answered from memory:
+// while the issuer is down, unauthenticated visits to the sign-in route do
+// not each send a request to it.
+const discoveryRetry = 10 * time.Second
+
 // oidcSubjectRE is a subject that fits the API's PrincipalId
 // ("<provider>:" then 1 to 255 printable ASCII characters without space).
 var oidcSubjectRE = regexp.MustCompile(`^[!-~]{1,255}$`)
+
+// oidcEmailRE is an email claim that may match an email entry: the
+// config's address syntax (one @, no space or control character, at most
+// 254). Any other value is dropped, never trimmed into an address.
+var oidcEmailRE = regexp.MustCompile(`^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,189}$`)
 
 // OIDCConfig configures an OpenID Connect provider (#268).
 type OIDCConfig struct {
@@ -63,8 +73,12 @@ type OIDC struct {
 	client *http.Client
 	local  bool // the issuer is a loopback http:// URL
 
-	mu   sync.Mutex
-	disc *oidcDiscovered
+	// sem is held by the sign-in that runs the discovery; the others wait
+	// for it, or for their own context.
+	sem      chan struct{}
+	disc     *oidcDiscovered
+	failErr  error
+	failedAt time.Time
 }
 
 // oidcDiscovered is what the discovery gave.
@@ -112,7 +126,7 @@ func NewOIDC(cfg OIDCConfig) (*OIDC, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	cfg.Scopes = slices.Clone(cfg.Scopes)
 	cfg.Algs = slices.Clone(cfg.Algs)
-	return &OIDC{cfg: cfg, client: &client, local: local}, nil
+	return &OIDC{cfg: cfg, client: &client, local: local, sem: make(chan struct{}, 1)}, nil
 }
 
 // asymmetricAlg reports whether a is an asymmetric JWS algorithm go-oidc
@@ -142,13 +156,33 @@ func (o *OIDC) err(format string, a ...any) error {
 }
 
 // discover reads the provider's metadata once; a failure is retried at the
-// next sign-in.
+// first sign-in after discoveryRetry.
 func (o *OIDC) discover(ctx context.Context) (*oidcDiscovered, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+	select {
+	case o.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("webauth: %s: discovery: %w", o.cfg.Name, ctx.Err())
+	}
+	defer func() { <-o.sem }()
 	if o.disc != nil {
 		return o.disc, nil
 	}
+	if o.failErr != nil && o.cfg.Now().Sub(o.failedAt) < discoveryRetry {
+		return nil, o.failErr
+	}
+	d, err := o.discoverNow(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			o.failErr, o.failedAt = err, o.cfg.Now()
+		}
+		return nil, err
+	}
+	o.disc, o.failErr = d, nil
+	return d, nil
+}
+
+// discoverNow sends the discovery request; the caller holds sem.
+func (o *OIDC) discoverNow(ctx context.Context) (*oidcDiscovered, error) {
 	dctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 	p, err := oidc.NewProvider(oidc.ClientContext(dctx, o.client), o.cfg.Issuer)
@@ -195,7 +229,6 @@ func (o *OIDC) discover(ctx context.Context) (*oidcDiscovered, error) {
 		},
 		verifier: p.Verifier(&oidc.Config{ClientID: o.cfg.ClientID, SupportedSigningAlgs: o.cfg.Algs, Now: o.cfg.Now}),
 	}
-	o.disc = d
 	return d, nil
 }
 
@@ -277,7 +310,10 @@ func (o *OIDC) Exchange(ctx context.Context, code, codeVerifier, nonce string) (
 	}
 	id := Identity{
 		Provider: o.cfg.Name, Subject: idt.Subject, Name: cutText(c.Name, 255), AvatarURL: safeURL(c.Picture),
-		Email: cutText(c.Email, 254), EmailVerified: c.verified(),
+		EmailVerified: c.verified(),
+	}
+	if utf8.ValidString(c.Email) && oidcEmailRE.MatchString(c.Email) {
+		id.Email = c.Email
 	}
 	for _, l := range []string{c.PreferredUsername, c.Email, idt.Subject} {
 		if id.Login = strings.TrimSpace(cutText(l, 255)); id.Login != "" {

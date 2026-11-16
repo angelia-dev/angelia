@@ -19,7 +19,6 @@ package webauth
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/config"
@@ -172,5 +171,19 @@ type LoginMetrics interface {
 func githubSubject(id int64) string { return strconv.FormatInt(id, 10) }
 
 // emailPinKey is the pin key of an email entry of an OIDC provider, in the
-// login column of ui_identity_pin: "email:" and the address in lower case.
-func emailPinKey(email string) string { return "email:" + strings.ToLower(email) }
+// login column of ui_identity_pin: "email:" and the address with its ASCII
+// letters in lower case.
+func emailPinKey(email string) string { return "email:" + asciiLower(email) }
+
+// asciiLower lowers the ASCII letters of s only. Email entries fold case
+// this way, not with Unicode folding, under which the Kelvin sign or the
+// long s would match (and pin) the address of an ASCII k or s.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}

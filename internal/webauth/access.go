@@ -101,7 +101,7 @@ func (a *accessList) oidcRole(ctx context.Context, provider, subject, email stri
 		switch {
 		case e.Subject != "":
 			grants = e.Subject == subject
-		case e.Email != "" && email != "" && strings.EqualFold(e.Email, email):
+		case e.Email != "" && email != "" && asciiLower(e.Email) == asciiLower(email):
 			pinned, err := a.pin(ctx, provider, emailPinKey(email), subject)
 			if err != nil {
 				return match{}, err

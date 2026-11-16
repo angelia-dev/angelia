@@ -54,7 +54,8 @@ ui:
 
 - `GET /ui/auth/login/{name}`: discovery (`<issuer>/.well-known/openid-configuration`) on the first
   sign-in, through netguard's HTTP client (SSRF guard: a private issuer needs `http.allow_networks`),
-  redirects not followed, retried at the next sign-in after a failure; the api role starts without
+  redirects not followed, retried at the first sign-in 10 s after a failure (sign-ins in between fail
+  without a request; a sign-in waiting for another's discovery gives up with its own request); the api role starts without
   reaching the issuer. `authorization_endpoint`, `token_endpoint` and `jwks_uri` must be https (http on
   loopback only with a loopback issuer); a provider that lists `code_challenge_methods_supported`
   without `S256` is refused. The client authenticates with `client_secret_basic`, or
@@ -76,12 +77,14 @@ ui:
 - `/v1/me` `user`: `provider` the name, `subject` the sub, `login` the `preferred_username`, else the
   `email`, else the sub; `name` the `name` claim; `avatar_url` the `picture` claim if https.
 - `email` and `email_verified` (a boolean, or the string `"true"`) are read at sign-in only and not
-  stored with the session.
+  stored with the session. An `email` that is not a plain address (control characters, space, several
+  `@`, over 254 characters) is dropped, never trimmed.
 
 ### 4. Access entries
 
 - `{provider, subject, role}` matches the sub.
-- `{provider, email, role}` matches a **verified** email case-insensitively and pins the address to
+- `{provider, email, role}` matches a **verified** email, ASCII letters case-insensitively (no
+  Unicode folding, under which `\u212A` would match `k`), and pins the address to
   the sub at its first match, in `ui_identity_pin` (`provider` = the name, `login` =
   `email:<address in lower case>`), as `github_user` pins a login. Another sub with that address later
   gets nothing from the entry (`identity_mismatch`). On every request, and when the email has changed

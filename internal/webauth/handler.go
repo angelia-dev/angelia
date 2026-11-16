@@ -87,6 +87,9 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		if !providerNameRE.MatchString(p.Name()) {
 			return nil, fmt.Errorf("webauth: provider name %q is not lower-case letters, digits and hyphens", p.Name())
 		}
+		if _, dup := h.providers[p.Name()]; dup {
+			return nil, fmt.Errorf("webauth: provider %q is listed twice", p.Name())
+		}
 		h.providers[p.Name()] = p
 	}
 	h.mux = http.NewServeMux()

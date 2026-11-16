@@ -429,12 +429,19 @@ func TestOIDCDiscovery(t *testing.T) {
 			is := newTestIssuer(t, jose.RS256)
 			is.discovery = tc.change
 			p := is.provider(t, "kc")
+			now := time.Now()
+			p.cfg.Now = func() time.Time { return now }
 			_, err := p.AuthCodeURL(t.Context(), "s", "c", "n")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
-			// A failed discovery is retried at the next sign-in.
+			// A failed discovery is retried at the first sign-in after
+			// discoveryRetry.
 			is.set(func(is *testIssuer) { is.discovery = nil })
+			if _, err := p.AuthCodeURL(t.Context(), "s", "c", "n"); err == nil {
+				t.Fatal("discovery retried at once")
+			}
+			now = now.Add(discoveryRetry)
 			if _, err := p.AuthCodeURL(t.Context(), "s", "c", "n"); err != nil {
 				t.Fatal(err)
 			}
