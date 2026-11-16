@@ -37,6 +37,15 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 | `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
+| `ui.enabled` | none | `false` | `true` turns on the admin UI's sign-in; see [Admin UI sign-in](#admin-ui-sign-in) |
+| `ui.public_url` | none | empty | `https://host[:port]`, no path; `http://` only for a loopback host |
+| `ui.github.client_id` | none | empty | the client id of a GitHub OAuth App |
+| `ui.github.client_secret_env` | none | empty | name of the environment variable holding the client secret |
+| `ui.github.client_secret_file` | none | empty | path of a file holding the client secret (one of the two) |
+| `ui.github.web_url`, `ui.github.api_url` | none | `https://github.com`, `https://api.github.com` | https URLs of GitHub Enterprise Server (`https://HOST`, `https://HOST/api/v3`) |
+| `ui.access` | none | empty | list of `{github_user or github_id, role}`; `role` is `viewer`, `editor` or `admin` |
+| `ui.session.idle_timeout` | none | `12h` | duration, at least `1m`, at most `max_lifetime` |
+| `ui.session.max_lifetime` | none | `168h` | duration, at least `1m` |
 
 - `<kind>` in the `sources.*` keys is a built-in source kind or, with `kind` set, the name of a named
   instance of one (`npm-internal`). A watch selects either by its `source`. The settings of an instance are
@@ -339,6 +348,82 @@ first admin token comes from one of two instance-side paths:
 While no admin token is active (none, or only revoked or expired ones), every start of the `api` role
 logs one warning, which holds no secret:
 `no active admin API token; create one with "angelia token create --local --scope admin --name admin"`.
+
+## Admin UI sign-in
+
+People sign in to the admin web UI with GitHub (ADR 0033). The `api` role serves the sign-in under
+`/ui/auth/`; a signed-in browser then calls the same `/v1` REST API as a token, with a session cookie
+instead of `Authorization`. Nothing changes for API tokens or MCP.
+
+```yaml
+ui:
+  enabled: true
+  public_url: https://angelia.example.com   # the URL people open; no path
+  github:
+    client_id: Ov23liEXAMPLE
+    client_secret_file: /run/secrets/angelia-github-client-secret   # or client_secret_env: NAME
+  access:
+    - github_user: octocat     # a login, pinned to its account id at the first sign-in
+      role: admin
+    - github_id: 583231        # a numeric account id
+      role: viewer
+  session:
+    idle_timeout: 12h
+    max_lifetime: 168h
+```
+
+**The GitHub OAuth App.** Register an OAuth App (GitHub: Settings, Developer settings, OAuth Apps) with
+the callback URL `<public_url>/ui/auth/callback/github`, such as
+`https://angelia.example.com/ui/auth/callback/github`. Angelia asks for no scope: it reads only the
+public profile (id, login, name, avatar) with the access token, then drops the token. The sign-in uses
+PKCE (S256) and a `state` bound to a short-lived cookie. GitHub Enterprise Server works with
+`web_url` and `api_url`; the requests go through the same outgoing HTTP client as sources
+([SSRF guard](#outgoing-http-and-private-networks), so a private Enterprise Server needs
+`http.allow_networks`).
+
+**The client secret** is never configured inline: `ui.github.client_secret` is refused (even with the UI
+disabled), and so is a `client_secret_env` value that is not a variable name. Set exactly one of
+`client_secret_env` and `client_secret_file`. The file must be a regular file of one line that group and
+others cannot write; one they can read is accepted with a warning. `angelia config check` reads the file
+and warns when the variable is unset; the `api` role does not start without the secret. Unlike source
+`token_env`, `client_secret_env` may name an `ANGELIA_` variable (such as
+`ANGELIA_UI_GITHUB_CLIENT_SECRET`): the secret goes only to GitHub's token endpoint.
+
+**Roles.** `ui.access` lists who may sign in. Each entry names a GitHub login (`github_user`, compared
+without case) or an account id (`github_id`), and a role: `viewer` gets the `read` scope, `editor`
+`write`, `admin` `admin`, exactly as a token of that scope. When several entries match, the highest role
+wins. At least one entry must be an `admin`. Anyone else who signs in with GitHub sees a "Not authorised"
+page; the attempt is logged at INFO. The list is evaluated on **every request**: removing an entry or
+lowering a role applies to open sessions at their next request (a removed user's session is refused as
+`revoked`).
+
+**Login pinning.** GitHub logins can be renamed and re-registered. The first time a `github_user` entry
+matches, Angelia pins the login to that account's id (in the database, shared by every replica). Later, a
+different account with that login gets nothing from the entry (logged at WARN with both ids, and
+counted as `identity_mismatch`); other entries can still match it. `github_id` entries need no pin. To
+move a login to a new account, use a `github_id` entry.
+
+**Cookies.** The session cookie is `__Host-angelia_session`: `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Path=/`, no `Domain`. It holds a random 256-bit secret; the database stores only its hash, so a
+database dump cannot be replayed. With a loopback `http://` `public_url` (local development) the
+cookies are named `angelia_session` and `angelia_oauth` and are not `Secure`.
+
+**Sessions** end after `idle_timeout` without a request, at `max_lifetime` after the sign-in (a lower
+`max_lifetime` applies to existing sessions too), at sign-out (`POST /ui/auth/logout`), or when an admin
+revokes them. Every request reads the session from the database, so a revocation applies at once on
+every replica. The last-seen time is written at most every 5 minutes per session. Admins list sessions
+with `GET /v1/sessions` (active ones by default, `include_ended=true` for all) and revoke one with
+`DELETE /v1/sessions/{id}`. `GET /v1/me` describes the caller, token or session. Audit records name a
+session's principal as `github:<account id>`, which survives a rename of the login.
+
+**CSRF.** A request authenticated by the cookie that changes something (any method other than `GET`,
+`HEAD` and `OPTIONS`) must carry `Origin` equal to `public_url` and `X-Angelia-CSRF: 1`, or it is
+refused with `403 csrf` before the cookie is read. A request with an `Authorization` header is
+authenticated by it alone and the cookie is ignored; `/mcp` never reads the cookie.
+
+**Metrics and logs.** `angelia_ui_logins_total{provider,result}` counts sign-ins
+([Metrics](operations/metrics.md)). No log line holds a cookie, an OAuth code, `state`, the PKCE
+verifier, a GitHub access token or the client secret.
 
 ## Installed plugins
 
