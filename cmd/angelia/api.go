@@ -64,6 +64,8 @@ func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry,
 	if cfg.UI.Enabled {
 		opts.UI = webui.Handler()
 	}
+	// GET /v1/access lists ui.access whether or not the UI is enabled.
+	opts.UIAccess = cfg.UI.Access
 	if m != nil { // a nil *Metrics in the interface field would panic
 		opts.Metrics = m
 	}

@@ -79,6 +79,21 @@ func (e DeliveryStatus) Valid() bool {
 	}
 }
 
+// Defines values for JsonSchemaSchema.
+const (
+	HttpsjsonSchemaOrgdraft202012schema JsonSchemaSchema = "https://json-schema.org/draft/2020-12/schema"
+)
+
+// Valid indicates whether the value is a known member of the JsonSchemaSchema enum.
+func (e JsonSchemaSchema) Valid() bool {
+	switch e {
+	case HttpsjsonSchemaOrgdraft202012schema:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ManagedBy.
 const (
 	Api  ManagedBy = "api"
@@ -253,6 +268,24 @@ func (e ShortEventType) Valid() bool {
 	}
 }
 
+// Defines values for TemplatePreviewRequestSample.
+const (
+	Full   TemplatePreviewRequestSample = "full"
+	Sparse TemplatePreviewRequestSample = "sparse"
+)
+
+// Valid indicates whether the value is a known member of the TemplatePreviewRequestSample enum.
+func (e TemplatePreviewRequestSample) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case Sparse:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TokenScope.
 const (
 	TokenScopeAdmin TokenScope = "admin"
@@ -293,6 +326,135 @@ func (e UiRole) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// Defines values for EventOrder.
+const (
+	EventOrderAsc  EventOrder = "asc"
+	EventOrderDesc EventOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the EventOrder enum.
+func (e EventOrder) Valid() bool {
+	switch e {
+	case EventOrderAsc:
+		return true
+	case EventOrderDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for IfNoneMatch.
+const (
+	IfNoneMatchAsterisk IfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the IfNoneMatch enum.
+func (e IfNoneMatch) Valid() bool {
+	switch e {
+	case IfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListEventsParamsOrder.
+const (
+	ListEventsParamsOrderAsc  ListEventsParamsOrder = "asc"
+	ListEventsParamsOrderDesc ListEventsParamsOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the ListEventsParamsOrder enum.
+func (e ListEventsParamsOrder) Valid() bool {
+	switch e {
+	case ListEventsParamsOrderAsc:
+		return true
+	case ListEventsParamsOrderDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutSinkParamsIfNoneMatch.
+const (
+	PutSinkParamsIfNoneMatchAsterisk PutSinkParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutSinkParamsIfNoneMatch enum.
+func (e PutSinkParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutSinkParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutSubscriptionParamsIfNoneMatch.
+const (
+	PutSubscriptionParamsIfNoneMatchAsterisk PutSubscriptionParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutSubscriptionParamsIfNoneMatch enum.
+func (e PutSubscriptionParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutSubscriptionParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutWatchParamsIfNoneMatch.
+const (
+	PutWatchParamsIfNoneMatchAsterisk PutWatchParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutWatchParamsIfNoneMatch enum.
+func (e PutWatchParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutWatchParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// AccessEntry One entry of the instance's `ui.access` list. An entry names one person of an identity
+// provider, by login or by the provider's numeric id, and gives a role; a person listed
+// several times gets the highest role. Never carries OAuth configuration or secrets.
+type AccessEntry struct {
+	// Kind What the entry names. Today always `user`; later kinds (such as a team or an organisation) may be added, so clients must accept other values.
+	//
+	// Examples: user
+	Kind string `json:"kind"`
+
+	// Login The login the entry names, in lower case (`github_user`), or `null` for an entry by id (`github_id`).
+	Login *string `json:"login"`
+
+	// Pinned Whether `subject` comes from the pin of a login entry. Once pinned, only that id gets the role, even if the login is renamed and taken by another account.
+	Pinned bool `json:"pinned"`
+
+	// Provider The identity provider; today `github`.
+	//
+	// Examples: github
+	Provider string `json:"provider"`
+
+	// Role A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+	Role UiRole `json:"role"`
+
+	// Subject The provider's id of the person (for GitHub the numeric user id, as a string). For an entry by id, that id; for an entry by login, the id the login was pinned to at its first sign-in, or `null` while nobody has signed in with it.
+	Subject *string `json:"subject"`
+}
+
+// AccessList defines model for AccessList.
+type AccessList struct {
+	// Items The entries, in the order of the configuration.
+	Items []AccessEntry `json:"items"`
 }
 
 // Bump defines model for Bump.
@@ -421,6 +583,9 @@ type Delivery struct {
 	// NextAttemptAt When a `pending` delivery is next due; `null` otherwise.
 	NextAttemptAt *Timestamp `json:"next_attempt_at"`
 
+	// Sink The name of the sink the subscription delivers to now, or `null` once the subscription was deleted. A subscription moved to another sink shows the new one.
+	Sink *Name `json:"sink"`
+
 	// Status `pending`: queued or held, due at `next_attempt_at`. `in_flight`: being sent. `delivered`: the sink accepted it. `dead`: given up (the dead-letter state); replayable.
 	Status DeliveryStatus `json:"status"`
 
@@ -447,7 +612,7 @@ type Duration = string
 
 // EventPage defines model for EventPage.
 type EventPage struct {
-	// HasMore Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`.
+	// HasMore Whether the scan stopped before the end of the log (with `order=desc`, before the oldest event kept). A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after` (with `order=desc`, `before=<next_before>`).
 	HasMore bool          `json:"has_more"`
 	Items   []EventRecord `json:"items"`
 
@@ -455,6 +620,9 @@ type EventPage struct {
 	//
 	// Examples: 4182
 	NextAfter Seq `json:"next_after"`
+
+	// NextBefore With `order=desc`, the cursor for the next (older) page, the lowest `seq` the server scanned, or the request's `before` when nothing was scanned; `null` with `order=asc`, and on an empty log without `before`.
+	NextBefore *Seq `json:"next_before"`
 }
 
 // EventRecord One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered.
@@ -471,6 +639,28 @@ type EventRecord struct {
 	Seq Seq `json:"seq"`
 }
 
+// JsonSchema A JSON Schema document of the 2020-12 dialect (https://json-schema.org/draft/2020-12/schema),
+// as an object (never the boolean forms `true` or `false`). Any keyword of the dialect may
+// appear, and the `x-angelia-*` annotations of docs/api.md; clients that build a form from it
+// should ignore keywords they do not know. The members below are the ones a client most often
+// reads.
+type JsonSchema struct {
+	// Schema The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+	Schema      *JsonSchemaSchema `json:"$schema,omitempty"`
+	Description *string           `json:"description,omitempty"`
+
+	// Properties The schema of each member of an object.
+	Properties *map[string]JsonSchema `json:"properties,omitempty"`
+	Required   *[]string              `json:"required,omitempty"`
+
+	// Type A JSON type name, or a list of them.
+	Type                 interface{}            `json:"type,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// JsonSchemaSchema The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+type JsonSchemaSchema string
+
 // Kind A source or sink kind (`pypi`, `github-release`, `webhook`, a plugin's kind, ...).
 type Kind = string
 
@@ -484,7 +674,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Me The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+// Me The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token.
 type Me struct {
 	// Kind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
 	Kind MeKind `json:"kind"`
@@ -500,6 +690,9 @@ type Me struct {
 
 	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
 	Scope TokenScope `json:"scope"`
+
+	// SessionId For a session, its `id`, the one `GET /v1/sessions` lists (so the UI can mark the current session and offer to revoke the others); `null` for a token. Never the cookie.
+	SessionId *Ulid `json:"session_id"`
 
 	// User For a session, who signed in; `null` for a token.
 	User *SessionUser `json:"user"`
@@ -528,7 +721,7 @@ type Plugin struct {
 	AllowedHosts []PluginHost `json:"allowed_hosts"`
 
 	// ConfigSchema The JSON Schema of the kind's configuration (a watch's `coordinates` for a source, a sink's `config` for a sink), or `null` when the kind does not publish one. A property with `x-angelia-secret` true holds a secret value; the server masks it in every response and refuses it in API writes.
-	ConfigSchema *map[string]interface{} `json:"config_schema"`
+	ConfigSchema *JsonSchema `json:"config_schema"`
 
 	// Interface Which core interface the plugin implements.
 	Interface PluginInterface `json:"interface"`
@@ -1006,6 +1199,56 @@ type SubscriptionWrite struct {
 	Template *string `json:"template,omitempty"`
 }
 
+// TemplateError defines model for TemplateError.
+type TemplateError struct {
+	// Column The column (in bytes, from 1), or `null` when unknown.
+	Column *int `json:"column"`
+
+	// Kind `parse`: the template does not parse. `not_allowed`: it uses something templates may not (`define`, `template`, `block`). `exec`: it failed on this event (a missing key, a function error). `timeout`: it ran past its time limit. `output_too_large`: its output passed the size limit. `invalid_event`: the event is not a JSON object. Open set.
+	//
+	// Examples: exec
+	Kind string `json:"kind"`
+
+	// Line The line of the template where it failed, from 1, or `null` when unknown.
+	Line *int `json:"line"`
+
+	// Reason What went wrong, from a fixed set of messages. It never quotes the template text, which may hold something that should not be echoed.
+	Reason string `json:"reason"`
+}
+
+// TemplatePreview The result of rendering a template. Exactly one of `output` and `error` is `null`.
+type TemplatePreview struct {
+	// ContentType The `Content-Type` a webhook delivery would send with the output (`application/json` when the output is a JSON object or array, else `text/plain`), or `null` when the template failed.
+	//
+	// Examples: application/json; charset=utf-8
+	ContentType *string `json:"content_type"`
+
+	// Error Why the template failed, or `null`.
+	Error *TemplateError `json:"error"`
+
+	// Output The rendered body, as a delivery would send it, or `null` when the template failed. Bytes that are not UTF-8 are replaced by U+FFFD.
+	Output *string `json:"output"`
+}
+
+// TemplatePreviewRequest A template and the event to render it with: at most one of `event`, `event_id` and
+// `sample`; with none of them, the built-in `full` sample.
+type TemplatePreviewRequest struct {
+	// Event A CloudEvents envelope as `EventRecord.event` holds it. Rendered as given; it is not checked against the envelope schema, only required to be an object.
+	Event *map[string]interface{} `json:"event,omitempty"`
+
+	// EventId The id of an event of the log (`404` when there is none).
+	EventId *Ulid `json:"event_id,omitempty"`
+
+	// Sample A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+	Sample *TemplatePreviewRequestSample `json:"sample,omitempty"`
+
+	// Template A Go `text/template`, as a subscription's `template`.
+	Template string `json:"template"`
+}
+
+// TemplatePreviewRequestSample A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+type TemplatePreviewRequestSample string
+
 // Timestamp RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
 //
 // Examples: 2026-10-30T17:00:02.512Z
@@ -1277,6 +1520,11 @@ type WatchWrite struct {
 // Examples: 4182
 type After = Seq
 
+// Before An event's position in the log, assigned in commit order (`event.seq`). Strictly increasing; there may be gaps.
+//
+// Examples: 4182
+type Before = Seq
+
 // ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerName = Name
 
@@ -1291,6 +1539,15 @@ type DryRun = bool
 
 // EventLimit defines model for EventLimit.
 type EventLimit = int
+
+// EventOrder defines model for EventOrder.
+type EventOrder string
+
+// IfMatch defines model for IfMatch.
+type IfMatch = string
+
+// IfNoneMatch defines model for IfNoneMatch.
+type IfNoneMatch string
 
 // IncludeEnded defines model for IncludeEnded.
 type IncludeEnded = bool
@@ -1366,6 +1623,11 @@ type NotFound = Problem
 // must be ignored.
 type PayloadTooLarge = Problem
 
+// PreconditionFailed RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
+// is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
+// must be ignored.
+type PreconditionFailed = Problem
+
 // Unauthorized RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
 // is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
 // must be ignored.
@@ -1423,6 +1685,15 @@ type ListDeliveriesParams struct {
 
 	// Event Only deliveries of this event, by event id.
 	Event *Ulid `form:"event,omitempty" json:"event,omitempty"`
+
+	// Sink Only deliveries of the subscriptions that deliver to this sink now, by name. An unknown sink matches nothing.
+	Sink *Name `form:"sink,omitempty" json:"sink,omitempty"`
+
+	// Since Only deliveries of events recorded at or after this time.
+	Since *Timestamp `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until Only deliveries of events recorded before this time. Must be after `since`.
+	Until *Timestamp `form:"until,omitempty" json:"until,omitempty"`
 }
 
 // ReplayDeliveryJSONBody defines parameters for ReplayDelivery.
@@ -1452,7 +1723,16 @@ type ListEventsParams struct {
 	// even `after=0` or an empty value, gets `400`. Reading never moves
 	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
 	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
+
+	// Order `asc` (the default): oldest first, after `after`. `desc`: newest first, below `before`. `desc` cannot be combined with `after` or `consumer`.
+	Order *ListEventsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Before With `order=desc`, return the events whose `seq` is lower than this, the `next_before` of the previous page. Absent, the page starts at the newest event. Needs `order=desc`.
+	Before *Before `form:"before,omitempty" json:"before,omitempty"`
 }
+
+// ListEventsParamsOrder defines parameters for ListEvents.
+type ListEventsParamsOrder string
 
 // StreamEventsParams defines parameters for StreamEvents.
 type StreamEventsParams struct {
@@ -1541,13 +1821,29 @@ type ListSinksParams struct {
 type DeleteSinkParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutSinkParams defines parameters for PutSink.
 type PutSinkParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutSinkParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutSinkParamsIfNoneMatch defines parameters for PutSink.
+type PutSinkParamsIfNoneMatch string
 
 // ListSubscriptionsParams defines parameters for ListSubscriptions.
 type ListSubscriptionsParams struct {
@@ -1565,13 +1861,29 @@ type ListSubscriptionsParams struct {
 type DeleteSubscriptionParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutSubscriptionParams defines parameters for PutSubscription.
 type PutSubscriptionParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutSubscriptionParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutSubscriptionParamsIfNoneMatch defines parameters for PutSubscription.
+type PutSubscriptionParamsIfNoneMatch string
 
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
@@ -1604,13 +1916,29 @@ type ListWatchesParams struct {
 type DeleteWatchParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutWatchParams defines parameters for PutWatch.
 type PutWatchParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutWatchParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutWatchParamsIfNoneMatch defines parameters for PutWatch.
+type PutWatchParamsIfNoneMatch string
 
 // ListWatchVersionsParams defines parameters for ListWatchVersions.
 type ListWatchVersionsParams struct {
@@ -1648,11 +1976,140 @@ type PutSinkJSONRequestBody = SinkWrite
 // PutSubscriptionJSONRequestBody defines body for PutSubscription for application/json ContentType.
 type PutSubscriptionJSONRequestBody = SubscriptionWrite
 
+// PreviewTemplateJSONRequestBody defines body for PreviewTemplate for application/json ContentType.
+type PreviewTemplateJSONRequestBody = TemplatePreviewRequest
+
 // CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
 type CreateTokenJSONRequestBody = TokenCreate
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
+
+// Getter for additional properties for JsonSchema. Returns the specified
+// element and whether it was found
+func (a JsonSchema) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for JsonSchema
+func (a *JsonSchema) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for JsonSchema to handle AdditionalProperties
+func (a *JsonSchema) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["$schema"]; found {
+		err = json.Unmarshal(raw, &a.Schema)
+		if err != nil {
+			return fmt.Errorf("error reading '$schema': %w", err)
+		}
+		delete(object, "$schema")
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["properties"]; found {
+		err = json.Unmarshal(raw, &a.Properties)
+		if err != nil {
+			return fmt.Errorf("error reading 'properties': %w", err)
+		}
+		delete(object, "properties")
+	}
+
+	if raw, found := object["required"]; found {
+		err = json.Unmarshal(raw, &a.Required)
+		if err != nil {
+			return fmt.Errorf("error reading 'required': %w", err)
+		}
+		delete(object, "required")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for JsonSchema to handle AdditionalProperties
+func (a JsonSchema) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Schema != nil {
+		object["$schema"], err = json.Marshal(a.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '$schema': %w", err)
+		}
+	}
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Properties != nil {
+		object["properties"], err = json.Marshal(a.Properties)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'properties': %w", err)
+		}
+	}
+
+	if a.Required != nil {
+		object["required"], err = json.Marshal(a.Required)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'required': %w", err)
+		}
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // AsConsumerAck0 returns the union data inside the ConsumerAck as a ConsumerAck0
 func (t ConsumerAck) AsConsumerAck0() (ConsumerAck0, error) {
@@ -2070,6 +2527,9 @@ func (t *SecretWrite) UnmarshalJSON(b []byte) error {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListAccess List the admin UI's access list
+	// (GET /v1/access)
+	ListAccess(w http.ResponseWriter, r *http.Request)
 	// ListConsumers List consumers
 	// (GET /v1/consumers)
 	ListConsumers(w http.ResponseWriter, r *http.Request, params ListConsumersParams)
@@ -2094,7 +2554,7 @@ type ServerInterface interface {
 	// ReplayDelivery Replay a delivery
 	// (POST /v1/deliveries/{id}/replay)
 	ReplayDelivery(w http.ResponseWriter, r *http.Request, id DeliveryId)
-	// ListEvents Pull events after a cursor
+	// ListEvents Pull events after a cursor, or the newest events
 	// (GET /v1/events)
 	ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams)
 	// StreamEvents Stream events (server-sent events)
@@ -2157,6 +2617,9 @@ type ServerInterface interface {
 	// PutSubscription Create or replace a subscription
 	// (PUT /v1/subscriptions/{name})
 	PutSubscription(w http.ResponseWriter, r *http.Request, name SubscriptionName, params PutSubscriptionParams)
+	// PreviewTemplate Render a message template against an event
+	// (POST /v1/template-previews)
+	PreviewTemplate(w http.ResponseWriter, r *http.Request)
 	// ListTokens List API tokens
 	// (GET /v1/tokens)
 	ListTokens(w http.ResponseWriter, r *http.Request, params ListTokensParams)
@@ -2189,6 +2652,12 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListAccess List the admin UI's access list
+// (GET /v1/access)
+func (_ Unimplemented) ListAccess(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // ListConsumers List consumers
 // (GET /v1/consumers)
@@ -2238,7 +2707,7 @@ func (_ Unimplemented) ReplayDelivery(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// ListEvents Pull events after a cursor
+// ListEvents Pull events after a cursor, or the newest events
 // (GET /v1/events)
 func (_ Unimplemented) ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -2364,6 +2833,12 @@ func (_ Unimplemented) PutSubscription(w http.ResponseWriter, r *http.Request, n
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// PreviewTemplate Render a message template against an event
+// (POST /v1/template-previews)
+func (_ Unimplemented) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListTokens List API tokens
 // (GET /v1/tokens)
 func (_ Unimplemented) ListTokens(w http.ResponseWriter, r *http.Request, params ListTokensParams) {
@@ -2426,6 +2901,20 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListAccess operation middleware
+func (siw *ServerInterfaceWrapper) ListAccess(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAccess(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListConsumers operation middleware
 func (siw *ServerInterfaceWrapper) ListConsumers(w http.ResponseWriter, r *http.Request) {
@@ -2683,6 +3172,45 @@ func (siw *ServerInterfaceWrapper) ListDeliveries(w http.ResponseWriter, r *http
 		return
 	}
 
+	// ------------- Optional query parameter "sink" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sink", r.URL.Query(), &params.Sink, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sink"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sink", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", r.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "since"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "since", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "until" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "until", r.URL.Query(), &params.Until, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "until"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "until", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListDeliveries(w, r, params)
 	}))
@@ -2829,6 +3357,32 @@ func (siw *ServerInterfaceWrapper) ListEvents(w http.ResponseWriter, r *http.Req
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consumer"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consumer", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "order" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "order", r.URL.Query(), &params.Order, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "order"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "order", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "before" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "before", r.URL.Query(), &params.Before, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "before"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "before", Err: err})
 		}
 		return
 	}
@@ -3429,6 +3983,27 @@ func (siw *ServerInterfaceWrapper) DeleteSink(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteSink(w, r, name, params)
 	}))
@@ -3495,6 +4070,46 @@ func (siw *ServerInterfaceWrapper) PutSink(w http.ResponseWriter, r *http.Reques
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch PutSinkParamsIfNoneMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3598,6 +4213,27 @@ func (siw *ServerInterfaceWrapper) DeleteSubscription(w http.ResponseWriter, r *
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteSubscription(w, r, name, params)
 	}))
@@ -3666,8 +4302,62 @@ func (siw *ServerInterfaceWrapper) PutSubscription(w http.ResponseWriter, r *htt
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch PutSubscriptionParamsIfNoneMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutSubscription(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewTemplate operation middleware
+func (siw *ServerInterfaceWrapper) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewTemplate(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3905,6 +4595,27 @@ func (siw *ServerInterfaceWrapper) DeleteWatch(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteWatch(w, r, name, params)
 	}))
@@ -3971,6 +4682,46 @@ func (siw *ServerInterfaceWrapper) PutWatch(w http.ResponseWriter, r *http.Reque
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dry_run", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch PutWatchParamsIfNoneMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4292,6 +5043,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/v1/sessions/{id}", wrapper.RevokeSession)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/access", wrapper.ListAccess)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/template-previews", wrapper.PreviewTemplate)
+	})
 
 	return r
 }
@@ -4309,6 +5066,8 @@ type InternalErrorApplicationProblemPlusJSONResponse Problem
 type NotFoundApplicationProblemPlusJSONResponse Problem
 
 type PayloadTooLargeApplicationProblemPlusJSONResponse Problem
+
+type PreconditionFailedApplicationProblemPlusJSONResponse Problem
 
 type UnauthorizedResponseHeaders struct {
 	WWWAuthenticate *string
@@ -4331,6 +5090,13 @@ type UnavailableApplicationProblemPlusJSONResponse struct {
 type UnsupportedMediaTypeApplicationProblemPlusJSONResponse Problem
 
 type ValidationFailedApplicationProblemPlusJSONResponse Problem
+
+type ListAccessRequestObject struct {
+}
+
+type ListAccessResponseObject interface {
+	VisitListAccessResponse(w http.ResponseWriter) error
+}
 
 type ListConsumersRequestObject struct {
 	Params ListConsumersParams
@@ -4578,6 +5344,14 @@ type PutSubscriptionResponseObject interface {
 	VisitPutSubscriptionResponse(w http.ResponseWriter) error
 }
 
+type PreviewTemplateRequestObject struct {
+	Body *PreviewTemplateJSONRequestBody
+}
+
+type PreviewTemplateResponseObject interface {
+	VisitPreviewTemplateResponse(w http.ResponseWriter) error
+}
+
 type ListTokensRequestObject struct {
 	Params ListTokensParams
 }
@@ -4656,6 +5430,9 @@ type ListWatchVersionsResponseObject interface {
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListAccess List the admin UI's access list
+	// (GET /v1/access)
+	ListAccess(ctx context.Context, request ListAccessRequestObject) (ListAccessResponseObject, error)
 	// ListConsumers List consumers
 	// (GET /v1/consumers)
 	ListConsumers(ctx context.Context, request ListConsumersRequestObject) (ListConsumersResponseObject, error)
@@ -4680,7 +5457,7 @@ type StrictServerInterface interface {
 	// ReplayDelivery Replay a delivery
 	// (POST /v1/deliveries/{id}/replay)
 	ReplayDelivery(ctx context.Context, request ReplayDeliveryRequestObject) (ReplayDeliveryResponseObject, error)
-	// ListEvents Pull events after a cursor
+	// ListEvents Pull events after a cursor, or the newest events
 	// (GET /v1/events)
 	ListEvents(ctx context.Context, request ListEventsRequestObject) (ListEventsResponseObject, error)
 	// StreamEvents Stream events (server-sent events)
@@ -4743,6 +5520,9 @@ type StrictServerInterface interface {
 	// PutSubscription Create or replace a subscription
 	// (PUT /v1/subscriptions/{name})
 	PutSubscription(ctx context.Context, request PutSubscriptionRequestObject) (PutSubscriptionResponseObject, error)
+	// PreviewTemplate Render a message template against an event
+	// (POST /v1/template-previews)
+	PreviewTemplate(ctx context.Context, request PreviewTemplateRequestObject) (PreviewTemplateResponseObject, error)
 	// ListTokens List API tokens
 	// (GET /v1/tokens)
 	ListTokens(ctx context.Context, request ListTokensRequestObject) (ListTokensResponseObject, error)
@@ -4809,6 +5589,30 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListAccess operation middleware
+func (sh *strictHandler) ListAccess(w http.ResponseWriter, r *http.Request) {
+	var request ListAccessRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAccess(ctx, request.(ListAccessRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAccess")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAccessResponseObject); ok {
+		if err := validResponse.VisitListAccessResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListConsumers operation middleware
@@ -5615,6 +6419,37 @@ func (sh *strictHandler) PutSubscription(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutSubscriptionResponseObject); ok {
 		if err := validResponse.VisitPutSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewTemplate operation middleware
+func (sh *strictHandler) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
+	var request PreviewTemplateRequestObject
+
+	var body PreviewTemplateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewTemplate(ctx, request.(PreviewTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewTemplateResponseObject); ok {
+		if err := validResponse.VisitPreviewTemplateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

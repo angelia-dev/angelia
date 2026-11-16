@@ -9,6 +9,7 @@ export const me = (over: Partial<S['Me']> = {}): S['Me'] => ({
   kind: 'session',
   role: 'admin',
   user: { provider: 'github', subject: '1', login: 'octocat', name: 'The Octocat', avatar_url: 'https://avatars.example/1.png' },
+  session_id: null,
   ...over,
 })
 
@@ -84,6 +85,7 @@ export const delivery = (id: string, over: Partial<S['Delivery']> = {}): S['Deli
   event_id: 'EVT00000000000000000000001',
   subscription_id: 'SUB1',
   subscription_name: 'to-slack',
+  sink: 'slack',
   idempotency_key: `key-${id}`,
   status: 'pending',
   attempts: 0,

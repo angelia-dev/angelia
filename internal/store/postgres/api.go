@@ -98,6 +98,26 @@ func (s *Store) HasEventsAfter(ctx context.Context, seq int64) (bool, error) {
 	return ok, wrap(err, "has events after", strconv.FormatInt(seq, 10))
 }
 
+// ListEventsBefore implements [store.APIReader].
+func (s *Store) ListEventsBefore(ctx context.Context, beforeSeq int64, limit int) ([]store.Event, error) {
+	if limit <= 0 {
+		limit = store.DefaultEventLimit
+	}
+	before := beforeSeq
+	if before <= 0 {
+		before = 1<<63 - 1
+	}
+	rows, err := s.q.ListEventsBefore(ctx, ListEventsBeforeParams{Seq: before, Limit: maxRows(limit)})
+	if err != nil {
+		return nil, wrap(err, "list events before", strconv.FormatInt(beforeSeq, 10))
+	}
+	out := make([]store.Event, len(rows))
+	for i, r := range rows {
+		out[i] = eventFromRow(r)
+	}
+	return out, nil
+}
+
 // ListDeliveryPage implements [store.APIReader].
 func (s *Store) ListDeliveryPage(ctx context.Context, q store.DeliveryQuery) ([]store.DeliveryRow, error) {
 	statuses := q.Statuses
@@ -108,10 +128,17 @@ func (s *Store) ListDeliveryPage(ctx context.Context, q store.DeliveryQuery) ([]
 	if before <= 0 {
 		before = 1<<63 - 1
 	}
+	since, until := int64(0), int64(1<<63-1)
+	if !q.Since.IsZero() {
+		since = millis(q.Since)
+	}
+	if !q.Until.IsZero() {
+		until = millis(q.Until)
+	}
 	rows, err := s.q.ListDeliveriesPage(ctx, ListDeliveriesPageParams{
 		// A nil SubscriptionIDs encodes as null: every subscription.
 		StatusesJson: jsonList(statuses), SubscriptionIdsJson: string(jsonList(q.SubscriptionIDs)),
-		EventID: q.EventID, BeforeSeq: before, BeforeID: q.BeforeID, MaxRows: maxRows(q.Limit),
+		EventID: q.EventID, BeforeSeq: before, BeforeID: q.BeforeID, SinceMs: since, UntilMs: until, MaxRows: maxRows(q.Limit),
 	})
 	if err != nil {
 		return nil, wrap(err, "list deliveries page", "")

@@ -284,3 +284,69 @@ func testClose(t *testing.T, open opener) {
 		t.Fatal("GetTarget on a closed store succeeded")
 	}
 }
+
+// ListEventsBefore reads the log newest first, and a delivery page keeps the
+// deliveries of events recorded in [Since, Until) (story #274).
+func testEventsBeforeAndDeliveryTimeWindow(t *testing.T, open opener) {
+	s := open(t)
+	seed(t, s)
+	ctx := t.Context()
+	for i, id := range []string{"e1", "e2", "e3"} {
+		ev := event(id)
+		ev.CreatedAt = t0.Add(time.Duration(i) * time.Hour)
+		must(t, s.AppendEvent(ctx, ev, []store.Delivery{{ID: "d" + id[1:], SubscriptionID: "s1", Status: store.DeliveryPending}}))
+	}
+	evs, err := s.ListEventsAfter(ctx, 0, 10)
+	must(t, err)
+	seqs := func(es []store.Event) string {
+		out := make([]string, len(es))
+		for i, e := range es {
+			out[i] = e.ID
+		}
+		return fmt.Sprint(out)
+	}
+	for _, tc := range []struct {
+		before int64
+		limit  int
+		want   string
+	}{
+		{0, 10, "[e3 e2 e1]"},
+		{0, 2, "[e3 e2]"},
+		{evs[2].Seq, 10, "[e2 e1]"},
+		{evs[1].Seq, 1, "[e1]"},
+		{evs[0].Seq, 10, "[]"},
+		{evs[2].Seq + 100, 10, "[e3 e2 e1]"},
+	} {
+		got, err := s.ListEventsBefore(ctx, tc.before, tc.limit)
+		must(t, err)
+		if seqs(got) != tc.want {
+			t.Errorf("ListEventsBefore(%d, %d) = %s, want %s", tc.before, tc.limit, seqs(got), tc.want)
+		}
+	}
+	if got, err := s.ListEventsBefore(ctx, 0, 1); err != nil || len(got) != 1 || !got[0].CreatedAt.Equal(t0.Add(2*time.Hour)) || string(got[0].Payload) != `{"v":1}` {
+		t.Errorf("ListEventsBefore row = %+v, %v", got, err)
+	}
+
+	page := func(q store.DeliveryQuery) string {
+		t.Helper()
+		q.Limit = 10
+		rows, err := s.ListDeliveryPage(ctx, q)
+		must(t, err)
+		return fmt.Sprint(idsOf(rows))
+	}
+	for _, tc := range []struct {
+		name         string
+		since, until time.Time
+		want         string
+	}{
+		{"no window", time.Time{}, time.Time{}, "[d3 d2 d1]"},
+		{"since is inclusive", t0.Add(time.Hour), time.Time{}, "[d3 d2]"},
+		{"until is exclusive", time.Time{}, t0.Add(2 * time.Hour), "[d2 d1]"},
+		{"both", t0.Add(30 * time.Minute), t0.Add(90 * time.Minute), "[d2]"},
+		{"empty", t0.Add(3 * time.Hour), time.Time{}, "[]"},
+	} {
+		if got := page(store.DeliveryQuery{Since: tc.since, Until: tc.until}); got != tc.want {
+			t.Errorf("%s: page = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}

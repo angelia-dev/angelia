@@ -29,6 +29,9 @@ type meJSON struct {
 	Kind        string           `json:"kind"`
 	Role        *string          `json:"role"`
 	User        *sessionUserJSON `json:"user"`
+	// SessionID is the session's public id, never the cookie (spec
+	// docs/api.md decision 49).
+	SessionID *string `json:"session_id"`
 }
 
 // sessionJSON is the Session schema.
@@ -64,6 +67,7 @@ func (s *Server) GetMe(ctx context.Context, _ GetMeRequestObject) (GetMeResponse
 	if si := p.Session; si != nil {
 		out.Kind = kindSession
 		out.Role = orNull(si.Role)
+		out.SessionID = orNull(si.ID)
 		out.User = &sessionUserJSON{
 			Provider: si.Provider, Subject: si.Subject, Login: si.Login,
 			Name: orNull(si.Name), AvatarURL: orNull(si.AvatarURL),

@@ -114,6 +114,21 @@ func (d *specDoc) validate(schema, v any, ptr string, errs *[]fieldError) {
 	if alts := listOf(m["oneOf"]); len(alts) > 0 {
 		d.validateOneOf(alts, v, ptr, errs, bad)
 	}
+	if n, ok := m["not"]; ok {
+		var sub []fieldError
+		d.validate(n, v, ptr, &sub)
+		if len(sub) == 0 {
+			// The subschema's description says what is excluded, as in
+			// TemplatePreviewRequest ("more than one of ...").
+			detail := "must not match the excluded schema"
+			if nm, ok := d.deref(n).(map[string]any); ok {
+				if what, ok := nm["description"].(string); ok && what != "" {
+					detail = "must not have " + what
+				}
+			}
+			bad(ptr, "%s", detail)
+		}
+	}
 }
 
 func (d *specDoc) validateString(m map[string]any, s, ptr string, bad func(string, string, ...any)) {

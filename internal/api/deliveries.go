@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/sink"
@@ -19,26 +20,52 @@ const replayListMax = 100
 
 type deliveryReader interface {
 	GetSubscription(ctx context.Context, id string) (store.Subscription, error)
+	GetSink(ctx context.Context, id string) (store.Sink, error)
+}
+
+// deliveryNames are the current names of a delivery's subscription and of
+// the sink it delivers to, nil once the subscription was deleted (or for a
+// row without a name).
+type deliveryNames struct{ subscription, sink *string }
+
+// namesCache caches deliveryNames by subscription id.
+type namesCache map[string]deliveryNames
+
+// namesOf returns the current names for a subscription id.
+func (c namesCache) namesOf(ctx context.Context, r deliveryReader, subID string) (deliveryNames, error) {
+	if n, ok := c[subID]; ok {
+		return n, nil
+	}
+	var n deliveryNames
+	sub, err := r.GetSubscription(ctx, subID)
+	switch {
+	case isNotFound(err):
+	case err != nil:
+		return n, err
+	default:
+		n.subscription = orNull(sub.Name)
+		k, err := r.GetSink(ctx, sub.SinkID)
+		switch {
+		case isNotFound(err):
+		case err != nil:
+			return n, err
+		default:
+			n.sink = orNull(k.Name)
+		}
+	}
+	c[subID] = n
+	return n, nil
 }
 
 // deliveryJSONOf builds the response of a delivery. names caches the current
-// name of each subscription ("" once it was deleted).
-func deliveryJSONOf(ctx context.Context, r deliveryReader, d store.Delivery, now time.Time, names map[string]*string) (deliveryJSON, error) {
-	name, ok := names[d.SubscriptionID]
-	if !ok {
-		sub, err := r.GetSubscription(ctx, d.SubscriptionID)
-		switch {
-		case err == nil && sub.Name != "":
-			n := sub.Name
-			name = &n
-		case err == nil, isNotFound(err):
-		default:
-			return deliveryJSON{}, err
-		}
-		names[d.SubscriptionID] = name
+// names of each subscription and its sink.
+func deliveryJSONOf(ctx context.Context, r deliveryReader, d store.Delivery, now time.Time, names namesCache) (deliveryJSON, error) {
+	n, err := names.namesOf(ctx, r, d.SubscriptionID)
+	if err != nil {
+		return deliveryJSON{}, err
 	}
 	out := deliveryJSON{
-		ID: d.ID, EventID: d.EventID, SubscriptionID: d.SubscriptionID, SubscriptionName: name,
+		ID: d.ID, EventID: d.EventID, SubscriptionID: d.SubscriptionID, SubscriptionName: n.subscription, Sink: n.sink,
 		IdempotencyKey: d.EventID + ":" + d.SubscriptionID, Status: d.Status, Attempts: d.Attempts,
 	}
 	if d.Status == store.DeliveryPending {
@@ -80,7 +107,7 @@ func (s *Server) GetDelivery(ctx context.Context, req GetDeliveryRequestObject) 
 	if err != nil {
 		return nil, storeProblem(err, "delivery", req.Id)
 	}
-	body, err := deliveryJSONOf(ctx, s.opts.Store, d, s.now(), map[string]*string{})
+	body, err := deliveryJSONOf(ctx, s.opts.Store, d, s.now(), namesCache{})
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +135,19 @@ func (s *Server) ListDeliveries(ctx context.Context, req ListDeliveriesRequestOb
 		}
 		q.SubscriptionIDs = ids
 	}
+	if req.Params.Sink != nil {
+		ids, err := s.sinkSubscriptionIDs(ctx, *req.Params.Sink)
+		if err != nil {
+			return nil, err
+		}
+		if q.SubscriptionIDs != nil { // both filters: both must hold
+			ids = slices.DeleteFunc(ids, func(id string) bool { return !slices.Contains(q.SubscriptionIDs, id) })
+		}
+		q.SubscriptionIDs = ids
+	}
+	if p := deliveryWindow(&q, req.Params.Since, req.Params.Until); p != nil {
+		return nil, p
+	}
 	rows := []store.DeliveryRow{}
 	if q.SubscriptionIDs == nil || len(q.SubscriptionIDs) > 0 {
 		var err error
@@ -121,7 +161,7 @@ func (s *Server) ListDeliveries(ctx context.Context, req ListDeliveriesRequestOb
 		last := rows[limit-1]
 		page.NextCursor = encodeCursor(pageCursor{K: cursorDeliveries, Seq: last.EventSeq, I: last.ID})
 	}
-	now, names := s.now(), map[string]*string{}
+	now, names := s.now(), namesCache{}
 	for _, r := range rows {
 		dj, err := deliveryJSONOf(ctx, s.opts.Store, r.Delivery, now, names)
 		if err != nil {
@@ -130,6 +170,44 @@ func (s *Server) ListDeliveries(ctx context.Context, req ListDeliveriesRequestOb
 		page.Items = append(page.Items, dj)
 	}
 	return jsonOK(page), nil
+}
+
+// sinkSubscriptionIDs returns the ids of the subscriptions that deliver to
+// the sink named name now; an unknown sink gives an empty, non-nil list.
+func (s *Server) sinkSubscriptionIDs(ctx context.Context, name string) ([]string, error) {
+	k, err := s.opts.Store.SinkByName(ctx, name)
+	switch {
+	case isNotFound(err):
+		return []string{}, nil
+	case err != nil:
+		return nil, err
+	}
+	subs, err := s.opts.Store.SubscriptionsBySink(ctx, k.ID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		ids = append(ids, sub.ID)
+	}
+	return ids, nil
+}
+
+// deliveryWindow sets the event-time window of a delivery query from since
+// (inclusive) and until (exclusive), already checked as timestamps; until
+// must be after since (spec docs/api.md decision 48).
+func deliveryWindow(q *store.DeliveryQuery, since, until *Timestamp) *ProblemDetail {
+	parse := func(v *Timestamp) time.Time {
+		if v == nil {
+			return time.Time{}
+		}
+		return v.UTC()
+	}
+	q.Since, q.Until = parse(since), parse(until)
+	if since != nil && until != nil && !q.Until.After(q.Since) {
+		return problem(SlugBadRequest, "query parameter until: must be after since")
+	}
+	return nil
 }
 
 // subscriptionIDs resolves a subscription given by name (its current id) or
@@ -196,7 +274,7 @@ func (s *Server) ReplayDelivery(ctx context.Context, req ReplayDeliveryRequestOb
 		if d, err = tx.GetDelivery(ctx, d.ID); err != nil {
 			return err
 		}
-		body, err = deliveryJSONOf(ctx, tx, d, now, map[string]*string{})
+		body, err = deliveryJSONOf(ctx, tx, d, now, namesCache{})
 		return err
 	})
 	if err != nil {
@@ -264,7 +342,7 @@ func (s *Server) CreateReplay(ctx context.Context, _ CreateReplayRequestObject) 
 		if err != nil {
 			return err
 		}
-		names := map[string]*string{}
+		names := namesCache{}
 		for _, r := range rows {
 			if !in.since.IsZero() && !eventTimeIn(r.EventPayload, in.since, in.until) {
 				continue

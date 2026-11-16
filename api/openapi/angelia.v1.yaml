@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.8.0
+  version: 0.9.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -27,6 +27,9 @@ info:
     - The instance's admin web UI signs people in (GitHub) and authenticates their requests with a
       session cookie instead of a token, with the scope of their role. `GET /v1/me` says who is
       calling; browser sessions are listed and revoked through `/v1/sessions` (`admin`).
+    - Watches, sinks and subscriptions carry an `ETag`; `If-Match` and `If-None-Match: *` on `PUT`
+      and `DELETE` make a write conditional (`412 precondition-failed`). Without them the last
+      write wins.
   contact:
     name: Angelia maintainers
     url: https://github.com/angelia-dev/spec/issues
@@ -63,6 +66,10 @@ tags:
     description: The caller's own principal, token or browser session.
   - name: sessions
     description: Browser sessions of the admin web UI, signed in with an identity provider (GitHub).
+  - name: access
+    description: The instance's `ui.access` list, who may sign in to the admin web UI and with which role (read-only).
+  - name: templates
+    description: Render a message template against an event without delivering anything.
 
 paths:
   /v1/watches:
@@ -112,6 +119,9 @@ paths:
       responses:
         '200':
           description: The watch.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -145,11 +155,18 @@ paths:
 
         A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
         needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+
+        Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+        writes only if the watch is still that version, else `412 precondition-failed`;
+        `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+        without them the last write wins.
       tags: [watches]
       security:
         - bearerAuth: [write]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IfNoneMatch'
       requestBody:
         required: true
         content:
@@ -165,6 +182,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -177,6 +196,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
             Location:
               $ref: '#/components/headers/Location'
           content:
@@ -194,6 +215,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '415':
@@ -211,11 +234,15 @@ paths:
         No new events or deliveries are created for the watch. Its events and deliveries are kept
         as history until retention prunes them. The target and its known versions are deleted
         when no other watch uses them.
+
+        With `If-Match`, the watch is deleted only if it is still that version, else
+        `412 precondition-failed`.
       tags: [watches]
       security:
         - bearerAuth: [write]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
       responses:
         '204':
           description: The watch was deleted (or, with `dry_run=true`, would be).
@@ -230,6 +257,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -290,7 +319,7 @@ paths:
   /v1/events:
     get:
       operationId: listEvents
-      summary: Pull events after a cursor
+      summary: Pull events after a cursor, or the newest events
       description: |
         The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
         To resume after downtime, pass the `next_after` of the previous page: no committed event is
@@ -311,6 +340,15 @@ paths:
         of `0` is checked like any other position. Reading never acknowledges: the
         client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
         `next_after`) once it has processed the page.
+
+        With `order=desc`, the page lists the newest events first, starting at the head of the log,
+        or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+        `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+        so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+        scanned, so a client that shows the newest events can then follow new ones with
+        `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+        it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+        `before` needs `order=desc` (`400`).
       tags: [events]
       security:
         - bearerAuth: [read]
@@ -321,9 +359,11 @@ paths:
         - $ref: '#/components/parameters/TypeFilter'
         - $ref: '#/components/parameters/SourceFilter'
         - $ref: '#/components/parameters/ConsumerParam'
+        - $ref: '#/components/parameters/EventOrder'
+        - $ref: '#/components/parameters/Before'
       responses:
         '200':
-          description: The events after the cursor, oldest first.
+          description: The events after the cursor, oldest first; with `order=desc`, the newest events below `before`, newest first.
           content:
             application/json:
               schema:
@@ -331,6 +371,8 @@ paths:
               examples:
                 page:
                   $ref: '#/components/examples/EventPage'
+                newestFirst:
+                  $ref: '#/components/examples/EventPageNewestFirst'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -371,10 +413,12 @@ paths:
           does not affect it. The stream never acknowledges: the client calls
           `POST /v1/consumers/{name}/ack`.
         - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-        - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-          cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-          checked again at least every 60 seconds: once it is revoked, the server closes the
-          stream.
+        - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+          set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+          instance on the same origin, authenticates with its session cookie instead, so a plain
+          `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+          session, is checked again at least every 60 seconds: once it is revoked or the session
+          ends, the server closes the stream.
       tags: [events]
       security:
         - bearerAuth: [read]
@@ -738,6 +782,9 @@ paths:
       responses:
         '200':
           description: The sink.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -769,11 +816,18 @@ paths:
         resolves it, fails before sending and is retried until it is stored. Needs
         the `admin` scope: a sink names secrets and decides where the instance sends requests.
         The next delivery attempt uses the new configuration.
+
+        Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+        writes only if the sink is still that version, else `412 precondition-failed`;
+        `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+        without them the last write wins.
       tags: [sinks]
       security:
         - bearerAuth: [admin]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IfNoneMatch'
       requestBody:
         required: true
         content:
@@ -789,6 +843,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -801,6 +857,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
             Location:
               $ref: '#/components/headers/Location'
           content:
@@ -818,6 +876,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '415':
@@ -834,11 +894,15 @@ paths:
       description: |
         Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
         the subscriptions first. Deliveries already recorded are kept as history.
+
+        With `If-Match`, the sink is deleted only if it is still that version, else
+        `412 precondition-failed`.
       tags: [sinks]
       security:
         - bearerAuth: [admin]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
       responses:
         '204':
           description: The sink was deleted (or, with `dry_run=true`, would be).
@@ -853,6 +917,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1073,6 +1139,9 @@ paths:
       responses:
         '200':
           description: The subscription.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -1104,11 +1173,18 @@ paths:
 
         A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
         needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+
+        Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+        writes only if the subscription is still that version, else `412 precondition-failed`;
+        `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+        without them the last write wins.
       tags: [subscriptions]
       security:
         - bearerAuth: [write]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IfNoneMatch'
       requestBody:
         required: true
         content:
@@ -1124,6 +1200,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             application/json:
               schema:
@@ -1136,6 +1214,8 @@ paths:
           headers:
             Angelia-Change:
               $ref: '#/components/headers/AngeliaChange'
+            ETag:
+              $ref: '#/components/headers/ETag'
             Location:
               $ref: '#/components/headers/Location'
           content:
@@ -1153,6 +1233,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '415':
@@ -1169,11 +1251,15 @@ paths:
       description: |
         Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
         removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+
+        With `If-Match`, the subscription is deleted only if it is still that version, else
+        `412 precondition-failed`.
       tags: [subscriptions]
       security:
         - bearerAuth: [write]
       parameters:
         - $ref: '#/components/parameters/DryRun'
+        - $ref: '#/components/parameters/IfMatch'
       responses:
         '204':
           description: The subscription was deleted (or, with `dry_run=true`, would be).
@@ -1188,6 +1274,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1199,7 +1287,13 @@ paths:
       summary: List deliveries
       description: |
         Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-        its subscription: `subscription_name` is `null` once the subscription was deleted.
+        its subscription: `subscription_name` and `sink` are `null` once the subscription was
+        deleted.
+
+        `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+        log, the order of this list, not the time of an attempt. `until` must be after `since`
+        (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+        with `subscription` too, both must hold.
       tags: [deliveries]
       security:
         - bearerAuth: [read]
@@ -1228,6 +1322,24 @@ paths:
           schema:
             $ref: '#/components/schemas/Ulid'
           example: 01JBX2A7C8D9E0F1G2H3J4K5M6
+        - name: sink
+          in: query
+          description: Only deliveries of the subscriptions that deliver to this sink now, by name. An unknown sink matches nothing.
+          schema:
+            $ref: '#/components/schemas/Name'
+          example: ci-webhook
+        - name: since
+          in: query
+          description: Only deliveries of events recorded at or after this time.
+          schema:
+            $ref: '#/components/schemas/Timestamp'
+          example: '2026-11-01T00:00:00.000Z'
+        - name: until
+          in: query
+          description: Only deliveries of events recorded before this time. Must be after `since`.
+          schema:
+            $ref: '#/components/schemas/Timestamp'
+          example: '2026-11-02T00:00:00.000Z'
       responses:
         '200':
           description: One page of deliveries.
@@ -1718,6 +1830,101 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v1/access:
+    get:
+      operationId: listAccess
+      summary: List the admin UI's access list
+      description: |
+        The entries of the instance's `ui.access` list, in the order of its configuration: who may
+        sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+        its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+        the list is configuration, changed in the instance's configuration file and read at start.
+        Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+        the list says who holds which role.
+      tags: [access]
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '200':
+          description: The access list, possibly empty.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessList'
+              examples:
+                access:
+                  $ref: '#/components/examples/AccessList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/template-previews:
+    post:
+      operationId: previewTemplate
+      summary: Render a message template against an event
+      description: |
+        Renders `template` as a subscription template (or a template-valued sink key such as
+        `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+        delivery would get. The event is `event` (an envelope given in the request), `event_id`
+        (an event of the log) or `sample` (a built-in sample event, `full` by default).
+
+        Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+        the same functions and no network, file, environment or clock access; it sees the event only,
+        so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+        The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+
+        A template that does not parse or fails to render is a `200` with `error` set: the request
+        was fine. Error reasons give a position and a fixed reason, never the template text.
+      tags: [templates]
+      security:
+        - bearerAuth: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplatePreviewRequest'
+            examples:
+              sample:
+                $ref: '#/components/examples/TemplatePreviewSample'
+              storedEvent:
+                $ref: '#/components/examples/TemplatePreviewStoredEvent'
+      responses:
+        '200':
+          description: The output, or the template's error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplatePreview'
+              examples:
+                rendered:
+                  $ref: '#/components/examples/TemplatePreviewRendered'
+                failed:
+                  $ref: '#/components/examples/TemplatePreviewFailed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1765,6 +1972,16 @@ components:
         operations do not list this scheme.
 
   headers:
+    ETag:
+      description: |
+        The version of the resource, a strong entity tag. It is derived from the stored resource
+        (its configuration, not its status), so it changes exactly when a write changes the
+        resource, and it is the same for every caller and replica. Opaque: compare it, do not parse
+        it. Send it back in `If-Match`.
+      schema:
+        type: string
+        pattern: '^"[\x21\x23-\x7e]{1,64}"$'
+      example: '"3q2-7wEAAAAAAAAAAAAAAA"'
     AngeliaChange:
       description: What the request changed (or, with `dry_run=true`, would change).
       schema:
@@ -1784,6 +2001,42 @@ components:
       example: Bearer realm="angelia", error="invalid_token"
 
   parameters:
+    IfMatch:
+      name: If-Match
+      in: header
+      description: |
+        Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+        or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+        comparison: a weak tag (`W/"..."`) never matches.
+      schema:
+        type: string
+        maxLength: 1024
+        pattern: '^(\*|(W/)?"[\x21\x23-\x7e]*"([ \t]*,[ \t]*(W/)?"[\x21\x23-\x7e]*")*)$'
+      example: '"3q2-7wEAAAAAAAAAAAAAAA"'
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: '`*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.'
+      schema:
+        type: string
+        enum: ['*']
+      example: '*'
+    EventOrder:
+      name: order
+      in: query
+      description: '`asc` (the default): oldest first, after `after`. `desc`: newest first, below `before`. `desc` cannot be combined with `after` or `consumer`.'
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+      example: desc
+    Before:
+      name: before
+      in: query
+      description: With `order=desc`, return the events whose `seq` is lower than this, the `next_before` of the previous page. Absent, the page starts at the newest event. Needs `order=desc`.
+      schema:
+        $ref: '#/components/schemas/Seq'
+      example: 4182
     WatchName:
       name: name
       in: path
@@ -2027,6 +2280,15 @@ components:
               $ref: '#/components/examples/ProblemSecretInUse'
             notReplayable:
               $ref: '#/components/examples/ProblemNotReplayable'
+    PreconditionFailed:
+      description: '`If-Match` names no current version of the resource, or `If-None-Match: *` found it existing (`precondition-failed`). Nothing was changed.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            preconditionFailed:
+              $ref: '#/components/examples/ProblemPreconditionFailed'
     UnsupportedMediaType:
       description: The request body is not `application/json`.
       content:
@@ -2382,7 +2644,7 @@ components:
             - type: 'null'
     EventPage:
       type: object
-      required: [items, next_after, has_more]
+      required: [items, next_after, has_more, next_before]
       properties:
         items:
           type: array
@@ -2392,8 +2654,13 @@ components:
           $ref: '#/components/schemas/Seq'
           description: The cursor for the next request, the highest `seq` the server scanned, which can be beyond the last item when the filters skipped events, or the request's `after` when nothing was scanned.
         has_more:
-          description: Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`.
+          description: Whether the scan stopped before the end of the log (with `order=desc`, before the oldest event kept). A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after` (with `order=desc`, `before=<next_before>`).
           type: boolean
+        next_before:
+          description: With `order=desc`, the cursor for the next (older) page, the lowest `seq` the server scanned, or the request's `before` when nothing was scanned; `null` with `order=asc`, and on an empty log without `before`.
+          oneOf:
+            - $ref: '#/components/schemas/Seq'
+            - type: 'null'
 
     ConsumerFilter:
       description: |
@@ -2642,9 +2909,9 @@ components:
             - type: 'null'
     Me:
       description: |
-        The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+        The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token.
       type: object
-      required: [principal_id, name, scope, kind, role, user]
+      required: [principal_id, name, scope, kind, role, user, session_id]
       properties:
         principal_id:
           $ref: '#/components/schemas/PrincipalId'
@@ -2667,6 +2934,11 @@ components:
           description: For a session, who signed in; `null` for a token.
           oneOf:
             - $ref: '#/components/schemas/SessionUser'
+            - type: 'null'
+        session_id:
+          description: For a session, its `id`, the one `GET /v1/sessions` lists (so the UI can mark the current session and offer to revoke the others); `null` for a token. Never the cookie.
+          oneOf:
+            - $ref: '#/components/schemas/Ulid'
             - type: 'null'
     Session:
       description: |
@@ -2715,6 +2987,51 @@ components:
             $ref: '#/components/schemas/Session'
         next_cursor:
           $ref: '#/components/schemas/NextCursor'
+    AccessEntry:
+      description: |
+        One entry of the instance's `ui.access` list. An entry names one person of an identity
+        provider, by login or by the provider's numeric id, and gives a role; a person listed
+        several times gets the highest role. Never carries OAuth configuration or secrets.
+      type: object
+      required: [provider, kind, login, subject, pinned, role]
+      properties:
+        provider:
+          description: The identity provider; today `github`.
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,31}$'
+          examples: [github]
+        kind:
+          description: What the entry names. Today always `user`; later kinds (such as a team or an organisation) may be added, so clients must accept other values.
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,31}$'
+          examples: [user]
+        login:
+          description: The login the entry names, in lower case (`github_user`), or `null` for an entry by id (`github_id`).
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 255
+            - type: 'null'
+        subject:
+          description: The provider's id of the person (for GitHub the numeric user id, as a string). For an entry by id, that id; for an entry by login, the id the login was pinned to at its first sign-in, or `null` while nobody has signed in with it.
+          oneOf:
+            - type: string
+              pattern: '^[!-~]{1,255}$'
+            - type: 'null'
+        pinned:
+          description: Whether `subject` comes from the pin of a login entry. Once pinned, only that id gets the role, even if the login is renamed and taken by another account.
+          type: boolean
+        role:
+          $ref: '#/components/schemas/UiRole'
+    AccessList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          description: The entries, in the order of the configuration.
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessEntry'
 
     SinkWrite:
       description: |
@@ -3013,6 +3330,7 @@ components:
         - event_id
         - subscription_id
         - subscription_name
+        - sink
         - idempotency_key
         - status
         - attempts
@@ -3029,6 +3347,11 @@ components:
           $ref: '#/components/schemas/Ulid'
         subscription_name:
           description: The subscription's current name, or `null` once it was deleted.
+          oneOf:
+            - $ref: '#/components/schemas/Name'
+            - type: 'null'
+        sink:
+          description: The name of the sink the subscription delivers to now, or `null` once the subscription was deleted. A subscription moved to another sink shows the new one.
           oneOf:
             - $ref: '#/components/schemas/Name'
             - type: 'null'
@@ -3149,12 +3472,41 @@ components:
           examples: ['angelia:host/v0']
         config_schema:
           description: The JSON Schema of the kind's configuration (a watch's `coordinates` for a source, a sink's `config` for a sink), or `null` when the kind does not publish one. A property with `x-angelia-secret` true holds a secret value; the server masks it in every response and refuses it in API writes.
-          type: [object, 'null']
+          oneOf:
+            - $ref: '#/components/schemas/JsonSchema'
+            - type: 'null'
         allowed_hosts:
           description: For a third-party plugin, the hosts it may reach (manifest and operator entries merged); empty for built-ins, which use the instance's network rules.
           type: array
           items:
             $ref: '#/components/schemas/PluginHost'
+    JsonSchema:
+      description: |
+        A JSON Schema document of the 2020-12 dialect (https://json-schema.org/draft/2020-12/schema),
+        as an object (never the boolean forms `true` or `false`). Any keyword of the dialect may
+        appear, and the `x-angelia-*` annotations of docs/api.md; clients that build a form from it
+        should ignore keywords they do not know. The members below are the ones a client most often
+        reads.
+      type: object
+      additionalProperties: true
+      properties:
+        $schema:
+          description: The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+          type: string
+          enum: ['https://json-schema.org/draft/2020-12/schema']
+        type:
+          description: A JSON type name, or a list of them.
+        description:
+          type: string
+        properties:
+          description: The schema of each member of an object.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JsonSchema'
+        required:
+          type: array
+          items:
+            type: string
     PluginHost:
       type: object
       required: [host, origin, credential_ports]
@@ -3185,6 +3537,74 @@ components:
         next_cursor:
           $ref: '#/components/schemas/NextCursor'
 
+    TemplatePreviewRequest:
+      description: |
+        A template and the event to render it with: at most one of `event`, `event_id` and
+        `sample`; with none of them, the built-in `full` sample.
+      type: object
+      required: [template]
+      additionalProperties: false
+      properties:
+        template:
+          description: A Go `text/template`, as a subscription's `template`.
+          type: string
+          minLength: 1
+          maxLength: 32768
+        event:
+          description: A CloudEvents envelope as `EventRecord.event` holds it. Rendered as given; it is not checked against the envelope schema, only required to be an object.
+          type: object
+        event_id:
+          $ref: '#/components/schemas/Ulid'
+          description: The id of an event of the log (`404` when there is none).
+        sample:
+          description: A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+          type: string
+          enum: [full, sparse]
+      not:
+        description: more than one of event, event_id and sample
+        anyOf:
+          - required: [event, event_id]
+          - required: [event, sample]
+          - required: [event_id, sample]
+    TemplatePreview:
+      description: The result of rendering a template. Exactly one of `output` and `error` is `null`.
+      type: object
+      required: [output, content_type, error]
+      properties:
+        output:
+          description: The rendered body, as a delivery would send it, or `null` when the template failed. Bytes that are not UTF-8 are replaced by U+FFFD.
+          type: [string, 'null']
+          maxLength: 262144
+        content_type:
+          description: The `Content-Type` a webhook delivery would send with the output (`application/json` when the output is a JSON object or array, else `text/plain`), or `null` when the template failed.
+          type: [string, 'null']
+          examples: [application/json; charset=utf-8]
+        error:
+          description: Why the template failed, or `null`.
+          oneOf:
+            - $ref: '#/components/schemas/TemplateError'
+            - type: 'null'
+    TemplateError:
+      type: object
+      required: [kind, line, column, reason]
+      properties:
+        kind:
+          description: '`parse`: the template does not parse. `not_allowed`: it uses something templates may not (`define`, `template`, `block`). `exec`: it failed on this event (a missing key, a function error). `timeout`: it ran past its time limit. `output_too_large`: its output passed the size limit. `invalid_event`: the event is not a JSON object. Open set.'
+          type: string
+          pattern: '^[a-z][a-z_]{0,31}$'
+          examples: [exec]
+        line:
+          description: The line of the template where it failed, from 1, or `null` when unknown.
+          type: [integer, 'null']
+          minimum: 1
+        column:
+          description: The column (in bytes, from 1), or `null` when unknown.
+          type: [integer, 'null']
+          minimum: 1
+        reason:
+          description: What went wrong, from a fixed set of messages. It never quotes the template text, which may hold something that should not be echoed.
+          type: string
+          maxLength: 1024
     NextCursor:
       description: The cursor of the next page, or `null` on the last page.
       oneOf:
@@ -3677,6 +4097,51 @@ components:
                 purl: pkg:pypi/requests@2.33.0
         next_after: 4190
         has_more: false
+        next_before: null
+    EventPageNewestFirst:
+      summary: The newest event (order=desc&limit=1)
+      value:
+        items:
+          - seq: 4190
+            ref_event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+            event:
+              specversion: '1.0'
+              type: dev.angelia.release.yanked.v1
+              source: angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2
+              id: 01JBXC4D5E6F7G8H9J0K1M2N3P
+              subject: pypi:requests@2.33.0
+              time: '2026-11-02T09:30:01.207Z'
+              datacontenttype: application/json
+              dataschema: https://github.com/angelia-dev/spec/schemas/release/v1.json
+              data:
+                source: pypi
+                package: requests
+                version: 2.33.0
+                normalized_version: 2.33.0
+                previous_version: 2.32.5
+                scheme: pep440
+                bump: minor
+                backport: false
+                prerelease: false
+                yanked: true
+                published_at: '2026-10-27T14:02:11Z'
+                detected_at: '2026-11-02T09:30:00Z'
+                cooldown_satisfied_at: null
+                urls:
+                  release: https://pypi.org/project/requests/2.33.0/
+                  changelog: https://github.com/psf/requests/blob/main/HISTORY.md
+                  artifact: null
+                notes: null
+                watch:
+                  id: 01JBX1Z3M4N5P6Q7R8S9T0V1W2
+                  name: requests
+                  labels:
+                    team: platform
+                    repo: api
+                purl: pkg:pypi/requests@2.33.0
+        next_after: 4190
+        has_more: true
+        next_before: 4190
     EventStream:
       summary: The retry hint, one event and a keep-alive
       value: |
@@ -3924,6 +4389,7 @@ components:
         kind: token
         role: null
         user: null
+        session_id: null
     MeSession:
       summary: A person signed in to the admin UI with GitHub
       value:
@@ -3938,6 +4404,55 @@ components:
           login: mmornati
           name: Marco Mornati
           avatar_url: https://avatars.githubusercontent.com/u/139323?v=4
+        session_id: 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+    AccessList:
+      summary: An admin pinned by login, an editor by id, and a viewer nobody signed in as yet
+      value:
+        items:
+          - provider: github
+            kind: user
+            login: mmornati
+            subject: '139323'
+            pinned: true
+            role: admin
+          - provider: github
+            kind: user
+            login: null
+            subject: '5550001'
+            pinned: false
+            role: editor
+          - provider: github
+            kind: user
+            login: octo-viewer
+            subject: null
+            pinned: false
+            role: viewer
+    TemplatePreviewSample:
+      summary: A Slack-style message against the built-in full sample
+      value:
+        template: '{"text": "{{.data.package}} {{.data.version}} was released"}'
+        sample: full
+    TemplatePreviewStoredEvent:
+      summary: The same template against an event of the log
+      value:
+        template: '{"text": "{{.data.package}} {{.data.version}} was released"}'
+        event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
+    TemplatePreviewRendered:
+      summary: The template rendered
+      value:
+        output: '{"text": "requests 2.33.0 was released"}'
+        content_type: application/json; charset=utf-8
+        error: null
+    TemplatePreviewFailed:
+      summary: 'The template {"text": "{{.data.pakage}}"} names a key the event does not have'
+      value:
+        output: null
+        content_type: null
+        error:
+          kind: exec
+          line: 1
+          column: 17
+          reason: unknown key "pakage"
     SessionPage:
       summary: A page with `include_ended=true`, a session the user signed out of and an active one
       value:
@@ -4026,6 +4541,7 @@ components:
         event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
         subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
         subscription_name: platform-ci
+        sink: ci-webhook
         idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
         status: dead
         attempts: 1
@@ -4039,6 +4555,7 @@ components:
         event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
         subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
         subscription_name: platform-ci
+        sink: ci-webhook
         idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
         status: pending
         attempts: 1
@@ -4053,6 +4570,7 @@ components:
             event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
             subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
             subscription_name: platform-ci
+            sink: ci-webhook
             idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
             status: dead
             attempts: 1
@@ -4063,6 +4581,7 @@ components:
             event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
             subscription_id: 01JBX0ZZ9Y8X7W6V5T4S3R2Q1P
             subscription_name: null
+            sink: null
             idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX0ZZ9Y8X7W6V5T4S3R2Q1P
             status: dead
             attempts: 0
@@ -4092,6 +4611,7 @@ components:
             event_id: 01JBX2A7C8D9E0F1G2H3J4K5M6
             subscription_id: 01JBX1YB3C4D5E6F7G8H9J0K1M
             subscription_name: platform-ci
+            sink: ci-webhook
             idempotency_key: 01JBX2A7C8D9E0F1G2H3J4K5M6:01JBX1YB3C4D5E6F7G8H9J0K1M
             status: pending
             attempts: 1
@@ -4172,6 +4692,14 @@ components:
         title: CSRF check failed
         status: 403
         detail: 'a request authenticated by the session cookie needs an Origin equal to the instance public URL and X-Angelia-CSRF: 1'
+        instance: /v1/watches/requests
+    ProblemPreconditionFailed:
+      summary: The watch changed since the client read it
+      value:
+        type: https://github.com/angelia-dev/spec/blob/main/docs/api.md#problem-precondition-failed
+        title: Precondition failed
+        status: 412
+        detail: watch requests is not at the version If-Match names; read it again
         instance: /v1/watches/requests
     ProblemNotFound:
       summary: No such watch

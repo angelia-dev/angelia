@@ -143,6 +143,10 @@ ORDER BY seq DESC LIMIT 1;
 -- name: ListEventsAfter :many
 SELECT * FROM event WHERE seq > $1 ORDER BY seq LIMIT $2;
 
+-- Newest first, for GET /v1/events?order=desc (story #274).
+-- name: ListEventsBefore :many
+SELECT * FROM event WHERE seq < $1 ORDER BY seq DESC LIMIT $2;
+
 -- All deliveries of an event in one statement (ADR 0028 §1: the event lock is
 -- held for one round trip per event, whatever the number of subscriptions).
 -- deliveries_json is an array of objects keyed by column name.
@@ -447,6 +451,7 @@ WHERE d.status IN (SELECT json_array_elements_text(sqlc.arg(statuses_json)::json
        OR d.subscription_id IN (SELECT json_array_elements_text(sqlc.arg(subscription_ids_json)::json)))
   AND (sqlc.arg(event_id)::text = '' OR d.event_id = sqlc.arg(event_id)::text)
   AND (e.seq < sqlc.arg(before_seq)::bigint OR (e.seq = sqlc.arg(before_seq)::bigint AND d.id > sqlc.arg(before_id)::text))
+  AND e.created_at >= sqlc.arg(since_ms)::bigint AND e.created_at < sqlc.arg(until_ms)::bigint
 ORDER BY e.seq DESC, d.id
 LIMIT sqlc.arg(max_rows);
 

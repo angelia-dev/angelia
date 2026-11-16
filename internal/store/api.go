@@ -55,6 +55,11 @@ type APIReader interface {
 	// HasEventsAfter reports whether an event with a Seq greater than seq
 	// exists.
 	HasEventsAfter(ctx context.Context, seq int64) (bool, error)
+	// ListEventsBefore returns up to limit events with a Seq lower than
+	// beforeSeq, newest first; a beforeSeq of 0 or less starts at the newest
+	// event. It reads the log backwards for GET /v1/events?order=desc (story
+	// #274). limit <= 0 means DefaultEventLimit.
+	ListEventsBefore(ctx context.Context, beforeSeq int64, limit int) ([]Event, error)
 	// ListDeliveryPage returns one page of deliveries, newest event first.
 	ListDeliveryPage(ctx context.Context, q DeliveryQuery) ([]DeliveryRow, error)
 	// ListConsumers returns up to limit consumers ordered by (Name, ID),
@@ -157,7 +162,11 @@ type DeliveryQuery struct {
 	// previous page; a zero BeforeSeq starts at the newest event.
 	BeforeSeq int64
 	BeforeID  string
-	Limit     int
+	// Since and Until keep the deliveries of the events recorded (their
+	// CreatedAt) at or after Since and before Until; a zero time does not
+	// bound (story #274).
+	Since, Until time.Time
+	Limit        int
 }
 
 // ReplayQuery selects the deliveries a bulk replay considers: those in one

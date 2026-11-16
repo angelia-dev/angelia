@@ -126,7 +126,7 @@ func (s *Server) GetWatch(ctx context.Context, req GetWatchRequestObject) (GetWa
 	if err != nil {
 		return nil, err
 	}
-	return jsonOK(body), nil
+	return jsonOK(body).withETag(watchETag(w, t)), nil
 }
 
 // ListWatches implements StrictServerInterface.
@@ -245,9 +245,15 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 		return nil, validationProblem("watch", errs)
 	}
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch, ifNoneMatch: req.Params.IfNoneMatch != nil}
 	var body watchJSON
 	var change Change
+	var tag string
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
+		current, err := s.currentWatchETag(ctx, tx, w.Name)
+		if err != nil {
+			return err
+		}
 		before, err := s.watchBody(ctx, tx, w.Name)
 		if err != nil {
 			return err
@@ -264,13 +270,36 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 		if err != nil {
 			return err
 		}
-		body, err = s.watchJSONOf(sw, t)
-		return err
+		if body, err = s.watchJSONOf(sw, t); err != nil {
+			return err
+		}
+		tag = watchETag(sw, t)
+		// Last, so that every other refusal comes first (RFC 9110
+		// §13.2.1); the transaction then rolls the write back.
+		return pc.check(current, "watch", w.Name)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return putResponse(change, location("watches", w.Name), body), nil
+	return putResponse(change, location("watches", w.Name), body).withETag(tag), nil
+}
+
+// currentWatchETag is the tag of the watch named name, "" when there is
+// none. A watch of the watch file has one too: the write then gets 409
+// managed-by-file, which comes before any precondition.
+func (s *Server) currentWatchETag(ctx context.Context, tx store.APITx, name string) (string, error) {
+	w, err := tx.WatchByName(ctx, name)
+	if isNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	t, err := tx.GetTarget(ctx, w.TargetID)
+	if err != nil {
+		return "", err
+	}
+	return watchETag(w, t), nil
 }
 
 // applyWatch creates or updates the API watch w, as the watch file apply
@@ -366,6 +395,7 @@ func sameLabels(a, b map[string]string) bool {
 // DeleteWatch implements StrictServerInterface.
 func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) (DeleteWatchResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch}
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
 		old, err := tx.WatchByName(ctx, req.Name)
 		cur, err := writeByName(old, err, "watch", req.Name)
@@ -374,6 +404,10 @@ func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) 
 		}
 		if cur == nil {
 			return problem(SlugNotFound, "no watch named %s", req.Name)
+		}
+		current, err := s.currentWatchETag(ctx, tx, req.Name)
+		if err != nil {
+			return err
 		}
 		before, err := s.watchBody(ctx, tx, req.Name)
 		if err != nil {
@@ -386,11 +420,15 @@ func (s *Server) DeleteWatch(ctx context.Context, req DeleteWatchRequestObject) 
 			return err
 		}
 		gone, err := tx.DeleteTargetIfUnused(ctx, cur.TargetID)
-		if err != nil || gone {
+		if err != nil {
 			return err
 		}
-		_, _, err = tx.RecomputeTargetInterval(ctx, cur.TargetID, s.now())
-		return err
+		if !gone {
+			if _, _, err := tx.RecomputeTargetInterval(ctx, cur.TargetID, s.now()); err != nil {
+				return err
+			}
+		}
+		return pc.check(current, "watch", req.Name)
 	})
 	if err != nil {
 		return nil, err

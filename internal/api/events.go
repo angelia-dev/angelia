@@ -149,8 +149,99 @@ func (s *Server) expiredCheck(ctx context.Context, pos int64, detail string) err
 	return p
 }
 
+// scanEventsBackward reads the log newest first, below before (0: from the
+// newest event), and returns up to limit events that match, the lowest and
+// highest seq it read (0 and 0 when it read nothing) and whether older events
+// are kept. It reads at most budget events, so a page may be empty with more
+// true. Reading backwards stops at the oldest event kept: there is no
+// expired cursor (spec docs/api.md decision 47).
+func (s *Server) scanEventsBackward(ctx context.Context, before int64, limit, budget int, f *eventFilter) (items []store.Event, low, high int64, more bool, err error) {
+	const batch = 1000
+	next := before
+	scanned := 0
+scan:
+	for scanned < budget {
+		n := min(batch, budget-scanned)
+		rows, err := s.opts.Store.ListEventsBefore(ctx, next, n)
+		if err != nil {
+			return nil, 0, 0, false, err
+		}
+		for _, e := range rows {
+			scanned++
+			if high == 0 {
+				high = e.Seq
+			}
+			next, low = e.Seq, e.Seq
+			if f.match(e) {
+				if items = append(items, e); len(items) == limit {
+					break scan
+				}
+			}
+		}
+		if len(rows) < n {
+			break
+		}
+	}
+	if low == 0 {
+		return items, 0, 0, false, nil
+	}
+	older, err := s.opts.Store.ListEventsBefore(ctx, low, 1)
+	return items, low, high, len(older) > 0, err
+}
+
+// listEventsDesc is GET /v1/events?order=desc.
+func (s *Server) listEventsDesc(ctx context.Context, p ListEventsParams, limit int) (eventPageJSON, error) {
+	var before int64
+	if p.Before != nil {
+		before = *p.Before
+	}
+	f, err := s.newEventFilter(ctx, deref(p.Watch), deref(p.Type), deref(p.Source))
+	if err != nil {
+		return eventPageJSON{}, err
+	}
+	var items []store.Event
+	var low, high int64
+	var more bool
+	// before=0 names no position below it: an empty page, never the head of
+	// the log (the store reads a beforeSeq of 0 as "from the newest").
+	if p.Before == nil || before > 0 {
+		if items, low, high, more, err = s.scanEventsBackward(ctx, before, limit, max(s.opts.EventScan, limit), f); err != nil {
+			return eventPageJSON{}, err
+		}
+	}
+	page := eventPageJSON{Items: make([]eventRecordJSON, 0, len(items)), NextAfter: high, HasMore: more}
+	switch {
+	case low > 0:
+		page.NextBefore = &low
+	case p.Before != nil: // nothing scanned below before
+		page.NextBefore, page.NextAfter = &before, max(before-1, 0)
+	}
+	for _, e := range items {
+		page.Items = append(page.Items, eventRecordOf(e))
+	}
+	return page, nil
+}
+
 // ListEvents implements StrictServerInterface.
 func (s *Server) ListEvents(ctx context.Context, req ListEventsRequestObject) (ListEventsResponseObject, error) {
+	desc := req.Params.Order != nil && *req.Params.Order == ListEventsParamsOrderDesc
+	switch {
+	case desc && (req.Params.After != nil || req.Params.Consumer != nil):
+		return nil, problem(SlugBadRequest, "query parameter order: desc cannot be combined with after or consumer")
+	case !desc && req.Params.Before != nil:
+		return nil, problem(SlugBadRequest, "query parameter before: needs order=desc")
+	}
+	limit := 100
+	if req.Params.Limit != nil {
+		limit = *req.Params.Limit
+	}
+	if desc {
+		page, err := s.listEventsDesc(ctx, req.Params, limit)
+		if err != nil {
+			return nil, err
+		}
+		return jsonOK(page), nil
+	}
 	var after int64
 	var f *eventFilter
 	if req.Params.Consumer != nil {
@@ -180,10 +271,6 @@ func (s *Server) ListEvents(ctx context.Context, req ListEventsRequestObject) (L
 		if err != nil {
 			return nil, err
 		}
-	}
-	limit := 100
-	if req.Params.Limit != nil {
-		limit = *req.Params.Limit
 	}
 	items, next, more, err := s.scanEvents(ctx, after, limit, max(s.opts.EventScan, limit), f)
 	if err != nil {

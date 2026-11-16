@@ -59,7 +59,7 @@ func (s *Server) GetSubscription(ctx context.Context, req GetSubscriptionRequest
 	if err != nil {
 		return nil, err
 	}
-	return jsonOK(body), nil
+	return jsonOK(body).withETag(subscriptionETag(sub)), nil
 }
 
 // ListSubscriptions implements StrictServerInterface.
@@ -128,13 +128,19 @@ func (s *Server) PutSubscription(ctx context.Context, req PutSubscriptionRequest
 		return nil, validationProblem("subscription", errs)
 	}
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch, ifNoneMatch: req.Params.IfNoneMatch != nil}
 	var body subscriptionJSON
 	var change Change
+	var tag string
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
 		old, err := tx.SubscriptionByName(ctx, sub.Name)
 		cur, err := writeByName(old, err, "subscription", sub.Name)
 		if err != nil {
 			return err
+		}
+		current := ""
+		if cur != nil {
+			current = subscriptionETag(*cur)
 		}
 		before, err := subscriptionBody(ctx, tx, cur)
 		if err != nil {
@@ -176,13 +182,20 @@ func (s *Server) PutSubscription(ctx context.Context, req PutSubscriptionRequest
 			row = *cur
 			change = ChangeUnchanged
 		}
-		body, err = subscriptionJSONOf(ctx, tx, row)
-		return err
+		if body, err = subscriptionJSONOf(ctx, tx, row); err != nil {
+			return err
+		}
+		stored, err := tx.SubscriptionByName(ctx, sub.Name)
+		if err != nil {
+			return err
+		}
+		tag = subscriptionETag(stored)
+		return pc.check(current, "subscription", sub.Name)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return putResponse(change, location("subscriptions", sub.Name), body), nil
+	return putResponse(change, location("subscriptions", sub.Name), body).withETag(tag), nil
 }
 
 // subscriptionBody is cur in the shape of its PUT body, nil when cur is
@@ -229,6 +242,7 @@ func samePolicy(stored []byte, p subscription.Policy) bool {
 // DeleteSubscription implements StrictServerInterface.
 func (s *Server) DeleteSubscription(ctx context.Context, req DeleteSubscriptionRequestObject) (DeleteSubscriptionResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch}
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
 		old, err := tx.SubscriptionByName(ctx, req.Name)
 		cur, err := writeByName(old, err, "subscription", req.Name)
@@ -250,7 +264,10 @@ func (s *Server) DeleteSubscription(ctx context.Context, req DeleteSubscriptionR
 		if _, err := tx.FailPendingDeliveries(ctx, cur.ID, watchfile.DeadOnDelete); err != nil {
 			return err
 		}
-		return tx.DeleteSubscription(ctx, cur.ID)
+		if err := tx.DeleteSubscription(ctx, cur.ID); err != nil {
+			return err
+		}
+		return pc.check(subscriptionETag(*cur), "subscription", req.Name)
 	})
 	if err != nil {
 		return nil, err
