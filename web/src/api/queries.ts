@@ -136,4 +136,19 @@ export interface ReplaySelector {
   dry_run: boolean
 }
 
-export const createReplay = (selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))
+export const fetchTokens = (includeRevoked: boolean) => (cursor: string | undefined) =>
+  unwrap(api.GET('/v1/tokens', { params: { query: { limit: PAGE_SIZE, cursor, include_revoked: includeRevoked || undefined } } }))
+
+export const createToken = (body: { name: string; scope: 'read' | 'write' | 'admin'; expires_at?: string }) =>
+  unwrap(api.POST('/v1/tokens', { body }))
+
+export const revokeToken = (id: string) =>
+  unwrap(api.DELETE('/v1/tokens/{id}', { params: { path: { id } } }).then((r) => ({ ...r, data: r.data ?? (r.response.ok ? true : undefined) })))
+
+export const fetchSessions = () => (cursor: string | undefined) =>
+  unwrap(api.GET('/v1/sessions', { params: { query: { limit: PAGE_SIZE, cursor } } }))
+
+export const revokeSession = (id: string) =>
+  unwrap(api.DELETE('/v1/sessions/{id}', { params: { path: { id } } }).then((r) => ({ ...r, data: r.data ?? (r.response.ok ? true : undefined) })))
+
+export const createReplay =(selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))
