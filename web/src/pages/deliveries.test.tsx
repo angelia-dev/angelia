@@ -36,15 +36,14 @@ describe('deliveries list', () => {
     const api = mockApi({ ...base, '/v1/deliveries': page([delivery('D1')]) })
     renderApp('/ui/deliveries')
     await screen.findByRole('table', { name: 'Deliveries' })
-    await userEvent.selectOptions(screen.getByLabelText('Status'), 'dead')
-    await vi.waitFor(() => expect(api.calls.at(-1)?.url.searchParams.getAll('status')).toEqual(['dead']))
+    expect(api.calls.find((c) => c.url.pathname === '/v1/deliveries')?.url.searchParams.getAll('status')).toEqual(['dead'])
+    await userEvent.selectOptions(screen.getByLabelText('Status'), 'pending')
+    await vi.waitFor(() => expect(api.calls.at(-1)?.url.searchParams.getAll('status')).toEqual(['pending']))
   })
 
   it('shows the dead-letter empty state', async () => {
-    mockApi({ ...base, '/v1/deliveries': ({ url }) => page(url.searchParams.has('status') ? [] : [delivery('D1')]) })
+    mockApi({ ...base, '/v1/deliveries': () => page([]) })
     renderApp('/ui/deliveries')
-    await screen.findByRole('table', { name: 'Deliveries' })
-    await userEvent.selectOptions(screen.getByLabelText('Status'), 'dead')
     expect(await screen.findByText('No dead letters')).toBeInTheDocument()
   })
 
@@ -88,5 +87,19 @@ describe('delivery detail', () => {
     mockApi({ ...base, '/v1/deliveries/X': problem(404, 'Delivery not found', 'no delivery X') })
     renderApp('/ui/deliveries/X')
     expect(await screen.findByRole('alert')).toHaveTextContent('no delivery X')
+  })
+})
+
+describe('sink filter', () => {
+  it('is labelled as filtering loaded rows and keeps Load more while pages remain', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/subscriptions': page([subscription('to-slack', 'slack-main'), subscription('to-mail', 'email', 'SUB2')]),
+      '/v1/deliveries': page([delivery('D0000001')], 'C2'),
+    })
+    renderApp('/ui/deliveries')
+    await screen.findByText('D0000001'.slice(-8))
+    await userEvent.selectOptions(screen.getByLabelText('Sink (filters loaded rows)'), 'email')
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument()
   })
 })
