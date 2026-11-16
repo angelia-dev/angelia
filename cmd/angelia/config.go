@@ -52,15 +52,8 @@ func newConfigCheckCmd() *cobra.Command {
 			if _, err := cfg.HTTP.LoadCAPool(); err != nil {
 				return fmt.Errorf("invalid configuration: %w", err)
 			}
-			if cfg.UI.Enabled && cfg.UI.GitHub.ClientSecretFile != "" {
-				// The env variant was checked by Load (a warning).
-				_, w, err := cfg.UI.GitHub.ClientSecret()
-				if err != nil {
-					return fmt.Errorf("invalid configuration: %w", err)
-				}
-				if w != "" {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
-				}
+			if err := checkUISecretFiles(cfg, cmd.ErrOrStderr()); err != nil {
+				return err
 			}
 			secretsLine, err := checkSecretsConfig(cmd.Context(), cfg, cmd.ErrOrStderr())
 			if err != nil {
@@ -345,4 +338,32 @@ func storedTargetWarnings(ctx context.Context, cfg *config.Config, plugins []con
 		kinds[i] = p.Kind
 	}
 	return storedSourceWarnings(reg, stored, kinds)
+}
+
+// checkUISecretFiles reads the client secret files of the UI's identity
+// providers. The env variants were checked by Load (a warning).
+func checkUISecretFiles(cfg *config.Config, stderr io.Writer) error {
+	if !cfg.UI.Enabled {
+		return nil
+	}
+	type reader func() (secrets.Value, string, error)
+	var files []reader
+	if cfg.UI.GitHub.ClientSecretFile != "" {
+		files = append(files, cfg.UI.GitHub.ClientSecret)
+	}
+	for _, o := range cfg.UI.OIDC {
+		if o.ClientSecretFile != "" {
+			files = append(files, o.ClientSecret)
+		}
+	}
+	for _, read := range files {
+		_, w, err := read()
+		if err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		if w != "" {
+			_, _ = fmt.Fprintln(stderr, "warning:", w)
+		}
+	}
+	return nil
 }

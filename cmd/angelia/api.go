@@ -89,15 +89,9 @@ func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry,
 }
 
 // uiAuth builds the admin UI's sessions and sign-in handler (ADR 0033 §4):
-// the GitHub OAuth App, whose requests go through the netguard client.
+// the GitHub OAuth App and the OIDC providers (#268), whose requests go
+// through the netguard client.
 func uiAuth(cfg *config.Config, st store.APIStore, m *metrics.Metrics, log *slog.Logger) (*webauth.Sessions, *webauth.Handler, error) {
-	secret, warning, err := cfg.UI.GitHub.ClientSecret()
-	if err != nil {
-		return nil, nil, fmt.Errorf("ui.github: %w", err)
-	}
-	if warning != "" {
-		log.Warn(warning)
-	}
 	var obs netguard.Observer
 	if m != nil { // a typed nil would panic in netguard
 		obs = m
@@ -106,17 +100,47 @@ func uiAuth(cfg *config.Config, st store.APIStore, m *metrics.Metrics, log *slog
 	if err != nil {
 		return nil, nil, err
 	}
-	gh, err := webauth.NewGitHub(webauth.GitHubConfig{
-		ClientID: cfg.UI.GitHub.ClientID, ClientSecret: secret,
-		RedirectURL: webauth.RedirectURL(cfg.UI, webauth.GitHubName),
-		WebURL:      cfg.UI.GitHub.WebURL, APIURL: cfg.UI.GitHub.APIURL, HTTP: client.HTTPClient(),
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("ui: %w", err)
+	var providers []webauth.IdentityProvider
+	if cfg.UI.GitHub.Configured() {
+		secret, warning, err := cfg.UI.GitHub.ClientSecret()
+		if err != nil {
+			return nil, nil, fmt.Errorf("ui.github: %w", err)
+		}
+		if warning != "" {
+			log.Warn(warning)
+		}
+		gh, err := webauth.NewGitHub(webauth.GitHubConfig{
+			ClientID: cfg.UI.GitHub.ClientID, ClientSecret: secret,
+			RedirectURL: webauth.RedirectURL(cfg.UI, webauth.GitHubName),
+			WebURL:      cfg.UI.GitHub.WebURL, APIURL: cfg.UI.GitHub.APIURL, HTTP: client.HTTPClient(),
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("ui: %w", err)
+		}
+		providers = append(providers, gh)
+	}
+	for _, o := range cfg.UI.OIDC {
+		secret, warning, err := o.ClientSecret()
+		if err != nil {
+			return nil, nil, fmt.Errorf("ui.oidc: %w", err)
+		}
+		if warning != "" {
+			log.Warn(warning)
+		}
+		p, err := webauth.NewOIDC(webauth.OIDCConfig{
+			Name: o.Name, Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: secret,
+			RedirectURL: webauth.RedirectURL(cfg.UI, o.Name), Scopes: o.EffectiveScopes(), Algs: o.EffectiveAlgs(),
+			HTTP: client.HTTPClient(),
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("ui: %w", err)
+		}
+		providers = append(providers, p)
 	}
 	sessions := webauth.NewSessions(st, cfg.UI, log)
-	hopts := webauth.HandlerOptions{Providers: []webauth.IdentityProvider{gh}, Sessions: sessions, UI: cfg.UI, Logger: log}
+	hopts := webauth.HandlerOptions{Providers: providers, Sessions: sessions, UI: cfg.UI, Logger: log}
 	if m != nil {
+		m.UIProviders(webauth.ProviderNames(cfg.UI)...)
 		hopts.Metrics = m
 	}
 	h, err := webauth.NewHandler(hopts)

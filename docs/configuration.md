@@ -39,11 +39,12 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 | `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
 | `ui.public_url` | none | empty | `https://host[:port]`, no path; `http://` only for a loopback host |
-| `ui.github.client_id` | none | empty | the client id of a GitHub OAuth App |
+| `ui.github.client_id` | none | empty | the client id of a GitHub OAuth App; `ui.github` is optional when `ui.oidc` lists a provider |
 | `ui.github.client_secret_env` | none | empty | name of the environment variable holding the client secret |
 | `ui.github.client_secret_file` | none | empty | path of a file holding the client secret (one of the two) |
 | `ui.github.web_url`, `ui.github.api_url` | none | `https://github.com`, `https://api.github.com` | https URLs of GitHub Enterprise Server (`https://HOST`, `https://HOST/api/v3`) |
-| `ui.access` | none | empty | list of `{github_user or github_id, role}`; `role` is `viewer`, `editor` or `admin` |
+| `ui.oidc` | none | empty | list of OpenID Connect providers `{name, display_name, issuer, client_id, client_secret_env or client_secret_file, scopes, allowed_algs}`; see [OpenID Connect providers](#openid-connect-providers) |
+| `ui.access` | none | empty | list of `{github_user or github_id, role}` or `{provider, subject or email, role}`; `role` is `viewer`, `editor` or `admin` |
 | `ui.session.idle_timeout` | none | `12h` | duration, at least `15m`, at most `max_lifetime` |
 | `ui.session.max_lifetime` | none | `168h` | duration, at least `1m` |
 
@@ -367,7 +368,9 @@ logs one warning, which holds no secret:
 
 ## Admin UI sign-in
 
-People sign in to the admin web UI with GitHub (ADR 0033). The `api` role serves the sign-in under
+People sign in to the admin web UI with GitHub (ADR 0033) or an OpenID Connect provider such as
+Authentik, Keycloak, GitLab or Google ([ADR 0034](adr/0034-generic-oidc-sign-in.md), see
+[OpenID Connect providers](#openid-connect-providers)). The `api` role serves the sign-in under
 `/ui/auth/`; a signed-in browser then calls the same `/v1` REST API as a token, with a session cookie
 instead of `Authorization`. Nothing changes for API tokens or MCP.
 
@@ -456,8 +459,9 @@ belongs to no session and keeps its scope. To remove someone completely:
 
 At start, the `api` role logs one WARN, `active api tokens were created by ui users that ui.access no
 longer lists`, with the ids (`token_ids`, never a token) of the active tokens whose `created_by` is a
-`github:<id>` principal that no entry of `ui.access` lists now (a `github_user` entry lists the account
-its login is pinned to).
+user principal (`github:<id>`, `<oidc name>:<sub>`) that no entry of `ui.access` lists now (a
+`github_user` or `email` entry lists the account it is pinned to; a provider removed from the
+configuration lists nobody).
 
 **CSRF.** A request authenticated by the cookie that changes something (any method other than `GET`,
 `HEAD` and `OPTIONS`) must carry `Origin` equal to `public_url` and `X-Angelia-CSRF: 1`, or it is
@@ -466,7 +470,69 @@ authenticated by it alone and the cookie is ignored; `/mcp` never reads the cook
 
 **Metrics and logs.** `angelia_ui_logins_total{provider,result}` counts sign-ins
 ([Metrics](operations/metrics.md)). No log line holds a cookie, an OAuth code, `state`, the PKCE
-verifier, a GitHub access token or the client secret.
+verifier, the nonce, a provider's access or ID token or the client secret.
+
+### OpenID Connect providers
+
+`ui.oidc` lists OpenID Connect providers, next to GitHub or instead of it ([ADR 0034](adr/0034-generic-oidc-sign-in.md)).
+Each one gets a sign-in route, `/ui/auth/login/<name>`, and a callback, `<public_url>/ui/auth/callback/<name>`,
+to register as the redirect URI of a confidential client (with a client secret) at the provider.
+
+```yaml
+ui:
+  enabled: true
+  public_url: https://angelia.example.com
+  oidc:
+    - name: authentik                # lower-case letters, digits, hyphens; not "github"
+      display_name: Company SSO      # optional label for the sign-in button
+      issuer: https://auth.example.com/application/o/angelia/
+      client_id: angelia
+      client_secret_file: /run/secrets/angelia-oidc   # or client_secret_env: NAME
+    - name: google
+      issuer: https://accounts.google.com
+      client_id: 1234-abc.apps.googleusercontent.com
+      client_secret_env: ANGELIA_UI_GOOGLE_CLIENT_SECRET
+  access:
+    - provider: authentik
+      subject: 5f1c0a7e-8a3b-4c3e-9d70-2b1f0c9e1a11   # the ID token's sub (preferred)
+      role: admin
+    - provider: google
+      email: alice@example.com      # a verified email, pinned to its sub at the first sign-in
+      role: editor
+```
+
+| Provider | `issuer` |
+|---|---|
+| Authentik | `https://HOST/application/o/<application slug>/` (with the trailing slash) |
+| Keycloak | `https://HOST/realms/<realm>` |
+| GitLab | `https://gitlab.com` or your instance's URL; the application needs the `openid`, `email` and `profile` scopes |
+| Google | `https://accounts.google.com` |
+
+- `issuer` is written exactly as the provider's discovery document states it (`issuer`), `https://` or
+  `http://` on a loopback host for local development. Angelia reads
+  `<issuer>/.well-known/openid-configuration` at the first sign-in, not at start: a provider that is down
+  shows an error page at sign-in and is tried again at the next one. Its endpoints must be `https://`.
+  The requests go through the [outgoing HTTP client](#outgoing-http-and-private-networks): a provider on a
+  private network needs `http.allow_networks`.
+- `scopes` default to `openid email profile` and must contain `openid`. `allowed_algs` lists the ID token
+  signature algorithms accepted; the default is every asymmetric one (`RS256`, `RS384`, `RS512`, `PS256`,
+  `PS384`, `PS512`, `ES256`, `ES384`, `ES512`, `EdDSA`). `none` and `HS256`/`HS384`/`HS512` are refused.
+- The client secret follows the GitHub rules above: never inline (`ui.oidc[N].client_secret` is refused),
+  exactly one of `client_secret_env` and `client_secret_file`. Angelia sends it with HTTP Basic
+  authentication (`client_secret_basic`), or in the form when the provider supports only
+  `client_secret_post`.
+- The sign-in uses PKCE (S256), `state` and a `nonce`. Angelia checks the ID token's signature against the
+  provider's keys, its issuer, audience (`azp` too when present), expiry and nonce, then drops every token.
+- `ui.access` entries for a provider set `provider` (its `name`) and exactly one of `subject` (the `sub`
+  claim, which never changes) and `email`. An `email` entry matches only an address the provider marks
+  `email_verified: true`, compared without case, and is **pinned** to the `sub` of its first match, like a
+  `github_user` login (the `ui_identity_pin` row has `login` = `email:<address>`): another account with
+  that address later gets nothing from it (`identity_mismatch`), and the entry keeps following its account
+  if the address changes at the provider. If your provider does not send `email_verified` (some Authentik
+  property mappings), use `subject` entries. Group claims are not used.
+- Audit records and `created_by` name a user as `<name>:<sub>`, such as `authentik:5f1c0a7e-...`.
+  `GET /v1/me` reports the `preferred_username` (else the email, else the sub) as `login`, the `name`
+  claim as `name` and the `picture` claim as `avatar_url`.
 
 ## Installed plugins
 

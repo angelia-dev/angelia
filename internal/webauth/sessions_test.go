@@ -379,7 +379,7 @@ func TestSessionsAccessPinning(t *testing.T) {
 		t.Fatalf("%q %+v %v", cookie, m, err)
 	}
 	// Another provider matches no entry.
-	if m, err := s.access.role(t.Context(), "gitlab", "1001", "alice"); err != nil || m.role != "" {
+	if m, err := s.access.role(t.Context(), "gitlab", "1001", "alice", ""); err != nil || m.role != "" {
 		t.Fatal(m, err)
 	}
 	// A mismatched login entry does not hide another entry's grant.
@@ -392,7 +392,7 @@ func TestSessionsAccessPinning(t *testing.T) {
 	}
 	// The pins are cached per process.
 	before := st.pins
-	if _, err := s2.access.role(t.Context(), GitHubName, "6666", "alice"); err != nil || st.pins != before {
+	if _, err := s2.access.role(t.Context(), GitHubName, "6666", "alice", ""); err != nil || st.pins != before {
 		t.Fatal(err, st.pins, before)
 	}
 }
@@ -637,7 +637,13 @@ func TestRoleScope(t *testing.T) {
 	if SessionCookieName(ui) != SessionCookieLocal {
 		t.Fatal(SessionCookieName(ui))
 	}
-	if len(LoginResults()) != 7 || Providers()[0] != "github" {
-		t.Fatal(LoginResults(), Providers())
+	ui.GitHub.ClientID = "x"
+	ui.OIDC = []config.UIOIDC{{Name: "authentik"}, {Name: "google"}}
+	if len(LoginResults()) != 7 || strings.Join(ProviderNames(ui), ",") != "github,authentik,google" {
+		t.Fatal(LoginResults(), ProviderNames(ui))
+	}
+	ui.GitHub.ClientID = ""
+	if strings.Join(ProviderNames(ui), ",") != "authentik,google" {
+		t.Fatal(ProviderNames(ui))
 	}
 }

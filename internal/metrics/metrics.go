@@ -67,6 +67,7 @@ type Metrics struct {
 
 	mu         sync.Mutex
 	limitHosts map[string]bool // hosts of the limits table, the closed set of the host label
+	uiProvs    map[string]bool // github and the configured ui.oidc names, the closed set of the provider label
 	demandSet  map[string]bool // host labels currently set on hostDemand
 
 	hostDemand       *prometheus.GaugeVec
@@ -114,11 +115,8 @@ func New(log *slog.Logger) *Metrics {
 		Name: "angelia_ui_logins_total",
 		Help: "Admin UI sign-ins handled by this process, by identity provider and result: success, not_authorised, identity_mismatch, invalid_state, cancelled, provider_error or error.",
 	}, []string{"provider", "result"})
-	for _, p := range webauth.Providers() {
-		for _, r := range webauth.LoginResults() {
-			m.uiLogins.WithLabelValues(p, r) // every pair starts at 0
-		}
-	}
+	m.uiProvs = map[string]bool{}
+	m.UIProviders(webauth.GitHubName)
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",
 		Help: "How late a check started: lease time minus the time the target was due.",
@@ -212,11 +210,29 @@ func (m *Metrics) AuthFailed(reason string) {
 	m.authFails.WithLabelValues(reason).Inc()
 }
 
+// UIProviders adds identity provider names to the closed set of the
+// provider label of angelia_ui_logins_total (github is always in it): the
+// api role passes the configured ui.oidc names. Every pair of a provider
+// and a result starts at 0.
+func (m *Metrics) UIProviders(names ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range names {
+		m.uiProvs[p] = true
+		for _, r := range webauth.LoginResults() {
+			m.uiLogins.WithLabelValues(p, r)
+		}
+	}
+}
+
 // UILogin implements webauth.LoginMetrics. A provider or result outside
-// webauth.Providers and webauth.LoginResults is counted as other and error,
-// so that the label sets stay closed.
+// UIProviders and webauth.LoginResults is counted as other and error, so
+// that the label sets stay closed.
 func (m *Metrics) UILogin(provider, result string) {
-	if !slices.Contains(webauth.Providers(), provider) {
+	m.mu.Lock()
+	known := m.uiProvs[provider]
+	m.mu.Unlock()
+	if !known {
 		provider = "other"
 	}
 	if !slices.Contains(webauth.LoginResults(), result) {
