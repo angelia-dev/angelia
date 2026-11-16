@@ -134,12 +134,14 @@ type IdentityProvider interface {
 - **React 19 + TypeScript (strict) + Vite**, single-page app; **TanStack Router** and **TanStack Query**;
   **Tailwind** with **shadcn/ui** components copied into the tree (Radix primitives); API types
   generated from `api/openapi/angelia.v1.yaml` with **openapi-typescript**, calls through
-  **openapi-fetch**; tests with **Vitest** and **Playwright**. Every runtime package is MIT (React, Radix,
-  TanStack, Tailwind, openapi-fetch, clsx, lucide-react). The PR of #261 lists the resolved versions.
+  **openapi-fetch**; tests with **Vitest** and **Playwright**. Runtime packages and licences (#261 pins
+  the versions): React, React DOM, TanStack Router and Query, openapi-fetch, Radix Slot, clsx and
+  tailwind-merge (MIT), lucide-react (ISC), class-variance-authority (Apache-2.0). TanStack Router pulls
+  in `isbot` (Unlicense), which is outside the AGENTS.md licence list and needs the maintainer's OK.
 - **`web/` in this repository** (D7), not a separate `ui` repository: an endpoint and its screen change in
   one PR, and the UI version is always the binary's.
-- **Embedded**: `internal/webui` embeds `web/dist` with `go:embed`. A plain `CGO_ENABLED=0 go build`
-  without Node embeds a placeholder page, so `go build` and `go test` never need Node. CI has a `web`
+- **Embedded**: Vite builds into `internal/webui/dist/app/` (git-ignored) and `internal/webui` embeds it
+  with `go:embed`. A plain `CGO_ENABLED=0 go build` without Node embeds the committed placeholder page, so `go build` and `go test` never need Node. CI has a `web`
   job; the release's GoReleaser `before` hook builds `web/` first. Built assets are not committed.
 - **Served by the `api` role** under `/ui/` (SPA fallback), hashed assets cached a year, `index.html`
   `no-cache`, CSP `default-src 'self'` (plus GitHub avatars), `frame-ancestors 'none'`. `ui.enabled`
