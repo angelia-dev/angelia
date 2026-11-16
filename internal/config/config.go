@@ -77,6 +77,8 @@ type Config struct {
 	HTTP     HTTP              `yaml:"http"`
 	Sources  map[string]Source `yaml:"sources"`
 	API      API               `yaml:"api"`
+	// UI is the admin web UI (ADR 0033); see ui.go.
+	UI UI `yaml:"ui"`
 	// PluginsDir holds one folder per installed plugin,
 	// <plugins_dir>/<kind>/ with manifest.json, plugin.wasm and grants.yaml
 	// (ADR 0025); read it with LoadPlugins. Load sets it to
@@ -317,6 +319,7 @@ func Default() *Config {
 		Sources:    map[string]Source{},
 		PluginsDir: defaultPluginsDir(DefaultDSN),
 		Tokens:     map[string]secret{},
+		UI:         UI{Session: UISession{IdleTimeout: DefaultUIIdleTimeout, MaxLifetime: DefaultUIMaxLifetime}},
 
 		pluginsDirDefault: true,
 	}
@@ -379,6 +382,7 @@ func Load(ctx context.Context, opts Options) (*Config, error) {
 		return nil, err
 	}
 	cfg.resolveTokens(env)
+	cfg.warnings = append(cfg.warnings, cfg.UI.resolve(env)...)
 	return cfg, nil
 }
 
@@ -392,6 +396,10 @@ type movedKey struct {
 // which moved to the plugin folders, so that Load can name the new
 // location once plugins_dir is known.
 func decode(data []byte, path string, cfg *Config) (*movedKey, error) {
+	if line := inlineClientSecret(data); line != 0 {
+		// Never echoed: the value is a credential put in the wrong place.
+		return nil, fmt.Errorf("%s: line %d: ui.github.client_secret: an inline client secret is refused; put it in an environment variable named by ui.github.client_secret_env, or in a file (mode 0600) named by ui.github.client_secret_file", path, line)
+	}
 	f := fileConfig{Config: *cfg}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -733,6 +741,7 @@ func (c *Config) Validate() error {
 	case strings.ContainsAny(f, "\r\n"):
 		bad("api.bootstrap_token_file: must be a single-line path")
 	}
+	c.UI.validate(bad)
 	return errors.Join(errs...)
 }
 
