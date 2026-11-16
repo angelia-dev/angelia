@@ -725,6 +725,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the caller's principal
+         * @description Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+         *     admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+         *     instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+         *     `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+         *     to show and which controls to offer. Never returns a token, a cookie or a hash.
+         */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List browser sessions
+         * @description Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+         *     in, when, from which user agent, when the session was last used and when it ends, **never the
+         *     cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+         *     used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+         *     the list shows who can act on the instance.
+         */
+        get: operations["listSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The session's id, a ULID. Never the cookie.
+                 * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+                 */
+                id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a browser session
+         * @description Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+         *     with `401` from the next request on (an open event stream fails at its next re-check, at most
+         *     60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+         *     already revoked session is `204` too and changes nothing. An unknown id is `404`.
+         */
+        delete: operations["revokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1017,7 +1094,7 @@ export interface components {
          * @enum {string}
          */
         TokenScope: "read" | "write" | "admin";
-        /** @description Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command). */
+        /** @description Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command). */
         TokenActor: string;
         /**
          * @description An API token as the server returns it: metadata only. No scope, flag or parameter returns
@@ -1054,6 +1131,76 @@ export interface components {
         };
         TokenPage: {
             items: components["schemas"]["Token"][];
+            next_cursor: components["schemas"]["NextCursor"];
+        };
+        /** @description Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login. */
+        PrincipalId: string;
+        /**
+         * @description A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+         * @enum {string}
+         */
+        UiRole: "viewer" | "editor" | "admin";
+        /** @description The identity a browser session signed in with, as the identity provider reported it at sign-in. */
+        SessionUser: {
+            /**
+             * @description The identity provider; today `github`.
+             * @example github
+             */
+            provider: string;
+            /**
+             * @description The provider's stable id of the user (for GitHub, the numeric user id as a string). It never changes; the principal id is `<provider>:<subject>`.
+             * @example 139323
+             */
+            subject: string;
+            /**
+             * @description The user's login at sign-in (GitHub's `login`). A login can be renamed and later taken by another account; `subject` cannot.
+             * @example mmornati
+             */
+            login: string;
+            /** @description The user's display name at sign-in, or `null` if they have none. */
+            name: string | null;
+            /** @description The URL of the user's avatar at sign-in, or `null`. */
+            avatar_url: string | null;
+        };
+        /** @description The caller of `GET /v1/me`. `role` and `user` are `null` for an API token. */
+        Me: {
+            principal_id: components["schemas"]["PrincipalId"];
+            /** @description The token's name, or the signed-in user's login. */
+            name: string;
+            scope: components["schemas"]["TokenScope"];
+            /**
+             * @description How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+             * @enum {string}
+             */
+            kind: "token" | "session";
+            /** @description For a session, the user's role in `ui.access` now; `null` for a token. */
+            role: components["schemas"]["UiRole"] | null;
+            /** @description For a session, who signed in; `null` for a token. */
+            user: components["schemas"]["SessionUser"] | null;
+        };
+        /**
+         * @description A browser session of the admin UI as the server returns it: metadata only, never the cookie
+         *     or its hash.
+         */
+        Session: {
+            /** @description Generated at sign-in, never reused. It is the ULID inside the session cookie. */
+            id: components["schemas"]["Ulid"];
+            user: components["schemas"]["SessionUser"];
+            /** @description The `User-Agent` of the browser that signed in (cut to 256 characters), or `null`. */
+            user_agent: string | null;
+            /** @description When the user signed in. */
+            created_at: components["schemas"]["Timestamp"];
+            /** @description When the session last authenticated a request. Accurate to about 5 minutes, and a crash can lose the last interval. The session ends once it is unused for the instance's idle timeout. */
+            last_seen_at: components["schemas"]["Timestamp"];
+            /** @description When the session ends whatever its use (sign-in plus the instance's maximum session lifetime). */
+            expires_at: components["schemas"]["Timestamp"];
+            /** @description When the session was revoked (by an admin, or because the user signed out), or `null`. */
+            revoked_at: components["schemas"]["Timestamp"] | null;
+            /** @description Who revoked the session (the user's own principal id when they signed out), or `null`. */
+            revoked_by: components["schemas"]["TokenActor"] | null;
+        };
+        SessionPage: {
+            items: components["schemas"]["Session"][];
             next_cursor: components["schemas"]["NextCursor"];
         };
         /**
@@ -1766,7 +1913,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description The token's scope is below the one the operation needs. */
+        /** @description The token's scope is below the one the operation needs (`forbidden`), or a request that changes something was authenticated by the admin UI's session cookie without the CSRF headers (`csrf`). */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -1875,6 +2022,11 @@ export interface components {
          */
         SubscriptionName: components["schemas"]["Name"];
         /**
+         * @description The session's id, a ULID. Never the cookie.
+         * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+         */
+        SessionId: components["schemas"]["Ulid"];
+        /**
          * @description The token's id, a ULID (the `ang_` token carries it after the prefix). Never the token itself.
          * @example 01JCZ8W3T6Q9N2H4K7M5R0V8XA
          */
@@ -1899,6 +2051,11 @@ export interface components {
          * @example false
          */
         IncludeRevoked: boolean;
+        /**
+         * @description List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+         * @example false
+         */
+        IncludeEnded: boolean;
         /**
          * @description The opaque `next_cursor` of the previous page. Absent for the first page.
          * @example eyJuIjoicmVxdWVzdHMifQ
@@ -3426,6 +3583,100 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The token is revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Page size.
+                 * @example 100
+                 */
+                limit?: components["parameters"]["Limit"];
+                /**
+                 * @description The opaque `next_cursor` of the previous page. Absent for the first page.
+                 * @example eyJuIjoicmVxdWVzdHMifQ
+                 */
+                cursor?: components["parameters"]["Cursor"];
+                /**
+                 * @description List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+                 * @example false
+                 */
+                include_ended?: components["parameters"]["IncludeEnded"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The session's id, a ULID. Never the cookie.
+                 * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+                 */
+                id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is revoked. */
             204: {
                 headers: {
                     [name: string]: unknown;
