@@ -1,6 +1,6 @@
 # ADR 0033: The admin web UI is a React SPA in `web/`, embedded in the binary; users sign in with GitHub, and their role from `ui.access` is one of the three API scopes
 
-- **Status:** Proposed (the maintainer accepted D1–D8 on 2026-11-16; this record is reviewed in its PR)
+- **Status:** Accepted (2026-11-16, by the maintainer)
 - **Date:** 2026-11-16
 - **Story:** angelia-dev/angelia#99 (UI-0); implemented by #261, #262, #100, #263–#268
 
