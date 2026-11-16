@@ -56,6 +56,11 @@ export interface paths {
          *
          *     A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
          *     needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+         *
+         *     Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+         *     writes only if the watch is still that version, else `412 precondition-failed`;
+         *     `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+         *     without them the last write wins.
          */
         put: operations["putWatch"];
         post?: never;
@@ -64,6 +69,9 @@ export interface paths {
          * @description No new events or deliveries are created for the watch. Its events and deliveries are kept
          *     as history until retention prunes them. The target and its known versions are deleted
          *     when no other watch uses them.
+         *
+         *     With `If-Match`, the watch is deleted only if it is still that version, else
+         *     `412 precondition-failed`.
          */
         delete: operations["deleteWatch"];
         options?: never;
@@ -108,7 +116,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Pull events after a cursor
+         * Pull events after a cursor, or the newest events
          * @description The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
          *     To resume after downtime, pass the `next_after` of the previous page: no committed event is
          *     skipped. `next_after` is the highest `seq` scanned, so filters that skip many events do
@@ -128,6 +136,15 @@ export interface paths {
          *     of `0` is checked like any other position. Reading never acknowledges: the
          *     client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
          *     `next_after`) once it has processed the page.
+         *
+         *     With `order=desc`, the page lists the newest events first, starting at the head of the log,
+         *     or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+         *     `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+         *     so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+         *     scanned, so a client that shows the newest events can then follow new ones with
+         *     `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+         *     it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+         *     `before` needs `order=desc` (`400`).
          */
         get: operations["listEvents"];
         put?: never;
@@ -167,10 +184,12 @@ export interface paths {
          *       does not affect it. The stream never acknowledges: the client calls
          *       `POST /v1/consumers/{name}/ack`.
          *     - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-         *     - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-         *       cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-         *       checked again at least every 60 seconds: once it is revoked, the server closes the
-         *       stream.
+         *     - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+         *       set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+         *       instance on the same origin, authenticates with its session cookie instead, so a plain
+         *       `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+         *       session, is checked again at least every 60 seconds: once it is revoked or the session
+         *       ends, the server closes the stream.
          */
         get: operations["streamEvents"];
         put?: never;
@@ -362,6 +381,11 @@ export interface paths {
          *     resolves it, fails before sending and is retried until it is stored. Needs
          *     the `admin` scope: a sink names secrets and decides where the instance sends requests.
          *     The next delivery attempt uses the new configuration.
+         *
+         *     Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+         *     writes only if the sink is still that version, else `412 precondition-failed`;
+         *     `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+         *     without them the last write wins.
          */
         put: operations["putSink"];
         post?: never;
@@ -369,6 +393,9 @@ export interface paths {
          * Delete a sink
          * @description Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
          *     the subscriptions first. Deliveries already recorded are kept as history.
+         *
+         *     With `If-Match`, the sink is deleted only if it is still that version, else
+         *     `412 precondition-failed`.
          */
         delete: operations["deleteSink"];
         options?: never;
@@ -488,6 +515,11 @@ export interface paths {
          *
          *     A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
          *     needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+         *
+         *     Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+         *     writes only if the subscription is still that version, else `412 precondition-failed`;
+         *     `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+         *     without them the last write wins.
          */
         put: operations["putSubscription"];
         post?: never;
@@ -495,6 +527,9 @@ export interface paths {
          * Delete a subscription
          * @description Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
          *     removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+         *
+         *     With `If-Match`, the subscription is deleted only if it is still that version, else
+         *     `412 precondition-failed`.
          */
         delete: operations["deleteSubscription"];
         options?: never;
@@ -512,7 +547,13 @@ export interface paths {
         /**
          * List deliveries
          * @description Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-         *     its subscription: `subscription_name` is `null` once the subscription was deleted.
+         *     its subscription: `subscription_name` and `sink` are `null` once the subscription was
+         *     deleted.
+         *
+         *     `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+         *     log, the order of this list, not the time of an attempt. `until` must be after `since`
+         *     (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+         *     with `subscription` too, both must hold.
          */
         get: operations["listDeliveries"];
         put?: never;
@@ -725,6 +766,139 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the caller's principal
+         * @description Who the request is authenticated as: an API token (`kind: token`) or a browser session of the
+         *     admin UI (`kind: session`), with its scope. For a session, `role` is the role that the
+         *     instance's `ui.access` list gives the user **now** (it is evaluated on every request) and
+         *     `user` is the identity the session signed in with. The admin UI calls it first, to know whom
+         *     to show and which controls to offer. Never returns a token, a cookie or a hash.
+         */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List browser sessions
+         * @description Browser sessions of the admin UI in ascending `id` order (ULIDs, so oldest first): who signed
+         *     in, when, from which user agent, when the session was last used and when it ends, **never the
+         *     cookie or its hash**. Only active sessions are listed (not revoked, not past `expires_at`, and
+         *     used within the instance's idle timeout) unless `include_ended=true`. Needs the `admin` scope:
+         *     the list shows who can act on the instance.
+         */
+        get: operations["listSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The session's id, a ULID. Never the cookie.
+                 * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+                 */
+                id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a browser session
+         * @description Sets `revoked_at` and `revoked_by`; the row stays. Requests with the session's cookie fail
+         *     with `401` from the next request on (an open event stream fails at its next re-check, at most
+         *     60 seconds later); the user can sign in again if `ui.access` still lists them. Revoking an
+         *     already revoked session is `204` too and changes nothing. An unknown id is `404`.
+         */
+        delete: operations["revokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the admin UI's access list
+         * @description The entries of the instance's `ui.access` list, in the order of its configuration: who may
+         *     sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+         *     its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+         *     the list is configuration, changed in the instance's configuration file and read at start.
+         *     Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+         *     the list says who holds which role.
+         */
+        get: operations["listAccess"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/template-previews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Render a message template against an event
+         * @description Renders `template` as a subscription template (or a template-valued sink key such as
+         *     `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+         *     delivery would get. The event is `event` (an envelope given in the request), `event_id`
+         *     (an event of the log) or `sample` (a built-in sample event, `full` by default).
+         *
+         *     Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+         *     the same functions and no network, file, environment or clock access; it sees the event only,
+         *     so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+         *     The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+         *
+         *     A template that does not parse or fails to render is a `200` with `error` set: the request
+         *     was fine. Error reasons give a position and a fixed reason, never the template text.
+         */
+        post: operations["previewTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -925,8 +1099,10 @@ export interface components {
             items: components["schemas"]["EventRecord"][];
             /** @description The cursor for the next request, the highest `seq` the server scanned, which can be beyond the last item when the filters skipped events, or the request's `after` when nothing was scanned. */
             next_after: components["schemas"]["Seq"];
-            /** @description Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`. */
+            /** @description Whether the scan stopped before the end of the log (with `order=desc`, before the oldest event kept). A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after` (with `order=desc`, `before=<next_before>`). */
             has_more: boolean;
+            /** @description With `order=desc`, the cursor for the next (older) page, the lowest `seq` the server scanned, or the request's `before` when nothing was scanned; `null` with `order=asc`, and on an empty log without `before`. */
+            next_before: components["schemas"]["Seq"] | null;
         };
         /**
          * @description Which events a consumer reads: the keys and values of the `GET /v1/events` filters. All
@@ -1017,7 +1193,7 @@ export interface components {
          * @enum {string}
          */
         TokenScope: "read" | "write" | "admin";
-        /** @description Who created or revoked a token, an API token's id, or `bootstrap` (the bootstrap file) or `local` (an instance-side command). */
+        /** @description Who created or revoked a token or a session, an API token's id, a signed-in user's principal id (`<provider>:<subject>`, such as `github:139323`), or `bootstrap` (the bootstrap file) or `local` (an instance-side command). */
         TokenActor: string;
         /**
          * @description An API token as the server returns it: metadata only. No scope, flag or parameter returns
@@ -1055,6 +1231,106 @@ export interface components {
         TokenPage: {
             items: components["schemas"]["Token"][];
             next_cursor: components["schemas"]["NextCursor"];
+        };
+        /** @description Who a request is authenticated as, in logs and the audit trail. An API token's id, or a signed-in user's `<provider>:<subject>` (such as `github:139323`), which stays the same when the user renames their login. */
+        PrincipalId: string;
+        /**
+         * @description A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+         * @enum {string}
+         */
+        UiRole: "viewer" | "editor" | "admin";
+        /** @description The identity a browser session signed in with, as the identity provider reported it at sign-in. */
+        SessionUser: {
+            /**
+             * @description The identity provider; today `github`.
+             * @example github
+             */
+            provider: string;
+            /**
+             * @description The provider's stable id of the user (for GitHub, the numeric user id as a string). It never changes; the principal id is `<provider>:<subject>`.
+             * @example 139323
+             */
+            subject: string;
+            /**
+             * @description The user's login at sign-in (GitHub's `login`). A login can be renamed and later taken by another account; `subject` cannot.
+             * @example mmornati
+             */
+            login: string;
+            /** @description The user's display name at sign-in, or `null` if they have none. */
+            name: string | null;
+            /** @description The URL of the user's avatar at sign-in, or `null`. */
+            avatar_url: string | null;
+        };
+        /** @description The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token. */
+        Me: {
+            principal_id: components["schemas"]["PrincipalId"];
+            /** @description The token's name, or the signed-in user's login. */
+            name: string;
+            scope: components["schemas"]["TokenScope"];
+            /**
+             * @description How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
+             * @enum {string}
+             */
+            kind: "token" | "session";
+            /** @description For a session, the user's role in `ui.access` now; `null` for a token. */
+            role: components["schemas"]["UiRole"] | null;
+            /** @description For a session, who signed in; `null` for a token. */
+            user: components["schemas"]["SessionUser"] | null;
+            /** @description For a session, its `id`, the one `GET /v1/sessions` lists (so the UI can mark the current session and offer to revoke the others); `null` for a token. Never the cookie. */
+            session_id: components["schemas"]["Ulid"] | null;
+        };
+        /**
+         * @description A browser session of the admin UI as the server returns it: metadata only, never the cookie
+         *     or its hash.
+         */
+        Session: {
+            /** @description Generated at sign-in, never reused. It is the ULID inside the session cookie. */
+            id: components["schemas"]["Ulid"];
+            user: components["schemas"]["SessionUser"];
+            /** @description The `User-Agent` of the browser that signed in (cut to 256 characters), or `null`. */
+            user_agent: string | null;
+            /** @description When the user signed in. */
+            created_at: components["schemas"]["Timestamp"];
+            /** @description When the session last authenticated a request. Accurate to about 5 minutes, and a crash can lose the last interval. The session ends once it is unused for the instance's idle timeout. */
+            last_seen_at: components["schemas"]["Timestamp"];
+            /** @description When the session ends whatever its use (sign-in plus the instance's maximum session lifetime). */
+            expires_at: components["schemas"]["Timestamp"];
+            /** @description When the session was revoked (by an admin, or because the user signed out), or `null`. */
+            revoked_at: components["schemas"]["Timestamp"] | null;
+            /** @description Who revoked the session (the user's own principal id when they signed out), or `null`. */
+            revoked_by: components["schemas"]["TokenActor"] | null;
+        };
+        SessionPage: {
+            items: components["schemas"]["Session"][];
+            next_cursor: components["schemas"]["NextCursor"];
+        };
+        /**
+         * @description One entry of the instance's `ui.access` list. An entry names one person of an identity
+         *     provider, by login or by the provider's numeric id, and gives a role; a person listed
+         *     several times gets the highest role. Never carries OAuth configuration or secrets.
+         */
+        AccessEntry: {
+            /**
+             * @description The identity provider; today `github`.
+             * @example github
+             */
+            provider: string;
+            /**
+             * @description What the entry names. Today always `user`; later kinds (such as a team or an organisation) may be added, so clients must accept other values.
+             * @example user
+             */
+            kind: string;
+            /** @description The login the entry names, in lower case (`github_user`), or `null` for an entry by id (`github_id`). */
+            login: string | null;
+            /** @description The provider's id of the person (for GitHub the numeric user id, as a string). For an entry by id, that id; for an entry by login, the id the login was pinned to at its first sign-in, or `null` while nobody has signed in with it. */
+            subject: string | null;
+            /** @description Whether `subject` comes from the pin of a login entry. Once pinned, only that id gets the role, even if the login is renamed and taken by another account. */
+            pinned: boolean;
+            role: components["schemas"]["UiRole"];
+        };
+        AccessList: {
+            /** @description The entries, in the order of the configuration. */
+            items: components["schemas"]["AccessEntry"][];
         };
         /**
          * @description The body of `PUT /v1/sinks/{name}`: the keys of `sinks[]` in the watch file. It carries no
@@ -1259,6 +1535,8 @@ export interface components {
             subscription_id: components["schemas"]["Ulid"];
             /** @description The subscription's current name, or `null` once it was deleted. */
             subscription_name: components["schemas"]["Name"] | null;
+            /** @description The name of the sink the subscription delivers to now, or `null` once the subscription was deleted. A subscription moved to another sink shows the new one. */
+            sink: components["schemas"]["Name"] | null;
             /** @description `<event id>:<subscription id>`; the same on every attempt and replay. */
             idempotency_key: string;
             status: components["schemas"]["DeliveryStatus"];
@@ -1335,9 +1613,33 @@ export interface components {
              */
             abi: string | null;
             /** @description The JSON Schema of the kind's configuration (a watch's `coordinates` for a source, a sink's `config` for a sink), or `null` when the kind does not publish one. A property with `x-angelia-secret` true holds a secret value; the server masks it in every response and refuses it in API writes. */
-            config_schema: Record<string, never> | null;
+            config_schema: components["schemas"]["JsonSchema"] | null;
             /** @description For a third-party plugin, the hosts it may reach (manifest and operator entries merged); empty for built-ins, which use the instance's network rules. */
             allowed_hosts: components["schemas"]["PluginHost"][];
+        };
+        /**
+         * @description A JSON Schema document of the 2020-12 dialect (https://json-schema.org/draft/2020-12/schema),
+         *     as an object (never the boolean forms `true` or `false`). Any keyword of the dialect may
+         *     appear, and the `x-angelia-*` annotations of docs/api.md; clients that build a form from it
+         *     should ignore keywords they do not know. The members below are the ones a client most often
+         *     reads.
+         */
+        JsonSchema: {
+            /**
+             * @description The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+             * @enum {string}
+             */
+            $schema?: "https://json-schema.org/draft/2020-12/schema";
+            /** @description A JSON type name, or a list of them. */
+            type?: unknown;
+            description?: string;
+            /** @description The schema of each member of an object. */
+            properties?: {
+                [key: string]: components["schemas"]["JsonSchema"];
+            };
+            required?: string[];
+        } & {
+            [key: string]: unknown;
         };
         PluginHost: {
             /**
@@ -1356,6 +1658,48 @@ export interface components {
         PluginPage: {
             items: components["schemas"]["Plugin"][];
             next_cursor: components["schemas"]["NextCursor"];
+        };
+        /**
+         * @description A template and the event to render it with: at most one of `event`, `event_id` and
+         *     `sample`; with none of them, the built-in `full` sample.
+         */
+        TemplatePreviewRequest: {
+            /** @description A Go `text/template`, as a subscription's `template`. */
+            template: string;
+            /** @description A CloudEvents envelope as `EventRecord.event` holds it. Rendered as given; it is not checked against the envelope schema, only required to be an object. */
+            event?: Record<string, never>;
+            /** @description The id of an event of the log (`404` when there is none). */
+            event_id?: components["schemas"]["Ulid"];
+            /**
+             * @description A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+             * @enum {string}
+             */
+            sample?: "full" | "sparse";
+        };
+        /** @description The result of rendering a template. Exactly one of `output` and `error` is `null`. */
+        TemplatePreview: {
+            /** @description The rendered body, as a delivery would send it, or `null` when the template failed. Bytes that are not UTF-8 are replaced by U+FFFD. */
+            output: string | null;
+            /**
+             * @description The `Content-Type` a webhook delivery would send with the output (`application/json` when the output is a JSON object or array, else `text/plain`), or `null` when the template failed.
+             * @example application/json; charset=utf-8
+             */
+            content_type: string | null;
+            /** @description Why the template failed, or `null`. */
+            error: components["schemas"]["TemplateError"] | null;
+        };
+        TemplateError: {
+            /**
+             * @description `parse`: the template does not parse. `not_allowed`: it uses something templates may not (`define`, `template`, `block`). `exec`: it failed on this event (a missing key, a function error). `timeout`: it ran past its time limit. `output_too_large`: its output passed the size limit. `invalid_event`: the event is not a JSON object. Open set.
+             * @example exec
+             */
+            kind: string;
+            /** @description The line of the template where it failed, from 1, or `null` when unknown. */
+            line: number | null;
+            /** @description The column (in bytes, from 1), or `null` when unknown. */
+            column: number | null;
+            /** @description What went wrong, from a fixed set of messages. It never quotes the template text, which may hold something that should not be echoed. */
+            reason: string;
         };
         /** @description The cursor of the next page, or `null` on the last page. */
         NextCursor: components["schemas"]["Cursor"] | null;
@@ -1766,7 +2110,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description The token's scope is below the one the operation needs. */
+        /** @description The token's scope is below the one the operation needs (`forbidden`), or a request that changes something was authenticated by the admin UI's session cookie without the CSRF headers (`csrf`). */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -1786,6 +2130,15 @@ export interface components {
         };
         /** @description The request conflicts with the current state (`managed-by-file`, `cross-owner-reference`, `sink-in-use`, `secret-in-use`, `not-replayable`). */
         Conflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description `If-Match` names no current version of the resource, or `If-None-Match: *` found it existing (`precondition-failed`). Nothing was changed. */
+        PreconditionFailed: {
             headers: {
                 [name: string]: unknown;
             };
@@ -1855,6 +2208,28 @@ export interface components {
     };
     parameters: {
         /**
+         * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+         *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+         *     comparison: a weak tag (`W/"..."`) never matches.
+         * @example "3q2-7wEAAAAAAAAAAAAAAA"
+         */
+        IfMatch: string;
+        /**
+         * @description `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+         * @example *
+         */
+        IfNoneMatch: "*";
+        /**
+         * @description `asc` (the default): oldest first, after `after`. `desc`: newest first, below `before`. `desc` cannot be combined with `after` or `consumer`.
+         * @example desc
+         */
+        EventOrder: "asc" | "desc";
+        /**
+         * @description With `order=desc`, return the events whose `seq` is lower than this, the `next_before` of the previous page. Absent, the page starts at the newest event. Needs `order=desc`.
+         * @example 4182
+         */
+        Before: components["schemas"]["Seq"];
+        /**
          * @description The watch's name.
          * @example requests
          */
@@ -1874,6 +2249,11 @@ export interface components {
          * @example platform-ci
          */
         SubscriptionName: components["schemas"]["Name"];
+        /**
+         * @description The session's id, a ULID. Never the cookie.
+         * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+         */
+        SessionId: components["schemas"]["Ulid"];
         /**
          * @description The token's id, a ULID (the `ang_` token carries it after the prefix). Never the token itself.
          * @example 01JCZ8W3T6Q9N2H4K7M5R0V8XA
@@ -1899,6 +2279,11 @@ export interface components {
          * @example false
          */
         IncludeRevoked: boolean;
+        /**
+         * @description List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+         * @example false
+         */
+        IncludeEnded: boolean;
         /**
          * @description The opaque `next_cursor` of the previous page. Absent for the first page.
          * @example eyJuIjoicmVxdWVzdHMifQ
@@ -1961,6 +2346,14 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /**
+         * @description The version of the resource, a strong entity tag. It is derived from the stored resource
+         *     (its configuration, not its status), so it changes exactly when a write changes the
+         *     resource, and it is the same for every caller and replica. Opaque: compare it, do not parse
+         *     it. Send it back in `If-Match`.
+         * @example "3q2-7wEAAAAAAAAAAAAAAA"
+         */
+        ETag: string;
         /**
          * @description What the request changed (or, with `dry_run=true`, would change).
          * @example unchanged
@@ -2049,6 +2442,7 @@ export interface operations {
             /** @description The watch. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2071,7 +2465,20 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+                /**
+                 * @description `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+                 * @example *
+                 */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 /**
                  * @description The watch's name.
@@ -2091,6 +2498,7 @@ export interface operations {
             200: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2101,6 +2509,7 @@ export interface operations {
             201: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     Location: components["headers"]["Location"];
                     [name: string]: unknown;
                 };
@@ -2112,6 +2521,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
@@ -2128,7 +2538,15 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+            };
             path: {
                 /**
                  * @description The watch's name.
@@ -2152,6 +2570,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -2254,6 +2673,16 @@ export interface operations {
                  * @example release-bot
                  */
                 consumer?: components["parameters"]["ConsumerParam"];
+                /**
+                 * @description `asc` (the default): oldest first, after `after`. `desc`: newest first, below `before`. `desc` cannot be combined with `after` or `consumer`.
+                 * @example desc
+                 */
+                order?: components["parameters"]["EventOrder"];
+                /**
+                 * @description With `order=desc`, return the events whose `seq` is lower than this, the `next_before` of the previous page. Absent, the page starts at the newest event. Needs `order=desc`.
+                 * @example 4182
+                 */
+                before?: components["parameters"]["Before"];
             };
             header?: never;
             path?: never;
@@ -2261,7 +2690,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The events after the cursor, oldest first. */
+            /** @description The events after the cursor, oldest first; with `order=desc`, the newest events below `before`, newest first. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2640,6 +3069,7 @@ export interface operations {
             /** @description The sink. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2662,7 +3092,20 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+                /**
+                 * @description `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+                 * @example *
+                 */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 /**
                  * @description The sink's name.
@@ -2682,6 +3125,7 @@ export interface operations {
             200: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2692,6 +3136,7 @@ export interface operations {
             201: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     Location: components["headers"]["Location"];
                     [name: string]: unknown;
                 };
@@ -2703,6 +3148,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
@@ -2719,7 +3165,15 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+            };
             path: {
                 /**
                  * @description The sink's name.
@@ -2743,6 +3197,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -2966,6 +3421,7 @@ export interface operations {
             /** @description The subscription. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2988,7 +3444,20 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+                /**
+                 * @description `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+                 * @example *
+                 */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 /**
                  * @description The subscription's name.
@@ -3008,6 +3477,7 @@ export interface operations {
             200: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3018,6 +3488,7 @@ export interface operations {
             201: {
                 headers: {
                     "Angelia-Change": components["headers"]["AngeliaChange"];
+                    ETag: components["headers"]["ETag"];
                     Location: components["headers"]["Location"];
                     [name: string]: unknown;
                 };
@@ -3029,6 +3500,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
@@ -3045,7 +3517,15 @@ export interface operations {
                  */
                 dry_run?: components["parameters"]["DryRun"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+                 *     or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+                 *     comparison: a weak tag (`W/"..."`) never matches.
+                 * @example "3q2-7wEAAAAAAAAAAAAAAA"
+                 */
+                "If-Match"?: components["parameters"]["IfMatch"];
+            };
             path: {
                 /**
                  * @description The subscription's name.
@@ -3069,6 +3549,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -3103,6 +3584,21 @@ export interface operations {
                  * @example 01JBX2A7C8D9E0F1G2H3J4K5M6
                  */
                 event?: components["schemas"]["Ulid"];
+                /**
+                 * @description Only deliveries of the subscriptions that deliver to this sink now, by name. An unknown sink matches nothing.
+                 * @example ci-webhook
+                 */
+                sink?: components["schemas"]["Name"];
+                /**
+                 * @description Only deliveries of events recorded at or after this time.
+                 * @example 2026-11-01T00:00:00.000Z
+                 */
+                since?: components["schemas"]["Timestamp"];
+                /**
+                 * @description Only deliveries of events recorded before this time. Must be after `since`.
+                 * @example 2026-11-02T00:00:00.000Z
+                 */
+                until?: components["schemas"]["Timestamp"];
             };
             header?: never;
             path?: never;
@@ -3435,6 +3931,157 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Page size.
+                 * @example 100
+                 */
+                limit?: components["parameters"]["Limit"];
+                /**
+                 * @description The opaque `next_cursor` of the previous page. Absent for the first page.
+                 * @example eyJuIjoicmVxdWVzdHMifQ
+                 */
+                cursor?: components["parameters"]["Cursor"];
+                /**
+                 * @description List ended sessions too (revoked, past `expires_at`, or idle longer than the instance's idle timeout).
+                 * @example false
+                 */
+                include_ended?: components["parameters"]["IncludeEnded"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The session's id, a ULID. Never the cookie.
+                 * @example 01JD0B6Q1W4E7R9T2Y5V8X0Z3A
+                 */
+                id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The access list, possibly empty. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    previewTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplatePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The output, or the template's error. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplatePreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };

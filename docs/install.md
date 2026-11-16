@@ -346,4 +346,5 @@ that fails is retried with backoff; the reasons are in the Angelia log and in [w
   for chat messages.
 - Other sinks: [GitHub dispatch](github-dispatch.md), [Shoutrrr](shoutrrr.md) (chat).
 - [Instance configuration](configuration.md), [metrics](operations/metrics.md), [private registries](private-registries.md).
+- [Admin UI](admin-ui.md): the web UI, its GitHub sign-in and roles, with Docker Compose and Coolify notes.
 - [Command-line reference](cli.md) and [MCP](mcp.md): both use the API token of section 4.
