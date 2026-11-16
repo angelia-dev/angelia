@@ -199,8 +199,69 @@ func TestGitHubExchangeFailures(t *testing.T) {
 	}
 	f.srv.Close()
 	var pe *ProviderError
-	if _, err := g.Exchange(t.Context(), fakeCode, verifier); !errors.As(err, &pe) || !strings.Contains(err.Error(), "request failed") {
+	_, err := g.Exchange(t.Context(), fakeCode, verifier)
+	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "request failed") {
 		t.Fatalf("closed server: %v", err)
+	}
+	// The transport error keeps its cause, the URL and never a credential.
+	if !strings.Contains(err.Error(), f.srv.URL+"/login/oauth/access_token") || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("closed server: the cause is lost: %v", err)
+	}
+	for _, s := range []string{fakeCode, verifier, fakeClientSecret, fakeAccessToken} {
+		if strings.Contains(err.Error(), s) {
+			t.Errorf("the error holds %q", s)
+		}
+	}
+}
+
+// The OAuth requests never follow a redirect: a 307 would resend the form,
+// client secret and code included, to wherever it points.
+func TestGitHubNoRedirect(t *testing.T) {
+	var mu sync.Mutex
+	followed := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		followed++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"access_token":"x","token_type":"bearer"}`))
+	}))
+	t.Cleanup(target.Close)
+	for _, path := range []string{"/login/oauth/access_token", "/api/v3/user"} {
+		t.Run(path, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == path {
+					http.Redirect(w, r, target.URL+path, http.StatusTemporaryRedirect)
+					return
+				}
+				f.srv.Config.Handler.ServeHTTP(w, r)
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			client := srv.Client()
+			g, err := NewGitHub(GitHubConfig{
+				ClientID: fakeClientID, ClientSecret: secrets.NewValueString(fakeClientSecret),
+				RedirectURL: "https://angelia.example.com/ui/auth/callback/github",
+				WebURL:      srv.URL, APIURL: srv.URL + "/api/v3", HTTP: client,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = g.Exchange(t.Context(), fakeCode, strings.Repeat("v", 43))
+			var pe *ProviderError
+			if !errors.As(err, &pe) || !strings.Contains(err.Error(), "HTTP 307") {
+				t.Fatalf("err = %v, want HTTP 307", err)
+			}
+			if client.CheckRedirect != nil {
+				t.Fatal("the caller's client was changed")
+			}
+		})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if followed != 0 {
+		t.Fatalf("followed %d redirects", followed)
 	}
 }
 

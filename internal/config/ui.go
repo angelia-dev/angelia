@@ -82,6 +82,10 @@ const (
 // Session defaults (ADR 0033 §3).
 const (
 	DefaultUIIdleTimeout = 12 * time.Hour
+	// MinUIIdleTimeout is the shortest idle timeout: well above the up to
+	// 6 minutes (the last-seen write interval plus the flush tick) that a
+	// use on another replica takes to reach the store.
+	MinUIIdleTimeout     = 15 * time.Minute
 	DefaultUIMaxLifetime = 7 * 24 * time.Hour
 )
 
@@ -196,8 +200,8 @@ func (u UI) validate(bad func(string, ...any)) {
 	}
 	s := u.Session
 	switch {
-	case s.IdleTimeout < time.Minute:
-		bad("ui.session.idle_timeout: must be at least 1m")
+	case s.IdleTimeout < MinUIIdleTimeout:
+		bad("ui.session.idle_timeout: must be at least 15m (a use on another replica reaches the store after up to 6m)")
 	case s.MaxLifetime < time.Minute:
 		bad("ui.session.max_lifetime: must be at least 1m")
 	case s.IdleTimeout > s.MaxLifetime:

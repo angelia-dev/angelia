@@ -18,7 +18,9 @@ describe('events timeline', () => {
         url.searchParams.get('after') === '0' ? eventPage([eventRecord(1), eventRecord(2)], true) : eventPage([eventRecord(3)]),
     })
     renderApp('/ui/events')
-    const table = await screen.findByRole('table', { name: 'Events, newest first' })
+    const table = await screen.findByRole('table', {
+      name: 'Events, newest first',
+    })
     await vi.waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(4))
     const rows = within(table).getAllByRole('row').slice(1)
     expect(rows.map((r) => within(r).getAllByRole('cell')[0]?.textContent)).toEqual(['3', '2', '1'])
@@ -33,15 +35,49 @@ describe('events timeline', () => {
       '/v1/events': () => eventPage([eventRecord(++next)], true),
     })
     renderApp('/ui/events')
-    const more = await screen.findByRole('button', { name: 'Load newer events' })
+    const more = await screen.findByRole('button', {
+      name: 'Load newer events',
+    })
     await vi.waitFor(() => expect(api.count('/v1/events')).toBe(5))
     expect(MockEventSource.instances).toHaveLength(0) // live updates wait for the newest event
     await userEvent.click(more)
     await vi.waitFor(() => expect(api.count('/v1/events')).toBe(6))
   })
 
+  it('offers "Load newer events" instead of the empty state when a page is empty but has more', async () => {
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/events': ({ url }) =>
+        url.searchParams.get('after') === '0' ? { items: [], next_after: 40, has_more: true } : eventPage([eventRecord(41)]),
+    })
+    renderApp('/ui/events')
+    const more = await screen.findByRole('button', {
+      name: 'Load newer events',
+    })
+    expect(screen.queryByText('No events yet')).not.toBeInTheDocument()
+    expect(screen.getByText(/loaded oldest first/)).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(2)) // auto-paging continues
+    await vi.waitFor(() => expect(screen.getByRole('table', { name: 'Events, newest first' })).toBeInTheDocument())
+    expect(more).not.toBeNull()
+  })
+
+  it('does not send an invalid watch or source filter', async () => {
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/events': eventPage([eventRecord(1)]),
+    })
+    renderApp('/ui/events')
+    await screen.findByRole('table')
+    await userEvent.type(screen.getByLabelText('Source'), 'PyPI!')
+    expect(await screen.findByText(/Use a source kind/)).toBeInTheDocument()
+    expect(api.calls.every((c) => !c.url.searchParams.has('source'))).toBe(true)
+  })
+
   it('passes the watch, type and source filters', async () => {
-    const api = mockApi({ '/v1/me': me(), '/v1/events': eventPage([eventRecord(1)]) })
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/events': eventPage([eventRecord(1)]),
+    })
     renderApp('/ui/events')
     await screen.findByRole('table')
     await userEvent.type(screen.getByLabelText('Watch (name or id)'), 'requests')
@@ -62,7 +98,10 @@ describe('events timeline', () => {
   })
 
   it('shows the problem detail when listing fails', async () => {
-    mockApi({ '/v1/me': me(), '/v1/events': problem(410, 'Cursor expired', 'oldest seq is 40') })
+    mockApi({
+      '/v1/me': me(),
+      '/v1/events': problem(410, 'Cursor expired', 'oldest seq is 40'),
+    })
     renderApp('/ui/events')
     expect(await screen.findByRole('alert')).toHaveTextContent('oldest seq is 40')
   })
@@ -70,7 +109,10 @@ describe('events timeline', () => {
 
 describe('live updates', () => {
   async function renderLive() {
-    const api = mockApi({ '/v1/me': me(), '/v1/events': eventPage([eventRecord(1), eventRecord(2)]) })
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/events': eventPage([eventRecord(1), eventRecord(2)]),
+    })
     renderApp('/ui/events')
     await screen.findByRole('table')
     await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
@@ -145,7 +187,10 @@ describe('event detail', () => {
   })
 
   it('shows a not-found problem', async () => {
-    mockApi({ '/v1/me': me(), '/v1/events/NOPE': problem(404, 'Event not found', 'no such event') })
+    mockApi({
+      '/v1/me': me(),
+      '/v1/events/NOPE': problem(404, 'Event not found', 'no such event'),
+    })
     renderApp('/ui/events/NOPE')
     expect(await screen.findByRole('alert')).toHaveTextContent('no such event')
   })
