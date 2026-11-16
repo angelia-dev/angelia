@@ -1,21 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
+import { api } from './client'
+import { ApiError, unwrap } from './problem'
+import type { Me, UiRole } from './types'
 
-// GET /v1/me is added to the OpenAPI spec by the sign-in story (#262). Until
-// then its response is typed here; replace this with the generated type then.
-export interface Me {
-  principal_id: string
-  name: string
-  scope: 'read' | 'write' | 'admin'
-  kind: 'token' | 'session'
-  role?: 'viewer' | 'editor' | 'admin'
-  user?: {
-    provider: string
-    subject: string
-    login: string
-    name?: string
-    avatar_url?: string
-  }
-}
+export type { Me, UiRole }
 
 export class NotSignedInError extends Error {
   constructor() {
@@ -24,18 +12,27 @@ export class NotSignedInError extends Error {
   }
 }
 
-export async function fetchMe(fetchFn: typeof fetch = fetch): Promise<Me> {
-  const res = await fetchFn('/v1/me', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
-  if (res.status === 401) throw new NotSignedInError()
-  if (!res.ok) throw new Error(`GET /v1/me: ${res.status}`)
-  return (await res.json()) as Me
+export async function fetchMe(): Promise<Me> {
+  try {
+    return await unwrap(api.GET('/v1/me'))
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) throw new NotSignedInError()
+    throw err
+  }
 }
 
 export function useMe() {
-  return useQuery({
-    queryKey: ['me'],
-    queryFn: () => fetchMe(),
-    retry: false,
-    staleTime: 60_000,
-  })
+  return useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false, staleTime: 60_000 })
+}
+
+const RANK: Record<UiRole, number> = { viewer: 0, editor: 1, admin: 2 }
+
+/** The role of a principal; an API token (no UI role) is judged by its scope. */
+export function effectiveRole(me: Me): UiRole {
+  if (me.role) return me.role
+  return me.scope === 'admin' ? 'admin' : me.scope === 'write' ? 'editor' : 'viewer'
+}
+
+export function hasRole(me: Me, min: UiRole): boolean {
+  return RANK[effectiveRole(me)] >= RANK[min]
 }

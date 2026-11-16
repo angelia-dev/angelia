@@ -248,6 +248,52 @@ func TestHandlerSignIn(t *testing.T) {
 	}
 }
 
+// Signing in again from a browser that holds a session ends that session,
+// revoked by the principal that signed in; a stale or junk cookie is
+// ignored.
+func TestHandlerSignInAgain(t *testing.T) {
+	e := newHandlerEnv(t, testUI())
+	signInWith := func(old string) *http.Cookie {
+		t.Helper()
+		oc, state := e.login(t)
+		r := httptest.NewRequest(http.MethodGet, "/ui/auth/callback/github?code=good&state="+state, nil)
+		addCookie(r, oc.Name, oc.Value)
+		if old != "" {
+			addCookie(r, SessionCookie, old)
+		}
+		resp := e.do(r)
+		sc := cookieOf(resp, SessionCookie)
+		if resp.StatusCode != http.StatusSeeOther || sc == nil {
+			t.Fatal(resp.Status, resp.Body)
+		}
+		return sc
+	}
+	first := signInWith("")
+	p1, err := e.s.AuthenticateSession(t.Context(), first.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := signInWith(first.Value)
+	if second.Value == first.Value {
+		t.Fatal("the cookie was reused")
+	}
+	if _, err := e.s.AuthenticateSession(t.Context(), second.Value); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.s.AuthenticateSession(t.Context(), first.Value)
+	wantReason(t, err, api.AuthReasonRevoked)
+	row, err := e.st.UISessionByID(t.Context(), p1.Session.ID)
+	if err != nil || row.RevokedAt == nil || row.RevokedBy != "github:1001" {
+		t.Fatalf("%+v %v", row, err)
+	}
+	if !strings.Contains(e.logs.String(), "ui session replaced by a new sign-in") || strings.Contains(e.logs.String(), first.Value) {
+		t.Fatal(e.logs.String())
+	}
+	// The revoked cookie, or junk, does not stop a new sign-in.
+	signInWith(first.Value)
+	signInWith("junk")
+}
+
 func TestHandlerState(t *testing.T) {
 	e := newHandlerEnv(t, testUI())
 	oc, state := e.login(t)

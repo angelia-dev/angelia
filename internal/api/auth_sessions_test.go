@@ -183,13 +183,13 @@ func TestSessionLifecycle(t *testing.T) {
 	e.must(http.StatusNoContent, e.do("DELETE", "/v1/sessions/"+id, e.tokens[api.ScopeAdmin], nil))
 	e.must(http.StatusUnauthorized, e.doCookie("GET", "/v1/me", cookie, nil, false))
 
-	// Idle: an hour without a request.
+	// Idle: an hour without a request, plus the replica slack.
 	cookie = e.signIn(editorID)
 	e.clock.add(59 * time.Minute)
 	e.must(http.StatusOK, e.doCookie("GET", "/v1/me", cookie, nil, false))
 	e.clock.add(59 * time.Minute)
 	e.must(http.StatusOK, e.doCookie("GET", "/v1/me", cookie, nil, false))
-	e.clock.add(time.Hour)
+	e.clock.add(time.Hour + webauth.IdleSlack)
 	e.must(http.StatusUnauthorized, e.doCookie("GET", "/v1/me", cookie, nil, false))
 
 	// Maximum lifetime, however active.

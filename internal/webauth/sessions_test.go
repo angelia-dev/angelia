@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -155,7 +156,7 @@ func wantReason(t *testing.T, err error, reason string) {
 
 func TestSessionsAuthenticate(t *testing.T) {
 	s, _, c, _ := newTestSessions(t, testUI())
-	if s.IdleTimeout() != time.Hour {
+	if s.IdleTimeout() != time.Hour+IdleSlack {
 		t.Fatal(s.IdleTimeout())
 	}
 	cookie, row := signIn(t, s, alice)
@@ -218,12 +219,74 @@ func TestSessionsEnd(t *testing.T) {
 		if _, err := s.AuthenticateSession(t.Context(), cookie); err != nil {
 			t.Fatal(err)
 		}
-		c.Add(time.Hour)
+		// Within the slack of a use on another replica, it lives on.
+		c.Add(time.Hour + IdleSlack - time.Second)
+		if _, err := s.CheckSession(t.Context(), cookie); err != nil {
+			t.Fatal(err)
+		}
+		c.Add(time.Second)
 		_, err := s.AuthenticateSession(t.Context(), cookie)
 		wantReason(t, err, api.AuthReasonExpired)
 		var ae *AuthError
 		if !errors.As(err, &ae) || ae.ID != row.ID || !strings.Contains(err.Error(), row.ID) {
 			t.Fatal(err)
+		}
+	})
+	t.Run("used on another replica", func(t *testing.T) {
+		// Replica B serves every request; A only sees the store, which B
+		// writes up to TouchInterval plus FlushTick after the use.
+		st, c := newTestStore(t), newClock()
+		a := NewSessions(st, testUI(), nil, WithClock(c.Now))
+		b := NewSessions(st, testUI(), nil, WithClock(c.Now))
+		cookie, _ := signIn(t, a, alice)
+		if _, err := b.AuthenticateSession(t.Context(), cookie); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Flush(t.Context(), false); err != nil {
+			t.Fatal(err)
+		}
+		// B's later uses are coalesced: the store keeps the first one.
+		for range 11 {
+			c.Add(5 * time.Minute)
+			if _, err := b.AuthenticateSession(t.Context(), cookie); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// 55 minutes after the stored use, B's last use was just now and
+		// its write is still pending: A must not end the session.
+		c.Add(5*time.Minute + FlushTick - time.Second)
+		if _, err := a.AuthenticateSession(t.Context(), cookie); err != nil {
+			t.Fatalf("ended early on another replica: %v", err)
+		}
+	})
+	t.Run("open stream only", func(t *testing.T) {
+		// The request that opened a stream counts as a use; the stream's
+		// re-checks do not, so the session ends at its idle timeout (plus
+		// the replica slack) however long the stream stays open.
+		s, st, c, _ := newTestSessions(t, testUI())
+		cookie, row := signIn(t, s, alice)
+		c.Add(time.Minute)
+		if _, err := s.AuthenticateSession(t.Context(), cookie); err != nil {
+			t.Fatal(err)
+		}
+		opened := c.Now()
+		var err error
+		for range 200 {
+			c.Add(30 * time.Second)
+			if _, err = s.CheckSession(t.Context(), cookie); err != nil {
+				break
+			}
+			if ferr := s.Flush(t.Context(), false); ferr != nil {
+				t.Fatal(ferr)
+			}
+		}
+		wantReason(t, err, api.AuthReasonExpired)
+		if ended := c.Now().Sub(opened); ended < time.Hour+IdleSlack || ended > time.Hour+IdleSlack+30*time.Second {
+			t.Fatalf("ended %s after the last use", ended)
+		}
+		r, _ := st.UISessionByID(t.Context(), row.ID)
+		if !r.LastSeenAt.Equal(opened) {
+			t.Fatalf("a re-check moved last_seen_at: %v, want %v", r.LastSeenAt, opened)
 		}
 	})
 	t.Run("max lifetime", func(t *testing.T) {
@@ -480,6 +543,75 @@ func (s *syncBuf) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// Tokens that a signed-in user created outlive their access: the api role
+// warns of the active ones whose creator ui.access no longer lists.
+func TestSessionsOrphanTokens(t *testing.T) {
+	s, st, c, logs := newTestSessions(t, testUI())
+	// alice (github_user "Alice") is listed once pinned by a sign-in; bob
+	// by his id. dave (1004) and the login "carol" pinned to 1003 are not
+	// listed below.
+	signIn(t, s, alice)
+	signIn(t, s, carol)
+	past := c.Now().Add(-time.Hour)
+	for i, tk := range []struct {
+		by      string
+		expires *time.Time
+		revoked bool
+	}{
+		{by: "github:1001"},
+		{by: "github:1002"},
+		{by: "github:1003"},
+		{by: "github:1004"},
+		{by: "local"},
+		{by: "bootstrap"},
+		{by: "01JD0000000000000000000000"},
+		{by: "github:1004", expires: &past},
+		{by: "github:1004", revoked: true},
+	} {
+		id := fmt.Sprintf("01JD00000000000000000000%02d", i)
+		err := st.CreateAPIToken(t.Context(), store.APIToken{
+			ID: id, Name: fmt.Sprintf("t%d", i), Scope: store.TokenScopeRead, Hash: bytes.Repeat([]byte{byte(i)}, 32),
+			CreatedAt: past.Add(-time.Hour), CreatedBy: tk.by, ExpiresAt: tk.expires,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tk.revoked {
+			if _, err := st.RevokeAPIToken(t.Context(), id, past, "local"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// carol is dropped from the list: her token and dave's are reported.
+	ui := testUI()
+	ui.Access = ui.Access[:2]
+	s2 := NewSessions(st, ui, slog.New(slog.NewTextHandler(logs, nil)), WithClock(c.Now))
+	ids, err := s2.OrphanTokens(t.Context(), st)
+	if err != nil || strings.Join(ids, ",") != "01JD0000000000000000000002,01JD0000000000000000000003" {
+		t.Fatalf("%v %v", ids, err)
+	}
+	s2.WarnOrphanTokens(t.Context(), st)
+	out := logs.String()
+	if strings.Count(out, "level=WARN") != 1 || !strings.Contains(out, "ui.access no longer lists") ||
+		!strings.Contains(out, "token_ids=\"[01JD0000000000000000000002 01JD0000000000000000000003]\"") {
+		t.Fatal(out)
+	}
+	// Nothing to report, nothing logged; a failed read is logged.
+	ui = testUI()
+	ui.Access = append(ui.Access, config.UIAccess{GitHubID: 1004, Role: config.UIRoleViewer})
+	s3 := NewSessions(st, ui, slog.New(slog.NewTextHandler(logs, nil)), WithClock(c.Now))
+	before := len(logs.String())
+	s3.WarnOrphanTokens(t.Context(), st)
+	if len(logs.String()) != before {
+		t.Fatalf("all listed, still warned: %s", logs.String()[before:])
+	}
+	_ = st.Close()
+	s3.WarnOrphanTokens(t.Context(), st)
+	if !strings.Contains(logs.String(), "not checked against ui.access") {
+		t.Fatal(logs.String())
+	}
 }
 
 func TestCutUserAgent(t *testing.T) {

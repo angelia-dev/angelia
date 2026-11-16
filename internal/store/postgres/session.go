@@ -111,6 +111,15 @@ func (s *Store) PinUIIdentity(ctx context.Context, provider, login, subject stri
 	return pinned, nil
 }
 
+// UIIdentityPin implements [store.SessionStore].
+func (s *Store) UIIdentityPin(ctx context.Context, provider, login string) (string, error) {
+	pinned, err := s.q.GetUIIdentityPin(ctx, GetUIIdentityPinParams{Provider: provider, Login: login})
+	if err != nil {
+		return "", wrap(err, "read ui identity pin", provider+"/"+login)
+	}
+	return pinned, nil
+}
+
 func uiSessionFromRow(r UiSession) store.UISession {
 	return store.UISession{
 		ID: r.ID, Hash: r.Hash, Provider: r.Provider, Subject: r.Subject, Login: r.Login, Name: r.Name,

@@ -27,6 +27,7 @@ type fakeSessions struct {
 	mu       sync.Mutex
 	sessions map[string]Principal
 	calls    int
+	checks   int
 }
 
 func newFakeSessions() *fakeSessions {
@@ -56,6 +57,21 @@ func (f *fakeSessions) AuthenticateSession(_ context.Context, cookie string) (Pr
 		return Principal{}, fmt.Errorf("session: %w", ErrUnauthenticated)
 	}
 	return found, nil
+}
+
+func (f *fakeSessions) CheckSession(ctx context.Context, cookie string) (Principal, error) {
+	p, err := f.AuthenticateSession(ctx, cookie)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls--
+	f.checks++
+	return p, err
+}
+
+func (f *fakeSessions) checkCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checks
 }
 
 func (f *fakeSessions) IdleTimeout() time.Duration { return 12 * time.Hour }
@@ -130,7 +146,7 @@ func TestSessionCookieAuthenticates(t *testing.T) {
 		t.Fatalf("me: %v", m)
 	}
 	r = e.do("GET", "/v1/tokens", "", nil, cookieHdr(sessRead)...)
-	if r.Status != http.StatusForbidden || r.problemType(t) != SlugForbidden {
+	if r.Status != http.StatusForbidden || r.problemType(t) != SlugForbidden || !strings.Contains(string(r.Body), "the session has read") {
 		t.Fatalf("viewer on an admin operation: %d %s", r.Status, r.Body)
 	}
 	e.must(http.StatusOK, e.do("GET", "/v1/tokens", "", nil, cookieHdr(sessMe)...))
@@ -282,7 +298,9 @@ func TestSafePathRedactsCookie(t *testing.T) {
 }
 
 // An event stream opened with the cookie re-checks the session, like a
-// token: once the session stops authenticating, the stream closes.
+// token: once the session stops authenticating, the stream closes. The
+// re-checks do not record a use (CheckSession): only the opening request
+// counts, so an open stream does not keep an idle session alive.
 func TestEventStreamSessionRecheck(t *testing.T) {
 	f := newFakeSessions()
 	_, ts := streamEnv(t, withSessions(f))
@@ -294,8 +312,11 @@ func TestEventStreamSessionRecheck(t *testing.T) {
 	n := f.callCount()
 	f.revoke(sessRead)
 	c.expectClosed()
-	if f.callCount() <= n {
+	if f.checkCount() == 0 {
 		t.Fatal("the stream did not check the session again")
+	}
+	if f.callCount() != n {
+		t.Fatalf("the stream's re-check recorded a use: %d authentications, want %d", f.callCount(), n)
 	}
 }
 
