@@ -52,6 +52,16 @@ func newConfigCheckCmd() *cobra.Command {
 			if _, err := cfg.HTTP.LoadCAPool(); err != nil {
 				return fmt.Errorf("invalid configuration: %w", err)
 			}
+			if cfg.UI.Enabled && cfg.UI.GitHub.ClientSecretFile != "" {
+				// The env variant was checked by Load (a warning).
+				_, w, err := cfg.UI.GitHub.ClientSecret()
+				if err != nil {
+					return fmt.Errorf("invalid configuration: %w", err)
+				}
+				if w != "" {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+				}
+			}
 			secretsLine, err := checkSecretsConfig(cmd.Context(), cfg, cmd.ErrOrStderr())
 			if err != nil {
 				return err
