@@ -21,6 +21,7 @@ func full(t *testing.T) *Metrics {
 	m.RegisterDeliveryCounts(fakeCounts{})
 	m.DueBacklog(1)
 	m.CheckLag(time.Second)
+	m.UILogin("github", "success")
 	m.AttemptFinished(dispatch.OutcomeDelivered)
 	m.RateLimitWait("pypi.org", time.Second)
 	m.ServerPause("pypi.org", netguard.PauseRetryAfter)

@@ -9,7 +9,8 @@
 //
 // Cardinality is bounded by design. The only labels are source kind, fetch
 // result, delivery outcome and status, fixed lists (bucket, origin, reason,
-// class, the API's authentication failure reason), and the host of the
+// class, the API's authentication failure reason, the UI sign-in's provider
+// and result), and the host of the
 // netguard limits table: the built-in hosts plus those of
 // http.host_limits.hosts (any other host is "other", because sinks share the
 // client and their hosts can be secret). No label ever carries a package,
@@ -37,6 +38,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/dispatch"
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/webauth"
 )
 
 // Fetch results, the values of the result label of angelia_source_fetches_total.
@@ -56,6 +58,7 @@ type Metrics struct {
 	dueTargets prometheus.Gauge
 	streams    prometheus.Gauge
 	authFails  *prometheus.CounterVec
+	uiLogins   *prometheus.CounterVec
 	checkLag   prometheus.Histogram
 	fetches    *prometheus.CounterVec
 	rateWait   *prometheus.HistogramVec
@@ -106,6 +109,15 @@ func New(log *slog.Logger) *Metrics {
 	}, []string{"reason"})
 	for _, r := range api.AuthReasons() {
 		m.authFails.WithLabelValues(r) // every reason starts at 0
+	}
+	m.uiLogins = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "angelia_ui_logins_total",
+		Help: "Admin UI sign-ins handled by this process, by identity provider and result: success, not_authorised, identity_mismatch, invalid_state, cancelled, provider_error or error.",
+	}, []string{"provider", "result"})
+	for _, p := range webauth.Providers() {
+		for _, r := range webauth.LoginResults() {
+			m.uiLogins.WithLabelValues(p, r) // every pair starts at 0
+		}
 	}
 	m.checkLag = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "angelia_check_lag_seconds",
@@ -161,7 +173,7 @@ func New(log *slog.Logger) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		info, m.dueTargets, m.streams, m.authFails, m.checkLag, m.fetches, m.rateWait, m.attempts,
+		info, m.dueTargets, m.streams, m.authFails, m.uiLogins, m.checkLag, m.fetches, m.rateWait, m.attempts,
 		m.hostLimitRate, m.hostLimitBurst, m.hostDemand, m.serverPauses, m.responses, m.deadlineRefusals,
 	)
 	return m
@@ -198,6 +210,19 @@ func (m *Metrics) AuthFailed(reason string) {
 		reason = api.AuthReasonUnknown
 	}
 	m.authFails.WithLabelValues(reason).Inc()
+}
+
+// UILogin implements webauth.LoginMetrics. A provider or result outside
+// webauth.Providers and webauth.LoginResults is counted as other and error,
+// so that the label sets stay closed.
+func (m *Metrics) UILogin(provider, result string) {
+	if !slices.Contains(webauth.Providers(), provider) {
+		provider = "other"
+	}
+	if !slices.Contains(webauth.LoginResults(), result) {
+		result = webauth.ResultError
+	}
+	m.uiLogins.WithLabelValues(provider, result).Inc()
 }
 
 // CheckLag implements scheduler.Metrics. A negative lag counts as zero.
