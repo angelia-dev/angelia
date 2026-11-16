@@ -266,6 +266,17 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	h.count(name, ResultSuccess)
 	h.log.InfoContext(ctx, "ui sign-in", "provider", name, "principal", id.PrincipalID(), "login", id.Login,
 		"role", m.role, "session_id", row.ID)
+	// Signing in again ends the session the browser held before.
+	if cs := r.CookiesNamed(h.sessionName()); len(cs) == 1 {
+		old, changed, err := h.sessions.revokeCookie(ctx, cs[0].Value, id.PrincipalID())
+		switch {
+		case err != nil:
+			h.log.ErrorContext(ctx, "ui sign-in: the previous session was not revoked", "principal", id.PrincipalID(), "error", err)
+		case changed:
+			h.log.InfoContext(ctx, "ui session replaced by a new sign-in", "principal", id.PrincipalID(),
+				"session_id", old.ID, "new_session_id", row.ID)
+		}
+	}
 	maxAge := int(row.ExpiresAt.Sub(h.now()) / time.Second)
 	http.SetCookie(w, h.cookie(SessionCookie, SessionCookieLocal, cookie, max(maxAge, 1)))
 	http.Redirect(w, r, homePath, http.StatusSeeOther)

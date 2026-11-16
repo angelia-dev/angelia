@@ -71,7 +71,7 @@ export function DeliveriesPage() {
           options={[{ value: '', label: 'All subscriptions' }, ...subList.map((s) => ({ value: s.id, label: s.name }))]}
         />
         <SelectFilter
-          label="Sink"
+          label="Sink (filters loaded rows)"
           value={sinkName}
           onChange={setSinkName}
           options={[{ value: '', label: 'All sinks' }, ...sinkNames.map((n) => ({ value: n, label: n }))]}

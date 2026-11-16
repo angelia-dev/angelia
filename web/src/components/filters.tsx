@@ -9,11 +9,14 @@ export function TextFilter({
   value,
   onChange,
   placeholder,
+  help,
 }: {
   label: string
   value: string
   onChange: (v: string) => void
   placeholder?: string
+  /** Inline error text; marks the input invalid. */
+  help?: string
 }) {
   const id = useId()
   return (
@@ -21,7 +24,20 @@ export function TextFilter({
       <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
         {label}
       </label>
-      <input id={id} className={control} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      <input
+        id={id}
+        className={control}
+        value={value}
+        placeholder={placeholder}
+        aria-invalid={help ? true : undefined}
+        aria-describedby={help ? `${id}-help` : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {help && (
+        <p id={`${id}-help`} className="max-w-64 text-xs text-destructive">
+          {help}
+        </p>
+      )}
     </div>
   )
 }

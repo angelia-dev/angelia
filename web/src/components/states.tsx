@@ -119,10 +119,10 @@ export function ListFrame({
 }) {
   if (query.isPending) return <TableSkeleton label={label} columns={columns} />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
-  if (count === 0) return <>{empty}</>
+  if (count === 0 && !query.hasNextPage) return <>{empty}</>
   return (
     <>
-      {children}
+      {count === 0 ? empty : children}
       {query.hasNextPage && (
         <div className="mt-4">
           <Button variant="outline" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>

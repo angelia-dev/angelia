@@ -107,9 +107,96 @@ describe('replay range', () => {
     const dialog = screen.getByRole('dialog')
     await userEvent.click(within(dialog).getByLabelText('Time range'))
     await userEvent.type(within(dialog).getByLabelText('Subscription (name or id)'), 'to-slack')
-    await userEvent.type(within(dialog).getByLabelText(/Event time from/), '2026-01-02T00:00')
-    await userEvent.type(within(dialog).getByLabelText(/Event time until/), '2026-01-01T00:00')
+    await userEvent.type(within(dialog).getByLabelText(/Event time from/), '2026-01-01T00:00')
+    await userEvent.type(within(dialog).getByLabelText(/Event time until/), '2026-01-02T00:00')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Count deliveries' }))
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('since must be before until')
+  })
+})
+
+describe('replay dialogs', () => {
+  it('offers no replay for a delivery whose subscription was deleted', async () => {
+    mockApi({
+      ...base('editor'),
+      '/v1/deliveries': page([delivery('D0000003', { status: 'dead', subscription_name: null })]),
+    })
+    renderApp('/ui/deliveries')
+    await screen.findByRole('table', { name: 'Deliveries' })
+    expect(screen.queryByRole('button', { name: /^Replay delivery/ })).not.toBeInTheDocument()
+  })
+
+  it('does not close on Escape while the replay is pending, then does', async () => {
+    let release: (r: Response) => void = () => {}
+    const pending = new Promise<Response>((r) => (release = r))
+    const stubbed = mockApi(base('editor')).fetchMock
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(typeof input === 'string' && input.startsWith('/') ? location.origin + input : input, init)
+      return req.method === 'POST' ? pending : stubbed(req)
+    })
+    renderApp('/ui/deliveries/D0000001')
+    await userEvent.click(await screen.findByRole('button', { name: 'Replay' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Replay' }))
+    await within(dialog).findByRole('button', { name: 'Replaying…' })
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    release(new Response(JSON.stringify({ ...dead, status: 'pending' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await within(dialog).findByText('The delivery is queued again.')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('traps focus, focuses the first control and restores focus to the opener', async () => {
+    mockApi(base('editor'))
+    renderApp('/ui/deliveries/D0000001')
+    const opener = await screen.findByRole('button', { name: 'Replay' })
+    await userEvent.click(opener)
+    const dialog = screen.getByRole('dialog')
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' })
+    const replay = within(dialog).getByRole('button', { name: 'Replay' })
+    expect(cancel).toHaveFocus()
+    await userEvent.tab()
+    expect(replay).toHaveFocus()
+    await userEvent.tab()
+    expect(cancel).toHaveFocus()
+    await userEvent.tab({ shift: true })
+    expect(replay).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+  })
+
+  it('sends ISO since/until for a time range, rejects since >= until inline, and resets the count on change', async () => {
+    const bodies: Record<string, unknown>[] = []
+    mockApi({
+      ...base('editor'),
+      'POST /v1/replays': () => ({ replayed: 2, dry_run: true, deliveries: [], truncated: false }),
+    })
+    const stubbed = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(typeof input === 'string' && input.startsWith('/') ? location.origin + input : input, init)
+      if (req.method === 'POST') bodies.push((await req.clone().json()) as Record<string, unknown>)
+      return stubbed(req)
+    })
+    renderApp('/ui/deliveries')
+    await userEvent.click(await screen.findByRole('button', { name: 'Replay range' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByLabelText('Time range'))
+    await userEvent.type(within(dialog).getByLabelText('Subscription (name or id)'), 'to-slack')
+    await userEvent.type(within(dialog).getByLabelText(/Event time from/), '2026-01-02T00:00')
+    await userEvent.type(within(dialog).getByLabelText(/Event time until/), '2026-01-01T00:00')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('The start must be before the end.')
+    expect(within(dialog).getByRole('button', { name: 'Count deliveries' })).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText(/Event time until/))
+    await userEvent.type(within(dialog).getByLabelText(/Event time until/), '2026-01-03T00:00')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Count deliveries' }))
+    await within(dialog).findByText('2 deliveries would be replayed.')
+    expect(bodies[0]).toMatchObject({
+      subscription: 'to-slack',
+      since: new Date('2026-01-02T00:00').toISOString(),
+      until: new Date('2026-01-03T00:00').toISOString(),
+      dry_run: true,
+    })
+    expect(String(bodies[0]?.since)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
   })
 })

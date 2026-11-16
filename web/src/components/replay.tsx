@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createReplay, fetchCapped, fetchSubscriptions, replayDelivery, type ReplaySelector } from '@/api/queries'
@@ -9,7 +9,7 @@ import { TextFilter } from '@/components/filters'
 import { ErrorState } from '@/components/states'
 import { Button } from '@/components/ui/button'
 
-export const isReplayable = (d: Delivery) => d.status === 'dead' || d.status === 'delivered'
+export const isReplayable = (d: Delivery) => d.subscription_name !== null && (d.status === 'dead' || d.status === 'delivered')
 
 function useInvalidateDeliveries() {
   const qc = useQueryClient()
@@ -26,7 +26,7 @@ export function ReplayDeliveryDialog({ delivery, onClose }: { delivery: Delivery
   const mutation = useMutation({ mutationFn: () => replayDelivery(delivery.id), onSuccess: () => invalidate() })
   const queued = mutation.data
   return (
-    <Dialog title="Replay delivery" onClose={onClose}>
+    <Dialog title="Replay delivery" onClose={onClose} dismissible={!mutation.isPending}>
       {queued ? (
         <div role="status" className="space-y-2 text-sm">
           <p>The delivery is queued again.</p>
@@ -101,8 +101,19 @@ export function ReplayRangeDialog({ onClose }: { onClose: () => void }) {
   })
 
   const status = [...(dead ? (['dead'] as const) : []), ...(delivered ? (['delivered'] as const) : [])]
+  const badRange = mode === 'range' && since !== '' && until !== '' && !(new Date(since) < new Date(until))
   const valid =
-    status.length > 0 && (mode === 'event' ? event.trim() !== '' : subscription.trim() !== '' && since !== '' && until !== '')
+    status.length > 0 &&
+    (mode === 'event' ? event.trim() !== '' : subscription.trim() !== '' && since !== '' && until !== '' && !badRange)
+
+  // Any change of the selection invalidates a previous count or error.
+  const { reset: resetDry } = dry
+  const { reset: resetReal } = real
+  useEffect(() => {
+    resetDry()
+    resetReal()
+    setSelector(undefined)
+  }, [mode, event, subscription, since, until, dead, delivered, resetDry, resetReal])
 
   function count() {
     if (!valid) return
@@ -117,7 +128,7 @@ export function ReplayRangeDialog({ onClose }: { onClose: () => void }) {
   const result = real.data
   const counted = dry.data
   return (
-    <Dialog title="Replay range" onClose={onClose}>
+    <Dialog title="Replay range" onClose={onClose} dismissible={!dry.isPending && !real.isPending}>
       {result ? (
         <div role="status" className="text-sm">
           <p>
@@ -185,6 +196,11 @@ export function ReplayRangeDialog({ onClose }: { onClose: () => void }) {
                 </label>
                 <input id="replay-until" type="datetime-local" className={dateInput} value={until} onChange={(e) => setUntil(e.target.value)} />
               </div>
+              {badRange && (
+                <p role="alert" className="text-sm text-destructive">
+                  The start must be before the end.
+                </p>
+              )}
             </>
           )}
           <fieldset className="flex gap-4 text-sm">

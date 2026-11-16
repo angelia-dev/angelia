@@ -64,6 +64,11 @@ func NewGitHub(cfg GitHubConfig) (*GitHub, error) {
 	if cfg.APIURL == "" {
 		cfg.APIURL = DefaultGitHubAPIURL
 	}
+	// The OAuth requests never follow a redirect: a 3xx is the response,
+	// and anything but 200 is an error. The caller's client is copied.
+	client := *cfg.HTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	cfg.HTTP = &client
 	cfg.WebURL = strings.TrimRight(cfg.WebURL, "/")
 	cfg.APIURL = strings.TrimRight(cfg.APIURL, "/")
 	return &GitHub{cfg: cfg}, nil
@@ -175,7 +180,9 @@ func (g *GitHub) do(req *http.Request, step string, v any) error {
 		if req.Context().Err() != nil {
 			return fmt.Errorf("webauth: github: %s: %w", step, req.Context().Err())
 		}
-		return providerErr("%s: request failed", step)
+		// The cause names the method and URL, which carry no code, secret
+		// or token (those travel in the body and a header), never the body.
+		return providerErr("%s: request failed: %v", step, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

@@ -195,7 +195,7 @@ func (e *eventStream) idle() error {
 	default:
 	}
 	if !time.Now().Before(e.nextAuth) {
-		p, err := e.s.authenticate(e.ctx, &e.cred)
+		p, err := e.s.recheck(e.ctx, &e.cred)
 		if err != nil || p.Scope < ScopeRead {
 			return errStreamClosed // revoked
 		}

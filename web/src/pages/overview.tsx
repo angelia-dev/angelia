@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { fetchCapped, fetchDeliveries, fetchEvents, fetchWatches } from '@/api/queries'
+import { EVENT_PAGE_SIZE, fetchCapped, fetchDeliveries, fetchEvents, fetchWatches } from '@/api/queries'
 import type { EventRecord } from '@/api/types'
 import { ErrorCount, RelativeTime } from '@/components/badges'
 import { EmptyState, ErrorState, Head, PageHeader, Skeleton } from '@/components/states'
@@ -12,6 +12,10 @@ export const REFRESH_MS = 30_000
 /** Pages fetched per count; a count that hits the cap is shown as "N+". */
 export const COUNT_PAGES = 3
 export const EVENT_PAGES = 5
+/** Walking the events costs up to EVENT_PAGES requests, so it runs at most once a minute. */
+export const EVENTS_REFRESH_MS = 60_000
+/** Events the capped walk covers (EVENT_PAGES full pages). */
+const EVENT_WALK_LIMIT = EVENT_PAGES * EVENT_PAGE_SIZE
 const DAY_MS = 24 * 60 * 60 * 1000
 
 const poll = { refetchInterval: REFRESH_MS, staleTime: REFRESH_MS / 2 }
@@ -25,11 +29,18 @@ function StatCard({
   to,
   query,
   hint,
+  unknown,
 }: {
   label: string
   to: '/watches' | '/events' | '/deliveries'
-  query: { isPending: boolean; isError: boolean; data?: { n: number; capped: boolean } }
+  query: {
+    isPending: boolean
+    isError: boolean
+    data?: { n: number; capped: boolean }
+  }
   hint?: string
+  /** Show "n/a" with this note instead of a count that cannot be exact. */
+  unknown?: string
 }) {
   return (
     <Card>
@@ -41,6 +52,13 @@ function StatCard({
           <Skeleton className="h-8 w-16" />
         ) : query.isError || !query.data ? (
           <span className="text-sm text-destructive">unavailable</span>
+        ) : unknown ? (
+          <>
+            <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
+              n/a
+            </Link>
+            <p className="mt-1 text-xs text-muted-foreground">{unknown}</p>
+          </>
         ) : (
           <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
             {countLabel(query.data.n, query.data.capped)}
@@ -52,7 +70,12 @@ function StatCard({
   )
 }
 
-async function loadEvents(): Promise<{ recent: EventRecord[]; last24h: number; capped: boolean }> {
+/** `capped`: the walk stopped before the newest event, so neither number is exact. */
+async function loadEvents(): Promise<{
+  recent: EventRecord[]
+  last24h: number
+  capped: boolean
+}> {
   const day = Date.now() - DAY_MS
   // Events list oldest first, so the newest are only reached at the end of the walk.
   let after = 0
@@ -69,8 +92,18 @@ async function loadEvents(): Promise<{ recent: EventRecord[]; last24h: number; c
 }
 
 export function OverviewPage() {
-  const watches = useQuery({ queryKey: ['overview', 'watches'], queryFn: () => fetchCapped(fetchWatches({}, 100), COUNT_PAGES), ...poll })
-  const events = useQuery({ queryKey: ['overview', 'events'], queryFn: loadEvents, ...poll })
+  const watches = useQuery({
+    queryKey: ['overview', 'watches'],
+    queryFn: () => fetchCapped(fetchWatches({}, 100), COUNT_PAGES),
+    ...poll,
+  })
+  const events = useQuery({
+    queryKey: ['overview', 'events'],
+    queryFn: loadEvents,
+    refetchInterval: EVENTS_REFRESH_MS,
+    staleTime: EVENTS_REFRESH_MS,
+  })
+  const eventsNote = `More than ${EVENT_WALK_LIMIT} events retained; see Events.`
   const pending = useQuery({
     queryKey: ['overview', 'pending'],
     queryFn: () => fetchCapped(fetchDeliveries(['pending', 'in_flight'], 100), COUNT_PAGES),
@@ -93,17 +126,31 @@ export function OverviewPage() {
     <>
       <PageHeader title="Overview" />
       <section aria-label="Counts" className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <StatCard label="Watches" to="/watches" query={stat(watches, watches.data?.items.length)} hint="More watches exist than were counted." />
-        <StatCard label="Failing watches" to="/watches" query={stat(watches, failing.length)} hint="Counted among the first watches only." />
+        <StatCard
+          label="Watches"
+          to="/watches"
+          query={stat(watches, watches.data?.items.length)}
+          hint="More watches exist than were counted."
+        />
+        <StatCard
+          label="Failing watches"
+          to="/watches"
+          query={stat(watches, failing.length)}
+          hint="Counted among the first watches only."
+        />
         <StatCard
           label="Events in the last 24 hours"
           to="/events"
           query={
             events.data
-              ? { isPending: false, isError: false, data: { n: events.data.last24h, capped: events.data.capped } }
+              ? {
+                  isPending: false,
+                  isError: false,
+                  data: { n: events.data.last24h, capped: events.data.capped },
+                }
               : { isPending: events.isPending, isError: events.isError }
           }
-          hint="Counted among the oldest events only."
+          unknown={events.data?.capped ? eventsNote : undefined}
         />
         <StatCard label="Pending deliveries" to="/deliveries" query={stat(pending, pending.data?.items.length)} />
         <StatCard label="Dead letters" to="/deliveries" query={stat(dead, dead.data?.items.length)} />
@@ -118,6 +165,13 @@ export function OverviewPage() {
             <Skeleton className="h-40 w-full" />
           ) : events.isError ? (
             <ErrorState error={events.error} onRetry={() => void events.refetch()} />
+          ) : events.data.capped ? (
+            <p className="text-sm">
+              n/a. {eventsNote}{' '}
+              <Link to="/events" className="underline">
+                Open Events
+              </Link>
+            </p>
           ) : events.data.recent.length === 0 ? (
             <EmptyState title="No events yet" />
           ) : (
@@ -139,11 +193,6 @@ export function OverviewPage() {
                 ))}
               </TableBody>
             </Table>
-          )}
-          {events.data?.capped && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              More events exist than were loaded; the newest ones are on the Events page.
-            </p>
           )}
         </section>
 

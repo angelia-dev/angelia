@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, Head, ListFrame, PageHeader, Skeleton } from '@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableRow } from '@/components/ui/table'
 import { useDebounced } from '@/hooks/use-debounced'
+import { invalidHelp, KIND_PATTERN, LABEL_PATTERN, validOrUndefined } from '@/lib/filters'
 
 export function coordinatesSummary(w: Pick<Watch, 'coordinates'>): string {
   const entries = Object.entries(w.coordinates)
@@ -19,7 +20,13 @@ export function coordinatesSummary(w: Pick<Watch, 'coordinates'>): string {
 export function WatchesPage() {
   const [source, setSource] = useState('')
   const [label, setLabel] = useState('')
-  const filters = { source: useDebounced(source.trim()), label: useDebounced(label.trim()) }
+  const debouncedSource = useDebounced(source.trim())
+  const debouncedLabel = useDebounced(label.trim())
+  // Only values that match the spec's patterns are sent.
+  const filters = {
+    source: validOrUndefined(debouncedSource, KIND_PATTERN) ?? '',
+    label: validOrUndefined(debouncedLabel, LABEL_PATTERN) ?? '',
+  }
   const list = useCursorList(['watches', filters], fetchWatches(filters))
   const filtered = Boolean(filters.source || filters.label)
 
@@ -27,14 +34,30 @@ export function WatchesPage() {
     <>
       <PageHeader title="Watches" />
       <FilterBar label="Filter watches">
-        <TextFilter label="Source" value={source} onChange={setSource} placeholder="pypi" />
-        <TextFilter label="Label (key=value)" value={label} onChange={setLabel} placeholder="team=platform" />
+        <TextFilter
+          label="Source"
+          value={source}
+          onChange={setSource}
+          placeholder="pypi"
+          help={invalidHelp(debouncedSource, KIND_PATTERN, 'Use a source kind: lower case letters, digits and "-", e.g. pypi.')}
+        />
+        <TextFilter
+          label="Label (key=value)"
+          value={label}
+          onChange={setLabel}
+          placeholder="team=platform"
+          help={invalidHelp(
+            debouncedLabel,
+            LABEL_PATTERN,
+            'Use key=value; the key starts with a letter or digit and has up to 63 characters from A-Z a-z 0-9 . _ / -.',
+          )}
+        />
       </FilterBar>
       <ListFrame
         label="watches"
         query={list}
         count={list.items.length}
-        columns={7}
+        columns={8}
         empty={
           <EmptyState title={filtered ? 'No watch matches these filters' : 'No watches yet'}>
             {filtered ? 'Clear a filter to see more.' : 'Watches appear here once they are added through the config file or the API.'}
@@ -96,7 +119,10 @@ function list(values: string[]) {
 
 export function WatchDetailPage() {
   const { name } = useParams({ from: '/watches/$name' })
-  const watch = useQuery({ queryKey: ['watch', name], queryFn: () => fetchWatch(name) })
+  const watch = useQuery({
+    queryKey: ['watch', name],
+    queryFn: () => fetchWatch(name),
+  })
   const versions = useCursorList(['watch-versions', name], fetchVersions(name))
 
   if (watch.isPending) return <Skeleton className="h-40 w-full" />
@@ -181,8 +207,7 @@ export function WatchDetailPage() {
                 </TableHead>
                 <TableCell>{v.normalized_version}</TableCell>
                 <TableCell>
-                  {[v.prerelease && 'pre-release', v.yanked && 'yanked', v.removed_at && 'removed'].filter(Boolean).join(', ') ||
-                    'release'}
+                  {[v.prerelease && 'pre-release', v.yanked && 'yanked', v.removed_at && 'removed'].filter(Boolean).join(', ') || 'release'}
                 </TableCell>
                 <TableCell>
                   <RelativeTime value={v.published_at} />
