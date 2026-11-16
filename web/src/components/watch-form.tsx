@@ -2,8 +2,7 @@ import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invalidateWatches, putWatch } from '@/api/mutations'
 import { schemaFields, usePlugins } from '@/api/plugins'
-import { ApiError } from '@/api/problem'
-import { fetchWatch } from '@/api/queries'
+import { isPreconditionFailed } from '@/api/problem'
 import type { Watch } from '@/api/types'
 import {
   Checkbox,
@@ -21,6 +20,7 @@ import {
 } from '@/components/form'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChangedElsewhere } from '@/components/versioned'
 import {
   BUMPS,
   PRERELEASE,
@@ -33,8 +33,24 @@ import {
   type WatchFormState,
 } from '@/lib/watch-form'
 
-/** Create (no `initial`) or edit an API-managed watch. `onDone` gets the saved name. */
-export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDone: (name: string) => void; onCancel: () => void }) {
+/**
+ * Create (no `initial`) or edit an API-managed watch. `onDone` gets the saved name. A create
+ * sends `If-None-Match: *`; an edit sends `If-Match: etag`, and `onReload` reads the watch again
+ * after someone else changed it.
+ */
+export function WatchForm({
+  initial,
+  etag,
+  onReload,
+  onDone,
+  onCancel,
+}: {
+  initial?: Watch
+  etag?: string
+  onReload?: () => void
+  onDone: (name: string) => void
+  onCancel: () => void
+}) {
   const creating = !initial
   const client = useQueryClient()
   const [form, setForm] = useState<WatchFormState>(() => (initial ? watchToForm(initial) : emptyWatchForm()))
@@ -52,19 +68,8 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
   const requiredCoordinates = fields.filter((f) => f.required).map((f) => f.key)
 
   const save = useMutation({
-    mutationFn: async () => {
-      if (creating) {
-        const existing = await fetchWatch(form.name).then(
-          () => true,
-          (err: unknown) => {
-            if (err instanceof ApiError && err.status === 404) return false
-            throw err
-          },
-        )
-        if (existing) throw new NameTaken()
-      }
-      return putWatch(initial?.name ?? form.name, formToWrite(form))
-    },
+    mutationFn: () =>
+      creating ? putWatch(form.name, formToWrite(form), { create: true }) : putWatch(initial.name, formToWrite(form), { etag }),
     onSuccess: async (saved) => {
       await invalidateWatches(client)
       onDone(saved.name)
@@ -72,7 +77,8 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
   })
 
   const serverErrors = problemFieldErrors(save.error)
-  const taken: FieldErrors = save.error instanceof NameTaken ? { '/name': ['A watch with this name already exists. Open it to edit it.'] } : {}
+  const conflict = isPreconditionFailed(save.error)
+  const taken: FieldErrors = conflict && creating ? { '/name': ['A watch with this name already exists. Open it to edit it.'] } : {}
   const errors = mergeErrors(clientErrors, serverErrors, taken)
 
   // After a refused submit, move focus to the first field that has an error (WCAG 3.3.1).
@@ -110,8 +116,8 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
       <CardContent>
         <form ref={formRef} aria-label={creating ? 'New watch' : `Edit ${initial.name}`} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            Saving replaces the whole watch. The API has no version check, so the last write wins: changes made by someone else
-            since you opened this form are overwritten.
+            Saving replaces the whole watch. If someone else saved it since you opened this form, the save is refused and nothing
+            is overwritten.
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <TextInput
@@ -245,7 +251,8 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
             />
           </fieldset>
 
-          <ProblemSummary error={save.error instanceof NameTaken ? undefined : save.error} claimed={WATCH_FIELD_POINTERS} />
+          {conflict && !creating && <ChangedElsewhere kind="watch" onReload={onReload ?? onCancel} />}
+          <ProblemSummary error={conflict ? undefined : save.error} claimed={WATCH_FIELD_POINTERS} />
 
           <div className="flex gap-2">
             <Button type="submit" disabled={save.isPending}>
@@ -259,11 +266,4 @@ export function WatchForm({ initial, onDone, onCancel }: { initial?: Watch; onDo
       </CardContent>
     </Card>
   )
-}
-
-class NameTaken extends Error {
-  constructor() {
-    super('name taken')
-    this.name = 'NameTaken'
-  }
 }

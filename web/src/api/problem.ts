@@ -30,3 +30,21 @@ export async function unwrap<T>(call: Promise<Result<T>>): Promise<T> {
   if (data === undefined) throw new ApiError(response.status, asProblem(error))
   return data
 }
+
+/** A success body with the response's `ETag`, the version to send back in `If-Match`. */
+export interface Versioned<T> {
+  data: T
+  etag?: string
+}
+
+/** As `unwrap`, keeping the `ETag` header of the response. */
+export async function unwrapVersioned<T>(call: Promise<Result<T>>): Promise<Versioned<T>> {
+  const { data, error, response } = await call
+  if (data === undefined) throw new ApiError(response.status, asProblem(error))
+  return { data, etag: response.headers.get('ETag') ?? undefined }
+}
+
+/** A conditional write refused with `412 precondition-failed`. */
+export function isPreconditionFailed(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 412
+}

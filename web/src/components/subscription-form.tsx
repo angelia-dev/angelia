@@ -1,7 +1,9 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { invalidateSubscriptions, putSubscription, subscriptionExists } from '@/api/mutations'
+import { hasRole, useMe } from '@/api/me'
+import { invalidateSubscriptions, putSubscription } from '@/api/mutations'
 import { usePlugins } from '@/api/plugins'
+import { isPreconditionFailed } from '@/api/problem'
 import { useAllSinks } from '@/api/secrets'
 import type { Subscription } from '@/api/types'
 import {
@@ -19,6 +21,8 @@ import {
 } from '@/components/form'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { TemplatePreview } from '@/components/template-preview'
+import { ChangedElsewhere } from '@/components/versioned'
 import {
   EVENT_TYPES,
   SUBSCRIPTION_FIELD_POINTERS,
@@ -30,16 +34,32 @@ import {
 } from '@/lib/subscription-form'
 import { BUMPS, PRERELEASE } from '@/lib/watch-form'
 
-class NameTaken extends Error {}
-
 function toggle<T>(list: T[], item: T, on: boolean): T[] {
   return on ? [...list, item] : list.filter((x) => x !== item)
 }
 
-/** Create (no `initial`) or edit an API-managed subscription. Editors and admins. */
-export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subscription; onDone: () => void; onCancel: () => void }) {
+/**
+ * Create (no `initial`) or edit an API-managed subscription. Editors and admins. A create sends
+ * `If-None-Match: *`, an edit `If-Match: etag`.
+ */
+export function SubscriptionForm({
+  initial,
+  etag,
+  onReload,
+  onDone,
+  onCancel,
+}: {
+  initial?: Subscription
+  etag?: string
+  onReload?: () => void
+  onDone: () => void
+  onCancel: () => void
+}) {
   const creating = !initial
   const client = useQueryClient()
+  const me = useMe()
+  // POST /v1/template-previews needs the admin role.
+  const canPreview = !!me.data && hasRole(me.data, 'admin')
   const sinks = useAllSinks()
   const sources = usePlugins('source')
   const [form, setForm] = useState<SubscriptionFormState>(() => (initial ? subscriptionToForm(initial) : emptySubscriptionForm()))
@@ -47,10 +67,10 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
   const set = (patch: Partial<SubscriptionFormState>) => setForm((f) => ({ ...f, ...patch }))
 
   const save = useMutation({
-    mutationFn: async () => {
-      if (creating && (await subscriptionExists(form.name))) throw new NameTaken()
-      return putSubscription(initial?.name ?? form.name, formToSubscriptionWrite(form))
-    },
+    mutationFn: () =>
+      creating
+        ? putSubscription(form.name, formToSubscriptionWrite(form), false, { create: true })
+        : putSubscription(initial.name, formToSubscriptionWrite(form), false, { etag }),
     onSuccess: async () => {
       await invalidateSubscriptions(client)
       onDone()
@@ -59,7 +79,8 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
   // The API checks the template against sample events when it validates a write: a dry run writes nothing.
   const check = useMutation({ mutationFn: () => putSubscription(initial?.name ?? form.name, formToSubscriptionWrite(form), true) })
 
-  const taken: FieldErrors = save.error instanceof NameTaken ? { '/name': ['A subscription with this name already exists. Edit it from the list.'] } : {}
+  const conflict = isPreconditionFailed(save.error)
+  const taken: FieldErrors = conflict && creating ? { '/name': ['A subscription with this name already exists. Edit it from the list.'] } : {}
   const errors = mergeErrors(clientErrors, problemFieldErrors(save.error), problemFieldErrors(check.error), taken)
 
   const formRef = useRef<HTMLFormElement>(null)
@@ -82,7 +103,7 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
   // An API subscription may only name a sink the API manages (409 cross-owner-reference otherwise).
   const usable = (sinks.data ?? []).filter((s) => s.managed_by === 'api' || s.name === form.sink)
   const title = creating ? 'New subscription' : `Edit ${initial.name}`
-  const shownError = save.error instanceof NameTaken ? undefined : (save.error ?? (check.error && !Object.keys(problemFieldErrors(check.error)).length ? check.error : undefined))
+  const shownError = conflict ? undefined : (save.error ?? (check.error && !Object.keys(problemFieldErrors(check.error)).length ? check.error : undefined))
 
   return (
     <Card className="mb-6">
@@ -92,8 +113,8 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
       <CardContent>
         <form ref={formRef} aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            Saving replaces the whole subscription. The API has no version check, so the last write wins. Editing the filter or policy
-            decides held deliveries again.
+            Saving replaces the whole subscription; if someone else saved it since you opened this form, the save is refused and
+            nothing is overwritten. Editing the filter or policy decides held deliveries again.
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <TextInput label="Name" required value={form.name} disabled={!creating} onChange={(v) => set({ name: v })} errors={errorsFor(errors, '/name')} />
@@ -200,8 +221,10 @@ export function SubscriptionForm({ initial, onDone, onCancel }: { initial?: Subs
                 </span>
               )}
             </div>
+            {canPreview && <TemplatePreview template={form.template} />}
           </div>
 
+          {conflict && !creating && <ChangedElsewhere kind="subscription" onReload={onReload ?? onCancel} />}
           <ProblemSummary error={shownError} claimed={SUBSCRIPTION_FIELD_POINTERS} />
           <div className="flex gap-2">
             <Button type="submit" disabled={save.isPending}>

@@ -42,6 +42,43 @@ export function TextFilter({
   )
 }
 
+/** A labelled local date and time (`datetime-local`), in the browser's time zone; empty means no bound. */
+export function DateTimeFilter({
+  label,
+  value,
+  onChange,
+  help,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  /** Inline error text; marks the input invalid. */
+  help?: string
+}) {
+  const id = useId()
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
+        {label}
+      </label>
+      <input
+        id={id}
+        type="datetime-local"
+        className={control}
+        value={value}
+        aria-invalid={help ? true : undefined}
+        aria-describedby={help ? `${id}-help` : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {help && (
+        <p id={`${id}-help`} className="max-w-64 text-xs text-destructive">
+          {help}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function SelectFilter({
   label,
   value,

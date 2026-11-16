@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { deleteWatch, invalidateWatches } from '@/api/mutations'
+import { deleteWatch, fetchWatchVersioned, invalidateWatches } from '@/api/mutations'
 import { hasRole, useMe } from '@/api/me'
 import { fetchVersions, fetchWatch, fetchWatches, useCursorList } from '@/api/queries'
 import type { Watch } from '@/api/types'
 import { ErrorCount, LabelList, ManagedByBadge, RelativeTime } from '@/components/badges'
 import { FilterBar, TextFilter } from '@/components/filters'
 import { ConfirmDelete } from '@/components/form'
+import { VersionedEdit } from '@/components/versioned'
 import { WatchForm } from '@/components/watch-form'
 import { Button } from '@/components/ui/button'
 import { watchToYaml } from '@/lib/yaml'
@@ -187,7 +188,11 @@ export function WatchDetailPage() {
       )}
       {showYaml && w.managed_by === 'api' && <YamlView yaml={watchToYaml(w)} />}
       {editing && w.managed_by === 'api' && canWrite && (
-        <WatchForm initial={w} onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />
+        <VersionedEdit kind="watch" name={w.name} fetch={fetchWatchVersioned}>
+          {(v, reload) => (
+            <WatchForm initial={v.data} etag={v.etag} onReload={reload} onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />
+          )}
+        </VersionedEdit>
       )}
       <p className="mb-4 text-sm">
         <Link to="/watches" className="underline">

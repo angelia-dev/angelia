@@ -6,6 +6,8 @@ import { mockApi, problem, renderApp } from '@/test/mock-api'
 
 afterEach(() => vi.unstubAllGlobals())
 
+const providers = [{ name: 'github', label: 'GitHub' }]
+
 const empty = {
   '/v1/watches': page([]),
   '/v1/events': eventPage([]),
@@ -14,11 +16,46 @@ const empty = {
 
 describe('app shell', () => {
   it('shows the sign-in page on 401', async () => {
-    mockApi({ '/v1/me': problem(401, 'Unauthorized', 'sign in first') })
+    mockApi({ '/v1/me': problem(401, 'Unauthorized', 'sign in first'), '/ui/auth/providers': providers })
     renderApp()
     const link = await screen.findByRole('link', { name: 'Sign in with GitHub' })
     expect(link).toHaveAttribute('href', '/ui/auth/login/github')
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+  })
+
+  it('shows one sign-in button per provider, in the server order', async () => {
+    const api = mockApi({
+      '/v1/me': problem(401, 'Unauthorized'),
+      '/ui/auth/providers': [
+        { name: 'github', label: 'GitHub' },
+        { name: 'corp-sso', label: 'Company SSO' },
+        { name: 'Bad Name', label: '<b>x</b>' }, // not a provider name: dropped
+        { name: 'google' }, // no label: the name
+      ],
+    })
+    renderApp()
+    await screen.findByRole('link', { name: 'Sign in with GitHub' })
+    const links = screen.getAllByRole('link')
+    expect(links.map((l) => [l.textContent, l.getAttribute('href')])).toEqual([
+      ['Sign in with GitHub', '/ui/auth/login/github'],
+      ['Sign in with Company SSO', '/ui/auth/login/corp-sso'],
+      ['Sign in with google', '/ui/auth/login/google'],
+    ])
+    expect(api.calls.find((c) => c.url.pathname === '/ui/auth/providers')?.method).toBe('GET')
+  })
+
+  it('offers a retry when the providers cannot be loaded', async () => {
+    let ok = false
+    mockApi({
+      '/v1/me': problem(401, 'Unauthorized'),
+      '/ui/auth/providers': () => (ok ? providers : new Response('nope', { status: 500 })),
+    })
+    renderApp()
+    const retry = await screen.findByRole('button', { name: /retry/i }, { timeout: 3000 })
+    expect(screen.queryByRole('link', { name: /Sign in/ })).not.toBeInTheDocument()
+    ok = true
+    await userEvent.click(retry)
+    expect(await screen.findByRole('link', { name: 'Sign in with GitHub' })).toBeInTheDocument()
   })
 
   it('shows avatar, login, role and the full navigation to an admin', async () => {
@@ -47,6 +84,7 @@ describe('app shell', () => {
     let signedOut = false
     const api = mockApi({
       '/v1/me': () => (signedOut ? problem(401, 'Unauthorized') : me()),
+      '/ui/auth/providers': providers,
       'POST /ui/auth/logout': () => {
         signedOut = true
         return new Response(null, { status: 204 })

@@ -7,11 +7,13 @@ import {
   fetchDeliveries,
   fetchSubscriptions,
   useCursorList,
+  type DeliveryFilters,
 } from '@/api/queries'
+import { useAllSinks } from '@/api/secrets'
 import { hasRole, useMe } from '@/api/me'
 import type { Delivery, DeliveryStatus } from '@/api/types'
 import { DeliveryStatusBadge, RelativeTime } from '@/components/badges'
-import { FilterBar, SelectFilter } from '@/components/filters'
+import { DateTimeFilter, FilterBar, SelectFilter } from '@/components/filters'
 import { isReplayable, ReplayDeliveryDialog, ReplayRangeDialog } from '@/components/replay'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Head, ListFrame, PageHeader, Skeleton } from '@/components/states'
@@ -25,7 +27,23 @@ const STATUS_OPTIONS = [
   { value: 'dead', label: 'Dead letters' },
 ]
 
-/** subscription id -> { name, sink }, so a delivery can show its sink. Bounded to a few pages. */
+/**
+ * A `datetime-local` pair as the API's RFC 3339 bounds, read in the browser's time zone. An
+ * `until` not after `since` is refused here (the API would answer 400).
+ */
+export function timeRange(since: string, until: string): { since?: string; until?: string; error?: string } {
+  const toIso = (v: string) => {
+    if (!v) return undefined
+    const t = new Date(v)
+    return Number.isNaN(t.getTime()) ? undefined : t.toISOString()
+  }
+  const s = toIso(since)
+  const u = toIso(until)
+  if (s && u && Date.parse(u) <= Date.parse(s)) return { since: s, error: 'Must be after the start.' }
+  return { since: s, until: u }
+}
+
+/** subscription id -> subscription, for the subscription filter. Bounded to a few pages. */
 export function useSubscriptionIndex() {
   return useQuery({
     queryKey: ['subscription-index'],
@@ -41,23 +59,27 @@ export function DeliveriesPage() {
   const [status, setStatus] = useState('dead')
   const [subscription, setSubscription] = useState('')
   const [sinkName, setSinkName] = useState('')
+  const [since, setSince] = useState('')
+  const [until, setUntil] = useState('')
   const [replaying, setReplaying] = useState<Delivery>()
-  const [range, setRange] = useState(false)
+  const [replayRange, setReplayRange] = useState(false)
   const statuses = (status ? [status] : []) as DeliveryStatus[]
-  const list = useCursorList(['deliveries', status, subscription], fetchDeliveries(statuses, undefined, subscription))
+  const range = timeRange(since, until)
+  const filters: DeliveryFilters = { status: statuses, subscription, sink: sinkName, since: range.since, until: range.until }
+  const list = useCursorList(['deliveries', status, subscription, sinkName, range.since, range.until], fetchDeliveries(filters))
   const subs = useSubscriptionIndex()
+  const sinks = useAllSinks()
   const me = useMe()
   const canWrite = !!me.data && hasRole(me.data, 'editor')
   const subList = useMemo(() => [...(subs.data?.values() ?? [])], [subs.data])
-  const sinkNames = useMemo(() => [...new Set(subList.map((s) => s.sink))].sort(), [subList])
-  // The API has no sink filter: narrow what was loaded, by the sink of each subscription.
-  const items = sinkName ? list.items.filter((d) => subs.data?.get(d.subscription_id)?.sink === sinkName) : list.items
+  const sinkNames = useMemo(() => [...new Set((sinks.data ?? []).map((s) => s.name))].sort(), [sinks.data])
+  const items = list.items
 
   return (
     <>
       <PageHeader title="Deliveries">
         {canWrite && (
-          <Button variant="outline" onClick={() => setRange(true)}>
+          <Button variant="outline" onClick={() => setReplayRange(true)}>
             Replay range
           </Button>
         )}
@@ -71,14 +93,16 @@ export function DeliveriesPage() {
           options={[{ value: '', label: 'All subscriptions' }, ...subList.map((s) => ({ value: s.id, label: s.name }))]}
         />
         <SelectFilter
-          label="Sink (filters loaded rows)"
+          label="Sink"
           value={sinkName}
           onChange={setSinkName}
-          options={[{ value: '', label: 'All sinks' }, ...sinkNames.map((n) => ({ value: n, label: n }))]}
+          options={[{ value: '', label: 'All sinks' }, ...[...new Set([...sinkNames, ...(sinkName ? [sinkName] : [])])].map((n) => ({ value: n, label: n }))]}
         />
+        <DateTimeFilter label="Event recorded from" value={since} onChange={setSince} />
+        <DateTimeFilter label="Event recorded before" value={until} onChange={setUntil} help={range.error} />
       </FilterBar>
       {replaying && <ReplayDeliveryDialog delivery={replaying} onClose={() => setReplaying(undefined)} />}
-      {range && <ReplayRangeDialog onClose={() => setRange(false)} />}
+      {replayRange && <ReplayRangeDialog onClose={() => setReplayRange(false)} />}
       <ListFrame
         label="deliveries"
         query={list}
@@ -98,7 +122,7 @@ export function DeliveriesPage() {
                 <TableCell>
                   <DeliveryStatusBadge status={d.status} />
                 </TableCell>
-                <TableCell>{subs.data?.get(d.subscription_id)?.sink ?? '—'}</TableCell>
+                <TableCell>{d.sink ?? '—'}</TableCell>
                 <TableCell>{d.subscription_name ?? '(deleted)'}</TableCell>
                 <TableCell>{d.attempts}</TableCell>
                 <TableCell className="max-w-64 truncate" title={d.last_error ?? undefined}>
@@ -133,17 +157,15 @@ export function DeliveriesPage() {
 export function DeliveryDetailPage() {
   const { id } = useParams({ from: '/deliveries/$id' })
   const query = useQuery({ queryKey: ['delivery', id], queryFn: () => fetchDelivery(id) })
-  const subs = useSubscriptionIndex()
   const me = useMe()
   const [replaying, setReplaying] = useState(false)
   if (query.isPending) return <Skeleton className="h-40 w-full" />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
   const d = query.data
-  const sub = subs.data?.get(d.subscription_id)
   const canWrite = !!me.data && hasRole(me.data, 'editor')
   const rows: [string, React.ReactNode][] = [
     ['Status', <DeliveryStatusBadge key="s" status={d.status} />],
-    ['Sink', sub?.sink ?? '—'],
+    ['Sink', d.sink ?? '—'],
     ['Subscription', d.subscription_name ?? '(deleted)'],
     ['Attempts', d.attempts],
     ['Next attempt', <RelativeTime key="n" value={d.next_attempt_at} />],

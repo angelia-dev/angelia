@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api } from './client'
-import { ApiError, unwrap } from './problem'
+import { ApiError, unwrap, unwrapVersioned } from './problem'
 import type { components } from './schema'
 
 type S = components['schemas']
@@ -15,8 +15,31 @@ export async function unwrapVoid(call: Promise<{ error?: unknown; response: Resp
   throw new ApiError(response.status, body && typeof body === 'object' && 'title' in body ? body : undefined)
 }
 
-export const putWatch = (name: string, body: WatchWrite) =>
-  unwrap(api.PUT('/v1/watches/{name}', { params: { path: { name } }, body }))
+/**
+ * How a write is made conditional (optimistic concurrency): `create` sends `If-None-Match: *`
+ * (refused with 412 if the name exists), `etag` sends `If-Match` (refused with 412 if someone
+ * changed the resource since it was read). Neither: the last write wins.
+ */
+export interface Precondition {
+  create?: boolean
+  etag?: string
+}
+
+export function preconditionHeaders(p: Precondition = {}): { 'If-Match'?: string; 'If-None-Match'?: '*' } {
+  if (p.create) return { 'If-None-Match': '*' }
+  if (p.etag) return { 'If-Match': p.etag }
+  return {}
+}
+
+export const fetchWatchVersioned = (name: string) =>
+  unwrapVersioned(api.GET('/v1/watches/{name}', { params: { path: { name } } }))
+export const fetchSinkVersioned = (name: string) =>
+  unwrapVersioned(api.GET('/v1/sinks/{name}', { params: { path: { name } } }))
+export const fetchSubscriptionVersioned = (name: string) =>
+  unwrapVersioned(api.GET('/v1/subscriptions/{name}', { params: { path: { name } } }))
+
+export const putWatch = (name: string, body: WatchWrite, pre?: Precondition) =>
+  unwrap(api.PUT('/v1/watches/{name}', { params: { path: { name }, header: preconditionHeaders(pre) }, body }))
 
 export const deleteWatch = (name: string) =>
   unwrapVoid(api.DELETE('/v1/watches/{name}', { params: { path: { name } } }))
@@ -42,24 +65,25 @@ export async function exists(call: Promise<{ error?: unknown; response: Response
   throw new ApiError(response.status, body && typeof body === 'object' && 'title' in body ? body : undefined)
 }
 
-export const sinkExists = (name: string) => exists(api.GET('/v1/sinks/{name}', { params: { path: { name } } }))
-export const subscriptionExists = (name: string) =>
-  exists(api.GET('/v1/subscriptions/{name}', { params: { path: { name } } }))
 export const secretExists = (name: string) => exists(api.GET('/v1/secrets/{name}', { params: { path: { name } } }))
 
-export const putSink = (name: string, body: SinkWrite) =>
-  unwrap(api.PUT('/v1/sinks/{name}', { params: { path: { name } }, body }))
+export const putSink = (name: string, body: SinkWrite, pre?: Precondition) =>
+  unwrap(api.PUT('/v1/sinks/{name}', { params: { path: { name }, header: preconditionHeaders(pre) }, body }))
 export const deleteSink = (name: string) =>
   unwrapVoid(api.DELETE('/v1/sinks/{name}', { params: { path: { name } } }))
 
 /** `dryRun` validates the body (template included) and writes nothing. */
-export const putSubscription = (name: string, body: SubscriptionWrite, dryRun = false) =>
+export const putSubscription = (name: string, body: SubscriptionWrite, dryRun = false, pre?: Precondition) =>
   unwrap(
     api.PUT('/v1/subscriptions/{name}', {
-      params: { path: { name }, query: dryRun ? { dry_run: true } : {} },
+      params: { path: { name }, query: dryRun ? { dry_run: true } : {}, header: preconditionHeaders(pre) },
       body,
     }),
   )
+
+/** Renders a template against the built-in `full` sample event (admin only); nothing is stored or sent. */
+export const previewTemplate = (template: string) =>
+  unwrap(api.POST('/v1/template-previews', { body: { template, sample: 'full' } }))
 export const deleteSubscription = (name: string) =>
   unwrapVoid(api.DELETE('/v1/subscriptions/{name}', { params: { path: { name } } }))
 

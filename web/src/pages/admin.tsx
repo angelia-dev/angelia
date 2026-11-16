@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { hasRole, effectiveRole, useMe, type Me } from '@/api/me'
-import { createToken, fetchSessions, fetchTokens, revokeSession, revokeToken } from '@/api/queries'
+import { createToken, fetchAccess, fetchSessions, fetchTokens, revokeSession, revokeToken } from '@/api/queries'
 import { useCursorList } from '@/api/queries'
 import type { components } from '@/api/schema'
 import { RelativeTime } from '@/components/badges'
@@ -283,7 +283,12 @@ function RevokeTokenDialog({ token, onClose }: { token: Token; onClose: () => vo
 
 // --- Sessions -----------------------------------------------------------------
 
-/** The API does not say which session is the caller's; compare the signed-in principal instead. */
+/** This browser's session: `Me.session_id` names it (null for a token). */
+export function isCurrentSession(me: Me, s: Session): boolean {
+  return me.kind === 'session' && me.session_id != null && me.session_id === s.id
+}
+
+/** Another session of the signed-in person's own account. */
 export function isOwnSession(me: Me, s: Session): boolean {
   return me.kind === 'session' && me.principal_id === `${s.user.provider}:${s.user.subject}`
 }
@@ -294,10 +299,17 @@ function SessionsTab({ me }: { me: Me }) {
   return (
     <section aria-label="Sessions">
       <p className="mb-4 text-sm text-muted-foreground">
-        Browser sessions of the admin UI. The API does not say which one is yours, so every session of your own account is
+        Browser sessions of the admin UI. The one you are using is marked “this session”; other sessions of your account are
         marked “you”.
       </p>
-      {revoking && <RevokeSessionDialog session={revoking} own={isOwnSession(me, revoking)} onClose={() => setRevoking(undefined)} />}
+      {revoking && (
+        <RevokeSessionDialog
+          session={revoking}
+          current={isCurrentSession(me, revoking)}
+          own={isOwnSession(me, revoking)}
+          onClose={() => setRevoking(undefined)}
+        />
+      )}
       <ListFrame
         label="sessions"
         query={list}
@@ -312,7 +324,11 @@ function SessionsTab({ me }: { me: Me }) {
               <TableRow key={s.id}>
                 <TableCell>
                   <span className="font-medium">{s.user.login}</span>{' '}
-                  {isOwnSession(me, s) && <Badge variant="secondary">you</Badge>}
+                  {isCurrentSession(me, s) ? (
+                    <Badge>this session</Badge>
+                  ) : (
+                    isOwnSession(me, s) && <Badge variant="secondary">you</Badge>
+                  )}
                 </TableCell>
                 <TableCell>
                   <RelativeTime value={s.created_at} />
@@ -340,7 +356,17 @@ function SessionsTab({ me }: { me: Me }) {
   )
 }
 
-function RevokeSessionDialog({ session, own, onClose }: { session: Session; own: boolean; onClose: () => void }) {
+function RevokeSessionDialog({
+  session,
+  current,
+  own,
+  onClose,
+}: {
+  session: Session
+  current: boolean
+  own: boolean
+  onClose: () => void
+}) {
   const qc = useQueryClient()
   const m = useMutation({
     mutationFn: () => revokeSession(session.id),
@@ -348,7 +374,7 @@ function RevokeSessionDialog({ session, own, onClose }: { session: Session; own:
       await qc.invalidateQueries({ queryKey: ['sessions'] })
       // If it was this browser's session, /v1/me now answers 401 and the app shows the sign-in page;
       // otherwise nothing else changes, so no other cache is touched.
-      if (own) await qc.invalidateQueries({ queryKey: ['me'] })
+      if (own || current) await qc.invalidateQueries({ queryKey: ['me'] })
       onClose()
     },
   })
@@ -358,10 +384,16 @@ function RevokeSessionDialog({ session, own, onClose }: { session: Session; own:
         Revoke the session of <strong>{session.user.login}</strong> signed in {new Date(session.created_at).toLocaleString()}? The
         browser is signed out at its next request.
       </p>
-      {own && (
+      {current ? (
         <p role="note" className="mt-2 text-sm font-medium">
-          This is a session of your own account. If it is the one you are using now, you will be signed out.
+          This is the session you are using now: you will be signed out.
         </p>
+      ) : (
+        own && (
+          <p role="note" className="mt-2 text-sm font-medium">
+            This is another session of your own account. You stay signed in here.
+          </p>
+        )
       )}
       {m.isError && (
         <div className="mt-3">
@@ -382,7 +414,11 @@ function RevokeSessionDialog({ session, own, onClose }: { session: Session; own:
 
 // --- Access -------------------------------------------------------------------
 
+type AccessEntry = components['schemas']['AccessEntry']
+
 function AccessTab({ me }: { me: Me }) {
+  // The tab is only rendered for admins (AdminPage), so non-admins never call GET /v1/access.
+  const access = useQuery({ queryKey: ['access'], queryFn: fetchAccess })
   return (
     <section aria-label="Access" className="space-y-3 text-sm">
       <p>
@@ -392,13 +428,41 @@ function AccessTab({ me }: { me: Me }) {
       <p>
         You are signed in as <strong>{me.user?.login ?? me.name}</strong> with the role <strong>{effectiveRole(me)}</strong>.
       </p>
-      <p className="text-muted-foreground">
-        The API has no endpoint that lists the access entries, so they are not shown here. See{' '}
-        <a className="underline" href="https://github.com/angelia-dev/angelia/blob/main/docs/admin-ui.md" target="_blank" rel="noreferrer">
-          docs/admin-ui.md
-        </a>{' '}
-        for the format.
-      </p>
+      {access.isPending ? (
+        <Skeleton className="h-24 w-full" />
+      ) : access.isError ? (
+        <ErrorState error={access.error} onRetry={() => void access.refetch()} />
+      ) : access.data.items.length === 0 ? (
+        <EmptyState title="No access entries" />
+      ) : (
+        <Table aria-label="Access list">
+          <Head columns={['Provider', 'Kind', 'Login', 'Subject', 'Role']} />
+          <TableBody>
+            {access.data.items.map((e, i) => (
+              <AccessRow key={`${e.provider}-${e.login ?? ''}-${e.subject ?? ''}-${i}`} entry={e} />
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </section>
+  )
+}
+
+function AccessRow({ entry: e }: { entry: AccessEntry }) {
+  return (
+    <TableRow>
+      <TableCell>{e.provider}</TableCell>
+      <TableCell>{e.kind}</TableCell>
+      <TableCell>{e.login ?? '—'}</TableCell>
+      <TableCell>
+        {e.subject ?? <span className="text-muted-foreground">not signed in yet</span>}
+        {e.pinned && (
+          <Badge variant="outline" className="ml-2">
+            pinned
+          </Badge>
+        )}
+      </TableCell>
+      <TableCell>{e.role}</TableCell>
+    </TableRow>
   )
 }

@@ -81,13 +81,18 @@ export interface EventFilters {
 
 export const EVENT_PAGE_SIZE = 200
 
-/** Events come oldest first, paged by `seq`: `after` is the last seq already seen. */
-export const fetchEvents = (filters: EventFilters, after: number, limit = EVENT_PAGE_SIZE) =>
+/**
+ * Events newest first (`order=desc`): the head of the log, or the events below `before`
+ * (the `next_before` of the previous page). `next_after` is the highest seq scanned, where the
+ * live stream picks up.
+ */
+export const fetchEventsNewest = (filters: EventFilters, before?: number, limit = EVENT_PAGE_SIZE) =>
   unwrap(
     api.GET('/v1/events', {
       params: {
         query: {
-          after,
+          order: 'desc',
+          before,
           limit,
           watch: filters.watch ? [filters.watch] : undefined,
           type: filters.type ? [filters.type] : undefined,
@@ -99,12 +104,31 @@ export const fetchEvents = (filters: EventFilters, after: number, limit = EVENT_
 
 export const fetchEvent = (id: string) => unwrap(api.GET('/v1/events/{id}', { params: { path: { id } } }))
 
-export const fetchDeliveries = (status: DeliveryStatus[] = [], limit = PAGE_SIZE, subscription?: string) =>
+export interface DeliveryFilters {
+  status?: DeliveryStatus[]
+  /** A subscription id. */
+  subscription?: string
+  /** A sink name: the deliveries of the subscriptions that deliver to it now. */
+  sink?: string
+  /** RFC 3339; bounds the time the event was recorded, `since` inclusive, `until` exclusive. */
+  since?: string
+  until?: string
+}
+
+export const fetchDeliveries = (filters: DeliveryFilters = {}, limit = PAGE_SIZE) =>
   (cursor: string | undefined) =>
     unwrap(
       api.GET('/v1/deliveries', {
         params: {
-          query: { limit, cursor, status: status.length ? status : undefined, subscription: subscription || undefined },
+          query: {
+            limit,
+            cursor,
+            status: filters.status?.length ? filters.status : undefined,
+            subscription: filters.subscription || undefined,
+            sink: filters.sink || undefined,
+            since: filters.since || undefined,
+            until: filters.until || undefined,
+          },
         },
       }),
     )
@@ -150,5 +174,8 @@ export const fetchSessions = () => (cursor: string | undefined) =>
 
 export const revokeSession = (id: string) =>
   unwrap(api.DELETE('/v1/sessions/{id}', { params: { path: { id } } }).then((r) => ({ ...r, data: r.data ?? (r.response.ok ? true : undefined) })))
+
+/** The `ui.access` list (admin only). */
+export const fetchAccess = () => unwrap(api.GET('/v1/access'))
 
 export const createReplay = (selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))

@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { invalidateSinks, putSink, sinkExists } from '@/api/mutations'
+import { invalidateSinks, putSink } from '@/api/mutations'
 import { schemaFields, usePlugins, type SchemaField } from '@/api/plugins'
+import { isPreconditionFailed } from '@/api/problem'
 import { useSecretNames } from '@/api/secrets'
 import type { Plugin, Sink } from '@/api/types'
 import {
@@ -20,6 +21,8 @@ import {
 import { Skeleton } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { TemplatePreview } from '@/components/template-preview'
+import { ChangedElsewhere } from '@/components/versioned'
 import {
   editableFields,
   emptySinkForm,
@@ -30,10 +33,17 @@ import {
   type SinkFormState,
 } from '@/lib/sink-form'
 
-class NameTaken extends Error {}
+interface SinkFormProps {
+  initial?: Sink
+  /** The `ETag` of `initial`, sent in `If-Match`. */
+  etag?: string
+  onReload?: () => void
+  onDone: () => void
+  onCancel: () => void
+}
 
 /** Create (no `initial`) or edit an API-managed sink. Admin only: the API enforces it too. */
-export function SinkForm(props: { initial?: Sink; onDone: () => void; onCancel: () => void }) {
+export function SinkForm(props: SinkFormProps) {
   const plugins = usePlugins('sink')
   // The form starts from the kind's schema, so wait for the list of kinds first.
   if (plugins.isPending) return <Skeleton className="mb-6 h-40 w-full" />
@@ -42,17 +52,13 @@ export function SinkForm(props: { initial?: Sink; onDone: () => void; onCancel: 
 
 function SinkFormBody({
   initial,
+  etag,
+  onReload,
   onDone,
   onCancel,
   plugins,
   pluginsFailed,
-}: {
-  initial?: Sink
-  onDone: () => void
-  onCancel: () => void
-  plugins: Plugin[]
-  pluginsFailed: boolean
-}) {
+}: SinkFormProps & { plugins: Plugin[]; pluginsFailed: boolean }) {
   const creating = !initial
   const client = useQueryClient()
   const secrets = useSecretNames()
@@ -69,17 +75,18 @@ function SinkFormBody({
   const setValue = (key: string, v: string) => setForm((f) => ({ ...f, values: { ...f.values, [key]: v } }))
 
   const save = useMutation({
-    mutationFn: async () => {
-      if (creating && (await sinkExists(form.name))) throw new NameTaken()
-      return putSink(initial?.name ?? form.name, formToSinkWrite(form, fields))
-    },
+    mutationFn: () =>
+      creating
+        ? putSink(form.name, formToSinkWrite(form, fields), { create: true })
+        : putSink(initial.name, formToSinkWrite(form, fields), { etag }),
     onSuccess: async () => {
       await invalidateSinks(client)
       onDone()
     },
   })
 
-  const taken: FieldErrors = save.error instanceof NameTaken ? { '/name': ['A sink with this name already exists. Edit it from the list.'] } : {}
+  const conflict = isPreconditionFailed(save.error)
+  const taken: FieldErrors = conflict && creating ? { '/name': ['A sink with this name already exists. Edit it from the list.'] } : {}
   const errors = mergeErrors(clientErrors, problemFieldErrors(save.error), taken)
   const claimed = ['/name', '/kind', ...editableFields(fields).map((f) => `/config/${f.key}`), ...(fields.length === 0 ? ['/config'] : [])]
 
@@ -145,17 +152,21 @@ function SinkFormBody({
         />
       )
     }
+    const value = form.values[f.key] ?? ''
     return (
-      <TextInput
-        key={f.key}
-        label={f.key}
-        required={f.required}
-        value={form.values[f.key] ?? ''}
-        onChange={(v) => setValue(f.key, v)}
-        errors={errorsFor(errors, p)}
-        placeholder={f.default !== undefined ? String(f.default) : undefined}
-        hint={hint}
-      />
+      <div key={f.key} className="flex flex-col gap-2">
+        <TextInput
+          label={f.key}
+          required={f.required}
+          value={value}
+          onChange={(v) => setValue(f.key, v)}
+          errors={errorsFor(errors, p)}
+          placeholder={f.default !== undefined ? String(f.default) : undefined}
+          hint={hint}
+        />
+        {/* A value with an action is a template (github-dispatch's event_type): offer to render it. */}
+        {value.includes('{{') && <TemplatePreview template={value} label={f.key} />}
+      </div>
     )
   }
 
@@ -168,9 +179,9 @@ function SinkFormBody({
       <CardContent>
         <form ref={formRef} aria-label={title} noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            The configuration is replaced as a whole and the next delivery uses it. The API has no version check, so the last write
-            wins. A sink never takes a secret value: name a stored secret (<code>*_ref</code>) or an environment variable of the
-            instance (<code>*_env</code>).
+            The configuration is replaced as a whole and the next delivery uses it. If someone else saved this sink since you
+            opened the form, the save is refused and nothing is overwritten. A sink never takes a secret value: name a stored
+            secret (<code>*_ref</code>) or an environment variable of the instance (<code>*_env</code>).
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <TextInput label="Name" required value={form.name} disabled={!creating} onChange={(v) => set({ name: v })} errors={errorsFor(errors, '/name')} />
@@ -208,7 +219,8 @@ function SinkFormBody({
               The URLs of this sink were redacted for your token, so it cannot be saved from here without losing them.
             </p>
           )}
-          <ProblemSummary error={save.error instanceof NameTaken ? undefined : save.error} claimed={claimed} />
+          {conflict && !creating && <ChangedElsewhere kind="sink" onReload={onReload ?? onCancel} />}
+          <ProblemSummary error={conflict ? undefined : save.error} claimed={claimed} />
           <div className="flex gap-2">
             <Button type="submit" disabled={save.isPending || redacted}>
               {save.isPending ? 'Saving…' : creating ? 'Create sink' : 'Save changes'}

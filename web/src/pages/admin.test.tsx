@@ -218,6 +218,22 @@ describe('sessions', () => {
     expect(rows[1]).not.toHaveTextContent('you')
   })
 
+  it('marks the current session with Me.session_id, apart from other sessions of the same account', async () => {
+    mockApi({
+      '/v1/me': me({ session_id: 'S3' }),
+      '/v1/sessions': page([session('S1', 'octocat', '1'), session('S3', 'octocat', '1'), session('S2', 'someone', '2')]),
+    })
+    renderApp('/ui/admin')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Sessions' }))
+    const rows = within(await screen.findByRole('table', { name: 'Sessions' })).getAllByRole('row').slice(1)
+    expect(rows[0]).toHaveTextContent('you')
+    expect(rows[0]).not.toHaveTextContent('this session')
+    expect(rows[1]).toHaveTextContent('this session')
+    expect(rows[2]).not.toHaveTextContent(/you|this session/)
+    await userEvent.click(screen.getByRole('button', { name: /Revoke session of octocat \(S1\)/ }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('You stay signed in here.')
+  })
+
   it('revokes another user\'s session and stays signed in', async () => {
     let gone = false
     const api = mockApi({
@@ -242,7 +258,8 @@ describe('sessions', () => {
   it('revoking your own session signs you out', async () => {
     let revoked = false
     mockApi({
-      '/v1/me': () => (revoked ? problem(401, 'Unauthorized', 'session revoked') : me()),
+      '/v1/me': () => (revoked ? problem(401, 'Unauthorized', 'session revoked') : me({ session_id: 'S1' })),
+      '/ui/auth/providers': [{ name: 'github', label: 'GitHub' }],
       '/v1/sessions': page([session('S1', 'octocat', '1')]),
       'DELETE /v1/sessions/S1': () => {
         revoked = true
@@ -252,7 +269,7 @@ describe('sessions', () => {
     renderApp('/ui/admin')
     await userEvent.click(await screen.findByRole('tab', { name: 'Sessions' }))
     await userEvent.click(await screen.findByRole('button', { name: /Revoke session of octocat/ }))
-    expect(screen.getByRole('dialog')).toHaveTextContent('you will be signed out')
+    expect(screen.getByRole('dialog')).toHaveTextContent('This is the session you are using now: you will be signed out.')
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke' }))
     expect(await screen.findByRole('link', { name: /sign in/i })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Sessions' })).not.toBeInTheDocument()
@@ -296,14 +313,43 @@ describe('sessions', () => {
 })
 
 describe('access', () => {
-  it('explains where ui.access lives and shows the signed-in role', async () => {
-    mockApi({ '/v1/me': me() })
+  it('lists GET /v1/access with the signed-in role', async () => {
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/access': {
+        items: [
+          { provider: 'github', kind: 'user', login: 'octocat', subject: '1', pinned: true, role: 'admin' },
+          { provider: 'github', kind: 'user', login: null, subject: '5550001', pinned: false, role: 'editor' },
+          { provider: 'github', kind: 'user', login: 'octo-viewer', subject: null, pinned: false, role: 'viewer' },
+        ],
+      },
+    })
     renderApp('/ui/admin')
     await userEvent.click(await screen.findByRole('tab', { name: 'Access' }))
     const panel = screen.getByRole('region', { name: 'Access' })
     expect(panel).toHaveTextContent('ui.access')
-    expect(panel).toHaveTextContent('octocat')
-    expect(panel).toHaveTextContent('admin')
-    expect(within(panel).getByRole('link', { name: 'docs/admin-ui.md' })).toHaveAttribute('href', expect.stringContaining('docs/admin-ui.md'))
+    expect(panel).toHaveTextContent('signed in as octocat with the role admin')
+    const rows = within(await within(panel).findByRole('table', { name: 'Access list' })).getAllByRole('row').slice(1)
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveTextContent('octocat')
+    expect(rows[0]).toHaveTextContent('pinned')
+    expect(rows[1]).toHaveTextContent('5550001')
+    expect(rows[1]).toHaveTextContent('editor')
+    expect(rows[2]).toHaveTextContent('not signed in yet')
+    expect(api.count('/v1/access')).toBe(1)
+  })
+
+  it('shows the problem when listing fails', async () => {
+    mockApi({ '/v1/me': me(), '/v1/access': problem(503, 'Service unavailable', 'database is starting') })
+    renderApp('/ui/admin')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Access' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('database is starting')
+  })
+
+  it('never calls GET /v1/access for a non-admin', async () => {
+    const api = mockApi({ '/v1/me': me({ role: 'editor', scope: 'write' }), '/v1/access': { items: [] } })
+    renderApp('/ui/admin')
+    expect(await screen.findByRole('alert')).toHaveTextContent('This screen is for administrators.')
+    expect(api.count('/v1/access')).toBe(0)
   })
 })
