@@ -1,21 +1,26 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { delivery, me, page, subscription } from '@/test/fixtures'
+import { delivery, me, page, sink, subscription } from '@/test/fixtures'
 import { mockApi, problem, renderApp } from '@/test/mock-api'
+import { timeRange } from '@/pages/deliveries'
 
 afterEach(() => vi.unstubAllGlobals())
 
-const base = { '/v1/me': me(), '/v1/subscriptions': page([subscription('to-slack', 'slack-main')]) }
+const base = {
+  '/v1/me': me(),
+  '/v1/subscriptions': page([subscription('to-slack', 'slack-main')]),
+  '/v1/sinks': page([sink('slack-main'), sink('email')]),
+}
 
 describe('deliveries list', () => {
-  it('shows status as text, the sink of the subscription, attempts and the last error', async () => {
+  it('shows status as text, the delivery\'s sink, attempts and the last error', async () => {
     mockApi({
       ...base,
       '/v1/deliveries': page([
-        delivery('D0000001', { status: 'dead', attempts: 8, last_error: 'HTTP 500', next_attempt_at: null }),
+        delivery('D0000001', { status: 'dead', attempts: 8, last_error: 'HTTP 500', next_attempt_at: null, sink: 'slack-main' }),
         delivery('D0000002', { status: 'delivered', attempts: 1 }),
-        delivery('D0000003', { status: 'pending', subscription_name: null, subscription_id: 'GONE' }),
+        delivery('D0000003', { status: 'pending', subscription_name: null, sink: null, subscription_id: 'GONE' }),
       ]),
     })
     renderApp('/ui/deliveries')
@@ -70,7 +75,7 @@ describe('delivery detail', () => {
   it('shows the delivery and links to its event', async () => {
     mockApi({
       ...base,
-      '/v1/deliveries/D1': delivery('D1', { status: 'dead', attempts: 5, last_error: 'timeout' }),
+      '/v1/deliveries/D1': delivery('D1', { status: 'dead', attempts: 5, last_error: 'timeout', sink: 'slack-main' }),
     })
     renderApp('/ui/deliveries/D1')
     const table = await screen.findByRole('table', { name: 'Delivery details' })
@@ -90,16 +95,56 @@ describe('delivery detail', () => {
   })
 })
 
-describe('sink filter', () => {
-  it('is labelled as filtering loaded rows and keeps Load more while pages remain', async () => {
-    mockApi({
-      '/v1/me': me(),
-      '/v1/subscriptions': page([subscription('to-slack', 'slack-main'), subscription('to-mail', 'email', 'SUB2')]),
-      '/v1/deliveries': page([delivery('D0000001')], 'C2'),
-    })
+describe('server-side filters', () => {
+  it('sends the sink filter to the API and keeps Load more', async () => {
+    const api = mockApi({ ...base, '/v1/deliveries': page([delivery('D0000001', { sink: 'email' })], 'C2') })
     renderApp('/ui/deliveries')
     await screen.findByText('D0000001'.slice(-8))
-    await userEvent.selectOptions(screen.getByLabelText('Sink (filters loaded rows)'), 'email')
+    await userEvent.selectOptions(screen.getByLabelText('Sink'), 'email')
+    await vi.waitFor(() => expect(api.calls.at(-1)?.url.searchParams.get('sink')).toBe('email'))
+    expect(api.calls.at(-1)?.url.searchParams.getAll('status')).toEqual(['dead'])
     expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument()
+  })
+
+  it('sends a time range as RFC 3339 since/until and refuses an end before the start', async () => {
+    const api = mockApi({ ...base, '/v1/deliveries': page([delivery('D0000001')]) })
+    renderApp('/ui/deliveries')
+    await screen.findByText('D0000001'.slice(-8))
+    const from = screen.getByLabelText('Event recorded from')
+    const to = screen.getByLabelText('Event recorded before')
+    expect(from).toHaveAttribute('type', 'datetime-local')
+    await userEvent.type(from, '2026-11-01T08:00')
+    await userEvent.type(to, '2026-11-02T08:00')
+    await vi.waitFor(() => {
+      const q = api.calls.filter((c) => c.url.pathname === '/v1/deliveries').at(-1)?.url.searchParams
+      expect(q?.get('since')).toBe(new Date('2026-11-01T08:00').toISOString())
+      expect(q?.get('until')).toBe(new Date('2026-11-02T08:00').toISOString())
+    })
+    await userEvent.clear(to)
+    await userEvent.type(to, '2026-10-01T08:00')
+    expect(await screen.findByText('Must be after the start.')).toBeInTheDocument()
+    expect(to).toHaveAttribute('aria-invalid', 'true')
+    await vi.waitFor(() => {
+      const q = api.calls.filter((c) => c.url.pathname === '/v1/deliveries').at(-1)?.url.searchParams
+      expect(q?.has('until')).toBe(false)
+    })
+  })
+})
+
+describe('timeRange', () => {
+  // The other tests compare with the same conversion; this pins the offset in a zone that is not UTC.
+  it('reads datetime-local values in the browser time zone and sends them as UTC instants', () => {
+    const tz = process.env.TZ
+    process.env.TZ = 'Asia/Kolkata' // UTC+05:30, no daylight saving time
+    try {
+      expect(timeRange('2026-11-01T08:00', '2026-11-01T08:30')).toEqual({
+        since: '2026-11-01T02:30:00.000Z',
+        until: '2026-11-01T03:00:00.000Z',
+      })
+      expect(timeRange('', '')).toEqual({ since: undefined, until: undefined })
+    } finally {
+      if (tz === undefined) delete process.env.TZ
+      else process.env.TZ = tz
+    }
   })
 })

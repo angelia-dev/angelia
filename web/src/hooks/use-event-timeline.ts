@@ -1,38 +1,41 @@
 import { useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { fetchEvents, type EventFilters } from '@/api/queries'
+import { EVENT_PAGE_SIZE, fetchEventsNewest, type EventFilters } from '@/api/queries'
 import type { EventRecord } from '@/api/types'
 
-/** Pages fetched without asking before the user must press "Load newer events". */
+/** Older pages fetched without asking while fewer than a page of events matched the filters. */
 export const AUTO_PAGES = 5
 
 /**
- * The events API lists oldest first and pages by `seq`, and has no way to jump
- * to the newest event. The timeline therefore walks forward from the oldest
- * event kept, up to AUTO_PAGES pages, then waits for the user. Only once it has
- * reached the newest event (`atTail`) does the live stream take over.
+ * The timeline reads the log newest first (`order=desc`): the first page is the head, and
+ * "older" pages follow with `before=<next_before>`. The first page's `next_after` is the highest
+ * seq the server scanned, where the live stream picks up (`head`). A filtered page can be short
+ * or empty while older events remain, so a few more pages are fetched until a page's worth
+ * matched; then the user asks for more.
  */
 export function useEventTimeline(filters: EventFilters) {
   const query = useInfiniteQuery({
     queryKey: ['events', filters],
-    queryFn: ({ pageParam }) => fetchEvents(filters, pageParam),
-    initialPageParam: 0,
-    getNextPageParam: (last) => (last.has_more ? last.next_after : undefined),
+    queryFn: ({ pageParam }) => fetchEventsNewest(filters, pageParam),
+    initialPageParam: undefined as number | undefined,
+    getNextPageParam: (last) => (last.has_more && last.next_before != null ? last.next_before : undefined),
+    // The live stream brings what is new; refetching every page from the head would only repeat it.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   })
   const { hasNextPage, isFetchingNextPage, isError, fetchNextPage } = query
   const pageCount = query.data?.pages.length ?? 0
+  const loaded = useMemo<EventRecord[]>(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data])
 
   useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage && !isError && pageCount > 0 && pageCount < AUTO_PAGES) {
+    if (hasNextPage && !isFetchingNextPage && !isError && pageCount > 0 && pageCount < AUTO_PAGES && loaded.length < EVENT_PAGE_SIZE) {
       void fetchNextPage()
     }
-  }, [hasNextPage, isFetchingNextPage, isError, pageCount, fetchNextPage])
+  }, [hasNextPage, isFetchingNextPage, isError, pageCount, loaded.length, fetchNextPage])
 
-  const loaded = useMemo<EventRecord[]>(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data])
-  const lastPage = query.data?.pages[pageCount - 1]
-  const lastSeq = lastPage ? lastPage.next_after : 0
-  const atTail = !query.isPending && !query.isError && !hasNextPage
-  return { ...query, loaded, lastSeq, atTail }
+  const head = query.data?.pages[0]?.next_after ?? 0
+  const ready = !query.isPending && !query.isError
+  return { ...query, loaded, head, ready }
 }
 
 /** Loaded and live events merged by seq, newest first. */

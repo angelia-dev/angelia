@@ -1,7 +1,7 @@
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { eventPage, eventRecord, me } from '@/test/fixtures'
+import { eventPageDesc, eventRecord, me } from '@/test/fixtures'
 import { MockEventSource, mockApi, problem, renderApp } from '@/test/mock-api'
 
 beforeEach(() => {
@@ -11,60 +11,70 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('events timeline', () => {
-  it('lists events newest first and pages forward with `after` until the tail', async () => {
+  it('reads the newest events first with order=desc and opens the stream at the head', async () => {
     const api = mockApi({
       '/v1/me': me(),
-      '/v1/events': ({ url }) =>
-        url.searchParams.get('after') === '0' ? eventPage([eventRecord(1), eventRecord(2)], true) : eventPage([eventRecord(3)]),
+      '/v1/events': eventPageDesc([eventRecord(9), eventRecord(8), eventRecord(7)]),
     })
     renderApp('/ui/events')
-    const table = await screen.findByRole('table', {
-      name: 'Events, newest first',
-    })
-    await vi.waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(4))
+    const table = await screen.findByRole('table', { name: 'Events, newest first' })
     const rows = within(table).getAllByRole('row').slice(1)
-    expect(rows.map((r) => within(r).getAllByRole('cell')[0]?.textContent)).toEqual(['3', '2', '1'])
-    expect(api.calls.filter((c) => c.url.pathname === '/v1/events').map((c) => c.url.searchParams.get('after'))).toEqual(['0', '2'])
-    expect(rows[0]).toHaveTextContent('release.published')
+    expect(rows.map((r) => within(r).getAllByRole('cell')[0]?.textContent)).toEqual(['9', '8', '7'])
+    const q = api.calls.find((c) => c.url.pathname === '/v1/events')?.url.searchParams
+    expect(q?.get('order')).toBe('desc')
+    expect(q?.has('before')).toBe(false)
+    expect(q?.has('after')).toBe(false)
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    expect(MockEventSource.last?.url).toBe('/v1/events/stream?after=9')
+    expect(api.count('/v1/events')).toBe(1)
+    expect(screen.queryByRole('button', { name: 'Show older events' })).not.toBeInTheDocument()
   })
 
-  it('stops auto-paging after a few pages and offers "Load newer events"', async () => {
-    let next = 0
-    const api = mockApi({
-      '/v1/me': me(),
-      '/v1/events': () => eventPage([eventRecord(++next)], true),
-    })
-    renderApp('/ui/events')
-    const more = await screen.findByRole('button', {
-      name: 'Load newer events',
-    })
-    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(5))
-    expect(MockEventSource.instances).toHaveLength(0) // live updates wait for the newest event
-    await userEvent.click(more)
-    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(6))
-  })
-
-  it('offers "Load newer events" instead of the empty state when a page is empty but has more', async () => {
+  it('loads older events with `before` when the user asks', async () => {
+    const full = Array.from({ length: 200 }, (_, i) => eventRecord(400 - i))
     const api = mockApi({
       '/v1/me': me(),
       '/v1/events': ({ url }) =>
-        url.searchParams.get('after') === '0' ? { items: [], next_after: 40, has_more: true } : eventPage([eventRecord(41)]),
+        url.searchParams.get('before') === '201' ? eventPageDesc([eventRecord(200), eventRecord(199)]) : eventPageDesc(full, true),
     })
     renderApp('/ui/events')
-    const more = await screen.findByRole('button', {
-      name: 'Load newer events',
+    const table = await screen.findByRole('table', { name: 'Events, newest first' })
+    expect(within(table).getAllByRole('row')).toHaveLength(201)
+    expect(api.count('/v1/events')).toBe(1) // a full page: nothing more is fetched by itself
+    await userEvent.click(screen.getByRole('button', { name: 'Show older events' }))
+    await vi.waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(203))
+    const second = api.calls.filter((c) => c.url.pathname === '/v1/events')[1]?.url.searchParams
+    expect(second?.get('order')).toBe('desc')
+    expect(second?.get('before')).toBe('201')
+    expect(screen.queryByRole('button', { name: 'Show older events' })).not.toBeInTheDocument()
+    expect(MockEventSource.last?.url).toBe('/v1/events/stream?after=400')
+  })
+
+  it('fetches a few older pages by itself while the filters match too little, then waits', async () => {
+    let before = 1000
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/events': () => {
+        before -= 100
+        return eventPageDesc([], true, { head: 1000, next_before: before })
+      },
     })
+    renderApp('/ui/events')
+    const older = await screen.findByRole('button', { name: 'Show older events' })
+    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(5))
     expect(screen.queryByText('No events yet')).not.toBeInTheDocument()
-    expect(screen.getByText(/loaded oldest first/)).toBeInTheDocument()
-    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(2)) // auto-paging continues
-    await vi.waitFor(() => expect(screen.getByRole('table', { name: 'Events, newest first' })).toBeInTheDocument())
-    expect(more).not.toBeNull()
+    expect(screen.getByText(/No event matched among the newest events/)).toBeInTheDocument()
+    const befores = api.calls.filter((c) => c.url.pathname === '/v1/events').map((c) => c.url.searchParams.get('before'))
+    expect(befores).toEqual([null, '900', '800', '700', '600'])
+    await vi.waitFor(() => expect(MockEventSource.last?.url).toBe('/v1/events/stream?after=1000'))
+    await userEvent.click(older)
+    await vi.waitFor(() => expect(api.count('/v1/events')).toBe(6))
   })
 
   it('does not send an invalid watch or source filter', async () => {
     const api = mockApi({
       '/v1/me': me(),
-      '/v1/events': eventPage([eventRecord(1)]),
+      '/v1/events': eventPageDesc([eventRecord(1)]),
     })
     renderApp('/ui/events')
     await screen.findByRole('table')
@@ -76,7 +86,7 @@ describe('events timeline', () => {
   it('passes the watch, type and source filters', async () => {
     const api = mockApi({
       '/v1/me': me(),
-      '/v1/events': eventPage([eventRecord(1)]),
+      '/v1/events': eventPageDesc([eventRecord(1)]),
     })
     renderApp('/ui/events')
     await screen.findByRole('table')
@@ -92,7 +102,7 @@ describe('events timeline', () => {
   })
 
   it('shows an empty state and a problem', async () => {
-    mockApi({ '/v1/me': me(), '/v1/events': eventPage([]) })
+    mockApi({ '/v1/me': me(), '/v1/events': eventPageDesc([]) })
     renderApp('/ui/events')
     expect(await screen.findByText('No events yet')).toBeInTheDocument()
   })
@@ -111,7 +121,7 @@ describe('live updates', () => {
   async function renderLive() {
     const api = mockApi({
       '/v1/me': me(),
-      '/v1/events': eventPage([eventRecord(1), eventRecord(2)]),
+      '/v1/events': eventPageDesc([eventRecord(2), eventRecord(1)]),
     })
     renderApp('/ui/events')
     await screen.findByRole('table')
@@ -169,7 +179,7 @@ describe('live updates', () => {
 
   it('reports a browser without EventSource', async () => {
     vi.stubGlobal('EventSource', undefined)
-    mockApi({ '/v1/me': me(), '/v1/events': eventPage([]) })
+    mockApi({ '/v1/me': me(), '/v1/events': eventPageDesc([]) })
     renderApp('/ui/events')
     expect(await screen.findByText('Live updates are not supported by this browser')).toBeInTheDocument()
   })

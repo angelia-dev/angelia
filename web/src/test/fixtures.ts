@@ -74,10 +74,26 @@ export const eventRecord = (seq: number, over: { version?: string; time?: string
   }
 }
 
-export const eventPage = (items: S['EventRecord'][], has_more = false) => ({
+export const eventPage = (items: S['EventRecord'][], has_more = false): S['EventPage'] => ({
   items,
   next_after: items.length ? (items[items.length - 1] as S['EventRecord']).seq : 0,
   has_more,
+  next_before: null,
+})
+
+/**
+ * A page of `order=desc`: `items` newest first; `head` is the highest seq scanned (default the
+ * first item's), `next_before` the lowest (default the last item's).
+ */
+export const eventPageDesc = (
+  items: S['EventRecord'][],
+  has_more = false,
+  over: { head?: number; next_before?: number | null } = {},
+): S['EventPage'] => ({
+  items,
+  next_after: over.head ?? items[0]?.seq ?? 0,
+  has_more,
+  next_before: over.next_before !== undefined ? over.next_before : (items[items.length - 1]?.seq ?? null),
 })
 
 export const delivery = (id: string, over: Partial<S['Delivery']> = {}): S['Delivery'] => ({

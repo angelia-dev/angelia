@@ -1,11 +1,19 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { hasRole, useMe } from '@/api/me'
-import { deleteSink, deleteSubscription, invalidateSinks, invalidateSubscriptions } from '@/api/mutations'
+import {
+  deleteSink,
+  deleteSubscription,
+  fetchSinkVersioned,
+  fetchSubscriptionVersioned,
+  invalidateSinks,
+  invalidateSubscriptions,
+} from '@/api/mutations'
 import type { Sink, Subscription } from '@/api/types'
 import { ConfirmDelete } from '@/components/form'
 import { SinkForm } from '@/components/sink-form'
 import { SubscriptionForm } from '@/components/subscription-form'
+import { VersionedEdit } from '@/components/versioned'
 import { Button } from '@/components/ui/button'
 import { fetchConsumers, fetchPlugins, fetchSinks, fetchSubscriptions, useCursorList } from '@/api/queries'
 import { LabelList, ManagedByBadge, RelativeTime } from '@/components/badges'
@@ -82,13 +90,12 @@ export function SinksPage() {
   return (
     <>
       <PageHeader title="Sinks">{isAdmin && !form && <Button onClick={() => setForm('new')}>New sink</Button>}</PageHeader>
-      {isAdmin && form && (
-        <SinkForm
-          key={form === 'new' ? 'new' : form.name}
-          initial={form === 'new' ? undefined : form}
-          onDone={() => setForm(null)}
-          onCancel={() => setForm(null)}
-        />
+      {isAdmin && form === 'new' && <SinkForm key="new" onDone={() => setForm(null)} onCancel={() => setForm(null)} />}
+      {isAdmin && form && form !== 'new' && (
+        // The edit starts from the sink as it is now, and its ETag guards the save.
+        <VersionedEdit key={form.name} kind="sink" name={form.name} fetch={fetchSinkVersioned}>
+          {(v, reload) => <SinkForm initial={v.data} etag={v.etag} onReload={reload} onDone={() => setForm(null)} onCancel={() => setForm(null)} />}
+        </VersionedEdit>
       )}
       <ListFrame
         label="sinks"
@@ -134,13 +141,13 @@ export function SubscriptionsPage() {
   return (
     <>
       <PageHeader title="Subscriptions">{canWrite && !form && <Button onClick={() => setForm('new')}>New subscription</Button>}</PageHeader>
-      {canWrite && form && (
-        <SubscriptionForm
-          key={form === 'new' ? 'new' : form.name}
-          initial={form === 'new' ? undefined : form}
-          onDone={() => setForm(null)}
-          onCancel={() => setForm(null)}
-        />
+      {canWrite && form === 'new' && <SubscriptionForm key="new" onDone={() => setForm(null)} onCancel={() => setForm(null)} />}
+      {canWrite && form && form !== 'new' && (
+        <VersionedEdit key={form.name} kind="subscription" name={form.name} fetch={fetchSubscriptionVersioned}>
+          {(v, reload) => (
+            <SubscriptionForm initial={v.data} etag={v.etag} onReload={reload} onDone={() => setForm(null)} onCancel={() => setForm(null)} />
+          )}
+        </VersionedEdit>
       )}
       <ListFrame
         label="subscriptions"

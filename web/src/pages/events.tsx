@@ -53,8 +53,8 @@ export function EventsPage() {
   const timeline = useEventTimeline(filters)
   const stream = useEventStream({
     filters,
-    after: timeline.lastSeq,
-    enabled: timeline.atTail && !paused,
+    after: timeline.head,
+    enabled: timeline.ready && !paused,
   })
   const events = useMemo(() => mergeEvents(timeline.loaded, stream.events), [timeline.loaded, stream.events])
   const shown = events.slice(0, rows)
@@ -117,23 +117,24 @@ export function EventsPage() {
               </TableBody>
             </Table>
           )}
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            {events.length > shown.length && (
-              <Button variant="outline" onClick={() => setRows((n) => n + ROWS)}>
-                Show older events
+          {events.length === 0 && (
+            <p className="text-sm text-muted-foreground">No event matched among the newest events; older ones may match.</p>
+          )}
+          {(events.length > shown.length || timeline.hasNextPage) && (
+            <div className="mt-4">
+              <Button
+                variant="outline"
+                disabled={timeline.isFetchingNextPage}
+                onClick={() => {
+                  // Draw the rows already loaded first; fetch an older page only when they are all shown.
+                  if (events.length <= shown.length) void timeline.fetchNextPage()
+                  setRows((n) => n + ROWS)
+                }}
+              >
+                {timeline.isFetchingNextPage ? 'Loading…' : 'Show older events'}
               </Button>
-            )}
-            {timeline.hasNextPage && (
-              <>
-                <Button variant="outline" disabled={timeline.isFetchingNextPage} onClick={() => void timeline.fetchNextPage()}>
-                  {timeline.isFetchingNextPage ? 'Loading…' : 'Load newer events'}
-                </Button>
-                <span className="text-sm text-muted-foreground">
-                  Events are loaded oldest first; live updates start once the newest event is loaded.
-                </span>
-              </>
-            )}
-          </div>
+            </div>
+          )}
         </>
       )}
     </>

@@ -16,8 +16,9 @@ export function streamUrl(filters: EventFilters, after: number): string {
 }
 
 /**
- * Live events from GET /v1/events/stream through EventSource (the session
- * cookie is sent; a bearer token could not be). While `enabled` is false the
+ * Live events from GET /v1/events/stream through the browser's EventSource:
+ * the UI is served on the same origin, so the session cookie authenticates
+ * the stream (spec 0.9.0 documents this; a bearer token could not be sent). While `enabled` is false the
  * connection is closed; turning it on again resumes after the last seq seen.
  * The browser reconnects by itself and sends Last-Event-ID; when it gives up
  * (the server refused the stream with a problem) the status becomes "error"

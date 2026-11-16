@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -24,6 +25,8 @@ const (
 	loginPath    = "/ui/auth/login/"
 	callbackPath = "/ui/auth/callback/"
 	logoutPath   = "/ui/auth/logout"
+	// providersPath lists the providers for the sign-in page's buttons.
+	providersPath = "/ui/auth/providers"
 	// homePath is where a successful sign-in lands.
 	homePath = "/ui/"
 )
@@ -50,17 +53,19 @@ type HandlerOptions struct {
 }
 
 // Handler serves the browser routes of the sign-in: GET
-// /ui/auth/login/{provider}, GET /ui/auth/callback/{provider} and POST
-// /ui/auth/logout. They are outside the REST API and its specification.
+// /ui/auth/providers, GET /ui/auth/login/{provider}, GET
+// /ui/auth/callback/{provider} and POST /ui/auth/logout. They are outside the REST API and its specification.
 type Handler struct {
 	providers map[string]IdentityProvider
-	sessions  *Sessions
-	origin    string
-	local     bool
-	metrics   LoginMetrics
-	log       *slog.Logger
-	now       func() time.Time
-	mux       *http.ServeMux
+	// list is the body of GET /ui/auth/providers, built once.
+	list     []byte
+	sessions *Sessions
+	origin   string
+	local    bool
+	metrics  LoginMetrics
+	log      *slog.Logger
+	now      func() time.Time
+	mux      *http.ServeMux
 }
 
 var providerNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -83,6 +88,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if h.now == nil {
 		h.now = time.Now
 	}
+	entries := make([]providerEntry, 0, len(opts.Providers))
 	for _, p := range opts.Providers {
 		if !providerNameRE.MatchString(p.Name()) {
 			return nil, fmt.Errorf("webauth: provider name %q is not lower-case letters, digits and hyphens", p.Name())
@@ -91,12 +97,40 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return nil, fmt.Errorf("webauth: provider %q is listed twice", p.Name())
 		}
 		h.providers[p.Name()] = p
+		label := p.Name()
+		if l, ok := p.(Labeler); ok && l.Label() != "" {
+			label = l.Label()
+		}
+		entries = append(entries, providerEntry{Name: p.Name(), Label: label})
 	}
+	list, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("webauth: providers: %w", err)
+	}
+	h.list = list
 	h.mux = http.NewServeMux()
 	h.mux.HandleFunc("GET "+loginPath+"{provider}", h.login)
 	h.mux.HandleFunc("GET "+callbackPath+"{provider}", h.callback)
 	h.mux.HandleFunc("POST "+logoutPath, h.logout)
+	h.mux.HandleFunc("GET "+providersPath, h.providerList)
 	return h, nil
+}
+
+// providerEntry is one provider of GET /ui/auth/providers: its name (the
+// path segment of /ui/auth/login/{name}) and the label of its button.
+// Nothing else: no client id, issuer, URL or secret.
+type providerEntry struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+}
+
+// providerList serves GET /ui/auth/providers, unauthenticated: the sign-in
+// page shows one button per provider, in the configuration's order.
+func (h *Handler) providerList(w http.ResponseWriter, _ *http.Request) {
+	hd := w.Header()
+	hd.Set("Content-Type", "application/json")
+	hd.Set("Content-Security-Policy", pageCSP)
+	_, _ = w.Write(h.list)
 }
 
 // RedirectURL is the callback URL of a provider for a public URL, to
@@ -357,12 +391,16 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
 </html>
 `))
 
+// pageCSP is the Content-Security-Policy of every response with a body:
+// nothing may load or run.
+const pageCSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 // page writes a page with a CSP that allows nothing to load or run.
 func (h *Handler) page(w http.ResponseWriter, status int, kind pageKind, login string) {
 	t := pageTexts[kind]
 	hd := w.Header()
 	hd.Set("Content-Type", "text/html; charset=utf-8")
-	hd.Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	hd.Set("Content-Security-Policy", pageCSP)
 	w.WriteHeader(status)
 	_ = pageTmpl.Execute(w, struct{ Title, Text, Login string }{t.title, t.text, login})
 }

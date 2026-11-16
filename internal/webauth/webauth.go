@@ -70,6 +70,12 @@ type IdentityProvider interface {
 	Exchange(ctx context.Context, code, codeVerifier, nonce string) (Identity, error)
 }
 
+// Labeler is an [IdentityProvider] with a human-readable name, the text of
+// its sign-in button. A provider without one is labelled by its Name.
+type Labeler interface {
+	Label() string
+}
+
 // roleRank orders the roles of ui.access; 0 is no role.
 func roleRank(role string) int {
 	switch role {

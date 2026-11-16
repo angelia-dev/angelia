@@ -113,3 +113,7 @@ export function problemWith(status: number, title: string, extra: Record<string,
 /** A JSON response with a status other than 200 (`201` on create). */
 export const jsonResponse = (status: number, body?: unknown) =>
   new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+/** A 200 JSON response with an `ETag`, as a GET of a watch, sink or subscription. */
+export const etagged = (body: unknown, etag: string) =>
+  new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json', ETag: etag } })

@@ -1,6 +1,6 @@
 import { screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { delivery, eventPage, eventRecord, me, page, watch } from '@/test/fixtures'
+import { delivery, eventPageDesc, eventRecord, me, page, watch } from '@/test/fixtures'
 import { mockApi, problem, renderApp } from '@/test/mock-api'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -11,7 +11,7 @@ describe('overview', () => {
     mockApi({
       '/v1/me': me(),
       '/v1/watches': page([watch('a'), watch('b', {}, { error_count: 2 }), watch('c', {}, { error_count: 1 })]),
-      '/v1/events': eventPage([eventRecord(1, { time: old }), eventRecord(2), eventRecord(3)]),
+      '/v1/events': eventPageDesc([eventRecord(3), eventRecord(2), eventRecord(1, { time: old })], true),
       '/v1/deliveries': ({ url }) =>
         url.searchParams.getAll('status').includes('dead')
           ? page([delivery('D1', { status: 'dead' })])
@@ -39,7 +39,7 @@ describe('overview', () => {
     const api = mockApi({
       '/v1/me': me(),
       '/v1/watches': page([watch('a')], 'more'),
-      '/v1/events': eventPage([]),
+      '/v1/events': eventPageDesc([]),
       '/v1/deliveries': page([]),
     })
     renderApp()
@@ -47,22 +47,29 @@ describe('overview', () => {
     expect(api.count('/v1/watches')).toBe(3)
   })
 
-  it('shows n/a instead of inexact numbers when the event walk is capped', async () => {
-    let next = 0
+  it('counts the last 24 hours exactly by reading newest first until an older event', async () => {
+    const hour = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
     const api = mockApi({
       '/v1/me': me(),
       '/v1/watches': page([]),
-      '/v1/events': () => eventPage([eventRecord(++next)], true),
+      '/v1/events': ({ url }) => {
+        const before = url.searchParams.get('before')
+        if (before === null) return eventPageDesc([eventRecord(30, { time: hour(1) }), eventRecord(29, { time: hour(2) })], true)
+        if (before === '29') return eventPageDesc([eventRecord(28, { time: hour(20) }), eventRecord(27, { time: hour(23) })], true)
+        return eventPageDesc([eventRecord(26, { time: hour(23.5) }), eventRecord(25, { time: hour(30) })], true)
+      },
       '/v1/deliveries': page([]),
     })
     renderApp()
     const counts = await screen.findByRole('region', { name: 'Counts' })
     const card = within(counts).getByText('Events in the last 24 hours').closest('div')?.parentElement
-    await vi.waitFor(() => expect(card).toHaveTextContent('n/a'))
-    expect(card).toHaveTextContent('More than 1000 events retained; see Events.')
-    expect(screen.queryByRole('table', { name: 'Latest events' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open Events' })).toHaveAttribute('href', '/ui/events')
-    expect(api.count('/v1/events')).toBe(5)
+    await vi.waitFor(() => expect(card).toHaveTextContent(/^Events in the last 24 hours5$/))
+    const calls = api.calls.filter((c) => c.url.pathname === '/v1/events').map((c) => c.url.searchParams)
+    expect(calls.map((q) => q.get('order'))).toEqual(['desc', 'desc', 'desc'])
+    expect(calls.map((q) => q.get('before'))).toEqual([null, '29', '27'])
+    expect(calls.every((q) => !q.has('after'))).toBe(true)
+    const latest = await screen.findByRole('table', { name: 'Latest events' })
+    expect(within(latest).getAllByRole('row').slice(1)).toHaveLength(2) // the first page's newest
   })
 
   it('walks the events at most once a minute', async () => {
@@ -71,7 +78,7 @@ describe('overview', () => {
       const api = mockApi({
         '/v1/me': me(),
         '/v1/watches': page([]),
-        '/v1/events': eventPage([eventRecord(1)]),
+        '/v1/events': eventPageDesc([eventRecord(1)]),
         '/v1/deliveries': page([]),
       })
       renderApp()
@@ -92,7 +99,7 @@ describe('overview', () => {
       const api = mockApi({
         '/v1/me': me(),
         '/v1/watches': page([]),
-        '/v1/events': eventPage([]),
+        '/v1/events': eventPageDesc([]),
         '/v1/deliveries': page([]),
       })
       renderApp()
@@ -109,7 +116,7 @@ describe('overview', () => {
     mockApi({
       '/v1/me': me(),
       '/v1/watches': problem(503, 'Service unavailable', 'database is starting'),
-      '/v1/events': eventPage([]),
+      '/v1/events': eventPageDesc([]),
       '/v1/deliveries': page([]),
     })
     renderApp()

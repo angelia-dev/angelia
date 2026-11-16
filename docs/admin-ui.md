@@ -16,18 +16,20 @@ when an admin revokes it.
 
 | Page | Shows |
 |---|---|
-| Overview | Angelia's state at a glance. |
-| Watches | Each watch with its status and versions. |
-| Events | The event log, with live updates. |
-| Deliveries | Each delivery attempt and the dead letters. Replay is coming in a follow-up story (#263-#266). |
-| Sinks | Each sink. Secret values are never shown. |
-| Subscriptions | Which sink gets which events. |
+| Overview | Angelia's state at a glance, with the exact number of events of the last 24 hours. |
+| Watches | Each watch with its status and versions. Editors create, edit and delete API-managed watches. |
+| Events | The event log, newest first, with live updates. |
+| Deliveries | Each delivery with its sink, filtered by status, subscription, sink and time range, and the dead letters. Editors replay. |
+| Sinks | Each sink. Secret values are never shown. Admins create and edit API-managed sinks and preview template-valued keys. |
+| Subscriptions | Which sink gets which events. Editors create and edit API-managed ones; admins preview the template on a sample event. |
 | Consumers | Each consumer. |
 | Plugins | The installed plugins. |
-| Admin | Sessions and API tokens (admins only). Coming in a follow-up story (#263-#266). |
+| Admin | API tokens, sessions (the current one marked) and the `ui.access` list (admins only). |
 
-The pages above are read-only. Replay, editing watches, subscriptions, sinks and consumers, and the admin
-pages are not there yet: they come in follow-up stories (#263-#266).
+Saving a watch, a sink or a subscription is conditional: an edit sends the `ETag` it read (`If-Match`) and a
+create sends `If-None-Match: *`. If someone else saved first, or the name is taken, nothing is overwritten and
+the form keeps your input. A template preview renders on the server's built-in sample event; its output is
+shown as plain text, never as HTML.
 
 Rows that come from the watch file (`managed_by: file`) show a badge and have no edit controls. Change
 them in the watch file and restart, or apply the file with `angelia apply`.
@@ -76,6 +78,9 @@ sessions keep the old list.
 - A session ends at `ui.session.max_lifetime` after the sign-in, whatever its use. The default is `168h`
   (7 days). Idle timeout must not be longer than the max lifetime.
 - **Sign-out** ends the current session: `POST /ui/auth/logout`.
+- The **sign-in page** shows one button per configured provider (GitHub, then each `ui.oidc` provider). It
+  reads the list from `GET /ui/auth/providers`, which needs no session and returns each provider's `name`
+  and `label` only (`Cache-Control: no-store`), never a client id, an issuer or a secret.
 - **Admins revoke** sessions through the API: `GET /v1/sessions` lists them, and
   `DELETE /v1/sessions/{id}` ends one. The Admin page does the same.
 

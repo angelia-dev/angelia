@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { jsonResponse, mockApi, problemWith, renderApp } from '@/test/mock-api'
+import { etagged, jsonResponse, mockApi, problemWith, renderApp } from '@/test/mock-api'
 import { me, page, plugin, watch } from '@/test/fixtures'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -49,6 +49,9 @@ describe('creating a watch', () => {
     await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'PUT')).toBe(true))
     const put = api.calls.find((c) => c.method === 'PUT')!
     expect(put.headers.get('X-Angelia-CSRF')).toBe('1')
+    expect(put.headers.get('If-None-Match')).toBe('*') // create only: never overwrite a watch of that name
+    expect(put.headers.has('If-Match')).toBe(false)
+    expect(api.calls.some((c) => c.method === 'GET' && c.url.pathname === '/v1/watches/flask')).toBe(false)
     expect(JSON.parse(put.body)).toEqual({
       source: 'pypi',
       coordinates: { package: 'Flask' },
@@ -76,18 +79,22 @@ describe('creating a watch', () => {
     expect(api.calls.some((c) => c.method === 'PUT')).toBe(false)
   })
 
-  it('refuses a name that already exists instead of overwriting that watch', async () => {
-    const api = mockApi({
+  it('refuses a name that already exists (412 on If-None-Match) and keeps the input', async () => {
+    mockApi({
       '/v1/me': editor(),
       '/v1/plugins': plugins,
       '/v1/watches': page([]),
-      '/v1/watches/flask': watch('flask'),
+      'PUT /v1/watches/flask': problemWith(412, 'Precondition failed', { detail: 'watch flask exists' }),
     })
     renderApp('/ui/watches')
     const form = await fillNewWatch()
     await userEvent.click(within(form).getByRole('button', { name: 'Create watch' }))
-    expect(await within(form).findByText(/already exists/)).toBeInTheDocument()
-    expect(api.calls.some((c) => c.method === 'PUT')).toBe(false)
+    const name = within(form).getByLabelText(/^Name/)
+    await vi.waitFor(() => expect(name).toHaveAccessibleDescription(/already exists/))
+    expect(name).toHaveAttribute('aria-invalid', 'true')
+    expect(name).toHaveValue('flask')
+    expect(within(form).getByLabelText(/^package/)).toHaveValue('Flask')
+    expect(within(form).queryByText('Precondition failed')).not.toBeInTheDocument()
   })
 
   it('shows 422 field errors next to the fields and the rest in a summary', async () => {
@@ -158,27 +165,55 @@ describe('editing and deleting a watch', () => {
     '/v1/me': who,
     '/v1/plugins': plugins,
     '/v1/watches': page([w]),
-    '/v1/watches/flask': w,
+    '/v1/watches/flask': () => etagged(w, '"v1"'),
     '/v1/watches/flask/versions': page([]),
   })
 
-  it('prefills the form, keeps the name fixed and sends the whole watch', async () => {
+  it('prefills the form, keeps the name fixed and sends the whole watch with If-Match', async () => {
     const api = mockApi({ ...routes(editor()), 'PUT /v1/watches/flask': watch('flask') })
     renderApp('/ui/watches/flask')
     await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = await screen.findByRole('form', { name: 'Edit flask' })
     expect(within(form).getByLabelText(/^Name/)).toBeDisabled()
     expect(within(form).getByLabelText(/^Name/)).toHaveValue('flask')
-    expect(within(form).getByText(/last write wins/)).toBeInTheDocument()
+    expect(within(form).getByText(/the save is refused and nothing is overwritten/)).toBeInTheDocument()
     await userEvent.clear(within(form).getByLabelText('Interval'))
     await userEvent.type(within(form).getByLabelText('Interval'), '2h')
     await userEvent.click(within(form).getByRole('button', { name: 'Save changes' }))
     await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'PUT')).toBe(true))
-    const body = JSON.parse(api.calls.find((c) => c.method === 'PUT')!.body)
+    const put = api.calls.find((c) => c.method === 'PUT')!
+    expect(put.headers.get('If-Match')).toBe('"v1"')
+    expect(put.headers.has('If-None-Match')).toBe(false)
+    const body = JSON.parse(put.body)
     expect(body.interval).toBe('2h')
     expect(body.source).toBe('pypi')
     expect(body.scheme).toBe('pep440')
     expect(body.labels).toEqual({ team: 'platform' })
+  })
+
+  it('on 412 says the watch changed elsewhere, keeps the input, and reloads on request', async () => {
+    let version = 1
+    const api = mockApi({
+      ...routes(editor()),
+      '/v1/watches/flask': () => etagged(watch('flask', { interval: version === 1 ? '1h' : '3h' }), `"v${version}"`),
+      'PUT /v1/watches/flask': problemWith(412, 'Precondition failed', { detail: 'the watch changed' }),
+    })
+    renderApp('/ui/watches/flask')
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const form = await screen.findByRole('form', { name: 'Edit flask' })
+    await userEvent.clear(within(form).getByLabelText('Interval'))
+    await userEvent.type(within(form).getByLabelText('Interval'), '2h')
+    version = 2 // someone else saves
+    await userEvent.click(within(form).getByRole('button', { name: 'Save changes' }))
+    const alert = await within(form).findByText('Changed by someone else')
+    expect(alert.closest('[role="alert"]')).toHaveTextContent(/your changes here are kept/)
+    expect(within(form).getByLabelText('Interval')).toHaveValue('2h')
+    await userEvent.click(within(form).getByRole('button', { name: 'Reload watch' }))
+    const fresh = await screen.findByRole('form', { name: 'Edit flask' })
+    await vi.waitFor(() => expect(within(fresh).getByLabelText('Interval')).toHaveValue('3h'))
+    await userEvent.click(within(fresh).getByRole('button', { name: 'Save changes' }))
+    await vi.waitFor(() => expect(api.calls.filter((c) => c.method === 'PUT')).toHaveLength(2))
+    expect(api.calls.filter((c) => c.method === 'PUT')[1]?.headers.get('If-Match')).toBe('"v2"')
   })
 
   it('asks before deleting, then deletes with the CSRF header and goes back to the list', async () => {
@@ -270,7 +305,7 @@ describe('watch form details', () => {
 
   it('focuses Cancel in the delete confirmation and returns focus on Escape', async () => {
     const w = watch('flask')
-    mockApi({ '/v1/me': editor(), '/v1/plugins': plugins, '/v1/watches': page([w]), '/v1/watches/flask': w, '/v1/watches/flask/versions': page([]) })
+    mockApi({ '/v1/me': editor(), '/v1/plugins': plugins, '/v1/watches': page([w]), '/v1/watches/flask': () => etagged(w, '"v1"'), '/v1/watches/flask/versions': page([]) })
     renderApp('/ui/watches/flask')
     await userEvent.click(await screen.findByRole('button', { name: /^Delete/ }))
     const dialog = screen.getByRole('alertdialog')

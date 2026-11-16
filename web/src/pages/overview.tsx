@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { EVENT_PAGE_SIZE, fetchCapped, fetchDeliveries, fetchEvents, fetchWatches } from '@/api/queries'
+import { fetchCapped, fetchDeliveries, fetchEventsNewest, fetchWatches } from '@/api/queries'
 import type { EventRecord } from '@/api/types'
 import { ErrorCount, RelativeTime } from '@/components/badges'
 import { EmptyState, ErrorState, Head, PageHeader, Skeleton } from '@/components/states'
@@ -11,11 +11,12 @@ import { shortType } from '@/pages/events'
 export const REFRESH_MS = 30_000
 /** Pages fetched per count; a count that hits the cap is shown as "N+". */
 export const COUNT_PAGES = 3
-export const EVENT_PAGES = 5
-/** Walking the events costs up to EVENT_PAGES requests, so it runs at most once a minute. */
+/** Events per page of the 24-hour count; most instances see fewer in a day, so one call is enough. */
+export const EVENT_COUNT_PAGE = 100
+/** A safety bound on the count: past EVENT_COUNT_PAGES pages it is shown as "N+". */
+export const EVENT_COUNT_PAGES = 100
+/** The count may take several requests, so it runs at most once a minute. */
 export const EVENTS_REFRESH_MS = 60_000
-/** Events the capped walk covers (EVENT_PAGES full pages). */
-const EVENT_WALK_LIMIT = EVENT_PAGES * EVENT_PAGE_SIZE
 const DAY_MS = 24 * 60 * 60 * 1000
 
 const poll = { refetchInterval: REFRESH_MS, staleTime: REFRESH_MS / 2 }
@@ -29,7 +30,6 @@ function StatCard({
   to,
   query,
   hint,
-  unknown,
 }: {
   label: string
   to: '/watches' | '/events' | '/deliveries'
@@ -39,8 +39,6 @@ function StatCard({
     data?: { n: number; capped: boolean }
   }
   hint?: string
-  /** Show "n/a" with this note instead of a count that cannot be exact. */
-  unknown?: string
 }) {
   return (
     <Card>
@@ -52,13 +50,6 @@ function StatCard({
           <Skeleton className="h-8 w-16" />
         ) : query.isError || !query.data ? (
           <span className="text-sm text-destructive">unavailable</span>
-        ) : unknown ? (
-          <>
-            <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
-              n/a
-            </Link>
-            <p className="mt-1 text-xs text-muted-foreground">{unknown}</p>
-          </>
         ) : (
           <Link to={to} className="text-3xl font-semibold underline-offset-4 hover:underline">
             {countLabel(query.data.n, query.data.capped)}
@@ -70,25 +61,29 @@ function StatCard({
   )
 }
 
-/** `capped`: the walk stopped before the newest event, so neither number is exact. */
+/**
+ * The newest events and how many were recorded in the last 24 hours: the log is read newest
+ * first (`order=desc`) until an event older than a day, so the count is exact unless it passes
+ * the safety bound (`capped`).
+ */
 async function loadEvents(): Promise<{
   recent: EventRecord[]
   last24h: number
   capped: boolean
 }> {
   const day = Date.now() - DAY_MS
-  // Events list oldest first, so the newest are only reached at the end of the walk.
-  let after = 0
+  let before: number | undefined
   let last24h = 0
-  let recent: EventRecord[] = []
-  for (let i = 0; i < EVENT_PAGES; i++) {
-    const page = await fetchEvents({}, after)
-    last24h += page.items.filter((r) => Date.parse(r.event.time) >= day).length
-    recent = [...recent, ...page.items].slice(-10)
-    if (!page.has_more) return { recent: recent.reverse(), last24h, capped: false }
-    after = page.next_after
+  let recent: EventRecord[] | undefined
+  for (let i = 0; i < EVENT_COUNT_PAGES; i++) {
+    const page = await fetchEventsNewest({}, before, EVENT_COUNT_PAGE)
+    recent ??= page.items.slice(0, 10)
+    const inDay = page.items.filter((r) => Date.parse(r.event.time) >= day).length
+    last24h += inDay
+    if (inDay < page.items.length || !page.has_more || page.next_before == null) return { recent, last24h, capped: false }
+    before = page.next_before
   }
-  return { recent: recent.reverse(), last24h, capped: true }
+  return { recent: recent ?? [], last24h, capped: true }
 }
 
 export function OverviewPage() {
@@ -103,15 +98,14 @@ export function OverviewPage() {
     refetchInterval: EVENTS_REFRESH_MS,
     staleTime: EVENTS_REFRESH_MS,
   })
-  const eventsNote = `More than ${EVENT_WALK_LIMIT} events retained; see Events.`
   const pending = useQuery({
     queryKey: ['overview', 'pending'],
-    queryFn: () => fetchCapped(fetchDeliveries(['pending', 'in_flight'], 100), COUNT_PAGES),
+    queryFn: () => fetchCapped(fetchDeliveries({ status: ['pending', 'in_flight'] }, 100), COUNT_PAGES),
     ...poll,
   })
   const dead = useQuery({
     queryKey: ['overview', 'dead'],
-    queryFn: () => fetchCapped(fetchDeliveries(['dead'], 100), COUNT_PAGES),
+    queryFn: () => fetchCapped(fetchDeliveries({ status: ['dead'] }, 100), COUNT_PAGES),
     ...poll,
   })
 
@@ -150,7 +144,7 @@ export function OverviewPage() {
                 }
               : { isPending: events.isPending, isError: events.isError }
           }
-          unknown={events.data?.capped ? eventsNote : undefined}
+          hint="Counted up to a bound; see Events."
         />
         <StatCard label="Pending deliveries" to="/deliveries" query={stat(pending, pending.data?.items.length)} />
         <StatCard label="Dead letters" to="/deliveries" query={stat(dead, dead.data?.items.length)} />
@@ -165,13 +159,6 @@ export function OverviewPage() {
             <Skeleton className="h-40 w-full" />
           ) : events.isError ? (
             <ErrorState error={events.error} onRetry={() => void events.refetch()} />
-          ) : events.data.capped ? (
-            <p className="text-sm">
-              n/a. {eventsNote}{' '}
-              <Link to="/events" className="underline">
-                Open Events
-              </Link>
-            </p>
           ) : events.data.recent.length === 0 ? (
             <EmptyState title="No events yet" />
           ) : (
