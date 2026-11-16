@@ -99,11 +99,13 @@ export const fetchEvents = (filters: EventFilters, after: number, limit = EVENT_
 
 export const fetchEvent = (id: string) => unwrap(api.GET('/v1/events/{id}', { params: { path: { id } } }))
 
-export const fetchDeliveries = (status: DeliveryStatus[] = [], limit = PAGE_SIZE) =>
+export const fetchDeliveries = (status: DeliveryStatus[] = [], limit = PAGE_SIZE, subscription?: string) =>
   (cursor: string | undefined) =>
     unwrap(
       api.GET('/v1/deliveries', {
-        params: { query: { limit, cursor, status: status.length ? status : undefined } },
+        params: {
+          query: { limit, cursor, status: status.length ? status : undefined, subscription: subscription || undefined },
+        },
       }),
     )
 
@@ -121,3 +123,17 @@ export const fetchConsumers = () => (cursor: string | undefined) =>
 
 export const fetchPlugins = () => (cursor: string | undefined) =>
   unwrap(api.GET('/v1/plugins', { params: { query: { limit: PAGE_SIZE, cursor } } }))
+
+export const replayDelivery = (id: string) =>
+  unwrap(api.POST('/v1/deliveries/{id}/replay', { params: { path: { id } }, body: {} }))
+
+export interface ReplaySelector {
+  event?: string
+  subscription?: string
+  since?: string
+  until?: string
+  status: ('dead' | 'delivered')[]
+  dry_run: boolean
+}
+
+export const createReplay = (selector: ReplaySelector) => unwrap(api.POST('/v1/replays', { body: selector }))
