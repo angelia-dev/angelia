@@ -199,7 +199,7 @@ type Dispatcher struct {
 	inflight int
 	sending  map[string]struct{} // ids of the deliveries being attempted
 	wg       sync.WaitGroup
-	freed    chan struct{} // a worker finished while every slot was busy
+	freed    chan struct{} // an attempt finished; holds at most one wake-up
 
 	// Owned by the poll loop.
 	failingSince, lastErrLog time.Time
@@ -283,6 +283,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		case <-d.freed:
 			stop()
 		}
+		// A wake-up and the cancellation can be ready at once; select
+		// picks either, so do not start another poll after shutdown.
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 }
 
@@ -338,14 +343,16 @@ func (d *Dispatcher) poll(ctx context.Context) int {
 			d.attempt(context.WithoutCancel(ctx), ld)
 			d.mu.Lock()
 			delete(d.sending, ld.Delivery.ID)
-			full := d.inflight == d.opts.Workers
 			d.inflight--
 			d.mu.Unlock()
-			if full {
-				select {
-				case d.freed <- struct{}{}:
-				default:
-				}
+			// Wake the loop on every finished attempt, whatever its outcome,
+			// not only when the pool was full: an attempt that finishes while
+			// a poll runs leaves a slot that poll did not count, and it would
+			// otherwise wait for the poll timer (story #258, as #224 for the
+			// scheduler).
+			select {
+			case d.freed <- struct{}{}:
+			default:
 			}
 		})
 	}

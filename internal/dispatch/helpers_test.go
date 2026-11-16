@@ -93,7 +93,7 @@ func (s *testSink) requests() []sink.Request {
 	return append([]sink.Request(nil), s.reqs...)
 }
 
-func registry(t *testing.T, s sink.Sink) *sink.Registry {
+func registry(t testing.TB, s sink.Sink) *sink.Registry {
 	t.Helper()
 	r := sink.NewRegistry()
 	if err := r.Register(s); err != nil {
@@ -102,7 +102,7 @@ func registry(t *testing.T, s sink.Sink) *sink.Registry {
 	return r
 }
 
-func openStore(t *testing.T, path string) *sqlite.Store {
+func openStore(t testing.TB, path string) *sqlite.Store {
 	t.Helper()
 	st, err := sqlite.Open(t.Context(), path, discard())
 	if err != nil {
@@ -112,7 +112,7 @@ func openStore(t *testing.T, path string) *sqlite.Store {
 	return st
 }
 
-func newStore(t *testing.T) (*sqlite.Store, string) {
+func newStore(t testing.TB) (*sqlite.Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "angelia.db")
 	st := openStore(t, path)
@@ -121,7 +121,7 @@ func newStore(t *testing.T) (*sqlite.Store, string) {
 }
 
 // seedSink creates the sink k1 of the test kind and its subscription s1.
-func seedSink(t *testing.T, st store.Store) {
+func seedSink(t testing.TB, st store.Store) {
 	t.Helper()
 	must(t, st.CreateSink(t.Context(), store.Sink{ID: "k1", Kind: sinkKind, ConfigEncrypted: []byte(`{"url":"https://example.com/hook"}`)}))
 	must(t, st.CreateSubscription(t.Context(), store.Subscription{ID: "s1", SinkID: "k1"}))
@@ -132,7 +132,7 @@ func payload(id string) []byte {
 }
 
 // addEvents writes n events with one delivery each for s1, due at t0.
-func addEvents(t *testing.T, st store.Store, n int) {
+func addEvents(t testing.TB, st store.Store, n int) {
 	t.Helper()
 	for i := range n {
 		id := fmt.Sprintf("E%04d", i)
@@ -151,7 +151,7 @@ func delivery(t *testing.T, st store.Store, eventID string) store.Delivery {
 	return ds[0]
 }
 
-func newDispatcher(t *testing.T, st Store, sinks Sinks, opts Options) *Dispatcher {
+func newDispatcher(t testing.TB, st Store, sinks Sinks, opts Options) *Dispatcher {
 	t.Helper()
 	if opts.Logger == nil {
 		opts.Logger = discard()
@@ -171,7 +171,7 @@ func pollWait(t *testing.T, d *Dispatcher) int {
 	return n
 }
 
-func must(t *testing.T, err error) {
+func must(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)

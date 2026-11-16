@@ -181,3 +181,7 @@ Raise `-releases-per-hour` if the report shows kills waiting for work; lower it 
   transactions on a power loss.
 - The receiver records a request after its delay, just before it answers. A request cut
   off later counts as received and is sent again: a duplicate, never a hidden loss.
+- **Not a throughput measurement**: the request rate in the kill loop and the drain is bounded by the
+  kills and the restarts, not by the dispatcher. Dispatch throughput against the worker ceiling is
+  measured by `BenchmarkDispatchThroughput` in `internal/dispatch`
+  ([result](../results/dispatch-throughput-2026-11-16.md), #258).

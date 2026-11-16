@@ -86,6 +86,13 @@ jobs:
         run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - name: Coverage gate (internal/, 80%)
         run: scripts/coverage-gate.sh coverage.out 80
+      # Story #258: one delivery per dispatcher, a few seconds. A smoke test
+      # only: timing on shared runners is noisy, so the rate is not checked.
+      - name: Dispatch throughput benchmark (smoke)
+        env:
+          ANGELIA_TEST_POSTGRES_DSN: postgres://postgres@localhost:5432/postgres?sslmode=disable
+          ANGELIA_TEST_POSTGRES_REQUIRED: "1"
+        run: go test -run '^$' -bench DispatchThroughput -benchtime 1x ./internal/dispatch/
 
   # Phase 0 benchmark 6: version ordering against the committed registry
   # snapshots (bench/ordering/README.md). Offline: reads testdata only.
