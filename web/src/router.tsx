@@ -4,15 +4,15 @@ import {
   createRouter,
   type RouterHistory,
 } from '@tanstack/react-router'
-import { hasRole, useMe } from '@/api/me'
+import { useMe } from '@/api/me'
 import { Layout } from '@/layout'
 import { DeliveriesPage, DeliveryDetailPage } from '@/pages/deliveries'
 import { EventDetailPage, EventsPage } from '@/pages/events'
 import { OverviewPage } from '@/pages/overview'
 import { ConsumersPage, PluginsPage, SinksPage, SubscriptionsPage } from '@/pages/resources'
 import { WatchDetailPage, WatchesPage } from '@/pages/watches'
-import { PlaceholderPage } from '@/pages/placeholder'
 import { SecretsPage } from '@/pages/secrets'
+import { AdminPage } from '@/pages/admin'
 import { SignInPage } from '@/pages/sign-in'
 
 /** The root asks who is signed in: the sign-in page on 401, else the app shell. */
@@ -37,20 +37,6 @@ function Root() {
 }
 
 const rootRoute = createRootRoute({ component: Root })
-
-function Forbidden() {
-  return (
-    <p role="alert" className="text-sm">
-      This screen is for administrators.
-    </p>
-  )
-}
-
-function AdminPage() {
-  const me = useMe()
-  if (!me.data || !hasRole(me.data, 'admin')) return <Forbidden />
-  return <PlaceholderPage title="Admin" />
-}
 
 const route = <P extends string>(path: P, component: () => React.ReactNode) =>
   createRoute({ getParentRoute: () => rootRoute, path, component })

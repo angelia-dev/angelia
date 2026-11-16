@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { useDebounced } from '@/hooks/use-debounced'
 import { useEventStream, type StreamStatus } from '@/hooks/use-event-stream'
+import { invalidHelp, KIND_PATTERN, NAME_OR_ID_PATTERN, validOrUndefined } from '@/lib/filters'
 import { mergeEvents, useEventTimeline } from '@/hooks/use-event-timeline'
 
 const TYPES: ShortEventType[] = ['release.published', 'release.yanked', 'release.prerelease']
@@ -42,15 +43,19 @@ export function EventsPage() {
   const debouncedSource = useDebounced(source.trim())
   const filters = useMemo<EventFilters>(
     () => ({
-      watch: debouncedWatch || undefined,
+      watch: validOrUndefined(debouncedWatch, NAME_OR_ID_PATTERN),
       type: (type || undefined) as ShortEventType | undefined,
-      source: debouncedSource || undefined,
+      source: validOrUndefined(debouncedSource, KIND_PATTERN),
     }),
     [debouncedWatch, type, debouncedSource],
   )
 
   const timeline = useEventTimeline(filters)
-  const stream = useEventStream({ filters, after: timeline.lastSeq, enabled: timeline.atTail && !paused })
+  const stream = useEventStream({
+    filters,
+    after: timeline.lastSeq,
+    enabled: timeline.atTail && !paused,
+  })
   const events = useMemo(() => mergeEvents(timeline.loaded, stream.events), [timeline.loaded, stream.events])
   const shown = events.slice(0, rows)
 
@@ -73,32 +78,45 @@ export function EventsPage() {
         </div>
       </PageHeader>
       <FilterBar label="Filter events">
-        <TextFilter label="Watch (name or id)" value={watch} onChange={setWatch} />
+        <TextFilter
+          label="Watch (name or id)"
+          value={watch}
+          onChange={setWatch}
+          help={invalidHelp(debouncedWatch, NAME_OR_ID_PATTERN, 'Use a lower case watch name or an upper case ULID id.')}
+        />
         <SelectFilter
           label="Type"
           value={type}
           onChange={setType}
           options={[{ value: '', label: 'All types' }, ...TYPES.map((t) => ({ value: t, label: t }))]}
         />
-        <TextFilter label="Source" value={source} onChange={setSource} placeholder="pypi" />
+        <TextFilter
+          label="Source"
+          value={source}
+          onChange={setSource}
+          placeholder="pypi"
+          help={invalidHelp(debouncedSource, KIND_PATTERN, 'Use a source kind: lower case letters, digits and "-", e.g. pypi.')}
+        />
       </FilterBar>
 
       {timeline.isPending ? (
         <TableSkeleton label="events" columns={5} />
       ) : timeline.isError ? (
         <ErrorState error={timeline.error} onRetry={() => void timeline.refetch()} />
-      ) : events.length === 0 ? (
+      ) : events.length === 0 && !timeline.hasNextPage ? (
         <EmptyState title="No events yet">Events appear here as watches detect new releases.</EmptyState>
       ) : (
         <>
-          <Table aria-label="Events, newest first">
-            <Head columns={['Seq', 'Type', 'Subject', 'Source', 'Time']} />
-            <TableBody>
-              {shown.map((r) => (
-                <EventRow key={r.seq} record={r} />
-              ))}
-            </TableBody>
-          </Table>
+          {events.length > 0 && (
+            <Table aria-label="Events, newest first">
+              <Head columns={['Seq', 'Type', 'Subject', 'Source', 'Time']} />
+              <TableBody>
+                {shown.map((r) => (
+                  <EventRow key={r.seq} record={r} />
+                ))}
+              </TableBody>
+            </Table>
+          )}
           <div className="mt-4 flex flex-wrap items-center gap-3">
             {events.length > shown.length && (
               <Button variant="outline" onClick={() => setRows((n) => n + ROWS)}>
@@ -145,7 +163,10 @@ function EventRow({ record }: { record: EventRecord }) {
 
 export function EventDetailPage() {
   const { id } = useParams({ from: '/events/$id' })
-  const query = useQuery({ queryKey: ['event', id], queryFn: () => fetchEvent(id) })
+  const query = useQuery({
+    queryKey: ['event', id],
+    queryFn: () => fetchEvent(id),
+  })
   if (query.isPending) return <Skeleton className="h-40 w-full" />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
   const { event: e, seq } = query.data

@@ -13,7 +13,9 @@ describe('overview', () => {
       '/v1/watches': page([watch('a'), watch('b', {}, { error_count: 2 }), watch('c', {}, { error_count: 1 })]),
       '/v1/events': eventPage([eventRecord(1, { time: old }), eventRecord(2), eventRecord(3)]),
       '/v1/deliveries': ({ url }) =>
-        url.searchParams.getAll('status').includes('dead') ? page([delivery('D1', { status: 'dead' })]) : page([delivery('P1'), delivery('P2')]),
+        url.searchParams.getAll('status').includes('dead')
+          ? page([delivery('D1', { status: 'dead' })])
+          : page([delivery('P1'), delivery('P2')]),
     })
     renderApp()
     const counts = await screen.findByRole('region', { name: 'Counts' })
@@ -45,10 +47,54 @@ describe('overview', () => {
     expect(api.count('/v1/watches')).toBe(3)
   })
 
+  it('shows n/a instead of inexact numbers when the event walk is capped', async () => {
+    let next = 0
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([]),
+      '/v1/events': () => eventPage([eventRecord(++next)], true),
+      '/v1/deliveries': page([]),
+    })
+    renderApp()
+    const counts = await screen.findByRole('region', { name: 'Counts' })
+    const card = within(counts).getByText('Events in the last 24 hours').closest('div')?.parentElement
+    await vi.waitFor(() => expect(card).toHaveTextContent('n/a'))
+    expect(card).toHaveTextContent('More than 1000 events retained; see Events.')
+    expect(screen.queryByRole('table', { name: 'Latest events' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open Events' })).toHaveAttribute('href', '/ui/events')
+    expect(api.count('/v1/events')).toBe(5)
+  })
+
+  it('walks the events at most once a minute', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const api = mockApi({
+        '/v1/me': me(),
+        '/v1/watches': page([]),
+        '/v1/events': eventPage([eventRecord(1)]),
+        '/v1/deliveries': page([]),
+      })
+      renderApp()
+      await screen.findByRole('table', { name: 'Latest events' })
+      expect(api.count('/v1/events')).toBe(1)
+      await vi.advanceTimersByTimeAsync(35_000)
+      expect(api.count('/v1/events')).toBe(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.count('/v1/events')).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('refetches every 30 seconds', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
-      const api = mockApi({ '/v1/me': me(), '/v1/watches': page([]), '/v1/events': eventPage([]), '/v1/deliveries': page([]) })
+      const api = mockApi({
+        '/v1/me': me(),
+        '/v1/watches': page([]),
+        '/v1/events': eventPage([]),
+        '/v1/deliveries': page([]),
+      })
       renderApp()
       await screen.findByText('No failing watches')
       expect(api.count('/v1/watches')).toBe(1)

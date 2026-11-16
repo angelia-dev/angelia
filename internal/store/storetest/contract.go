@@ -101,6 +101,7 @@ var covers = map[string]string{
 	"CreateUISession":              "UISessionCRUD",
 	"ListUISessions":               "ListUISessions",
 	"PinUIIdentity":                "PinUIIdentity",
+	"UIIdentityPin":                "PinUIIdentity",
 	"RevokeUISession":              "UISessionRevoke",
 	"UpdateConsumer":               "ConsumerCRUD",
 	"UpdateSecret":                 "SecretCRUD",

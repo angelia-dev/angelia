@@ -17,7 +17,11 @@ describe('watches list', () => {
     })
     renderApp('/ui/watches')
     const table = await screen.findByRole('table', { name: 'Watches' })
-    expect(within(table).getAllByRole('columnheader').every((th) => th.getAttribute('scope') === 'col')).toBe(true)
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .every((th) => th.getAttribute('scope') === 'col'),
+    ).toBe(true)
     const rows = within(table).getAllByRole('row').slice(1)
     expect(rows[0]).toHaveTextContent('requests')
     expect(rows[0]).toHaveTextContent('package: requests')
@@ -30,7 +34,10 @@ describe('watches list', () => {
   })
 
   it('sends the source and label filters to the API', async () => {
-    const api = mockApi({ '/v1/me': me(), '/v1/watches': page([watch('requests')]) })
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([watch('requests')]),
+    })
     renderApp('/ui/watches')
     await screen.findByRole('table', { name: 'Watches' })
     await userEvent.type(screen.getByLabelText('Source'), 'pypi')
@@ -40,6 +47,35 @@ describe('watches list', () => {
       expect(last?.url.searchParams.getAll('source')).toEqual(['pypi'])
       expect(last?.url.searchParams.getAll('label')).toEqual(['team=platform'])
     })
+  })
+
+  it('shows inline help and sends no filter for an invalid label or source', async () => {
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([watch('requests')]),
+    })
+    renderApp('/ui/watches')
+    await screen.findByRole('table', { name: 'Watches' })
+    await userEvent.type(screen.getByLabelText('Label (key=value)'), 'team')
+    await userEvent.type(screen.getByLabelText('Source'), 'PyPI')
+    expect(await screen.findByText(/Use key=value/)).toBeInTheDocument()
+    expect(await screen.findByText(/Use a source kind/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Label (key=value)')).toHaveAttribute('aria-invalid', 'true')
+    await new Promise((r) => setTimeout(r, 400))
+    expect(
+      api.calls
+        .filter((c) => c.url.pathname === '/v1/watches')
+        .every((c) => !c.url.searchParams.has('label') && !c.url.searchParams.has('source')),
+    ).toBe(true)
+  })
+
+  it('draws a skeleton with one column per header', async () => {
+    mockApi({ '/v1/me': me(), '/v1/watches': () => new Promise(() => {}) })
+    renderApp('/ui/watches')
+    const skeleton = await screen.findByRole('status', {
+      name: 'Loading watches',
+    })
+    expect(skeleton.querySelectorAll('tr')[0]?.querySelectorAll('td')).toHaveLength(8)
   })
 
   it('pages with the next cursor on "Load more"', async () => {
@@ -64,7 +100,10 @@ describe('watches list', () => {
   })
 
   it('shows the problem title and detail with a retry button', async () => {
-    mockApi({ '/v1/me': me(), '/v1/watches': problem(400, 'Invalid label filter', 'label must be key=value') })
+    mockApi({
+      '/v1/me': me(),
+      '/v1/watches': problem(400, 'Invalid label filter', 'label must be key=value'),
+    })
     renderApp('/ui/watches')
     expect(await screen.findByRole('alert')).toHaveTextContent('Invalid label filter')
     expect(screen.getByRole('alert')).toHaveTextContent('label must be key=value')
@@ -76,7 +115,17 @@ describe('watch detail', () => {
   it('shows status, policy and versions', async () => {
     const w = watch(
       'requests',
-      { policy: { prerelease: 'include', include: ['^2\\.'], exclude: [], constraint: '>=2', bump: ['minor'], cooldown: '24h', baseline: false } },
+      {
+        policy: {
+          prerelease: 'include',
+          include: ['^2\\.'],
+          exclude: [],
+          constraint: '>=2',
+          bump: ['minor'],
+          cooldown: '24h',
+          baseline: false,
+        },
+      },
       { error_count: 1 },
     )
     const seen = new Date().toISOString()
@@ -84,8 +133,24 @@ describe('watch detail', () => {
       '/v1/me': me(),
       '/v1/watches/requests': w,
       '/v1/watches/requests/versions': page([
-        { version: '2.33.0', normalized_version: '2.33.0', prerelease: false, yanked: false, published_at: null, first_seen_at: seen, removed_at: null },
-        { version: '2.34.0rc1', normalized_version: '2.34.0rc1', prerelease: true, yanked: true, published_at: null, first_seen_at: seen, removed_at: null },
+        {
+          version: '2.33.0',
+          normalized_version: '2.33.0',
+          prerelease: false,
+          yanked: false,
+          published_at: null,
+          first_seen_at: seen,
+          removed_at: null,
+        },
+        {
+          version: '2.34.0rc1',
+          normalized_version: '2.34.0rc1',
+          prerelease: true,
+          yanked: true,
+          published_at: null,
+          first_seen_at: seen,
+          removed_at: null,
+        },
       ]),
     })
     renderApp('/ui/watches/requests')

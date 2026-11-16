@@ -62,6 +62,15 @@ type Principal struct {
 	Session *SessionInfo
 }
 
+// credential names the principal's kind of credential in messages: "token"
+// or "session".
+func (p Principal) credential() string {
+	if p.Session != nil {
+		return "session"
+	}
+	return "token"
+}
+
 // SessionInfo is what a browser session principal adds (GET /v1/me).
 type SessionInfo struct {
 	// ID is the session's id (a ULID), never the cookie.
@@ -76,13 +85,17 @@ type SessionInfo struct {
 // SessionAuthenticator resolves the admin UI's session cookie to its
 // principal (ADR 0033 §6). internal/webauth implements it. The server calls
 // it on a request without an Authorization header that carries the cookie,
-// and again at least every 60 seconds on an open event stream. The role, and
+// and again (CheckSession) at least every 60 seconds on an open event stream. The role, and
 // so the scope, is evaluated from the current access list on every call.
 type SessionAuthenticator interface {
 	// AuthenticateSession returns the session's principal, or an error
 	// wrapping ErrUnauthenticated (an AuthFailure says why). Any other
 	// error is a server failure (500).
 	AuthenticateSession(ctx context.Context, cookie string) (Principal, error)
+	// CheckSession is AuthenticateSession without recording a use: the
+	// re-check of an open event stream, which must not keep an otherwise
+	// idle session alive. The request that opened the stream counted.
+	CheckSession(ctx context.Context, cookie string) (Principal, error)
 	// IdleTimeout is how long a session lives without a request: the
 	// active filter of GET /v1/sessions.
 	IdleTimeout() time.Duration
