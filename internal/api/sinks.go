@@ -374,7 +374,7 @@ func (s *Server) GetSink(ctx context.Context, req GetSinkRequestObject) (GetSink
 	if err != nil {
 		return nil, err
 	}
-	return jsonOK(body), nil
+	return jsonOK(body).withETag(sinkETag(k)), nil
 }
 
 // ListSinks implements StrictServerInterface.
@@ -448,13 +448,19 @@ func (s *Server) PutSink(ctx context.Context, req PutSinkRequestObject) (PutSink
 		return nil, p
 	}
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch, ifNoneMatch: req.Params.IfNoneMatch != nil}
 	var body sinkJSON
 	var change Change
+	var tag string
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
 		k0, err := tx.SinkByName(ctx, k.Name)
 		cur, err := writeByName(k0, err, "sink", k.Name)
 		if err != nil {
 			return err
+		}
+		current := ""
+		if cur != nil {
+			current = sinkETag(*cur)
 		}
 		row := store.Sink{Kind: k.Kind, ConfigEncrypted: k.Config, Name: k.Name, ManagedBy: store.ManagedByAPI}
 		switch {
@@ -476,18 +482,26 @@ func (s *Server) PutSink(ctx context.Context, req PutSinkRequestObject) (PutSink
 			row.ID = cur.ID
 			change = ChangeUnchanged
 		}
-		body, err = s.sinkJSONOf(row, principalFrom(ctx).Scope)
-		return err
+		if body, err = s.sinkJSONOf(row, principalFrom(ctx).Scope); err != nil {
+			return err
+		}
+		stored, err := tx.SinkByName(ctx, k.Name)
+		if err != nil {
+			return err
+		}
+		tag = sinkETag(stored)
+		return pc.check(current, "sink", k.Name)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return putResponse(change, location("sinks", k.Name), body), nil
+	return putResponse(change, location("sinks", k.Name), body).withETag(tag), nil
 }
 
 // DeleteSink implements StrictServerInterface.
 func (s *Server) DeleteSink(ctx context.Context, req DeleteSinkRequestObject) (DeleteSinkResponseObject, error) {
 	dry := req.Params.DryRun != nil && *req.Params.DryRun
+	pc := preconditions{ifMatch: req.Params.IfMatch}
 	err := s.inTx(ctx, dry, func(tx store.APITx) error {
 		k, err := tx.SinkByName(ctx, req.Name)
 		cur, err := writeByName(k, err, "sink", req.Name)
@@ -504,7 +518,10 @@ func (s *Server) DeleteSink(ctx context.Context, req DeleteSinkRequestObject) (D
 		if len(subs) > 0 {
 			return problem(SlugSinkInUse, "sink %s is used by subscription %s", req.Name, subs[0].Name)
 		}
-		return tx.DeleteSink(ctx, cur.ID)
+		if err := tx.DeleteSink(ctx, cur.ID); err != nil {
+			return err
+		}
+		return pc.check(sinkETag(*cur), "sink", req.Name)
 	})
 	if err != nil {
 		return nil, err

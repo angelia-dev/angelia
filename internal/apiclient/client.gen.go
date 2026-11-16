@@ -80,6 +80,21 @@ func (e DeliveryStatus) Valid() bool {
 	}
 }
 
+// Defines values for JsonSchemaSchema.
+const (
+	HttpsjsonSchemaOrgdraft202012schema JsonSchemaSchema = "https://json-schema.org/draft/2020-12/schema"
+)
+
+// Valid indicates whether the value is a known member of the JsonSchemaSchema enum.
+func (e JsonSchemaSchema) Valid() bool {
+	switch e {
+	case HttpsjsonSchemaOrgdraft202012schema:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ManagedBy.
 const (
 	Api  ManagedBy = "api"
@@ -254,6 +269,24 @@ func (e ShortEventType) Valid() bool {
 	}
 }
 
+// Defines values for TemplatePreviewRequestSample.
+const (
+	Full   TemplatePreviewRequestSample = "full"
+	Sparse TemplatePreviewRequestSample = "sparse"
+)
+
+// Valid indicates whether the value is a known member of the TemplatePreviewRequestSample enum.
+func (e TemplatePreviewRequestSample) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case Sparse:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TokenScope.
 const (
 	TokenScopeAdmin TokenScope = "admin"
@@ -294,6 +327,135 @@ func (e UiRole) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// Defines values for EventOrder.
+const (
+	EventOrderAsc  EventOrder = "asc"
+	EventOrderDesc EventOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the EventOrder enum.
+func (e EventOrder) Valid() bool {
+	switch e {
+	case EventOrderAsc:
+		return true
+	case EventOrderDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for IfNoneMatch.
+const (
+	IfNoneMatchAsterisk IfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the IfNoneMatch enum.
+func (e IfNoneMatch) Valid() bool {
+	switch e {
+	case IfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListEventsParamsOrder.
+const (
+	ListEventsParamsOrderAsc  ListEventsParamsOrder = "asc"
+	ListEventsParamsOrderDesc ListEventsParamsOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the ListEventsParamsOrder enum.
+func (e ListEventsParamsOrder) Valid() bool {
+	switch e {
+	case ListEventsParamsOrderAsc:
+		return true
+	case ListEventsParamsOrderDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutSinkParamsIfNoneMatch.
+const (
+	PutSinkParamsIfNoneMatchAsterisk PutSinkParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutSinkParamsIfNoneMatch enum.
+func (e PutSinkParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutSinkParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutSubscriptionParamsIfNoneMatch.
+const (
+	PutSubscriptionParamsIfNoneMatchAsterisk PutSubscriptionParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutSubscriptionParamsIfNoneMatch enum.
+func (e PutSubscriptionParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutSubscriptionParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PutWatchParamsIfNoneMatch.
+const (
+	PutWatchParamsIfNoneMatchAsterisk PutWatchParamsIfNoneMatch = "*"
+)
+
+// Valid indicates whether the value is a known member of the PutWatchParamsIfNoneMatch enum.
+func (e PutWatchParamsIfNoneMatch) Valid() bool {
+	switch e {
+	case PutWatchParamsIfNoneMatchAsterisk:
+		return true
+	default:
+		return false
+	}
+}
+
+// AccessEntry One entry of the instance's `ui.access` list. An entry names one person of an identity
+// provider, by login or by the provider's numeric id, and gives a role; a person listed
+// several times gets the highest role. Never carries OAuth configuration or secrets.
+type AccessEntry struct {
+	// Kind What the entry names. Today always `user`; later kinds (such as a team or an organisation) may be added, so clients must accept other values.
+	//
+	// Examples: user
+	Kind string `json:"kind"`
+
+	// Login The login the entry names, in lower case (`github_user`), or `null` for an entry by id (`github_id`).
+	Login *string `json:"login"`
+
+	// Pinned Whether `subject` comes from the pin of a login entry. Once pinned, only that id gets the role, even if the login is renamed and taken by another account.
+	Pinned bool `json:"pinned"`
+
+	// Provider The identity provider; today `github`.
+	//
+	// Examples: github
+	Provider string `json:"provider"`
+
+	// Role A role of the instance's `ui.access` list. `viewer` has the `read` scope, `editor` `write`, `admin` `admin`.
+	Role UiRole `json:"role"`
+
+	// Subject The provider's id of the person (for GitHub the numeric user id, as a string). For an entry by id, that id; for an entry by login, the id the login was pinned to at its first sign-in, or `null` while nobody has signed in with it.
+	Subject *string `json:"subject"`
+}
+
+// AccessList defines model for AccessList.
+type AccessList struct {
+	// Items The entries, in the order of the configuration.
+	Items []AccessEntry `json:"items"`
 }
 
 // Bump defines model for Bump.
@@ -422,6 +584,9 @@ type Delivery struct {
 	// NextAttemptAt When a `pending` delivery is next due; `null` otherwise.
 	NextAttemptAt *Timestamp `json:"next_attempt_at"`
 
+	// Sink The name of the sink the subscription delivers to now, or `null` once the subscription was deleted. A subscription moved to another sink shows the new one.
+	Sink *Name `json:"sink"`
+
 	// Status `pending`: queued or held, due at `next_attempt_at`. `in_flight`: being sent. `delivered`: the sink accepted it. `dead`: given up (the dead-letter state); replayable.
 	Status DeliveryStatus `json:"status"`
 
@@ -448,7 +613,7 @@ type Duration = string
 
 // EventPage defines model for EventPage.
 type EventPage struct {
-	// HasMore Whether the scan stopped before the end of the log. A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after`.
+	// HasMore Whether the scan stopped before the end of the log (with `order=desc`, before the oldest event kept). A page can be empty with `has_more` true when the server's bounded scan found no matching event; ask again with `next_after` (with `order=desc`, `before=<next_before>`).
 	HasMore bool          `json:"has_more"`
 	Items   []EventRecord `json:"items"`
 
@@ -456,6 +621,9 @@ type EventPage struct {
 	//
 	// Examples: 4182
 	NextAfter Seq `json:"next_after"`
+
+	// NextBefore With `order=desc`, the cursor for the next (older) page, the lowest `seq` the server scanned, or the request's `before` when nothing was scanned; `null` with `order=asc`, and on an empty log without `before`.
+	NextBefore *Seq `json:"next_before"`
 }
 
 // EventRecord One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered.
@@ -472,6 +640,28 @@ type EventRecord struct {
 	Seq Seq `json:"seq"`
 }
 
+// JsonSchema A JSON Schema document of the 2020-12 dialect (https://json-schema.org/draft/2020-12/schema),
+// as an object (never the boolean forms `true` or `false`). Any keyword of the dialect may
+// appear, and the `x-angelia-*` annotations of docs/api.md; clients that build a form from it
+// should ignore keywords they do not know. The members below are the ones a client most often
+// reads.
+type JsonSchema struct {
+	// Schema The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+	Schema      *JsonSchemaSchema `json:"$schema,omitempty"`
+	Description *string           `json:"description,omitempty"`
+
+	// Properties The schema of each member of an object.
+	Properties *map[string]JsonSchema `json:"properties,omitempty"`
+	Required   *[]string              `json:"required,omitempty"`
+
+	// Type A JSON type name, or a list of them.
+	Type                 interface{}            `json:"type,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// JsonSchemaSchema The dialect, `https://json-schema.org/draft/2020-12/schema`, when the document declares one; absent means the same dialect.
+type JsonSchemaSchema string
+
 // Kind A source or sink kind (`pypi`, `github-release`, `webhook`, a plugin's kind, ...).
 type Kind = string
 
@@ -485,7 +675,7 @@ type Labels map[string]string
 // refuses to change or delete it (`409 managed-by-file`).
 type ManagedBy string
 
-// Me The caller of `GET /v1/me`. `role` and `user` are `null` for an API token.
+// Me The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token.
 type Me struct {
 	// Kind How the request was authenticated, an API token (`token`) or the admin UI's session cookie (`session`).
 	Kind MeKind `json:"kind"`
@@ -501,6 +691,9 @@ type Me struct {
 
 	// Scope The one scope of a token; the scopes are ordered `read` < `write` < `admin`.
 	Scope TokenScope `json:"scope"`
+
+	// SessionId For a session, its `id`, the one `GET /v1/sessions` lists (so the UI can mark the current session and offer to revoke the others); `null` for a token. Never the cookie.
+	SessionId *Ulid `json:"session_id"`
 
 	// User For a session, who signed in; `null` for a token.
 	User *SessionUser `json:"user"`
@@ -529,7 +722,7 @@ type Plugin struct {
 	AllowedHosts []PluginHost `json:"allowed_hosts"`
 
 	// ConfigSchema The JSON Schema of the kind's configuration (a watch's `coordinates` for a source, a sink's `config` for a sink), or `null` when the kind does not publish one. A property with `x-angelia-secret` true holds a secret value; the server masks it in every response and refuses it in API writes.
-	ConfigSchema *map[string]interface{} `json:"config_schema"`
+	ConfigSchema *JsonSchema `json:"config_schema"`
 
 	// Interface Which core interface the plugin implements.
 	Interface PluginInterface `json:"interface"`
@@ -1007,6 +1200,56 @@ type SubscriptionWrite struct {
 	Template *string `json:"template,omitempty"`
 }
 
+// TemplateError defines model for TemplateError.
+type TemplateError struct {
+	// Column The column (in bytes, from 1), or `null` when unknown.
+	Column *int `json:"column"`
+
+	// Kind `parse`: the template does not parse. `not_allowed`: it uses something templates may not (`define`, `template`, `block`). `exec`: it failed on this event (a missing key, a function error). `timeout`: it ran past its time limit. `output_too_large`: its output passed the size limit. `invalid_event`: the event is not a JSON object. Open set.
+	//
+	// Examples: exec
+	Kind string `json:"kind"`
+
+	// Line The line of the template where it failed, from 1, or `null` when unknown.
+	Line *int `json:"line"`
+
+	// Reason What went wrong, from a fixed set of messages. It never quotes the template text, which may hold something that should not be echoed.
+	Reason string `json:"reason"`
+}
+
+// TemplatePreview The result of rendering a template. Exactly one of `output` and `error` is `null`.
+type TemplatePreview struct {
+	// ContentType The `Content-Type` a webhook delivery would send with the output (`application/json` when the output is a JSON object or array, else `text/plain`), or `null` when the template failed.
+	//
+	// Examples: application/json; charset=utf-8
+	ContentType *string `json:"content_type"`
+
+	// Error Why the template failed, or `null`.
+	Error *TemplateError `json:"error"`
+
+	// Output The rendered body, as a delivery would send it, or `null` when the template failed. Bytes that are not UTF-8 are replaced by U+FFFD.
+	Output *string `json:"output"`
+}
+
+// TemplatePreviewRequest A template and the event to render it with: at most one of `event`, `event_id` and
+// `sample`; with none of them, the built-in `full` sample.
+type TemplatePreviewRequest struct {
+	// Event A CloudEvents envelope as `EventRecord.event` holds it. Rendered as given; it is not checked against the envelope schema, only required to be an object.
+	Event *map[string]interface{} `json:"event,omitempty"`
+
+	// EventId The id of an event of the log (`404` when there is none).
+	EventId *Ulid `json:"event_id,omitempty"`
+
+	// Sample A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+	Sample *TemplatePreviewRequestSample `json:"sample,omitempty"`
+
+	// Template A Go `text/template`, as a subscription's `template`.
+	Template string `json:"template"`
+}
+
+// TemplatePreviewRequestSample A built-in sample event, `full` (every nullable field set) or `sparse` (every nullable field null, no watch name, no labels), the two events a template is checked against when a subscription is written.
+type TemplatePreviewRequestSample string
+
 // Timestamp RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision (the server always sends milliseconds).
 //
 // Examples: 2026-10-30T17:00:02.512Z
@@ -1278,6 +1521,11 @@ type WatchWrite struct {
 // Examples: 4182
 type After = Seq
 
+// Before An event's position in the log, assigned in commit order (`event.seq`). Strictly increasing; there may be gaps.
+//
+// Examples: 4182
+type Before = Seq
+
 // ConsumerName The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
 type ConsumerName = Name
 
@@ -1292,6 +1540,15 @@ type DryRun = bool
 
 // EventLimit defines model for EventLimit.
 type EventLimit = int
+
+// EventOrder defines model for EventOrder.
+type EventOrder string
+
+// IfMatch defines model for IfMatch.
+type IfMatch = string
+
+// IfNoneMatch defines model for IfNoneMatch.
+type IfNoneMatch string
 
 // IncludeEnded defines model for IncludeEnded.
 type IncludeEnded = bool
@@ -1367,6 +1624,11 @@ type NotFound = Problem
 // must be ignored.
 type PayloadTooLarge = Problem
 
+// PreconditionFailed RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
+// is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
+// must be ignored.
+type PreconditionFailed = Problem
+
 // Unauthorized RFC 9457 problem details. `type` is one of the URIs listed in docs/api.md (`about:blank`
 // is not used); clients switch on `type`, never on `title` or `detail`. Unknown members
 // must be ignored.
@@ -1424,6 +1686,15 @@ type ListDeliveriesParams struct {
 
 	// Event Only deliveries of this event, by event id.
 	Event *Ulid `form:"event,omitempty" json:"event,omitempty"`
+
+	// Sink Only deliveries of the subscriptions that deliver to this sink now, by name. An unknown sink matches nothing.
+	Sink *Name `form:"sink,omitempty" json:"sink,omitempty"`
+
+	// Since Only deliveries of events recorded at or after this time.
+	Since *Timestamp `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until Only deliveries of events recorded before this time. Must be after `since`.
+	Until *Timestamp `form:"until,omitempty" json:"until,omitempty"`
 }
 
 // ReplayDeliveryJSONBody defines parameters for ReplayDelivery.
@@ -1453,7 +1724,16 @@ type ListEventsParams struct {
 	// even `after=0` or an empty value, gets `400`. Reading never moves
 	// the consumer's cursor; `POST /v1/consumers/{name}/ack` does.
 	Consumer *ConsumerParam `form:"consumer,omitempty" json:"consumer,omitempty"`
+
+	// Order `asc` (the default): oldest first, after `after`. `desc`: newest first, below `before`. `desc` cannot be combined with `after` or `consumer`.
+	Order *ListEventsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Before With `order=desc`, return the events whose `seq` is lower than this, the `next_before` of the previous page. Absent, the page starts at the newest event. Needs `order=desc`.
+	Before *Before `form:"before,omitempty" json:"before,omitempty"`
 }
+
+// ListEventsParamsOrder defines parameters for ListEvents.
+type ListEventsParamsOrder string
 
 // StreamEventsParams defines parameters for StreamEvents.
 type StreamEventsParams struct {
@@ -1542,13 +1822,29 @@ type ListSinksParams struct {
 type DeleteSinkParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutSinkParams defines parameters for PutSink.
 type PutSinkParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutSinkParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutSinkParamsIfNoneMatch defines parameters for PutSink.
+type PutSinkParamsIfNoneMatch string
 
 // ListSubscriptionsParams defines parameters for ListSubscriptions.
 type ListSubscriptionsParams struct {
@@ -1566,13 +1862,29 @@ type ListSubscriptionsParams struct {
 type DeleteSubscriptionParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutSubscriptionParams defines parameters for PutSubscription.
 type PutSubscriptionParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutSubscriptionParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutSubscriptionParamsIfNoneMatch defines parameters for PutSubscription.
+type PutSubscriptionParamsIfNoneMatch string
 
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
@@ -1605,13 +1917,29 @@ type ListWatchesParams struct {
 type DeleteWatchParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
 }
 
 // PutWatchParams defines parameters for PutWatch.
 type PutWatchParams struct {
 	// DryRun Validate and compute the result, without writing anything. The response is the one the request would get.
 	DryRun *DryRun `form:"dry_run,omitempty" json:"dry_run,omitempty"`
+
+	// IfMatch Write only if the resource's current `ETag` is one of these (comma-separated) entity tags,
+	// or, with `*`, only if the resource exists; else `412 precondition-failed`. Strong
+	// comparison: a weak tag (`W/"..."`) never matches.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IfNoneMatch `*`: create only. If the resource exists, the request gets `412 precondition-failed` and changes nothing. No other value is accepted.
+	IfNoneMatch *PutWatchParamsIfNoneMatch `json:"If-None-Match,omitempty"`
 }
+
+// PutWatchParamsIfNoneMatch defines parameters for PutWatch.
+type PutWatchParamsIfNoneMatch string
 
 // ListWatchVersionsParams defines parameters for ListWatchVersions.
 type ListWatchVersionsParams struct {
@@ -1649,11 +1977,140 @@ type PutSinkJSONRequestBody = SinkWrite
 // PutSubscriptionJSONRequestBody defines body for PutSubscription for application/json ContentType.
 type PutSubscriptionJSONRequestBody = SubscriptionWrite
 
+// PreviewTemplateJSONRequestBody defines body for PreviewTemplate for application/json ContentType.
+type PreviewTemplateJSONRequestBody = TemplatePreviewRequest
+
 // CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
 type CreateTokenJSONRequestBody = TokenCreate
 
 // PutWatchJSONRequestBody defines body for PutWatch for application/json ContentType.
 type PutWatchJSONRequestBody = WatchWrite
+
+// Getter for additional properties for JsonSchema. Returns the specified
+// element and whether it was found
+func (a JsonSchema) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for JsonSchema
+func (a *JsonSchema) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for JsonSchema to handle AdditionalProperties
+func (a *JsonSchema) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["$schema"]; found {
+		err = json.Unmarshal(raw, &a.Schema)
+		if err != nil {
+			return fmt.Errorf("error reading '$schema': %w", err)
+		}
+		delete(object, "$schema")
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["properties"]; found {
+		err = json.Unmarshal(raw, &a.Properties)
+		if err != nil {
+			return fmt.Errorf("error reading 'properties': %w", err)
+		}
+		delete(object, "properties")
+	}
+
+	if raw, found := object["required"]; found {
+		err = json.Unmarshal(raw, &a.Required)
+		if err != nil {
+			return fmt.Errorf("error reading 'required': %w", err)
+		}
+		delete(object, "required")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for JsonSchema to handle AdditionalProperties
+func (a JsonSchema) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Schema != nil {
+		object["$schema"], err = json.Marshal(a.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '$schema': %w", err)
+		}
+	}
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Properties != nil {
+		object["properties"], err = json.Marshal(a.Properties)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'properties': %w", err)
+		}
+	}
+
+	if a.Required != nil {
+		object["required"], err = json.Marshal(a.Required)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'required': %w", err)
+		}
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // AsConsumerAck0 returns the union data inside the ConsumerAck as a ConsumerAck0
 func (t ConsumerAck) AsConsumerAck0() (ConsumerAck0, error) {
@@ -2143,6 +2600,18 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 
+	// ListAccess List the admin UI's access list
+	//
+	// The entries of the instance's `ui.access` list, in the order of its configuration: who may
+	// sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+	// its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+	// the list is configuration, changed in the instance's configuration file and read at start.
+	// Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+	// the list says who holds which role.
+	//
+	// Corresponds with GET /v1/access (the `ListAccess` operationId).
+	ListAccess(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListConsumers List consumers
 	//
 	// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
@@ -2257,7 +2726,13 @@ type ClientInterface interface {
 	// ListDeliveries List deliveries
 	//
 	// Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-	// its subscription: `subscription_name` is `null` once the subscription was deleted.
+	// its subscription: `subscription_name` and `sink` are `null` once the subscription was
+	// deleted.
+	//
+	// `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+	// log, the order of this list, not the time of an attempt. `until` must be after `since`
+	// (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+	// with `subscription` too, both must hold.
 	//
 	// Corresponds with GET /v1/deliveries (the `ListDeliveries` operationId).
 	ListDeliveries(ctx context.Context, params *ListDeliveriesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2301,7 +2776,7 @@ type ClientInterface interface {
 	// Corresponds with POST /v1/deliveries/{id}/replay (the `ReplayDelivery` operationId).
 	ReplayDelivery(ctx context.Context, id DeliveryId, body ReplayDeliveryJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// ListEvents Pull events after a cursor
+	// ListEvents Pull events after a cursor, or the newest events
 	//
 	// The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
 	// To resume after downtime, pass the `next_after` of the previous page: no committed event is
@@ -2322,6 +2797,15 @@ type ClientInterface interface {
 	// of `0` is checked like any other position. Reading never acknowledges: the
 	// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
 	// `next_after`) once it has processed the page.
+	//
+	// With `order=desc`, the page lists the newest events first, starting at the head of the log,
+	// or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+	// `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+	// so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+	// scanned, so a client that shows the newest events can then follow new ones with
+	// `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+	// it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+	// `before` needs `order=desc` (`400`).
 	//
 	// Corresponds with GET /v1/events (the `ListEvents` operationId).
 	ListEvents(ctx context.Context, params *ListEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2348,10 +2832,12 @@ type ClientInterface interface {
 	//   does not affect it. The stream never acknowledges: the client calls
 	//   `POST /v1/consumers/{name}/ack`.
 	// - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-	// - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-	//   cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-	//   checked again at least every 60 seconds: once it is revoked, the server closes the
-	//   stream.
+	// - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+	//   set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+	//   instance on the same origin, authenticates with its session cookie instead, so a plain
+	//   `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+	//   session, is checked again at least every 60 seconds: once it is revoked or the session
+	//   ends, the server closes the stream.
 	//
 	// Corresponds with GET /v1/events/stream (the `StreamEvents` operationId).
 	StreamEvents(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2501,6 +2987,9 @@ type ClientInterface interface {
 	// Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
 	// the subscriptions first. Deliveries already recorded are kept as history.
 	//
+	// With `If-Match`, the sink is deleted only if it is still that version, else
+	// `412 precondition-failed`.
+	//
 	// Corresponds with DELETE /v1/sinks/{name} (the `DeleteSink` operationId).
 	DeleteSink(ctx context.Context, name SinkName, params *DeleteSinkParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2522,6 +3011,11 @@ type ClientInterface interface {
 	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
 	// The next delivery attempt uses the new configuration.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the sink is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /v1/sinks/{name} (the `PutSink` operationId).
@@ -2537,6 +3031,11 @@ type ClientInterface interface {
 	// resolves it, fails before sending and is retried until it is stored. Needs
 	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
 	// The next delivery attempt uses the new configuration.
+	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the sink is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+	// without them the last write wins.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2554,6 +3053,9 @@ type ClientInterface interface {
 	//
 	// Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
 	// removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+	//
+	// With `If-Match`, the subscription is deleted only if it is still that version, else
+	// `412 precondition-failed`.
 	//
 	// Corresponds with DELETE /v1/subscriptions/{name} (the `DeleteSubscription` operationId).
 	DeleteSubscription(ctx context.Context, name SubscriptionName, params *DeleteSubscriptionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2578,6 +3080,11 @@ type ClientInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the subscription is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -2596,10 +3103,55 @@ type ClientInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the subscription is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 	PutSubscription(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PreviewTemplateWithBody Render a message template against an event
+	//
+	// Renders `template` as a subscription template (or a template-valued sink key such as
+	// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+	// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+	// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+	//
+	// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+	// the same functions and no network, file, environment or clock access; it sees the event only,
+	// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+	// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+	//
+	// A template that does not parse or fails to render is a `200` with `error` set: the request
+	// was fine. Error reasons give a position and a fixed reason, never the template text.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+	PreviewTemplateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PreviewTemplate Render a message template against an event
+	//
+	// Renders `template` as a subscription template (or a template-valued sink key such as
+	// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+	// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+	// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+	//
+	// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+	// the same functions and no network, file, environment or clock access; it sees the event only,
+	// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+	// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+	//
+	// A template that does not parse or fails to render is a `200` with `error` set: the request
+	// was fine. Error reasons give a position and a fixed reason, never the template text.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+	PreviewTemplate(ctx context.Context, body PreviewTemplateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListTokens List API tokens
 	//
@@ -2672,6 +3224,9 @@ type ClientInterface interface {
 	// as history until retention prunes them. The target and its known versions are deleted
 	// when no other watch uses them.
 	//
+	// With `If-Match`, the watch is deleted only if it is still that version, else
+	// `412 precondition-failed`.
+	//
 	// Corresponds with DELETE /v1/watches/{name} (the `DeleteWatch` operationId).
 	DeleteWatch(ctx context.Context, name WatchName, params *DeleteWatchParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2697,6 +3252,11 @@ type ClientInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the watch is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -2717,6 +3277,11 @@ type ClientInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the watch is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -2731,6 +3296,28 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /v1/watches/{name}/versions (the `ListWatchVersions` operationId).
 	ListWatchVersions(ctx context.Context, name WatchName, params *ListWatchVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+// ListAccess List the admin UI's access list
+//
+// The entries of the instance's `ui.access` list, in the order of its configuration: who may
+// sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+// its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+// the list is configuration, changed in the instance's configuration file and read at start.
+// Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+// the list says who holds which role.
+//
+// Corresponds with GET /v1/access (the `ListAccess` operationId).
+func (c *Client) ListAccess(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAccessRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 // ListConsumers List consumers
@@ -2917,7 +3504,13 @@ func (c *Client) AckConsumer(ctx context.Context, name ConsumerName, body AckCon
 // ListDeliveries List deliveries
 //
 // Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-// its subscription: `subscription_name` is `null` once the subscription was deleted.
+// its subscription: `subscription_name` and `sink` are `null` once the subscription was
+// deleted.
+//
+// `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+// log, the order of this list, not the time of an attempt. `until` must be after `since`
+// (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+// with `subscription` too, both must hold.
 //
 // Corresponds with GET /v1/deliveries (the `ListDeliveries` operationId).
 func (c *Client) ListDeliveries(ctx context.Context, params *ListDeliveriesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3001,7 +3594,7 @@ func (c *Client) ReplayDelivery(ctx context.Context, id DeliveryId, body ReplayD
 	return c.Client.Do(req)
 }
 
-// ListEvents Pull events after a cursor
+// ListEvents Pull events after a cursor, or the newest events
 //
 // The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
 // To resume after downtime, pass the `next_after` of the previous page: no committed event is
@@ -3022,6 +3615,15 @@ func (c *Client) ReplayDelivery(ctx context.Context, id DeliveryId, body ReplayD
 // of `0` is checked like any other position. Reading never acknowledges: the
 // client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
 // `next_after`) once it has processed the page.
+//
+// With `order=desc`, the page lists the newest events first, starting at the head of the log,
+// or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+// `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+// so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+// scanned, so a client that shows the newest events can then follow new ones with
+// `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+// it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+// `before` needs `order=desc` (`400`).
 //
 // Corresponds with GET /v1/events (the `ListEvents` operationId).
 func (c *Client) ListEvents(ctx context.Context, params *ListEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3058,10 +3660,12 @@ func (c *Client) ListEvents(ctx context.Context, params *ListEventsParams, reqEd
 //     does not affect it. The stream never acknowledges: the client calls
 //     `POST /v1/consumers/{name}/ack`.
 //   - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-//   - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-//     cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-//     checked again at least every 60 seconds: once it is revoked, the server closes the
-//     stream.
+//   - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+//     set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+//     instance on the same origin, authenticates with its session cookie instead, so a plain
+//     `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+//     session, is checked again at least every 60 seconds: once it is revoked or the session
+//     ends, the server closes the stream.
 //
 // Corresponds with GET /v1/events/stream (the `StreamEvents` operationId).
 func (c *Client) StreamEvents(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3361,6 +3965,9 @@ func (c *Client) ListSinks(ctx context.Context, params *ListSinksParams, reqEdit
 // Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
 // the subscriptions first. Deliveries already recorded are kept as history.
 //
+// With `If-Match`, the sink is deleted only if it is still that version, else
+// `412 precondition-failed`.
+//
 // Corresponds with DELETE /v1/sinks/{name} (the `DeleteSink` operationId).
 func (c *Client) DeleteSink(ctx context.Context, name SinkName, params *DeleteSinkParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteSinkRequest(c.Server, name, params)
@@ -3402,6 +4009,11 @@ func (c *Client) GetSink(ctx context.Context, name SinkName, reqEditors ...Reque
 // the `admin` scope: a sink names secrets and decides where the instance sends requests.
 // The next delivery attempt uses the new configuration.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the sink is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /v1/sinks/{name} (the `PutSink` operationId).
@@ -3427,6 +4039,11 @@ func (c *Client) PutSinkWithBody(ctx context.Context, name SinkName, params *Put
 // resolves it, fails before sending and is retried until it is stored. Needs
 // the `admin` scope: a sink names secrets and decides where the instance sends requests.
 // The next delivery attempt uses the new configuration.
+//
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the sink is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+// without them the last write wins.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3464,6 +4081,9 @@ func (c *Client) ListSubscriptions(ctx context.Context, params *ListSubscription
 //
 // Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
 // removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+//
+// With `If-Match`, the subscription is deleted only if it is still that version, else
+// `412 precondition-failed`.
 //
 // Corresponds with DELETE /v1/subscriptions/{name} (the `DeleteSubscription` operationId).
 func (c *Client) DeleteSubscription(ctx context.Context, name SubscriptionName, params *DeleteSubscriptionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3508,6 +4128,11 @@ func (c *Client) GetSubscription(ctx context.Context, name SubscriptionName, req
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the subscription is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -3536,11 +4161,76 @@ func (c *Client) PutSubscriptionWithBody(ctx context.Context, name SubscriptionN
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the subscription is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+// without them the last write wins.
+//
 // Takes a body of the `application/json` content type.
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 func (c *Client) PutSubscription(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutSubscriptionRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PreviewTemplateWithBody Render a message template against an event
+//
+// Renders `template` as a subscription template (or a template-valued sink key such as
+// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+//
+// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+// the same functions and no network, file, environment or clock access; it sees the event only,
+// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+//
+// A template that does not parse or fails to render is a `200` with `error` set: the request
+// was fine. Error reasons give a position and a fixed reason, never the template text.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+func (c *Client) PreviewTemplateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPreviewTemplateRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PreviewTemplate Render a message template against an event
+//
+// Renders `template` as a subscription template (or a template-valued sink key such as
+// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+//
+// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+// the same functions and no network, file, environment or clock access; it sees the event only,
+// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+//
+// A template that does not parse or fails to render is a `200` with `error` set: the request
+// was fine. Error reasons give a position and a fixed reason, never the template text.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+func (c *Client) PreviewTemplate(ctx context.Context, body PreviewTemplateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPreviewTemplateRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3682,6 +4372,9 @@ func (c *Client) ListWatches(ctx context.Context, params *ListWatchesParams, req
 // as history until retention prunes them. The target and its known versions are deleted
 // when no other watch uses them.
 //
+// With `If-Match`, the watch is deleted only if it is still that version, else
+// `412 precondition-failed`.
+//
 // Corresponds with DELETE /v1/watches/{name} (the `DeleteWatch` operationId).
 func (c *Client) DeleteWatch(ctx context.Context, name WatchName, params *DeleteWatchParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteWatchRequest(c.Server, name, params)
@@ -3727,6 +4420,11 @@ func (c *Client) GetWatch(ctx context.Context, name WatchName, reqEditors ...Req
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the watch is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -3756,6 +4454,11 @@ func (c *Client) PutWatchWithBody(ctx context.Context, name WatchName, params *P
 //
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the watch is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+// without them the last write wins.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3790,6 +4493,33 @@ func (c *Client) ListWatchVersions(ctx context.Context, name WatchName, params *
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewListAccessRequest constructs an http.Request for the ListAccess method
+func NewListAccessRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/access")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
 }
 
 // NewListConsumersRequest constructs an http.Request for the ListConsumers method
@@ -4162,6 +4892,42 @@ func NewListDeliveriesRequest(server string, params *ListDeliveriesParams) (*htt
 
 		}
 
+		if params.Sink != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "sink", *params.Sink, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Since != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "since", *params.Since, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "date-time"}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Until != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "until", *params.Until, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "date-time"}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if encoded := queryValues.Encode(); encoded != "" {
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
@@ -4348,6 +5114,30 @@ func NewListEventsRequest(server string, params *ListEventsParams) (*http.Reques
 		if params.Consumer != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "consumer", *params.Consumer, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Order != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "order", *params.Order, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Before != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "before", *params.Before, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: "int64"}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {
@@ -5191,6 +5981,21 @@ func NewDeleteSinkRequest(server string, name SinkName, params *DeleteSinkParams
 		return nil, err
 	}
 
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
@@ -5298,6 +6103,32 @@ func NewPutSinkRequestWithBody(server string, name SinkName, params *PutSinkPara
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+		if params.IfNoneMatch != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "If-None-Match", *params.IfNoneMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam1)
+		}
+
+	}
 
 	return req, nil
 }
@@ -5438,6 +6269,21 @@ func NewDeleteSubscriptionRequest(server string, name SubscriptionName, params *
 		return nil, err
 	}
 
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
@@ -5540,6 +6386,72 @@ func NewPutSubscriptionRequestWithBody(server string, name SubscriptionName, par
 	}
 
 	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+		if params.IfNoneMatch != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "If-None-Match", *params.IfNoneMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPreviewTemplateRequest calls the generic PreviewTemplate builder with application/json body
+func NewPreviewTemplateRequest(server string, body PreviewTemplateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPreviewTemplateRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPreviewTemplateRequestWithBody constructs an http.Request for the PreviewTemplate method, with any body, and a specified content type
+func NewPreviewTemplateRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/template-previews")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -5883,6 +6795,21 @@ func NewDeleteWatchRequest(server string, name WatchName, params *DeleteWatchPar
 		return nil, err
 	}
 
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
@@ -5990,6 +6917,32 @@ func NewPutWatchRequestWithBody(server string, name WatchName, params *PutWatchP
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+		if params.IfNoneMatch != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "If-None-Match", *params.IfNoneMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam1)
+		}
+
+	}
 
 	return req, nil
 }
@@ -6135,6 +7088,20 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 
+	// ListAccessWithResponse List the admin UI's access list
+	//
+	// The entries of the instance's `ui.access` list, in the order of its configuration: who may
+	// sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+	// its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+	// the list is configuration, changed in the instance's configuration file and read at start.
+	// Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+	// the list says who holds which role.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/access (the `ListAccess` operationId).
+	ListAccessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAccessResponse, error)
+
 	// ListConsumersWithResponse List consumers
 	//
 	// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
@@ -6255,7 +7222,13 @@ type ClientWithResponsesInterface interface {
 	// ListDeliveriesWithResponse List deliveries
 	//
 	// Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-	// its subscription: `subscription_name` is `null` once the subscription was deleted.
+	// its subscription: `subscription_name` and `sink` are `null` once the subscription was
+	// deleted.
+	//
+	// `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+	// log, the order of this list, not the time of an attempt. `until` must be after `since`
+	// (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+	// with `subscription` too, both must hold.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6303,7 +7276,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /v1/deliveries/{id}/replay (the `ReplayDelivery` operationId).
 	ReplayDeliveryWithResponse(ctx context.Context, id DeliveryId, body ReplayDeliveryJSONRequestBody, reqEditors ...RequestEditorFn) (*ReplayDeliveryResponse, error)
 
-	// ListEventsWithResponse Pull events after a cursor
+	// ListEventsWithResponse Pull events after a cursor, or the newest events
 	//
 	// The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
 	// To resume after downtime, pass the `next_after` of the previous page: no committed event is
@@ -6324,6 +7297,15 @@ type ClientWithResponsesInterface interface {
 	// of `0` is checked like any other position. Reading never acknowledges: the
 	// client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
 	// `next_after`) once it has processed the page.
+	//
+	// With `order=desc`, the page lists the newest events first, starting at the head of the log,
+	// or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+	// `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+	// so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+	// scanned, so a client that shows the newest events can then follow new ones with
+	// `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+	// it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+	// `before` needs `order=desc` (`400`).
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6352,10 +7334,12 @@ type ClientWithResponsesInterface interface {
 	//   does not affect it. The stream never acknowledges: the client calls
 	//   `POST /v1/consumers/{name}/ack`.
 	// - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-	// - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-	//   cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-	//   checked again at least every 60 seconds: once it is revoked, the server closes the
-	//   stream.
+	// - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+	//   set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+	//   instance on the same origin, authenticates with its session cookie instead, so a plain
+	//   `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+	//   session, is checked again at least every 60 seconds: once it is revoked or the session
+	//   ends, the server closes the stream.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6527,6 +7511,9 @@ type ClientWithResponsesInterface interface {
 	// Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
 	// the subscriptions first. Deliveries already recorded are kept as history.
 	//
+	// With `If-Match`, the sink is deleted only if it is still that version, else
+	// `412 precondition-failed`.
+	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with DELETE /v1/sinks/{name} (the `DeleteSink` operationId).
@@ -6552,6 +7539,11 @@ type ClientWithResponsesInterface interface {
 	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
 	// The next delivery attempt uses the new configuration.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the sink is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/sinks/{name} (the `PutSink` operationId).
@@ -6567,6 +7559,11 @@ type ClientWithResponsesInterface interface {
 	// resolves it, fails before sending and is retried until it is stored. Needs
 	// the `admin` scope: a sink names secrets and decides where the instance sends requests.
 	// The next delivery attempt uses the new configuration.
+	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the sink is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+	// without them the last write wins.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -6586,6 +7583,9 @@ type ClientWithResponsesInterface interface {
 	//
 	// Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
 	// removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+	//
+	// With `If-Match`, the subscription is deleted only if it is still that version, else
+	// `412 precondition-failed`.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6614,6 +7614,11 @@ type ClientWithResponsesInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the subscription is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -6632,10 +7637,55 @@ type ClientWithResponsesInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the subscription is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
 	PutSubscriptionWithResponse(ctx context.Context, name SubscriptionName, params *PutSubscriptionParams, body PutSubscriptionJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSubscriptionResponse, error)
+
+	// PreviewTemplateWithBodyWithResponse Render a message template against an event
+	//
+	// Renders `template` as a subscription template (or a template-valued sink key such as
+	// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+	// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+	// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+	//
+	// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+	// the same functions and no network, file, environment or clock access; it sees the event only,
+	// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+	// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+	//
+	// A template that does not parse or fails to render is a `200` with `error` set: the request
+	// was fine. Error reasons give a position and a fixed reason, never the template text.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+	PreviewTemplateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PreviewTemplateResponse, error)
+
+	// PreviewTemplateWithResponse Render a message template against an event
+	//
+	// Renders `template` as a subscription template (or a template-valued sink key such as
+	// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+	// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+	// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+	//
+	// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+	// the same functions and no network, file, environment or clock access; it sees the event only,
+	// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+	// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+	//
+	// A template that does not parse or fails to render is a `200` with `error` set: the request
+	// was fine. Error reasons give a position and a fixed reason, never the template text.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+	PreviewTemplateWithResponse(ctx context.Context, body PreviewTemplateJSONRequestBody, reqEditors ...RequestEditorFn) (*PreviewTemplateResponse, error)
 
 	// ListTokensWithResponse List API tokens
 	//
@@ -6716,6 +7766,9 @@ type ClientWithResponsesInterface interface {
 	// as history until retention prunes them. The target and its known versions are deleted
 	// when no other watch uses them.
 	//
+	// With `If-Match`, the watch is deleted only if it is still that version, else
+	// `412 precondition-failed`.
+	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with DELETE /v1/watches/{name} (the `DeleteWatch` operationId).
@@ -6745,6 +7798,11 @@ type ClientWithResponsesInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the watch is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -6765,6 +7823,11 @@ type ClientWithResponsesInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+	// writes only if the watch is still that version, else `412 precondition-failed`;
+	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+	// without them the last write wins.
+	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -6781,6 +7844,89 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /v1/watches/{name}/versions (the `ListWatchVersions` operationId).
 	ListWatchVersionsWithResponse(ctx context.Context, name WatchName, params *ListWatchVersionsParams, reqEditors ...RequestEditorFn) (*ListWatchVersionsResponse, error)
+}
+
+// ListAccessResponse401Headers the declared response headers of an HTTP 401 response for ListAccess
+type ListAccessResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// ListAccessResponse503Headers the declared response headers of an HTTP 503 response for ListAccess
+type ListAccessResponse503Headers struct {
+	RetryAfter *int
+}
+
+type ListAccessResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AccessList
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *ListAccessResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *ListAccessResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListAccessResponse) GetJSON200() *AccessList {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r ListAccessResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r ListAccessResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r ListAccessResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r ListAccessResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r ListAccessResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAccessResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAccessResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListAccessResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
 }
 
 // ListConsumersResponse401Headers the declared response headers of an HTTP 401 response for ListConsumers
@@ -8959,6 +10105,8 @@ type DeleteSinkResponse struct {
 	ApplicationproblemJSON404 *NotFound
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
@@ -8989,6 +10137,11 @@ func (r DeleteSinkResponse) GetApplicationproblemJSON404() *NotFound {
 // GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
 func (r DeleteSinkResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r DeleteSinkResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
 }
 
 // GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
@@ -9030,6 +10183,11 @@ func (r DeleteSinkResponse) ContentType() string {
 	return ""
 }
 
+// GetSinkResponse200Headers the declared response headers of an HTTP 200 response for GetSink
+type GetSinkResponse200Headers struct {
+	ETag *string
+}
+
 // GetSinkResponse401Headers the declared response headers of an HTTP 401 response for GetSink
 type GetSinkResponse401Headers struct {
 	WWWAuthenticate *string
@@ -9055,6 +10213,8 @@ type GetSinkResponse struct {
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
 	ApplicationproblemJSON503 *Unavailable
+	// Headers200 the parsed response headers for an HTTP 200 response
+	Headers200 *GetSinkResponse200Headers
 	// Headers401 the parsed response headers for an HTTP 401 response
 	Headers401 *GetSinkResponse401Headers
 	// Headers503 the parsed response headers for an HTTP 503 response
@@ -9123,11 +10283,13 @@ func (r GetSinkResponse) ContentType() string {
 // PutSinkResponse200Headers the declared response headers of an HTTP 200 response for PutSink
 type PutSinkResponse200Headers struct {
 	AngeliaChange *string
+	ETag          *string
 }
 
 // PutSinkResponse201Headers the declared response headers of an HTTP 201 response for PutSink
 type PutSinkResponse201Headers struct {
 	AngeliaChange *string
+	ETag          *string
 	Location      *string
 }
 
@@ -9156,6 +10318,8 @@ type PutSinkResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
 	ApplicationproblemJSON413 *PayloadTooLarge
 	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
@@ -9204,6 +10368,11 @@ func (r PutSinkResponse) GetApplicationproblemJSON403() *Forbidden {
 // GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
 func (r PutSinkResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r PutSinkResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
 }
 
 // GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
@@ -9376,6 +10545,8 @@ type DeleteSubscriptionResponse struct {
 	ApplicationproblemJSON404 *NotFound
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
@@ -9406,6 +10577,11 @@ func (r DeleteSubscriptionResponse) GetApplicationproblemJSON404() *NotFound {
 // GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
 func (r DeleteSubscriptionResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r DeleteSubscriptionResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
 }
 
 // GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
@@ -9447,6 +10623,11 @@ func (r DeleteSubscriptionResponse) ContentType() string {
 	return ""
 }
 
+// GetSubscriptionResponse200Headers the declared response headers of an HTTP 200 response for GetSubscription
+type GetSubscriptionResponse200Headers struct {
+	ETag *string
+}
+
 // GetSubscriptionResponse401Headers the declared response headers of an HTTP 401 response for GetSubscription
 type GetSubscriptionResponse401Headers struct {
 	WWWAuthenticate *string
@@ -9472,6 +10653,8 @@ type GetSubscriptionResponse struct {
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
 	ApplicationproblemJSON503 *Unavailable
+	// Headers200 the parsed response headers for an HTTP 200 response
+	Headers200 *GetSubscriptionResponse200Headers
 	// Headers401 the parsed response headers for an HTTP 401 response
 	Headers401 *GetSubscriptionResponse401Headers
 	// Headers503 the parsed response headers for an HTTP 503 response
@@ -9540,11 +10723,13 @@ func (r GetSubscriptionResponse) ContentType() string {
 // PutSubscriptionResponse200Headers the declared response headers of an HTTP 200 response for PutSubscription
 type PutSubscriptionResponse200Headers struct {
 	AngeliaChange *string
+	ETag          *string
 }
 
 // PutSubscriptionResponse201Headers the declared response headers of an HTTP 201 response for PutSubscription
 type PutSubscriptionResponse201Headers struct {
 	AngeliaChange *string
+	ETag          *string
 	Location      *string
 }
 
@@ -9573,6 +10758,8 @@ type PutSubscriptionResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
 	ApplicationproblemJSON413 *PayloadTooLarge
 	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
@@ -9623,6 +10810,11 @@ func (r PutSubscriptionResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
 }
 
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r PutSubscriptionResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
+}
+
 // GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
 func (r PutSubscriptionResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
 	return r.ApplicationproblemJSON413
@@ -9671,6 +10863,124 @@ func (r PutSubscriptionResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r PutSubscriptionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// PreviewTemplateResponse401Headers the declared response headers of an HTTP 401 response for PreviewTemplate
+type PreviewTemplateResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// PreviewTemplateResponse503Headers the declared response headers of an HTTP 503 response for PreviewTemplate
+type PreviewTemplateResponse503Headers struct {
+	RetryAfter *int
+}
+
+type PreviewTemplateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TemplatePreview
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *NotFound
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *PreviewTemplateResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *PreviewTemplateResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PreviewTemplateResponse) GetJSON200() *TemplatePreview {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON404() *NotFound {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r PreviewTemplateResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r PreviewTemplateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PreviewTemplateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PreviewTemplateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PreviewTemplateResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -10174,6 +11484,8 @@ type DeleteWatchResponse struct {
 	ApplicationproblemJSON404 *NotFound
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
@@ -10204,6 +11516,11 @@ func (r DeleteWatchResponse) GetApplicationproblemJSON404() *NotFound {
 // GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
 func (r DeleteWatchResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r DeleteWatchResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
 }
 
 // GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
@@ -10245,6 +11562,11 @@ func (r DeleteWatchResponse) ContentType() string {
 	return ""
 }
 
+// GetWatchResponse200Headers the declared response headers of an HTTP 200 response for GetWatch
+type GetWatchResponse200Headers struct {
+	ETag *string
+}
+
 // GetWatchResponse401Headers the declared response headers of an HTTP 401 response for GetWatch
 type GetWatchResponse401Headers struct {
 	WWWAuthenticate *string
@@ -10270,6 +11592,8 @@ type GetWatchResponse struct {
 	ApplicationproblemJSON500 *InternalError
 	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
 	ApplicationproblemJSON503 *Unavailable
+	// Headers200 the parsed response headers for an HTTP 200 response
+	Headers200 *GetWatchResponse200Headers
 	// Headers401 the parsed response headers for an HTTP 401 response
 	Headers401 *GetWatchResponse401Headers
 	// Headers503 the parsed response headers for an HTTP 503 response
@@ -10338,11 +11662,13 @@ func (r GetWatchResponse) ContentType() string {
 // PutWatchResponse200Headers the declared response headers of an HTTP 200 response for PutWatch
 type PutWatchResponse200Headers struct {
 	AngeliaChange *string
+	ETag          *string
 }
 
 // PutWatchResponse201Headers the declared response headers of an HTTP 201 response for PutWatch
 type PutWatchResponse201Headers struct {
 	AngeliaChange *string
+	ETag          *string
 	Location      *string
 }
 
@@ -10371,6 +11697,8 @@ type PutWatchResponse struct {
 	ApplicationproblemJSON403 *Forbidden
 	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
 	ApplicationproblemJSON409 *Conflict
+	// ApplicationproblemJSON412 the response for an HTTP 412 `application/problem+json` response
+	ApplicationproblemJSON412 *PreconditionFailed
 	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
 	ApplicationproblemJSON413 *PayloadTooLarge
 	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
@@ -10419,6 +11747,11 @@ func (r PutWatchResponse) GetApplicationproblemJSON403() *Forbidden {
 // GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
 func (r PutWatchResponse) GetApplicationproblemJSON409() *Conflict {
 	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON412 returns the response for an HTTP 412 `application/problem+json` response
+func (r PutWatchResponse) GetApplicationproblemJSON412() *PreconditionFailed {
+	return r.ApplicationproblemJSON412
 }
 
 // GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
@@ -10570,6 +11903,26 @@ func (r ListWatchVersionsResponse) ContentType() string {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
+}
+
+// ListAccessWithResponse List the admin UI's access list
+//
+// The entries of the instance's `ui.access` list, in the order of its configuration: who may
+// sign in to the admin web UI and with which role. A `github_user` entry shows the numeric id
+// its login is pinned to once someone signed in with it (`subject`, `pinned: true`). Read-only:
+// the list is configuration, changed in the instance's configuration file and read at start.
+// Never returns the OAuth client id, its secret or any other configuration. Needs `admin`:
+// the list says who holds which role.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/access (the `ListAccess` operationId).
+func (c *ClientWithResponses) ListAccessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAccessResponse, error) {
+	rsp, err := c.ListAccess(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAccessResponse(rsp)
 }
 
 // ListConsumersWithResponse List consumers
@@ -10734,7 +12087,13 @@ func (c *ClientWithResponses) AckConsumerWithResponse(ctx context.Context, name 
 // ListDeliveriesWithResponse List deliveries
 //
 // Deliveries, newest event first. `status=dead` is the dead-letter view. A delivery outlives
-// its subscription: `subscription_name` is `null` once the subscription was deleted.
+// its subscription: `subscription_name` and `sink` are `null` once the subscription was
+// deleted.
+//
+// `since` (inclusive) and `until` (exclusive) bound the time the event was recorded in the
+// log, the order of this list, not the time of an attempt. `until` must be after `since`
+// (`400`). `sink` keeps the deliveries of the subscriptions that deliver to that sink now;
+// with `subscription` too, both must hold.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10806,7 +12165,7 @@ func (c *ClientWithResponses) ReplayDeliveryWithResponse(ctx context.Context, id
 	return ParseReplayDeliveryResponse(rsp)
 }
 
-// ListEventsWithResponse Pull events after a cursor
+// ListEventsWithResponse Pull events after a cursor, or the newest events
 //
 // The pull API. Events in commit order, starting after the cursor `after` (an event's `seq`).
 // To resume after downtime, pass the `next_after` of the previous page: no committed event is
@@ -10827,6 +12186,15 @@ func (c *ClientWithResponses) ReplayDeliveryWithResponse(ctx context.Context, id
 // of `0` is checked like any other position. Reading never acknowledges: the
 // client acknowledges with `POST /v1/consumers/{name}/ack` (for example the page's
 // `next_after`) once it has processed the page.
+//
+// With `order=desc`, the page lists the newest events first, starting at the head of the log,
+// or below `before` (an event's `seq`, exclusive) for the next page: pass the page's
+// `next_before`. The filters apply as in commit order, and the scan is bounded the same way,
+// so a page may be empty with `has_more` true. `next_after` is the highest `seq` the page
+// scanned, so a client that shows the newest events can then follow new ones with
+// `after=<next_after>` or the event stream. Reading backwards ends at the oldest event kept:
+// it never gets `410`. `order=desc` cannot be combined with `after` or `consumer`, and
+// `before` needs `order=desc` (`400`).
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10861,10 +12229,12 @@ func (c *ClientWithResponses) ListEventsWithResponse(ctx context.Context, params
 //     does not affect it. The stream never acknowledges: the client calls
 //     `POST /v1/consumers/{name}/ack`.
 //   - The server sends a comment line (`: keep-alive`) when nothing else was sent for 15 seconds.
-//   - The token is sent in the `Authorization` header, so the browser `EventSource` API, which
-//     cannot set headers, cannot use this endpoint; use a fetch-based SSE client. The token is
-//     checked again at least every 60 seconds: once it is revoked, the server closes the
-//     stream.
+//   - A token is sent in the `Authorization` header, which the browser `EventSource` API cannot
+//     set: a client with a token uses a fetch-based SSE client. The admin web UI, served by the
+//     instance on the same origin, authenticates with its session cookie instead, so a plain
+//     `EventSource` works there (a `GET` needs no CSRF header). The credential, token or
+//     session, is checked again at least every 60 seconds: once it is revoked or the session
+//     ends, the server closes the stream.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11126,6 +12496,9 @@ func (c *ClientWithResponses) ListSinksWithResponse(ctx context.Context, params 
 // Refused with `409` (`sink-in-use`) while a subscription uses the sink: delete or repoint
 // the subscriptions first. Deliveries already recorded are kept as history.
 //
+// With `If-Match`, the sink is deleted only if it is still that version, else
+// `412 precondition-failed`.
+//
 // Returns a wrapper object for the known response body format(s).
 //
 // Corresponds with DELETE /v1/sinks/{name} (the `DeleteSink` operationId).
@@ -11163,6 +12536,11 @@ func (c *ClientWithResponses) GetSinkWithResponse(ctx context.Context, name Sink
 // the `admin` scope: a sink names secrets and decides where the instance sends requests.
 // The next delivery attempt uses the new configuration.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the sink is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/sinks/{name} (the `PutSink` operationId).
@@ -11184,6 +12562,11 @@ func (c *ClientWithResponses) PutSinkWithBodyWithResponse(ctx context.Context, n
 // resolves it, fails before sending and is retried until it is stored. Needs
 // the `admin` scope: a sink names secrets and decides where the instance sends requests.
 // The next delivery attempt uses the new configuration.
+//
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the sink is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the sink exists. Both are optional:
+// without them the last write wins.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11215,6 +12598,9 @@ func (c *ClientWithResponses) ListSubscriptionsWithResponse(ctx context.Context,
 //
 // Its `pending` deliveries, held or not, become `dead` with `last_error` `subscription
 // removed`; `in_flight` deliveries finish; `delivered` and `dead` deliveries stay as history.
+//
+// With `If-Match`, the subscription is deleted only if it is still that version, else
+// `412 precondition-failed`.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11255,6 +12641,11 @@ func (c *ClientWithResponses) GetSubscriptionWithResponse(ctx context.Context, n
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the subscription is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -11279,6 +12670,11 @@ func (c *ClientWithResponses) PutSubscriptionWithBodyWithResponse(ctx context.Co
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the subscription is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the subscription exists. Both are optional:
+// without them the last write wins.
+//
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/subscriptions/{name} (the `PutSubscription` operationId).
@@ -11288,6 +12684,58 @@ func (c *ClientWithResponses) PutSubscriptionWithResponse(ctx context.Context, n
 		return nil, err
 	}
 	return ParsePutSubscriptionResponse(rsp)
+}
+
+// PreviewTemplateWithBodyWithResponse Render a message template against an event
+//
+// Renders `template` as a subscription template (or a template-valued sink key such as
+// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+//
+// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+// the same functions and no network, file, environment or clock access; it sees the event only,
+// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+//
+// A template that does not parse or fails to render is a `200` with `error` set: the request
+// was fine. Error reasons give a position and a fixed reason, never the template text.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+func (c *ClientWithResponses) PreviewTemplateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PreviewTemplateResponse, error) {
+	rsp, err := c.PreviewTemplateWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePreviewTemplateResponse(rsp)
+}
+
+// PreviewTemplateWithResponse Render a message template against an event
+//
+// Renders `template` as a subscription template (or a template-valued sink key such as
+// `github-dispatch`'s `event_type`) against one event and returns the output, or the error a
+// delivery would get. The event is `event` (an envelope given in the request), `event_id`
+// (an event of the log) or `sample` (a built-in sample event, `full` by default).
+//
+// Nothing is stored and nothing is sent. The template runs in the engine deliveries use, with
+// the same functions and no network, file, environment or clock access; it sees the event only,
+// so no secret can be resolved (`*_ref` and `*_env` keys are not part of the template context).
+// The run is bounded more strictly than a delivery: 250 ms and 256 KiB of output.
+//
+// A template that does not parse or fails to render is a `200` with `error` set: the request
+// was fine. Error reasons give a position and a fixed reason, never the template text.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/template-previews (the `PreviewTemplate` operationId).
+func (c *ClientWithResponses) PreviewTemplateWithResponse(ctx context.Context, body PreviewTemplateJSONRequestBody, reqEditors ...RequestEditorFn) (*PreviewTemplateResponse, error) {
+	rsp, err := c.PreviewTemplate(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePreviewTemplateResponse(rsp)
 }
 
 // ListTokensWithResponse List API tokens
@@ -11405,6 +12853,9 @@ func (c *ClientWithResponses) ListWatchesWithResponse(ctx context.Context, param
 // as history until retention prunes them. The target and its known versions are deleted
 // when no other watch uses them.
 //
+// With `If-Match`, the watch is deleted only if it is still that version, else
+// `412 precondition-failed`.
+//
 // Returns a wrapper object for the known response body format(s).
 //
 // Corresponds with DELETE /v1/watches/{name} (the `DeleteWatch` operationId).
@@ -11446,6 +12897,11 @@ func (c *ClientWithResponses) GetWatchWithResponse(ctx context.Context, name Wat
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the watch is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+// without them the last write wins.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with PUT /v1/watches/{name} (the `PutWatch` operationId).
@@ -11471,6 +12927,11 @@ func (c *ClientWithResponses) PutWatchWithBodyWithResponse(ctx context.Context, 
 //
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
+// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
+// writes only if the watch is still that version, else `412 precondition-failed`;
+// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
+// without them the last write wins.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11499,6 +12960,83 @@ func (c *ClientWithResponses) ListWatchVersionsWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParseListWatchVersionsResponse(rsp)
+}
+
+// ParseListAccessResponse parses an HTTP response from a ListAccessWithResponse call
+func ParseListAccessResponse(rsp *http.Response) (*ListAccessResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAccessResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AccessList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers ListAccessResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers ListAccessResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
 }
 
 // ParseListConsumersResponse parses an HTTP response from a ListConsumersWithResponse call
@@ -13603,6 +15141,13 @@ func ParseDeleteSinkResponse(rsp *http.Response) (*DeleteSinkResponse, error) {
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -13714,6 +15259,16 @@ func ParseGetSinkResponse(rsp *http.Response) (*GetSinkResponse, error) {
 	}
 
 	switch {
+	case rsp.StatusCode == 200:
+		var headers GetSinkResponse200Headers
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
+		response.Headers200 = &headers
 	case rsp.StatusCode == 401:
 		var headers GetSinkResponse401Headers
 		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
@@ -13795,6 +15350,13 @@ func ParsePutSinkResponse(rsp *http.Response) (*PutSinkResponse, error) {
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
 		var dest PayloadTooLarge
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -13842,6 +15404,13 @@ func ParsePutSinkResponse(rsp *http.Response) (*PutSinkResponse, error) {
 			}
 			headers.AngeliaChange = &value
 		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
 		response.Headers200 = &headers
 	case rsp.StatusCode == 201:
 		var headers PutSinkResponse201Headers
@@ -13851,6 +15420,13 @@ func ParsePutSinkResponse(rsp *http.Response) (*PutSinkResponse, error) {
 				return nil, err
 			}
 			headers.AngeliaChange = &value
+		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
 		}
 		if values := rsp.Header.Values("Location"); len(values) > 0 {
 			var value string
@@ -14014,6 +15590,13 @@ func ParseDeleteSubscriptionResponse(rsp *http.Response) (*DeleteSubscriptionRes
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -14125,6 +15708,16 @@ func ParseGetSubscriptionResponse(rsp *http.Response) (*GetSubscriptionResponse,
 	}
 
 	switch {
+	case rsp.StatusCode == 200:
+		var headers GetSubscriptionResponse200Headers
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
+		response.Headers200 = &headers
 	case rsp.StatusCode == 401:
 		var headers GetSubscriptionResponse401Headers
 		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
@@ -14206,6 +15799,13 @@ func ParsePutSubscriptionResponse(rsp *http.Response) (*PutSubscriptionResponse,
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
 		var dest PayloadTooLarge
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -14253,6 +15853,13 @@ func ParsePutSubscriptionResponse(rsp *http.Response) (*PutSubscriptionResponse,
 			}
 			headers.AngeliaChange = &value
 		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
 		response.Headers200 = &headers
 	case rsp.StatusCode == 201:
 		var headers PutSubscriptionResponse201Headers
@@ -14262,6 +15869,13 @@ func ParsePutSubscriptionResponse(rsp *http.Response) (*PutSubscriptionResponse,
 				return nil, err
 			}
 			headers.AngeliaChange = &value
+		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
 		}
 		if values := rsp.Header.Values("Location"); len(values) > 0 {
 			var value string
@@ -14283,6 +15897,118 @@ func ParsePutSubscriptionResponse(rsp *http.Response) (*PutSubscriptionResponse,
 		response.Headers401 = &headers
 	case rsp.StatusCode == 503:
 		var headers PutSubscriptionResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParsePreviewTemplateResponse parses an HTTP response from a PreviewTemplateWithResponse call
+func ParsePreviewTemplateResponse(rsp *http.Response) (*PreviewTemplateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PreviewTemplateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TemplatePreview
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers PreviewTemplateResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers PreviewTemplateResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
@@ -14788,6 +16514,13 @@ func ParseDeleteWatchResponse(rsp *http.Response) (*DeleteWatchResponse, error) 
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -14899,6 +16632,16 @@ func ParseGetWatchResponse(rsp *http.Response) (*GetWatchResponse, error) {
 	}
 
 	switch {
+	case rsp.StatusCode == 200:
+		var headers GetWatchResponse200Headers
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
+		response.Headers200 = &headers
 	case rsp.StatusCode == 401:
 		var headers GetWatchResponse401Headers
 		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
@@ -14980,6 +16723,13 @@ func ParsePutWatchResponse(rsp *http.Response) (*PutWatchResponse, error) {
 		}
 		response.ApplicationproblemJSON409 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
 		var dest PayloadTooLarge
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -15027,6 +16777,13 @@ func ParsePutWatchResponse(rsp *http.Response) (*PutWatchResponse, error) {
 			}
 			headers.AngeliaChange = &value
 		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
+		}
 		response.Headers200 = &headers
 	case rsp.StatusCode == 201:
 		var headers PutWatchResponse201Headers
@@ -15036,6 +16793,13 @@ func ParsePutWatchResponse(rsp *http.Response) (*PutWatchResponse, error) {
 				return nil, err
 			}
 			headers.AngeliaChange = &value
+		}
+		if values := rsp.Header.Values("ETag"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "ETag", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ETag = &value
 		}
 		if values := rsp.Header.Values("Location"); len(values) > 0 {
 			var value string

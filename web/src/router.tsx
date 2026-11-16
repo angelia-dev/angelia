@@ -6,7 +6,13 @@ import {
 } from '@tanstack/react-router'
 import { useMe } from '@/api/me'
 import { Layout } from '@/layout'
-import { PlaceholderPage } from '@/pages/placeholder'
+import { DeliveriesPage, DeliveryDetailPage } from '@/pages/deliveries'
+import { EventDetailPage, EventsPage } from '@/pages/events'
+import { OverviewPage } from '@/pages/overview'
+import { ConsumersPage, PluginsPage, SinksPage, SubscriptionsPage } from '@/pages/resources'
+import { WatchDetailPage, WatchesPage } from '@/pages/watches'
+import { SecretsPage } from '@/pages/secrets'
+import { AdminPage } from '@/pages/admin'
 import { SignInPage } from '@/pages/sign-in'
 
 /** The root asks who is signed in: the sign-in page on 401, else the app shell. */
@@ -32,21 +38,24 @@ function Root() {
 
 const rootRoute = createRootRoute({ component: Root })
 
-const pages = [
-  ['/', 'Overview'],
-  ['/watches', 'Watches'],
-  ['/events', 'Events'],
-  ['/deliveries', 'Deliveries'],
-  ['/sinks', 'Sinks'],
-  ['/subscriptions', 'Subscriptions'],
-  ['/admin', 'Admin'],
-] as const
+const route = <P extends string>(path: P, component: () => React.ReactNode) =>
+  createRoute({ getParentRoute: () => rootRoute, path, component })
 
-const routeTree = rootRoute.addChildren(
-  pages.map(([path, title]) =>
-    createRoute({ getParentRoute: () => rootRoute, path, component: () => <PlaceholderPage title={title} /> }),
-  ),
-)
+const routeTree = rootRoute.addChildren([
+  route('/', OverviewPage),
+  route('/watches', WatchesPage),
+  route('/watches/$name', WatchDetailPage),
+  route('/events', EventsPage),
+  route('/events/$id', EventDetailPage),
+  route('/deliveries', DeliveriesPage),
+  route('/deliveries/$id', DeliveryDetailPage),
+  route('/sinks', SinksPage),
+  route('/subscriptions', SubscriptionsPage),
+  route('/secrets', SecretsPage),
+  route('/consumers', ConsumersPage),
+  route('/plugins', PluginsPage),
+  route('/admin', AdminPage),
+])
 
 export function createAppRouter(history?: RouterHistory) {
   return createRouter({ routeTree, basepath: '/ui', history })

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/store"
 )
 
@@ -362,6 +363,10 @@ func TestContract(t *testing.T) {
 				{Host: "crates-mirror.example.com", Origin: "operator", CredentialPorts: []int{443, 8443}},
 			},
 		})
+		// The AccessList example's entries (spec 0.9.0).
+		o.UIAccess = []config.UIAccess{
+			{GitHubUser: "mmornati", Role: "admin"}, {GitHubID: 5550001, Role: "editor"}, {GitHubUser: "octo-viewer", Role: "viewer"},
+		}
 	})
 	c := &contract{t: t, e: e, covered: map[string]bool{}}
 	seedExamples(c)
@@ -582,6 +587,29 @@ func TestContract(t *testing.T) {
 		t.Errorf("listSessions after the revoke: %v", v)
 	}
 	c.call("revokeSession", 404, "/v1/sessions/01JBX2A7C8D9E0F1G2H3J4K5M6", tokULID, nil)
+
+	// The gaps the admin UI found (spec 0.9.0): newest-first events, the
+	// access list, template previews and conditional writes.
+	_, v = c.call("listEvents", 200, "/v1/events?order=desc&limit=1", tokRead, nil)
+	c.sameAsExample("EventPageNewestFirst", v, "seq", "next_after", "next_before")
+	if _, err := e.st.PinUIIdentity(context.Background(), "github", "mmornati", "139323", e.now); err != nil {
+		t.Fatal(err)
+	}
+	_, v = c.call("listAccess", 200, "/v1/access", tokAdmin, nil)
+	c.sameAsExample("AccessList", v)
+	_, v = c.call("previewTemplate", 200, "/v1/template-previews", tokAdmin, c.exampleBody("TemplatePreviewSample"))
+	c.sameAsExample("TemplatePreviewRendered", v)
+	_, v = c.call("previewTemplate", 200, "/v1/template-previews", tokAdmin, c.exampleBody("TemplatePreviewStoredEvent"))
+	c.sameAsExample("TemplatePreviewRendered", v)
+	_, v = c.call("previewTemplate", 200, "/v1/template-previews", tokAdmin, map[string]any{"template": `{"text": "{{.data.pakage}}"}`})
+	c.sameAsExample("TemplatePreviewFailed", v)
+	r, _ = c.call("getWatch", 200, "/v1/watches/requests", tokRead, nil)
+	tag := r.Header.Get("ETag")
+	_, v = c.call("putWatch", 412, "/v1/watches/requests", tokWrite, c.exampleBody("WatchPut"), "If-Match", `"stale"`)
+	c.sameAsExample("ProblemPreconditionFailed", v)
+	if r, _ = c.call("putWatch", 200, "/v1/watches/requests", tokWrite, c.exampleBody("WatchPut"), "If-Match", tag); r.Header.Get("ETag") != tag {
+		t.Errorf("putWatch with If-Match: ETag %q, want %q", r.Header.Get("ETag"), tag)
+	}
 
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)

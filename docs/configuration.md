@@ -30,7 +30,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
 | `http.host_limits.default` | none | unset (5 rps, burst 5) | `{rps, burst}` for every unlisted host: `rps` from 1/3600 to 20, `burst` from 1 to 20; see [Per-host rate limits](#per-host-rate-limits) |
 | `http.host_limits.hosts.<host>` | none | empty | `{rps, burst}` for one exact host: `rps` from 1/3600 to 100, `burst` from 1 to 200 (default `ceil(rps)`) |
-| `ui.enabled` | none | `false` | `true` or `false`; serves the [admin UI](#admin-ui) from the `api` role |
+| `ui.enabled` | none | `false` | `true` serves the [admin UI](#admin-ui) and its [sign-in](#admin-ui-sign-in) from the `api` role |
 | `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
 | `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
@@ -38,7 +38,6 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 | `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
-| `ui.enabled` | none | `false` | `true` turns on the admin UI's sign-in; see [Admin UI sign-in](#admin-ui-sign-in) |
 | `ui.public_url` | none | empty | `https://host[:port]`, no path; `http://` only for a loopback host |
 | `ui.github.client_id` | none | empty | the client id of a GitHub OAuth App; `ui.github` is optional when `ui.oidc` lists a provider |
 | `ui.github.client_secret_env` | none | empty | name of the environment variable holding the client secret |
@@ -323,11 +322,9 @@ under `/ui/` on the `listen` address, from files embedded in the binary, and red
 `/ui/`. With the default, `false`, `/ui/` answers `404` and `/` is not routed. The UI is a client of
 the REST API above and has no endpoints of its own.
 
-Sign-in arrives with [#262](https://github.com/angelia-dev/angelia/issues/262) (GitHub sign-in,
-sessions and roles, with further `ui.*` keys): until then the UI shows its sign-in page and cannot
-call the API, so leave it disabled in production. A binary built without the UI (`go build` with no
-`make web` first) serves a placeholder page that says so. Responses carry a strict
-`Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
+The setup steps, the roles and the troubleshooting are in [admin-ui.md](admin-ui.md). Enabling the UI needs the sign-in keys of [Admin UI sign-in](#admin-ui-sign-in) below. A binary built
+without the UI (`go build` with no `make web` first) serves a placeholder page that says so. Responses
+carry a strict `Content-Security-Policy` (`default-src 'self'`, GitHub avatars allowed, no framing).
 
 ## API tokens
 
@@ -416,9 +413,9 @@ not set); the `api` role refuses to start without the secret. Unlike source
 without case) or an account id (`github_id`), and a role: `viewer` gets the `read` scope, `editor`
 `write`, `admin` `admin`, exactly as a token of that scope. When several entries match, the highest role
 wins. At least one entry must be an `admin`. Anyone else who signs in with GitHub sees a "Not authorised"
-page; the attempt is logged at INFO. The list is evaluated on **every request**: removing an entry or
-lowering a role applies to open sessions at their next request (a removed user's session is refused as
-`revoked`).
+page; the attempt is logged at INFO. Angelia reads the list once, at start. After a restart with a changed file, the
+new list applies to open sessions at their next request: a user whose entry was removed is refused, and a
+lowered role applies at once.
 
 **Login pinning.** GitHub logins can be renamed and re-registered. The first time a `github_user` entry
 matches, Angelia pins the login to that account's id (in the database, shared by every replica). Later, a
@@ -427,6 +424,8 @@ counted as `identity_mismatch`); other entries can still match it. `github_id` e
 move a login to a new account, use a `github_id` entry. Every replica caches the pins it has read
 until it restarts: after deleting a row of the `ui_identity_pin` table (to pin a login again),
 restart **every** replica, or a replica that still caches the old pin keeps refusing the new account.
+`GET /v1/access` (`admin` scope) lists the entries with the account id each login is pinned to, read
+from the database (it pins nothing, and never shows the OAuth client id or secret).
 
 **Cookies.** The session cookie is `__Host-angelia_session`: `Secure`, `HttpOnly`, `SameSite=Lax`,
 `Path=/`, no `Domain`. It holds a random 256-bit secret; the database stores only its hash, so a
@@ -449,7 +448,7 @@ with `GET /v1/sessions` (active ones by default, `include_ended=true` for all) a
 `DELETE /v1/sessions/{id}`. `GET /v1/me` describes the caller, token or session. Audit records name a
 session's principal as `github:<account id>`, which survives a rename of the login.
 
-**Removing someone's access (offboarding).** Removing a person's entry from `ui.access` ends their
+**Removing someone's access (offboarding).** Removing a person's entry from `ui.access` and restarting refuses their
 sessions at their next request, but **not the API tokens they created** while signed in: a token
 belongs to no session and keeps its scope. To remove someone completely:
 

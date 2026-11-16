@@ -106,6 +106,9 @@ type eventPageJSON struct {
 	Items     []eventRecordJSON `json:"items"`
 	NextAfter int64             `json:"next_after"`
 	HasMore   bool              `json:"has_more"`
+	// NextBefore is the cursor of the next older page with order=desc,
+	// nil otherwise (spec docs/api.md decision 47).
+	NextBefore *int64 `json:"next_before"`
 }
 
 type consumerJSON struct {
@@ -164,6 +167,7 @@ type deliveryJSON struct {
 	EventID          string     `json:"event_id"`
 	SubscriptionID   string     `json:"subscription_id"`
 	SubscriptionName *string    `json:"subscription_name"`
+	Sink             *string    `json:"sink"`
 	IdempotencyKey   string     `json:"idempotency_key"`
 	Status           string     `json:"status"`
 	Attempts         int64      `json:"attempts"`
