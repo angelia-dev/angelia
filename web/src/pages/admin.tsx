@@ -6,7 +6,7 @@ import { useCursorList } from '@/api/queries'
 import type { components } from '@/api/schema'
 import { RelativeTime } from '@/components/badges'
 import { Dialog } from '@/components/dialog'
-import { EmptyState, ErrorState, Head, ListFrame, PageHeader } from '@/components/states'
+import { EmptyState, ErrorState, Head, ListFrame, PageHeader, Skeleton } from '@/components/states'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
@@ -37,6 +37,7 @@ function Forbidden() {
 export function AdminPage() {
   const me = useMe()
   const [tab, setTab] = useState<TabId>('tokens')
+  if (me.isPending) return <Skeleton className="h-40 w-full" />
   if (!me.data || !hasRole(me.data, 'admin')) return <Forbidden />
   return (
     <>
@@ -147,6 +148,8 @@ function CreateTokenDialog({ onClose }: { onClose: () => void }) {
   const [secret, setSecret] = useState<string>()
   const [copied, setCopied] = useState<'yes' | 'no'>()
 
+  const expiryInPast = expires !== '' && !(new Date(expires).getTime() > Date.now())
+
   async function submit() {
     setBusy(true)
     setError(undefined)
@@ -176,7 +179,8 @@ function CreateTokenDialog({ onClose }: { onClose: () => void }) {
 
   if (secret !== undefined) {
     return (
-      <Dialog title="Token created" onClose={onClose}>
+      // Closing drops the secret for good: only the explicit button does it, never Escape or the backdrop.
+      <Dialog title="Token created" onClose={onClose} dismissible={false}>
         <p role="alert" className="mb-3 rounded-md border border-destructive p-3 text-sm">
           Copy this token now. It is shown only once and cannot be retrieved later.
         </p>
@@ -191,18 +195,18 @@ function CreateTokenDialog({ onClose }: { onClose: () => void }) {
           {copied === 'no' && <span role="status" className="text-sm">Could not copy; select the token and copy it by hand.</span>}
         </div>
         <div className="mt-4 flex justify-end">
-          <Button onClick={onClose}>Done</Button>
+          <Button onClick={onClose}>I have copied it</Button>
         </div>
       </Dialog>
     )
   }
   return (
-    <Dialog title="Create API token" onClose={onClose}>
+    <Dialog title="Create API token" onClose={onClose} dismissible={!busy}>
       <form
         className="space-y-3"
         onSubmit={(e) => {
           e.preventDefault()
-          if (name.trim() && !busy) void submit()
+          if (name.trim() && !expiryInPast && !busy) void submit()
         }}
       >
         <div className="flex flex-col gap-1">
@@ -227,12 +231,17 @@ function CreateTokenDialog({ onClose }: { onClose: () => void }) {
           </label>
           <input id="token-expires" type="datetime-local" className={control} value={expires} onChange={(e) => setExpires(e.target.value)} />
         </div>
+        {expiryInPast && (
+          <p role="alert" className="text-sm text-destructive">
+            The expiry must be in the future.
+          </p>
+        )}
         {error !== undefined && <ErrorState error={error} />}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!name.trim() || busy}>
+          <Button type="submit" disabled={!name.trim() || expiryInPast || busy}>
             {busy ? 'Creating…' : 'Create'}
           </Button>
         </div>
@@ -251,7 +260,7 @@ function RevokeTokenDialog({ token, onClose }: { token: Token; onClose: () => vo
     },
   })
   return (
-    <Dialog title="Revoke token" onClose={onClose}>
+    <Dialog title="Revoke token" onClose={onClose} dismissible={!m.isPending}>
       <p className="text-sm">
         Revoke token <strong>{token.name}</strong> ({token.scope})? Anything using it stops working immediately. This cannot be undone.
       </p>
@@ -337,16 +346,14 @@ function RevokeSessionDialog({ session, own, onClose }: { session: Session; own:
     mutationFn: () => revokeSession(session.id),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['sessions'] })
-      if (own) {
-        // If it was this browser's session, the next /v1/me is 401 and the app shows the sign-in page.
-        qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
-        await qc.invalidateQueries({ queryKey: ['me'] })
-      }
+      // If it was this browser's session, /v1/me now answers 401 and the app shows the sign-in page;
+      // otherwise nothing else changes, so no other cache is touched.
+      if (own) await qc.invalidateQueries({ queryKey: ['me'] })
       onClose()
     },
   })
   return (
-    <Dialog title="Revoke session" onClose={onClose}>
+    <Dialog title="Revoke session" onClose={onClose} dismissible={!m.isPending}>
       <p className="text-sm">
         Revoke the session of <strong>{session.user.login}</strong> signed in {new Date(session.created_at).toLocaleString()}? The
         browser is signed out at its next request.

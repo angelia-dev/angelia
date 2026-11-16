@@ -37,6 +37,12 @@ const session = (id: string, login: string, subject: string): Session => ({
 const SECRET = 'ang_01JBX2A7C8D9E0F1G2H3J4K5M6_secretsecretsecret'
 
 describe('admin visibility', () => {
+  it('shows a skeleton, not the forbidden message, while /v1/me loads', async () => {
+    mockApi({ '/v1/me': () => new Promise(() => {}) as never })
+    renderApp('/ui/admin')
+    expect(screen.queryByText('This screen is for administrators.')).not.toBeInTheDocument()
+  })
+
   it('hides the Admin nav item from editors and shows forbidden on the URL', async () => {
     mockApi({ '/v1/me': me({ role: 'editor', scope: 'write' }) })
     renderApp('/ui/admin')
@@ -89,7 +95,7 @@ describe('tokens', () => {
     })
     const writeText = vi.fn(() => Promise.resolve())
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-    renderApp('/ui/admin')
+    const { client } = renderApp('/ui/admin')
     await screen.findByText('No API tokens')
     await userEvent.click(screen.getByRole('button', { name: 'Create token' }))
     const dialog = screen.getByRole('dialog', { name: 'Create API token' })
@@ -100,23 +106,57 @@ describe('tokens', () => {
     const shown = await screen.findByRole('dialog', { name: 'Token created' })
     expect(within(shown).getByTestId('token-value')).toHaveTextContent(SECRET)
     expect(shown).toHaveTextContent('shown only once')
+    // Escape and a click on the backdrop must not discard the secret
+    await userEvent.keyboard('{Escape}')
+    await userEvent.click(shown.parentElement as HTMLElement)
+    expect(screen.getByRole('dialog', { name: 'Token created' })).toBeInTheDocument()
     const post = api.calls.find((c) => c.method === 'POST')
     expect(post?.headers.get('X-Angelia-CSRF')).toBe('1')
     await userEvent.click(within(shown).getByRole('button', { name: 'Copy' }))
     expect(writeText).toHaveBeenCalledWith(SECRET)
     expect(await within(shown).findByText('Copied.')).toBeInTheDocument()
 
-    await userEvent.click(within(shown).getByRole('button', { name: 'Done' }))
+    await userEvent.click(within(shown).getByRole('button', { name: 'I have copied it' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(SECRET)
     expect(await screen.findByText('deploy')).toBeInTheDocument()
     // the list never carried the secret, and nothing was stored in the browser
     expect(document.body).not.toHaveTextContent(SECRET)
+    expect(JSON.stringify(client.getQueryCache().getAll().map((q) => q.state.data))).not.toContain('ang_')
     expect(JSON.stringify({ ...localStorage })).not.toContain('ang_')
     expect(JSON.stringify({ ...sessionStorage })).not.toContain('ang_')
     // reopening the dialog starts empty
     await userEvent.click(screen.getByRole('button', { name: 'Create token' }))
     expect(screen.queryByTestId('token-value')).not.toBeInTheDocument()
+  })
+
+  it('sends expires_at as an ISO instant and refuses an expiry in the past', async () => {
+    const bodies: Record<string, unknown>[] = []
+    mockApi({
+      '/v1/me': me(),
+      '/v1/tokens': page([]),
+      'POST /v1/tokens': () =>
+        new Response(JSON.stringify({ ...token('T9', 'deploy'), token: SECRET }), { status: 201, headers: { 'Content-Type': 'application/json' } }),
+    })
+    const stubbed = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(typeof input === 'string' && input.startsWith('/') ? location.origin + input : input, init)
+      if (req.method === 'POST') bodies.push((await req.clone().json()) as Record<string, unknown>)
+      return stubbed(req)
+    })
+    renderApp('/ui/admin')
+    await userEvent.click(await screen.findByRole('button', { name: 'Create token' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'deploy')
+    await userEvent.type(within(dialog).getByLabelText('Expires (optional)'), '2020-01-01T00:00')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('The expiry must be in the future.')
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText('Expires (optional)'))
+    await userEvent.type(within(dialog).getByLabelText('Expires (optional)'), '2099-01-02T03:04')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await screen.findByRole('dialog', { name: 'Token created' })
+    expect(bodies[0]?.expires_at).toBe(new Date('2099-01-02T03:04').toISOString())
+    expect(String(bodies[0]?.expires_at)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
   })
 
   it('shows the problem when create fails', async () => {
@@ -216,6 +256,29 @@ describe('sessions', () => {
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke' }))
     expect(await screen.findByRole('link', { name: /sign in/i })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Sessions' })).not.toBeInTheDocument()
+  })
+
+  it('revoking a session of your own account keeps the app when /v1/me is still 200, without clearing caches', async () => {
+    let gone = false
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/tokens': page([token('T1', 'ci')]),
+      '/v1/sessions': () => page(gone ? [] : [session('S1', 'octocat', '1')]),
+      'DELETE /v1/sessions/S1': () => {
+        gone = true
+        return new Response(null, { status: 204 })
+      },
+    })
+    const { client } = renderApp('/ui/admin')
+    await screen.findByRole('table', { name: 'API tokens' })
+    await userEvent.click(screen.getByRole('tab', { name: 'Sessions' }))
+    await userEvent.click(await screen.findByRole('button', { name: /Revoke session of octocat/ }))
+    const meCalls = api.count('/v1/me')
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke' }))
+    expect(await screen.findByText('No active sessions')).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.count('/v1/me')).toBe(meCalls + 1))
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toBeInTheDocument()
+    expect(client.getQueryCache().find({ queryKey: ['tokens', false] })?.state.data).toBeDefined()
   })
 
   it('shows the problem when revoke fails', async () => {
