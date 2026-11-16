@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EventFilters } from '@/api/queries'
 import type { EventRecord } from '@/api/types'
 
+/** Live events kept in memory; older ones are dropped. */
+export const MAX_LIVE_EVENTS = 5000
+
 export type StreamStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'error' | 'unsupported'
 
 export function streamUrl(filters: EventFilters, after: number): string {
@@ -20,15 +23,7 @@ export function streamUrl(filters: EventFilters, after: number): string {
  * (the server refused the stream with a problem) the status becomes "error"
  * and `reconnect()` opens a new connection.
  */
-export function useEventStream({
-  filters,
-  after,
-  enabled,
-}: {
-  filters: EventFilters
-  after: number
-  enabled: boolean
-}) {
+export function useEventStream({ filters, after, enabled }: { filters: EventFilters; after: number; enabled: boolean }) {
   const [events, setEvents] = useState<EventRecord[]>([])
   const [status, setStatus] = useState<StreamStatus>('idle')
   const [attempt, setAttempt] = useState(0)
@@ -65,7 +60,7 @@ export function useEventStream({
       }
       if (record.seq <= lastSeq.current) return
       lastSeq.current = record.seq
-      setEvents((prev) => [...prev, record])
+      setEvents((prev) => (prev.length >= MAX_LIVE_EVENTS ? [...prev.slice(prev.length - MAX_LIVE_EVENTS + 1), record] : [...prev, record]))
     }
     es.onerror = () => setStatus(es.readyState === EventSource.CLOSED ? 'error' : 'reconnecting')
     return () => es.close()

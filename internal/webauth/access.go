@@ -2,6 +2,7 @@ package webauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,12 +10,14 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/store"
 )
 
 // PinStore pins a login to the subject seen at its first match
 // ([store.SessionStore] has it).
 type PinStore interface {
 	PinUIIdentity(ctx context.Context, provider, login, subject string, at time.Time) (string, error)
+	UIIdentityPin(ctx context.Context, provider, login string) (string, error)
 }
 
 // accessList evaluates ui.access (ADR 0033 §3). Today every entry is a
@@ -98,4 +101,33 @@ func (a *accessList) pin(ctx context.Context, provider, login, subject string) (
 	a.pinned[key] = got
 	a.mu.Unlock()
 	return got, nil
+}
+
+// listsSubject reports whether an entry of ui.access gives the subject of a
+// provider a role, without pinning anything: a github_id entry by its id, a
+// github_user entry only through the pin of its login. A login nobody
+// signed in with yet is pinned to no one, so it lists no subject.
+func (a *accessList) listsSubject(ctx context.Context, provider, subject string) (bool, error) {
+	if provider != GitHubName {
+		return false, nil
+	}
+	for _, e := range a.entries {
+		switch {
+		case roleRank(e.Role) == 0:
+		case e.GitHubID != 0:
+			if githubSubject(e.GitHubID) == subject {
+				return true, nil
+			}
+		case e.GitHubUser != "":
+			pinned, err := a.pins.UIIdentityPin(ctx, provider, strings.ToLower(e.GitHubUser))
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+			case err != nil:
+				return false, fmt.Errorf("webauth: read %s pin: %w", provider, err)
+			case pinned == subject:
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

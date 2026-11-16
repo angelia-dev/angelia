@@ -271,6 +271,15 @@ func (s *Server) authenticate(ctx context.Context, st *reqState) (Principal, err
 	return s.opts.Auth.Authenticate(ctx, st.token) //nolint:wrapcheck // the caller reads ErrUnauthenticated
 }
 
+// recheck is authenticate for the periodic re-check of an open event
+// stream: a session is checked without recording a use.
+func (s *Server) recheck(ctx context.Context, st *reqState) (Principal, error) {
+	if st.session != "" {
+		return s.opts.Sessions.CheckSession(ctx, st.session) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+	}
+	return s.opts.Auth.Authenticate(ctx, st.token) //nolint:wrapcheck // the caller reads ErrUnauthenticated
+}
+
 func stateFrom(ctx context.Context) *reqState {
 	st, _ := ctx.Value(reqStateKey{}).(*reqState)
 	if st == nil {
@@ -383,7 +392,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.Scope < op.Scope {
-		pr := problem(SlugForbidden, "this operation needs the %s scope; the token has %s", op.Scope, p.Scope)
+		pr := problem(SlugForbidden, "this operation needs the %s scope; the %s has %s", op.Scope, p.credential(), p.Scope)
 		pr.RequiredScope = op.Scope.String()
 		pr.write(rec, r)
 		return
