@@ -1,30 +1,112 @@
 @import 'tailwindcss';
 
-/* Light and dark follow the browser (prefers-color-scheme). */
+/*
+ * The Release Wire: the docs site's visual system (docs/admin-ui.md, "Design").
+ * Midnight chrome, canary paper for anything that is a release, gold for the path and the one
+ * primary action, the Baudot tape as the rule. Light and dark follow the browser
+ * (prefers-color-scheme). Fonts are self-hosted: the CSP allows 'self' only. OFL-1.1, see
+ * src/fonts/OFL-*.txt.
+ */
+
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('./fonts/archivo-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('./fonts/archivo-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Day: wire paper ground, midnight chrome. */
 :root {
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.2 0.01 260);
-  --card: oklch(1 0 0);
-  --muted: oklch(0.96 0.005 260);
-  --muted-foreground: oklch(0.48 0.02 260);
-  --border: oklch(0.91 0.008 260);
-  --primary: oklch(0.45 0.18 275);
-  --primary-foreground: oklch(0.99 0 0);
-  --destructive: oklch(0.55 0.22 27);
+  --background: #fffcef;
+  --foreground: #1b1938;
+  --card: #ffffff;
+  --muted: #f7efcd;
+  --muted-foreground: #57537f;
+  --border: #ddd5b4;
+  --primary: #fbbf24;
+  --primary-foreground: #14123a;
+  --destructive: #c2361d;
+  --destructive-foreground: #ffffff;
+  --ring: #4338ca;
+
+  --chrome: #14123a;
+  --chrome-2: #1e1b4b;
+  --chrome-foreground: #e6e7fb;
+  --chrome-muted: #b4b8ee;
+  --canary: #fde68a;
+  --gold: #f59e0b;
+  --gold-ink: #a14a07;
+  --link: #4338ca;
+  --ok: #23774a;
+  --held: #8a5a00;
+  --bulletin: #3730a3;
+  --paper: #fef6d3;
+  --paper-ink: #2a2614;
+  --paper-muted: #6b6142;
+  --code: #0d0b2a;
+  --code-foreground: #dfe3ff;
+  --shadow-paper: 0 18px 36px -22px rgb(20 18 58 / 0.45), 0 1px 3px rgb(20 18 58 / 0.12);
   color-scheme: light;
 }
 
+/* Night: the wire room after hours. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.17 0.01 260);
-    --foreground: oklch(0.95 0.005 260);
-    --card: oklch(0.21 0.012 260);
-    --muted: oklch(0.26 0.012 260);
-    --muted-foreground: oklch(0.7 0.015 260);
-    --border: oklch(0.3 0.014 260);
-    --primary: oklch(0.72 0.14 275);
-    --primary-foreground: oklch(0.17 0.01 260);
-    --destructive: oklch(0.65 0.2 27);
+    --background: #14123a;
+    --foreground: #e6e7fb;
+    --card: #1b1848;
+    --muted: #24215a;
+    --muted-foreground: #b4b8ee;
+    --border: #353081;
+    --primary: #fbbf24;
+    --primary-foreground: #14123a;
+    --destructive: #ff7a5c;
+    --destructive-foreground: #14123a;
+    --ring: #fbbf24;
+
+    --chrome: #0d0b2a;
+    --gold-ink: #fbbf24;
+    --link: #a5b4fc;
+    --ok: #6fd49a;
+    --held: #fbbf24;
+    --bulletin: #a5b4fc;
+    --shadow-paper: 0 30px 60px -30px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.25);
     color-scheme: dark;
   }
 }
@@ -39,12 +121,43 @@
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
+  --color-chrome: var(--chrome);
+  --color-chrome-2: var(--chrome-2);
+  --color-chrome-foreground: var(--chrome-foreground);
+  --color-chrome-muted: var(--chrome-muted);
+  --color-canary: var(--canary);
+  --color-gold: var(--gold);
+  --color-gold-ink: var(--gold-ink);
+  --color-link: var(--link);
+  --color-ok: var(--ok);
+  --color-held: var(--held);
+  --color-bulletin: var(--bulletin);
+  --color-paper: var(--paper);
+  --color-paper-ink: var(--paper-ink);
+  --color-paper-muted: var(--paper-muted);
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --font-sans: 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+::selection {
+  background: var(--canary);
+  color: #14123a;
+}
+
+a {
+  text-underline-offset: 3px;
 }
 
 /* Keyboard focus is always visible. */
@@ -52,7 +165,84 @@ a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid var(--primary);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  accent-color: var(--gold);
+}
+
+html {
+  scrollbar-color: var(--border) transparent;
+}
+
+@layer components {
+  /* Condensed heavy headings: the squeeze of Archivo's width axis is the headline voice. */
+  .wire-title {
+    font-weight: 850;
+    font-stretch: 70%;
+    line-height: 1;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+  }
+  .wire-subtitle {
+    font-weight: 800;
+    font-stretch: 78%;
+    line-height: 1.1;
+  }
+  /* Mono labels speak for the wire: table heads, slugs, stamps, datelines. */
+  .wire-label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  /* The Baudot tape: a gold strip of punched five-hole frames. */
+  .baudot {
+    background-color: var(--primary);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'%3E%3Cg fill='%2314123a'%3E%3Ccircle cx='6' cy='7' r='1.3'/%3E%3Ccircle cx='18' cy='7' r='1.3'/%3E%3Ccircle cx='30' cy='7' r='1.3'/%3E%3Ccircle cx='42' cy='7' r='1.3'/%3E%3Ccircle cx='54' cy='7' r='1.3'/%3E%3Ccircle cx='66' cy='7' r='1.3'/%3E%3Ccircle cx='6' cy='2.6' r='1.9'/%3E%3Ccircle cx='18' cy='11.4' r='1.9'/%3E%3Ccircle cx='30' cy='2.6' r='1.9'/%3E%3Ccircle cx='30' cy='11.4' r='1.9'/%3E%3Ccircle cx='42' cy='2.6' r='1.9'/%3E%3Ccircle cx='54' cy='11.4' r='1.9'/%3E%3Ccircle cx='66' cy='2.6' r='1.9'/%3E%3Ccircle cx='66' cy='11.4' r='1.9'/%3E%3C/g%3E%3C/svg%3E");
+    background-repeat: repeat-x;
+    background-size: 36px 7px;
+    height: 7px;
+  }
+  /*
+   * Canary paper: anything that is wire copy (a release, a delivery slip). It keeps its day colours
+   * in both themes, so the tokens are re-pointed inside it.
+   */
+  .paper {
+    --foreground: var(--paper-ink);
+    --muted-foreground: var(--paper-muted);
+    --border: rgb(42 38 20 / 0.28);
+    --destructive: #c2361d;
+    --destructive-foreground: #ffffff;
+    --ok: #23774a;
+    --held: #8a5a00;
+    --bulletin: #3730a3;
+    --gold-ink: #a14a07;
+    --link: #3730a3;
+    --ring: #3730a3;
+    --muted: #f7efcd;
+    background: var(--paper);
+    color: var(--paper-ink);
+    box-shadow: var(--shadow-paper);
+  }
+}
+
+/* Ledger column heads: mono labels in burnt gold. Row headers stay in the body face. */
+thead th {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold-ink);
+}
+tbody th {
+  font-weight: 600;
 }

@@ -303,7 +303,7 @@ function YamlView({ yaml }: { yaml: string }) {
           Add this to the file you pass to <code>--watches</code> to manage the watch from Git. Remove the API watch first, or the
           names clash (<code>409 managed-by-file</code>).
         </p>
-        <pre aria-label="Watch file YAML" className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
+        <pre aria-label="Watch file YAML" className="overflow-x-auto border-t-[3px] border-primary bg-code p-3 font-mono text-xs leading-relaxed text-code-foreground">
           {yaml}
         </pre>
         <Button variant="outline" size="sm" className="mt-2" onClick={() => void copy()}>

@@ -2,9 +2,7 @@ import { useState } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { effectiveRole, hasRole, type Me, type UiRole } from '@/api/me'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { Glyph, Tape } from '@/components/brand'
 
 export const NAV_ITEMS: { to: string; label: string; min: UiRole }[] = [
   { to: '/', label: 'Overview', min: 'viewer' },
@@ -49,19 +47,27 @@ function UserMenu({ me }: { me: Me }) {
   }
 
   return (
-    <div className="flex items-center gap-3 text-sm" data-testid="user-menu">
+    <div className="flex items-center gap-2.5 text-sm text-chrome-muted" data-testid="user-menu">
       {me.user?.avatar_url && <img src={me.user.avatar_url} alt="" className="size-7 rounded-full" />}
-      <span className="font-medium">{login}</span>
-      <Badge variant="secondary" aria-label={`Role: ${effectiveRole(me)}`}>
+      <span className="font-semibold text-chrome-foreground max-sm:sr-only">{login}</span>
+      <span
+        aria-label={`Role: ${effectiveRole(me)}`}
+        className="rounded-[2px] bg-canary px-1.5 py-px font-mono text-[0.72rem] font-bold tracking-[0.1em] text-chrome uppercase"
+      >
         {effectiveRole(me)}
-      </Badge>
+      </span>
       {me.kind === 'session' && (
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void onSignOut()}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void onSignOut()}
+          className="h-8 rounded-[2px] px-3 font-semibold text-chrome-foreground shadow-[inset_0_0_0_1.5px_var(--chrome-muted)] transition-colors hover:text-canary hover:shadow-[inset_0_0_0_1.5px_var(--canary)] disabled:opacity-50"
+        >
           Sign out
-        </Button>
+        </button>
       )}
       {error && (
-        <span role="alert" className="text-destructive">
+        <span role="alert" className="text-canary">
           {error}
         </span>
       )}
@@ -72,31 +78,37 @@ function UserMenu({ me }: { me: Me }) {
 export function Layout({ me }: { me: Me }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4">
-        <span className="text-lg font-semibold">Angelia</span>
-        <UserMenu me={me} />
+      <header className="bg-chrome text-chrome-foreground">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 pt-2.5 md:flex-nowrap md:px-6">
+          <Link to="/" className="flex items-center gap-2.5 py-1 text-white no-underline" aria-label="Angelia, overview">
+            <Glyph stroke="#fff" className="h-7 w-6" />
+            <span className="wire-title text-[1.3rem] [font-stretch:72%]">Angelia</span>
+          </Link>
+          <div className="order-2 ml-auto md:order-3">
+            <UserMenu me={me} />
+          </div>
+          <nav aria-label="Main" className="order-3 -mx-4 w-[calc(100%+2rem)] overflow-x-auto px-2 [scrollbar-width:none] md:order-2 md:mx-0 md:w-auto md:flex-1 md:px-0">
+            <ul className="flex gap-0.5">
+              {NAV_ITEMS.filter((item) => hasRole(me, item.min)).map((item) => (
+                <li key={item.to}>
+                  <Link
+                    to={item.to}
+                    activeOptions={{ exact: item.to === '/' }}
+                    className="block px-2.5 pt-2 pb-2.5 text-[0.94rem] font-semibold whitespace-nowrap text-chrome-muted no-underline [font-stretch:82%] hover:text-canary"
+                    activeProps={{ className: 'text-canary! shadow-[inset_0_-3px_0_var(--primary)]', 'aria-current': 'page' }}
+                  >
+                    {item.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </div>
       </header>
-      <div className="flex flex-1 flex-col md:flex-row">
-        <nav aria-label="Main" className="border-b border-border p-2 md:w-52 md:border-r md:border-b-0">
-          <ul className="flex gap-1 overflow-x-auto md:flex-col">
-            {NAV_ITEMS.filter((item) => hasRole(me, item.min)).map((item) => (
-              <li key={item.to}>
-                <Link
-                  to={item.to}
-                  activeOptions={{ exact: item.to === '/' }}
-                  className={cn('block rounded-md px-3 py-2 text-sm hover:bg-muted')}
-                  activeProps={{ className: 'bg-muted font-medium', 'aria-current': 'page' }}
-                >
-                  {item.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <main className="min-w-0 flex-1 p-4 md:p-6">
-          <Outlet />
-        </main>
-      </div>
+      <Tape />
+      <main className="mx-auto w-full max-w-[90rem] min-w-0 flex-1 px-4 py-6 md:px-6">
+        <Outlet />
+      </main>
     </div>
   )
 }

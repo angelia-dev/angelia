@@ -1,7 +1,7 @@
 import { useId } from 'react'
 
 const control =
-  'h-9 rounded-md border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary'
+  'h-9 rounded-[2px] border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
 
 /** A labelled text filter; the value is committed on every change. */
 export function TextFilter({

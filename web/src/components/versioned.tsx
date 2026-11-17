@@ -41,7 +41,7 @@ export function VersionedEdit<T>({
 /** The 412 of an edit: someone else saved first. The user's input stays until they reload. */
 export function ChangedElsewhere({ kind, onReload }: { kind: string; onReload: () => void }) {
   return (
-    <div role="alert" tabIndex={-1} className="rounded-lg border border-destructive p-3 text-sm">
+    <div role="alert" tabIndex={-1} className="rounded-[2px] border border-destructive p-3 text-sm">
       <p className="font-semibold text-destructive">Changed by someone else</p>
       <p className="mt-1">
         This {kind} was changed by someone else since you opened the form, so nothing was saved. Reload to edit the current

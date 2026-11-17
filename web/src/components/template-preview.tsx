@@ -43,7 +43,7 @@ export function TemplatePreview({ template, label = 'template' }: { template: st
               <pre
                 tabIndex={0}
                 aria-label={`Rendered ${label}`}
-                className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-3 text-xs focus-visible:outline-2 focus-visible:outline-primary"
+                className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-[2px] border border-border bg-muted p-3 text-xs focus-visible:outline-2 focus-visible:outline-ring"
               >
                 {result.output}
               </pre>

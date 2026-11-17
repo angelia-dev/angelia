@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { ApiError } from '@/api/problem'
+import { Stamp } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
@@ -32,8 +33,8 @@ export function TableSkeleton({ label, columns = 5, rows = 5 }: { label: string;
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-border p-8 text-center">
-      <p className="font-medium">{title}</p>
+    <div className="border border-dashed border-border p-8 text-center">
+      <p className="wire-subtitle text-lg">{title}</p>
       {children && <p className="mt-1 text-sm text-muted-foreground">{children}</p>}
     </div>
   )
@@ -45,8 +46,11 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   const title = problem?.title ?? 'Something went wrong'
   const detail = problem?.detail ?? (error instanceof Error ? error.message : String(error))
   return (
-    <div role="alert" className="rounded-lg border border-destructive p-4">
-      <p className="font-semibold text-destructive">{title}</p>
+    <div role="alert" className="border border-destructive p-4">
+      <p className="flex items-center gap-2 font-semibold text-destructive">
+        <Stamp tone="flash">Flash</Stamp>
+        {title}
+      </p>
       <p className="mt-1 text-sm">{detail}</p>
       {error instanceof ApiError && problem?.status === undefined && <p className="mt-1 text-xs">HTTP {error.status}</p>}
       {problem?.errors?.length ? (
@@ -69,8 +73,8 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
 
 export function PageHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-      <h1 className="text-2xl font-semibold">{title}</h1>
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <h1 className="wire-title text-[2rem]">{title}</h1>
       {children}
     </div>
   )

@@ -1,4 +1,4 @@
-import { Badge } from '@/components/ui/badge'
+import { Badge, Stamp, type StampTone } from '@/components/ui/badge'
 import type { DeliveryStatus } from '@/api/types'
 import { formatRelative } from '@/lib/time'
 
@@ -12,23 +12,23 @@ export function RelativeTime({ value }: { value: string | null | undefined }) {
   )
 }
 
-const STATUS: Record<DeliveryStatus, { label: string; symbol: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
-  pending: { label: 'pending', symbol: '◔', variant: 'secondary' },
-  in_flight: { label: 'in flight', symbol: '↻', variant: 'outline' },
-  delivered: { label: 'delivered', symbol: '✓', variant: 'default' },
-  dead: { label: 'dead letter', symbol: '✕', variant: 'destructive' },
+const STATUS: Record<DeliveryStatus, { label: string; symbol: string; tone: StampTone }> = {
+  pending: { label: 'pending', symbol: '◔', tone: 'routine' },
+  in_flight: { label: 'in flight', symbol: '↻', tone: 'bulletin' },
+  delivered: { label: 'delivered', symbol: '✓', tone: 'ok' },
+  dead: { label: 'dead letter', symbol: '✕', tone: 'flash' },
 }
 
-/** Status as text plus a symbol: colour is never the only signal. */
+/** Status as a stamp with text plus a symbol: colour is never the only signal. */
 export function DeliveryStatusBadge({ status }: { status: DeliveryStatus }) {
   const s = STATUS[status]
   return (
-    <Badge variant={s.variant}>
+    <Stamp tone={s.tone}>
       <span aria-hidden="true" className="mr-1">
         {s.symbol}
       </span>
       {s.label}
-    </Badge>
+    </Stamp>
   )
 }
 
@@ -55,12 +55,12 @@ export function ManagedByBadge({ value }: { value: 'api' | 'file' }) {
 export function ErrorCount({ count }: { count: number }) {
   if (count === 0) return <span>0</span>
   return (
-    <Badge variant="destructive">
+    <Stamp tone="flash">
       <span aria-hidden="true" className="mr-1">
         ⚠
       </span>
       {count} {count === 1 ? 'error' : 'errors'}
-    </Badge>
+    </Stamp>
   )
 }
 

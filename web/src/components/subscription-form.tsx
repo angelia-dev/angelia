@@ -129,7 +129,7 @@ export function SubscriptionForm({
             />
           </div>
 
-          <fieldset className="flex flex-col gap-3 rounded-lg border border-border p-3">
+          <fieldset className="flex flex-col gap-3 rounded-[2px] border border-border p-3">
             <legend className="px-1 text-sm font-medium">Filter</legend>
             <fieldset>
               <legend className="mb-1 text-sm font-medium">Event types</legend>
@@ -176,7 +176,7 @@ export function SubscriptionForm({
             <TextInput label="Package glob" value={form.package} onChange={(v) => set({ package: v })} errors={errorsFor(errors, '/filter/package')} placeholder="@types/*" hint="A glob on the package name. Empty means any." />
           </fieldset>
 
-          <fieldset className="flex flex-col gap-3 rounded-lg border border-border p-3">
+          <fieldset className="flex flex-col gap-3 rounded-[2px] border border-border p-3">
             <legend className="px-1 text-sm font-medium">Policy overrides</legend>
             <div className="grid gap-4 md:grid-cols-2">
               <SelectInput

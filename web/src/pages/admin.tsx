@@ -23,7 +23,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id']
 
 const control =
-  'h-9 rounded-md border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary'
+  'h-9 rounded-[2px] border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
 
 function Forbidden() {
   return (
@@ -181,10 +181,10 @@ function CreateTokenDialog({ onClose }: { onClose: () => void }) {
     return (
       // Closing drops the secret for good: only the explicit button does it, never Escape or the backdrop.
       <Dialog title="Token created" onClose={onClose} dismissible={false}>
-        <p role="alert" className="mb-3 rounded-md border border-destructive p-3 text-sm">
+        <p role="alert" className="mb-3 rounded-[2px] border border-destructive p-3 text-sm">
           Copy this token now. It is shown only once and cannot be retrieved later.
         </p>
-        <code data-testid="token-value" className="block break-all rounded-md bg-muted p-3 text-sm">
+        <code data-testid="token-value" className="block break-all rounded-[2px] bg-muted p-3 text-sm">
           {secret}
         </code>
         <div className="mt-2 flex items-center gap-3">
