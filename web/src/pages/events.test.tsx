@@ -204,4 +204,45 @@ describe('event detail', () => {
     renderApp('/ui/events/NOPE')
     expect(await screen.findByRole('alert')).toHaveTextContent('no such event')
   })
+
+  const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
+
+  it('punches one hole per release on the tape and shows the selected one as a bulletin', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/events': eventPageDesc([
+        eventRecord(3, { time: ago(1) }),
+        eventRecord(2, { time: ago(120) }),
+        eventRecord(1, { time: ago(300), type: 'dev.angelia.release.prerelease.v1' }),
+      ]),
+    })
+    renderApp('/ui/events')
+    const tape = await screen.findByRole('listbox', { name: /Releases of the last 7 days/ })
+    const holes = within(tape).getAllByRole('option')
+    expect(holes).toHaveLength(3)
+    expect(holes[0]).toHaveAccessibleName(/requests 1\.1\.0, prerelease/)
+    expect(holes[2]).toHaveAttribute('aria-selected', 'true') // the newest
+    const bulletin = screen.getByRole('region', { name: 'Selected release' })
+    expect(bulletin).toHaveTextContent('1.3.0')
+    expect(within(bulletin).getByLabelText('CloudEvent JSON')).toHaveTextContent('pypi:requests@1.3.0')
+
+    holes[2]!.focus()
+    await userEvent.keyboard('{ArrowLeft}')
+    expect(within(tape).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('region', { name: 'Selected release' })).toHaveTextContent('1.2.0')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show event 3 on the tape' }))
+    expect(screen.getByRole('region', { name: 'Selected release' })).toHaveTextContent('1.3.0')
+  })
+
+  it('says when the range is quiet and names the newest release', async () => {
+    const old = new Date(Date.now() - 40 * 24 * 3600_000).toISOString()
+    mockApi({ '/v1/me': me(), '/v1/events': eventPageDesc([eventRecord(1, { time: old })]) })
+    renderApp('/ui/events')
+    expect(await screen.findByText('No releases in the last 7 days')).toBeInTheDocument()
+    expect(screen.getByText(/The newest one, requests 1\.1\.0/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '30 days' }))
+    expect(screen.getByText('No releases in the last 30 days')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Selected release' })).not.toBeInTheDocument()
+  })
 })

@@ -75,7 +75,7 @@ export function describeSelector(s: ReplaySelector): string {
 
 const toIso = (local: string) => (local ? new Date(local).toISOString() : undefined)
 
-const dateInput = 'h-9 rounded-md border border-border bg-card px-3 text-sm'
+const dateInput = 'h-9 rounded-[2px] border border-border bg-card px-3 text-sm'
 
 /** "Replay range": the API's `createReplay`, with its dry run first. */
 export function ReplayRangeDialog({ onClose }: { onClose: () => void }) {

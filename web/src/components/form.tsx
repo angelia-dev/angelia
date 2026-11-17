@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 export const inputClass =
-  'h-9 w-full rounded-md border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary aria-[invalid=true]:border-destructive'
+  'h-9 w-full rounded-[2px] border border-border bg-card px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring aria-[invalid=true]:border-destructive'
 
 /** Field errors keyed by the JSON pointer of the request body, as the API reports them. */
 export type FieldErrors = Record<string, string[]>
@@ -309,7 +309,7 @@ export function ProblemSummary({ error, claimed = [] }: { error: unknown; claime
   }
   const loose = (problem?.errors ?? []).filter((e) => !claimed.some((c) => e.pointer === c || e.pointer.startsWith(c + '/')))
   return (
-    <div role="alert" tabIndex={-1} className="rounded-lg border border-destructive p-3 text-sm">
+    <div role="alert" tabIndex={-1} className="rounded-[2px] border border-destructive p-3 text-sm">
       <p className="font-semibold text-destructive">{title}</p>
       <p className="mt-1">{detail}</p>
       {status === 422 && loose.length > 0 && (
@@ -365,7 +365,7 @@ export function ConfirmDelete({
       role="alertdialog"
       aria-label={`Confirm delete of ${what}`}
       aria-describedby={descId}
-      className="flex flex-col gap-2 rounded-lg border border-destructive p-3 text-sm"
+      className="flex flex-col gap-2 rounded-[2px] border border-destructive p-3 text-sm"
       onKeyDown={(e) => {
         if (e.key === 'Escape' && !busy) setAsking(false)
       }}

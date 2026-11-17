@@ -202,7 +202,7 @@ export function WatchForm({
 
           <PairsEditor legend="Label" pairs={form.labels} onChange={(p) => set('labels', p)} keyLabel="Key" valueLabel="Value" errors={errorsFor(errors, '/labels')} hint="At most 32. Subscriptions filter on labels." />
 
-          <fieldset className="flex flex-col gap-3 rounded-lg border border-border p-3">
+          <fieldset className="flex flex-col gap-3 rounded-[2px] border border-border p-3">
             <legend className="px-1 text-sm font-medium">Policy</legend>
             <div className="grid gap-4 md:grid-cols-2">
               <SelectInput

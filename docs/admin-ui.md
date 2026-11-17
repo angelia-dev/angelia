@@ -34,6 +34,26 @@ shown as plain text, never as HTML.
 Rows that come from the watch file (`managed_by: file`) show a badge and have no edit controls. Change
 them in the watch file and restart, or apply the file with `angelia apply`.
 
+## Design
+
+The UI uses the same visual system as the documentation site, "The Release Wire": midnight chrome, canary
+paper for anything that is a release, gold for the path and the one primary action per block, and the
+gold Baudot tape as the rule. Status uses the wire's priority stamps: FLASH (a failure, a dead letter, a
+major release), BULLETIN (a minor release, a delivery in flight), ROUTINE (a patch). Headings are Archivo,
+condensed through its width axis; data, slugs and code are JetBrains Mono. Light and dark follow the
+operating system. The tokens and rules are in [web/DESIGN.md](../web/DESIGN.md).
+
+- **Overview: the sorting rack.** One pigeonhole per watch: its source, its latest release with the bump
+  and the previous version, a meter to the next check, and a paper slip with the last release and, when
+  one needs attention, its pending or dead delivery. Failing watches are outlined in Flash red. Past 24
+  watches the rack opens in its compact form, grouped by source; the Rack / Compact switch is kept per
+  browser.
+- **Events: the punched tape.** The last 24 hours, 7 days or 30 days as a gold tape with one hole per
+  release (solid: release, ring: prerelease, red: yank). Pick a hole with the mouse or the arrow keys
+  (Home and End jump to the ends): the release opens below as a bulletin slip next to its CloudEvent JSON.
+  The ledger under it lists the same events; its sequence number moves the tape to that event. A range
+  with no release says so and names the newest one.
+
 ## Roles
 
 Each entry of `ui.access` gives a role. A role is the same as an API scope.

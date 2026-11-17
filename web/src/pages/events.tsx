@@ -13,6 +13,8 @@ import { useDebounced } from '@/hooks/use-debounced'
 import { useEventStream, type StreamStatus } from '@/hooks/use-event-stream'
 import { invalidHelp, KIND_PATTERN, NAME_OR_ID_PATTERN, validOrUndefined } from '@/lib/filters'
 import { mergeEvents, useEventTimeline } from '@/hooks/use-event-timeline'
+import { Bulletin, EventTape, QuietTape, RANGES, TapeLegend, type TapeRange } from '@/components/event-tape'
+import { cn } from '@/lib/utils'
 
 const TYPES: ShortEventType[] = ['release.published', 'release.yanked', 'release.prerelease']
 
@@ -39,6 +41,8 @@ export function EventsPage() {
   const [source, setSource] = useState('')
   const [paused, setPaused] = useState(false)
   const [rows, setRows] = useState(ROWS)
+  const [range, setRange] = useState<TapeRange>('7d')
+  const [picked, setPicked] = useState<number>()
   const debouncedWatch = useDebounced(watch.trim())
   const debouncedSource = useDebounced(source.trim())
   const filters = useMemo<EventFilters>(
@@ -58,13 +62,30 @@ export function EventsPage() {
   })
   const events = useMemo(() => mergeEvents(timeline.loaded, stream.events), [timeline.loaded, stream.events])
   const shown = events.slice(0, rows)
+  const now = Date.now()
+  const rangeInfo = RANGES.find((r) => r.value === range)!
+  const inRange = events.filter((r) => Date.parse(r.event.time) >= now - rangeInfo.ms)
+  // The picked release, else the newest one in the range.
+  const selected = inRange.find((r) => r.seq === picked) ?? inRange[0]
 
   return (
     <>
       <PageHeader title="Events">
-        <div className="flex items-center gap-3">
-          <span role="status" className="text-sm">
-            <span aria-hidden="true">{stream.status === 'live' ? '● ' : '○ '}</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            role="status"
+            className={cn(
+              'inline-flex items-center gap-2 font-mono text-[0.78rem] font-bold tracking-[0.04em] uppercase',
+              stream.status === 'live' && !paused ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                'size-2 rounded-full',
+                stream.status === 'live' && !paused ? 'bg-destructive motion-safe:animate-pulse' : 'shadow-[inset_0_0_0_1.5px_currentColor]',
+              )}
+            />
             {paused ? 'Paused' : STREAM_TEXT[stream.status]}
           </span>
           {stream.status === 'error' && !paused && (
@@ -107,12 +128,35 @@ export function EventsPage() {
         <EmptyState title="No events yet">Events appear here as watches detect new releases.</EmptyState>
       ) : (
         <>
+          <section aria-label="Tape" className="mb-6 grid gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <TapeLegend />
+              <div role="group" aria-label="Tape range" className="inline-flex shadow-[inset_0_0_0_1.5px_var(--border)]">
+                {RANGES.map((r) => (
+                  <button
+                    key={r.value}
+                    type="button"
+                    aria-pressed={range === r.value}
+                    onClick={() => setRange(r.value)}
+                    className={cn(
+                      'h-8 px-3 text-sm font-semibold',
+                      range === r.value ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted',
+                    )}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <EventTape events={events} range={range} now={now} selected={selected?.seq} onSelect={setPicked} />
+            {selected ? <Bulletin record={selected} /> : <QuietTape newest={events[0]} rangeLabel={rangeInfo.label} />}
+          </section>
           {events.length > 0 && (
             <Table aria-label="Events, newest first">
               <Head columns={['Seq', 'Type', 'Subject', 'Source', 'Time']} />
               <TableBody>
                 {shown.map((r) => (
-                  <EventRow key={r.seq} record={r} />
+                  <EventRow key={r.seq} record={r} selected={r.seq === selected?.seq} onPick={() => setPicked(r.seq)} />
                 ))}
               </TableBody>
             </Table>
@@ -141,21 +185,25 @@ export function EventsPage() {
   )
 }
 
-function EventRow({ record }: { record: EventRecord }) {
+function EventRow({ record, selected, onPick }: { record: EventRecord; selected: boolean; onPick: () => void }) {
   const e = record.event
   return (
-    <TableRow>
-      <TableCell>{record.seq}</TableCell>
+    <TableRow className={cn(selected && 'bg-primary/15')}>
+      <TableCell>
+        <button type="button" onClick={onPick} aria-pressed={selected} aria-label={`Show event ${record.seq} on the tape`} className="font-mono text-xs underline decoration-dotted">
+          {record.seq}
+        </button>
+      </TableCell>
       <TableCell>
         <Badge variant={e.type.includes('yanked') ? 'destructive' : 'secondary'}>{shortType(e.type)}</Badge>
       </TableCell>
       <TableCell className="font-medium">
-        <Link to="/events/$id" params={{ id: e.id }} className="underline">
+        <Link to="/events/$id" params={{ id: e.id }} className="text-link underline">
           {e.subject}
         </Link>
       </TableCell>
-      <TableCell>{e.data.source}</TableCell>
-      <TableCell>
+      <TableCell className="font-mono text-xs">{e.data.source}</TableCell>
+      <TableCell className="font-mono text-xs whitespace-nowrap">
         <RelativeTime value={e.time} />
       </TableCell>
     </TableRow>
@@ -221,7 +269,7 @@ export function EventDetailPage() {
       <pre
         tabIndex={0}
         aria-label="CloudEvent JSON"
-        className="overflow-auto rounded-lg border border-border bg-muted p-4 text-xs focus-visible:outline-2 focus-visible:outline-primary"
+        className="overflow-auto border-t-[3px] border-primary bg-code p-4 font-mono text-xs leading-relaxed text-code-foreground focus-visible:outline-2 focus-visible:outline-ring"
       >
         {JSON.stringify(e, null, 2)}
       </pre>

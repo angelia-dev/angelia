@@ -1,4 +1,5 @@
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { delivery, eventPageDesc, eventRecord, me, page, watch } from '@/test/fixtures'
 import { mockApi, problem, renderApp } from '@/test/mock-api'
@@ -124,5 +125,30 @@ describe('overview', () => {
     expect(alerts[0]).toHaveTextContent('Service unavailable')
     expect(alerts[0]).toHaveTextContent('database is starting')
     expect(await screen.findByText('No events yet')).toBeInTheDocument()
+  })
+
+  it('puts each watch in a cubby with its latest release, and switches to the compact rack', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([watch('requests'), watch('other', {}, { error_count: 1 })]),
+      '/v1/events': eventPageDesc([eventRecord(5), eventRecord(4)]),
+      '/v1/deliveries': ({ url }) =>
+        url.searchParams.getAll('status').includes('dead') ? page([delivery('D1', { status: 'dead', event_id: 'EVT00000000000000000000005' })]) : page([]),
+    })
+    renderApp()
+    const cubby = await screen.findByRole('article', { name: 'Watch requests' })
+    await within(cubby).findByText('1.5.0')
+    expect(within(cubby).getByText('dead letter')).toBeInTheDocument()
+    expect(within(cubby).getByRole('meter', { name: 'Time to the next check of requests' })).toBeInTheDocument()
+    const other = screen.getByRole('article', { name: 'Watch other' })
+    expect(other).toHaveTextContent('No new release since the baseline.')
+    expect(other).toHaveTextContent('1 error')
+    expect(screen.getByRole('status')).toHaveTextContent('1 dead letter.')
+
+    await userEvent.click(screen.getByRole('button', { name: 'compact' }))
+    const group = screen.getByRole('region', { name: 'pypi watches' })
+    expect(within(group).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(group).getByLabelText('failing')).toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 })
