@@ -135,7 +135,7 @@ function ReleaseSlip({ record, trouble }: { record: EventRecord; trouble?: Deliv
   const d = record.event.data
   const p = bumpTone(d.bump)
   return (
-    <div className="paper relative z-[1] -mx-1 mt-4 -mb-7 grid -rotate-[0.8deg] gap-1 border-t border-dashed px-3 py-2">
+    <div className="paper relative z-[1] -mx-1 mt-4 -mb-5 grid -rotate-[0.8deg] gap-1 border-t border-dashed px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <Stamp tone={p.tone}>{p.label}</Stamp>
         <span className="font-mono text-xs text-muted-foreground">
@@ -161,7 +161,7 @@ function Cubby({ watch: w, record, trouble, now }: { watch: Watch; record?: Even
     <article
       aria-label={`Watch ${w.name}`}
       className={cn(
-        'relative flex min-h-60 min-w-0 flex-col border-r border-b border-border bg-card px-4 pb-4',
+        'relative -ml-px flex min-h-60 min-w-0 flex-col border border-t-[3px] border-border border-t-foreground bg-card px-4 pb-4',
         record && 'pb-0',
         failing && 'shadow-[inset_0_0_0_2px_var(--destructive)]',
       )}
@@ -380,7 +380,7 @@ export function OverviewPage() {
         ) : density === 'compact' ? (
           <CompactRack watches={items} latest={latest} now={now} />
         ) : (
-          <div className="grid w-fit max-w-full grid-cols-[repeat(auto-fit,minmax(16rem,21rem))] border-t-[3px] border-l border-t-foreground border-l-border pb-7 max-sm:w-full max-sm:grid-cols-1">
+          <div className="grid w-fit max-w-full grid-cols-[repeat(auto-fit,minmax(16rem,21rem))] gap-y-8 pb-6 pl-px max-sm:w-full max-sm:grid-cols-1">
             {items.map((w) => {
               const record = latest[w.name]
               return <Cubby key={w.id} watch={w} record={record} trouble={record ? trouble[record.event.id] : undefined} now={now} />

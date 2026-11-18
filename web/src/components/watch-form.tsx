@@ -145,7 +145,8 @@ export function WatchForm({
 
           <fieldset className="flex flex-col gap-3">
             <legend className="text-sm font-medium">Coordinates</legend>
-            {fields.length > 0 || extraCoordinates.length > 0 ? (
+            {/* Named fields only when the source publishes a coordinate schema; otherwise free key/value rows. */}
+            {fields.length > 0 ? (
               <div className="grid gap-4 md:grid-cols-2">
                 {fields.map((f) => (
                   <TextInput
@@ -173,7 +174,7 @@ export function WatchForm({
                 errors={errorsFor(errors, '/coordinates')}
               />
             )}
-            {(fields.length > 0 || extraCoordinates.length > 0) && errors['/coordinates'] && (
+            {fields.length > 0 && errors['/coordinates'] && (
               <p role="alert" tabIndex={-1} className="text-xs text-destructive">
                 {errors['/coordinates'].join('; ')}
               </p>

@@ -63,6 +63,27 @@ describe('creating a watch', () => {
     await vi.waitFor(() => expect(screen.queryByRole('form', { name: 'New watch' })).not.toBeInTheDocument())
   })
 
+  it('keeps free coordinate rows while typing for a source with no coordinate schema', async () => {
+    const api = mockApi({
+      '/v1/me': editor(),
+      '/v1/plugins': plugins,
+      '/v1/watches': page([]),
+      'PUT /v1/watches/vite': jsonResponse(201, watch('vite')),
+    })
+    renderApp('/ui/watches')
+    await userEvent.click(await screen.findByRole('button', { name: 'New watch' }))
+    const form = await screen.findByRole('form', { name: 'New watch' })
+    await userEvent.type(within(form).getByLabelText(/^Name/), 'vite')
+    await userEvent.selectOptions(await within(form).findByRole('combobox', { name: /^Source/ }), 'npm')
+    await userEvent.click(within(form).getByRole('button', { name: 'Add coordinate' }))
+    await userEvent.type(within(form).getByLabelText('Coordinate key'), 'name')
+    await userEvent.type(within(form).getByLabelText('Coordinate value'), 'vite')
+    expect(within(form).getByLabelText('Coordinate key')).toHaveValue('name')
+    await userEvent.click(within(form).getByRole('button', { name: 'Create watch' }))
+    await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'PUT')).toBe(true))
+    expect(JSON.parse(api.calls.find((c) => c.method === 'PUT')!.body).coordinates).toEqual({ name: 'vite' })
+  })
+
   it('checks the fields before sending anything', async () => {
     const api = mockApi({ '/v1/me': editor(), '/v1/plugins': plugins, '/v1/watches': page([]) })
     renderApp('/ui/watches')

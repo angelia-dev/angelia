@@ -18,6 +18,13 @@ export const RANGES: { value: TapeRange; label: string; ms: number }[] = [
 /** Holes closer than this share of the tape are moved to other lanes so each stays clickable. */
 const CROWD = 0.025
 const LANES = ['50%', '26%', '74%']
+/** Share of the tape kept free at each end. */
+const EDGE = 0.02
+
+/** Where a time sits on the tape, 0 to 1, keeping a margin at both ends so the oldest and newest holes stay whole. */
+function place(t: number, start: number, span: number) {
+  return EDGE + (1 - 2 * EDGE) * Math.min(1, Math.max(0, (t - start) / span))
+}
 
 type HoleKind = 'published' | 'prerelease' | 'yanked'
 
@@ -85,7 +92,7 @@ export function EventTape({
     let lane = 0
     let prev = -1
     return inRange.map((r) => {
-      const x = Math.min(1, Math.max(0, (Date.parse(r.event.time) - start) / span))
+      const x = place(Date.parse(r.event.time), start, span)
       lane = prev >= 0 && x - prev < CROWD ? (lane + 1) % LANES.length : 0
       prev = x
       return { record: r, x, lane }
@@ -158,7 +165,7 @@ export function EventTape({
             <span
               key={t.at}
               className="absolute top-1.5 -translate-x-1/2 whitespace-nowrap before:absolute before:-top-1.5 before:left-1/2 before:h-1 before:border-l before:border-border"
-              style={{ left: `${((t.at - start) / span) * 100}%` }}
+              style={{ left: `${place(t.at, start, span) * 100}%` }}
             >
               {t.label}
             </span>
