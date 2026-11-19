@@ -9,6 +9,7 @@ export const NAV_ITEMS: { to: string; label: string; min: UiRole }[] = [
   { to: '/watches', label: 'Watches', min: 'viewer' },
   { to: '/events', label: 'Events', min: 'viewer' },
   { to: '/deliveries', label: 'Deliveries', min: 'viewer' },
+  { to: '/configure', label: 'Configure', min: 'viewer' },
   { to: '/sinks', label: 'Sinks', min: 'viewer' },
   { to: '/subscriptions', label: 'Subscriptions', min: 'viewer' },
   { to: '/secrets', label: 'Secrets', min: 'admin' },
