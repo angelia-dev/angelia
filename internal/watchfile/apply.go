@@ -24,13 +24,16 @@ const (
 	Update    Action = "update"
 	Delete    Action = "delete"
 	Unchanged Action = "unchanged"
+	// Skip is an entry of the file whose resource an admin handed over to
+	// the API (POST /v1/adoptions): the apply leaves it alone and warns.
+	Skip Action = "skip"
 )
 
 // Object kinds in a Change.
 const (
-	KindSink         = "sink"
-	KindWatch        = "watch"
-	KindSubscription = "subscription"
+	KindSink         = store.KindSink
+	KindWatch        = store.KindWatch
+	KindSubscription = store.KindSubscription
 	KindTarget       = "target"
 )
 
@@ -165,6 +168,9 @@ func (r *reconciler) reconcile(f *File) error {
 	if err != nil {
 		return err
 	}
+	if f, err = r.skipAdopted(f); err != nil {
+		return err
+	}
 	if err := r.refuseTakenNames(f); err != nil {
 		return err
 	}
@@ -258,6 +264,70 @@ func (r *reconciler) reconcile(f *File) error {
 		}
 	}
 	return nil
+}
+
+// SkipAdopted is the Detail of a Skip change.
+const SkipAdopted = "moved to the API with POST /v1/adoptions; remove it from the watch file"
+
+// skipAdopted returns f without the entries an admin adopted (spec
+// docs/api.md item 55), each reported as a Skip change, and without the
+// subscriptions whose sink was adopted, since a file row may not reference an
+// API row. Adoption records the file no longer declares are deleted, so the
+// name behaves as any other name again.
+func (r *reconciler) skipAdopted(f *File) (*File, error) {
+	records, err := r.tx.ListAdoptions(r.ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return f, nil
+	}
+	adopted := map[string]bool{}
+	for _, a := range records {
+		adopted[a.Kind+"\x00"+a.Name] = true
+	}
+	declared := map[string]bool{}
+	is := func(kind, name string) bool {
+		declared[kind+"\x00"+name] = true
+		return adopted[kind+"\x00"+name]
+	}
+	out := *f
+	out.Sinks, out.Watches, out.Subscriptions = nil, nil, nil
+	skippedSinks := map[string]bool{}
+	for _, d := range f.Sinks {
+		if is(KindSink, d.Name) {
+			skippedSinks[d.Name] = true
+			r.add(KindSink, d.Name, Skip, SkipAdopted)
+			continue
+		}
+		out.Sinks = append(out.Sinks, d)
+	}
+	for _, d := range f.Watches {
+		if is(KindWatch, d.Name) {
+			r.add(KindWatch, d.Name, Skip, SkipAdopted)
+			continue
+		}
+		out.Watches = append(out.Watches, d)
+	}
+	for _, d := range f.Subscriptions {
+		switch {
+		case is(KindSubscription, d.Name):
+			r.add(KindSubscription, d.Name, Skip, SkipAdopted)
+		case skippedSinks[d.Sink]:
+			r.add(KindSubscription, d.Name, Skip, "its sink "+d.Sink+" was moved to the API; create the subscription through the API or the admin UI")
+		default:
+			out.Subscriptions = append(out.Subscriptions, d)
+		}
+	}
+	for _, a := range records {
+		if declared[a.Kind+"\x00"+a.Name] {
+			continue
+		}
+		if err := r.write(func() error { return r.tx.DeleteAdoption(r.ctx, a.Kind, a.Name) }); err != nil {
+			return nil, err
+		}
+	}
+	return &out, nil
 }
 
 // otherOwners are the owners whose rows a file apply never touches. Today only

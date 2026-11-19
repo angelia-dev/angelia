@@ -122,8 +122,18 @@ listed in the instance's `api.allowed_env`. Watches and subscriptions need
 
 A name is unique per kind across owners, and the API refuses to change
 file-managed objects. So `apply` on objects that `serve --watches` still loads
-fails with `409 managed-by-file`, or `name taken` at the next startup. To move
-objects to the API:
+fails with `409 managed-by-file`, or `name taken` at the next startup.
+
+**Preferred: adopt them in place.** An admin hands the objects over with
+`POST /v1/adoptions` (the admin UI's Configure page has a "Move them to the
+UI" button that does it for every file object). Ids, known versions, baselines,
+holds and pending deliveries are kept ([ADR 0035](adr/0035-adopt-watch-file-resources.md)).
+Then remove the objects from the `--watches` file (or drop `--watches`). Until
+you do, the startup apply skips them with a warning. After that, `angelia
+apply` manages them like any API object.
+
+**Without adoption** (instances older than spec 0.10.0), move objects to the API
+by recreating them:
 
 1. Remove them from the `--watches` file (or drop `--watches`) and restart
    `angelia serve`. The startup apply deletes the file-managed rows:

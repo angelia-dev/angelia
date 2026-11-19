@@ -278,6 +278,15 @@ Reconciliation, per kind (sinks, watches, subscriptions), keyed on `(managed_by 
 | row managed by file, name not in file | **delete** |
 | row not managed by file (`managed_by = 'api'`) | never touched |
 | name in file, row with that name managed by the API | apply and plan fail: `sink "hook": name taken by a sink managed by the API` |
+| name in file, adopted by an admin (`POST /v1/adoptions`) | **skip** with a `WARN`: the row is the API's now; remove the entry from the file |
+| subscription in file whose sink was adopted | **skip** with a `WARN`: a file row may not use an API sink |
+
+**Adopted names** ([ADR 0035](adr/0035-adopt-watch-file-resources.md), story #287). An admin can hand
+file rows over to the API in place with `POST /v1/adoptions` (the admin UI's "Move to the UI" button).
+The instance records each adopted kind and name (table `adoption`, migration 00023). While the file
+still declares one, the apply skips it, as the two last rows of the table say, so the process keeps
+starting. Once the file no longer declares a name, the apply deletes its record: the name then behaves
+as any other, and a new file entry with it fails as taken while the API row exists.
 
 Order inside the transaction: sinks, watches, subscriptions (create/update), then deletes in reverse
 dependency order (subscriptions, watches, sinks), then targets no watch uses are deleted.

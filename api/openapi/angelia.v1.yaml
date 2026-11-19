@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.9.0
+  version: 0.10.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -30,6 +30,8 @@ info:
     - Watches, sinks and subscriptions carry an `ETag`; `If-Match` and `If-None-Match: *` on `PUT`
       and `DELETE` make a write conditional (`412 precondition-failed`). Without them the last
       write wins.
+    - `POST /v1/adoptions` (`admin`) hands watch-file resources over to the API in place, so the
+      admin UI can edit them; the next startup skips their entries in the watch file.
   contact:
     name: Angelia maintainers
     url: https://github.com/angelia-dev/spec/issues
@@ -70,6 +72,8 @@ tags:
     description: The instance's `ui.access` list, who may sign in to the admin web UI and with which role (read-only).
   - name: templates
     description: Render a message template against an event without delivering anything.
+  - name: adoptions
+    description: Hand resources loaded from a watch file over to the API, in place.
 
 paths:
   /v1/watches:
@@ -1501,6 +1505,66 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v1/adoptions:
+    post:
+      operationId: adoptResources
+      summary: Hand watch-file resources over to the API
+      description: |
+        Changes the owner of each listed resource from `file` to `api`, in place and in one
+        transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+        its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+        (and the admin UI) can change and delete it like any API resource.
+
+        The instance remembers each adopted name. While the watch file still declares an entry
+        of that kind and name, the startup apply skips it with a warning instead of failing on
+        the name, so the process keeps starting until the operator removes the entry from the
+        file. Once the file no longer declares it, the name is forgotten.
+
+        The request is all or nothing. Each object must exist and be managed by the file
+        (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+        a subscription can be adopted only with its sink (in the same request, or a sink already
+        managed by the API), and a sink only with every file subscription that uses it.
+        Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+        the response says what would be adopted. An adoption is recorded in the audit log.
+      tags: [adoptions]
+      security:
+        - bearerAuth: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdoptionRequest'
+            examples:
+              everything:
+                $ref: '#/components/examples/AdoptionRequest'
+      responses:
+        '200':
+          description: What was adopted (or, with `dry_run`, what would be).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdoptionResult'
+              examples:
+                result:
+                  $ref: '#/components/examples/AdoptionResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v1/plugins:
     get:
       operationId: listPlugins
@@ -2418,7 +2482,8 @@ components:
       description: |
         Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
         created from a watch file loaded with `angelia serve --watches`; the API reads it but
-        refuses to change or delete it (`409 managed-by-file`).
+        refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+        `POST /v1/adoptions`, which makes it `api`.
       type: string
       enum: [api, file]
     ShortEventType:
@@ -3424,6 +3489,56 @@ components:
       anyOf:
         - required: [event]
         - required: [subscription, since, until]
+    AdoptionObject:
+      description: One resource to adopt, by kind and name.
+      type: object
+      additionalProperties: false
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          enum: [sink, watch, subscription]
+        name:
+          $ref: '#/components/schemas/Name'
+    AdoptionRequest:
+      description: The watch-file resources to hand over to the API.
+      type: object
+      additionalProperties: false
+      required: [objects]
+      properties:
+        objects:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/AdoptionObject'
+        dry_run:
+          description: Check the request and say what would be adopted, without changing anything.
+          type: boolean
+          default: false
+    AdoptedObject:
+      type: object
+      required: [kind, name, id]
+      properties:
+        kind:
+          type: string
+          enum: [sink, watch, subscription]
+        name:
+          $ref: '#/components/schemas/Name'
+        id:
+          $ref: '#/components/schemas/Ulid'
+    AdoptionResult:
+      type: object
+      required: [dry_run, adopted]
+      properties:
+        dry_run:
+          type: boolean
+        adopted:
+          description: The adopted resources (or, with `dry_run`, those that would be), sinks first, then watches, then subscriptions, each by name.
+          type: array
+          items:
+            $ref: '#/components/schemas/AdoptedObject'
     ReplayResult:
       type: object
       required: [replayed, dry_run, deliveries, truncated]
@@ -4619,6 +4734,30 @@ components:
             held_until: null
             last_error: 'webhook: https://ci.example.com: unexpected status 404 Not Found'
         truncated: false
+    AdoptionRequest:
+      summary: Adopt a sink, a watch and the subscription that uses the sink
+      value:
+        objects:
+          - kind: sink
+            name: ci-webhook
+          - kind: watch
+            name: pypi-requests
+          - kind: subscription
+            name: platform-ci
+    AdoptionResult:
+      summary: Three resources now managed by the API
+      value:
+        dry_run: false
+        adopted:
+          - kind: sink
+            name: ci-webhook
+            id: 01JBX1XA1B2C3D4E5F6G7H8J9K
+          - kind: watch
+            name: pypi-requests
+            id: 01JBX1WZ9Y8X7W6V5T4S3R2Q1P
+          - kind: subscription
+            name: platform-ci
+            id: 01JBX1YB3C4D5E6F7G8H9J0K1M
     PluginWasm:
       summary: A third-party WASM source with an operator-added mirror
       value:

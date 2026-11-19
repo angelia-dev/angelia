@@ -611,6 +611,12 @@ func TestContract(t *testing.T) {
 		t.Errorf("putWatch with If-Match: ETag %q, want %q", r.Header.Get("ETag"), tag)
 	}
 
+	// Every resource here is managed by the API: adopting is refused, as a whole.
+	_, v = c.call("adoptResources", 422, "/v1/adoptions", tokAdmin, c.exampleBody("AdoptionRequest"))
+	if errs, _ := v.(map[string]any)["errors"].([]any); len(errs) != 3 {
+		t.Errorf("adoptResources of API rows: %v", v)
+	}
+
 	// Deletes, in reverse dependency order, with dry runs first.
 	r, _ = c.call("deleteSubscription", 204, "/v1/subscriptions/platform-ci?dry_run=true", tokWrite, nil)
 	if r.Header.Get("Angelia-Change") != "deleted" {

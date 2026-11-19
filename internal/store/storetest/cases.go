@@ -6,6 +6,7 @@ import "testing"
 func cases(e Engine) []testCase {
 	return []testCase{
 		{"APITokenCRUD", testAPITokenCRUD},
+		{"Adoption", testAdoption},
 		{"APITokenCreateRace", testAPITokenCreateRace},
 		{"APITokenRevoke", testAPITokenRevoke},
 		{"AppendEventAndDeliveryUniqueness", testAppendEventAndDeliveryUniqueness},

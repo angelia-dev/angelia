@@ -242,6 +242,7 @@ func (r response) VisitGetEventResponse(w http.ResponseWriter) error           {
 func (r response) VisitListPluginsResponse(w http.ResponseWriter) error        { return r.write(w) }
 func (r response) VisitGetPluginResponse(w http.ResponseWriter) error          { return r.write(w) }
 func (r response) VisitCreateReplayResponse(w http.ResponseWriter) error       { return r.write(w) }
+func (r response) VisitAdoptResourcesResponse(w http.ResponseWriter) error     { return r.write(w) }
 func (r response) VisitListSinksResponse(w http.ResponseWriter) error          { return r.write(w) }
 func (r response) VisitDeleteSinkResponse(w http.ResponseWriter) error         { return r.write(w) }
 func (r response) VisitGetSinkResponse(w http.ResponseWriter) error            { return r.write(w) }

@@ -11,6 +11,9 @@ package storetest
 var covers = map[string]string{
 	"APITokenByID":                 "APITokenCRUD",
 	"AckConsumer":                  "AckConsumer",
+	"AdoptRow":                     "Adoption",
+	"DeleteAdoption":               "Adoption",
+	"ListAdoptions":                "Adoption",
 	"AcquireLease":                 "LeaseDueDeliveriesTakesOverExpired",
 	"AddPendingRelease":            "PendingRelease",
 	"AddVersion":                   "PendingRelease",
