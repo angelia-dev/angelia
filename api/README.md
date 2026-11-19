@@ -1,7 +1,7 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `SPECCOMMIT` ("feat(openapi): adopt watch-file resources with POST
+`openapi/angelia.v1.yaml` is at commit `da75b65` ("feat(openapi): adopt watch-file resources with POST
 /v1/adoptions (spec 0.10.0) (#21)") on the spec repository's `main`.
 Since spec 0.9.0, spec 0.10.0 adds `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
 `AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
