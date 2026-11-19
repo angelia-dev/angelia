@@ -125,6 +125,42 @@ func (q *Queries) AddVersion(ctx context.Context, arg AddVersionParams) (int64, 
 	return result.RowsAffected()
 }
 
+const adoptSink = `-- name: AdoptSink :execrows
+UPDATE sink SET managed_by = 'api' WHERE id = ? AND managed_by = 'file'
+`
+
+func (q *Queries) AdoptSink(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, adoptSink, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const adoptSubscription = `-- name: AdoptSubscription :execrows
+UPDATE subscription SET managed_by = 'api' WHERE id = ? AND managed_by = 'file'
+`
+
+func (q *Queries) AdoptSubscription(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, adoptSubscription, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const adoptWatch = `-- name: AdoptWatch :execrows
+UPDATE watch SET managed_by = 'api' WHERE id = ? AND managed_by = 'file'
+`
+
+func (q *Queries) AdoptWatch(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, adoptWatch, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countAPITokens = `-- name: CountAPITokens :one
 SELECT count(*) FROM api_token
 `
@@ -540,6 +576,23 @@ func (q *Queries) CreateWatch(ctx context.Context, arg CreateWatchParams) error 
 		arg.IntervalMs,
 	)
 	return err
+}
+
+const deleteAdoption = `-- name: DeleteAdoption :execrows
+DELETE FROM adoption WHERE kind = ? AND name = ?
+`
+
+type DeleteAdoptionParams struct {
+	Kind string
+	Name string
+}
+
+func (q *Queries) DeleteAdoption(ctx context.Context, arg DeleteAdoptionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAdoption, arg.Kind, arg.Name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteConsumer = `-- name: DeleteConsumer :execrows
@@ -1359,6 +1412,33 @@ func (q *Queries) ListActiveUISessionsPage(ctx context.Context, arg ListActiveUI
 			&i.RevokedAt,
 			&i.RevokedBy,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAdoptions = `-- name: ListAdoptions :many
+SELECT kind, name, adopted_at FROM adoption ORDER BY kind, name
+`
+
+func (q *Queries) ListAdoptions(ctx context.Context) ([]Adoption, error) {
+	rows, err := q.db.QueryContext(ctx, listAdoptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Adoption
+	for rows.Next() {
+		var i Adoption
+		if err := rows.Scan(&i.Kind, &i.Name, &i.AdoptedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2560,6 +2640,22 @@ func (q *Queries) PruneEvents(ctx context.Context, arg PruneEventsParams) (int64
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const recordAdoption = `-- name: RecordAdoption :exec
+INSERT INTO adoption (kind, name, adopted_at) VALUES (?, ?, ?)
+ON CONFLICT (kind, name) DO UPDATE SET adopted_at = excluded.adopted_at
+`
+
+type RecordAdoptionParams struct {
+	Kind      string
+	Name      string
+	AdoptedAt int64
+}
+
+func (q *Queries) RecordAdoption(ctx context.Context, arg RecordAdoptionParams) error {
+	_, err := q.db.ExecContext(ctx, recordAdoption, arg.Kind, arg.Name, arg.AdoptedAt)
+	return err
 }
 
 const releaseHeldDelivery = `-- name: ReleaseHeldDelivery :execrows

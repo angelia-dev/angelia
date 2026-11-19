@@ -9,8 +9,9 @@ The UI calls the same REST API as the CLI and tokens. Each action has the same s
 audit record. A browser session is a credential of its own: it stops at the sign-out, at its timeout, or
 when an admin revokes it.
 
-> **Status.** The sign-in and the read-only pages are in place. Replay, editing and the admin pages
-> come in follow-up stories (#263-#266). Check the release notes for what your version has.
+> **Status.** Sign-in, the read pages, editing, replay, the admin pages and the Configure page are in
+> place. Editing the whole configuration as YAML in the browser is planned. Check the release notes
+> for what your version has.
 
 ## What the UI shows
 
@@ -20,6 +21,7 @@ when an admin revokes it.
 | Watches | Each watch with its status and versions. Editors create, edit and delete API-managed watches. |
 | Events | The event log, newest first, with live updates. |
 | Deliveries | Each delivery with its sink, filtered by status, subscription, sink and time range, and the dead letters. Editors replay. |
+| Configure | The patch bay: watches, routes (subscriptions) and sinks joined by cords, with an editor drawer (Form and YAML tabs) and a YAML export of the whole configuration. Editors add, change and delete watches and routes; admins also sinks, and move watch-file objects to the UI. |
 | Sinks | Each sink. Secret values are never shown. Admins create and edit API-managed sinks and preview template-valued keys. |
 | Subscriptions | Which sink gets which events. Editors create and edit API-managed ones; admins preview the template on a sample event. |
 | Consumers | Each consumer. |
@@ -32,7 +34,34 @@ the form keeps your input. A template preview renders on the server's built-in s
 shown as plain text, never as HTML.
 
 Rows that come from the watch file (`managed_by: file`) show a badge and have no edit controls. Change
-them in the watch file and restart, or apply the file with `angelia apply`.
+them in the watch file and restart, or move them to the UI (below).
+
+## Configure: the patch bay
+
+The Configure page shows the whole configuration on one board. Watches are on the left, routes
+(subscriptions) in the middle and sinks on the right. A cord joins a watch to a route when the
+route's filter (source, labels, package) matches the watch today, and a route to its sink. A route is
+a filter, not a fixed link: a new watch that matches it joins it by itself.
+
+- **Select** any card to open the editor drawer. The **Form** tab is the same form as on the other
+  pages, saved conditionally with the `ETag`. The **YAML** tab shows the object as a watch-file entry.
+- **Route a watch**: drag from a watch's gold jack to a sink. A new route opens in the drawer,
+  prefilled with the watch's source and package; adjust the filter and save. Pressing the jack (or
+  Enter on it) starts a route without a sink.
+- **+ Watch**, **+ Route** and **+ Sink** add objects; **Export YAML** downloads everything as one
+  watch file, the format of `angelia apply`. The **YAML** view shows the same file.
+- Every save goes to the database through the API and takes effect at once, with no restart.
+
+### Move watch-file objects to the UI
+
+When objects come from the watch file, a banner says how many. An admin presses **Move them to the
+UI**: the dialog lists them, downloads them as YAML first (unless unticked), and hands them all over
+with `POST /v1/adoptions`. Ids, known versions, cooldown holds and pending deliveries stay as they are,
+so no release is missed or sent twice ([ADR 0035](adr/0035-adopt-watch-file-resources.md)).
+
+Then remove those objects from the watch file, or drop `--watches` from the start command. Until you
+do, Angelia starts normally, skips them in the file and logs one `WARN` line each
+(`watch file entry skipped`).
 
 ## Design
 

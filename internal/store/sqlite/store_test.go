@@ -293,8 +293,8 @@ func TestUpgradeMigrationOnPopulatedDB(t *testing.T) {
 
 	applied, err := migrate(ctx, db, discard(), 0)
 	must(t, err)
-	if applied != 7 { // 00016 to 00022
-		t.Fatalf("applied %d migrations, want 7", applied)
+	if applied != 8 { // 00016 to 00023
+		t.Fatalf("applied %d migrations, want 8", applied)
 	}
 	var idx int // 00018 adds the lease order index (story #232)
 	must(t, db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'delivery_status_next_attempt_at_id'`).Scan(&idx))

@@ -245,6 +245,22 @@ const (
 	ManagedByFile = "file"
 )
 
+// Kinds of config rows, as an adoption names them.
+const (
+	KindSink         = "sink"
+	KindWatch        = "watch"
+	KindSubscription = "subscription"
+)
+
+// Adoption records a watch-file row an admin handed over to the API (POST
+// /v1/adoptions, spec docs/api.md item 55). While the watch file still
+// declares Kind and Name, the file apply skips that entry.
+type Adoption struct {
+	Kind      string
+	Name      string
+	AdoptedAt time.Time
+}
+
 // ConfigTx is the unit of work of a declarative file apply (docs/watch-file.md
 // section 4). Every write belongs to one transaction.
 type ConfigTx interface {
@@ -313,6 +329,16 @@ type ConfigTx interface {
 	// LastError reason and clears the end of its hold. ErrNotFound when it is
 	// not one.
 	FailHeldDelivery(ctx context.Context, id, reason string, now time.Time) error
+	// AdoptRow changes the owner of the row of kind (KindSink, KindWatch or
+	// KindSubscription) with this id from file to api, in place, and records
+	// the adoption of name at now (replacing an older record). ErrNotFound
+	// when no file row of that kind has the id; ErrInvalid for another kind.
+	AdoptRow(ctx context.Context, kind, id, name string, now time.Time) error
+	// ListAdoptions returns every adoption record, by kind and name.
+	ListAdoptions(ctx context.Context) ([]Adoption, error)
+	// DeleteAdoption forgets the adoption of kind and name; no error when
+	// there is none.
+	DeleteAdoption(ctx context.Context, kind, name string) error
 }
 
 // TargetLeaseName is the name of the lease a scheduler holds on a target

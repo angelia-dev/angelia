@@ -1,9 +1,14 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `dbb439e` ("feat(openapi): API gaps found by the admin UI
-(spec 0.9.0) (#20)") on the spec repository's `main`.
-Since spec 0.8.0, spec 0.9.0 adds `order=desc` and `before` to `listEvents` with
+`openapi/angelia.v1.yaml` is at commit `da75b65` ("feat(openapi): adopt watch-file resources with POST
+/v1/adoptions (spec 0.10.0) (#21)") on the spec repository's `main`.
+Since spec 0.9.0, spec 0.10.0 adds `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
+`AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
+description (spec docs/api.md item 55). The MCP tool contract and the event schemas are unchanged by
+0.10.0.
+Before that, spec 0.9.0 (commit `dbb439e`, "feat(openapi): API gaps found by the admin UI (spec 0.9.0)
+(#20)"), since spec 0.8.0, added `order=desc` and `before` to `listEvents` with
 `EventPage.next_before`; the `sink`, `since` and `until` filters of `listDeliveries` and
 `Delivery.sink`; `listAccess` (`GET /v1/access`, `admin`); `Me.session_id`; `ETag` on `GET` and `PUT`
 of watches, sinks and subscriptions with the optional `If-Match` and `If-None-Match: *` headers and the

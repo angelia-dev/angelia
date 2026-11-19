@@ -16,6 +16,48 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for AdoptedObjectKind.
+const (
+	AdoptedObjectKindSink         AdoptedObjectKind = "sink"
+	AdoptedObjectKindSubscription AdoptedObjectKind = "subscription"
+	AdoptedObjectKindWatch        AdoptedObjectKind = "watch"
+)
+
+// Valid indicates whether the value is a known member of the AdoptedObjectKind enum.
+func (e AdoptedObjectKind) Valid() bool {
+	switch e {
+	case AdoptedObjectKindSink:
+		return true
+	case AdoptedObjectKindSubscription:
+		return true
+	case AdoptedObjectKindWatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdoptionObjectKind.
+const (
+	AdoptionObjectKindSink         AdoptionObjectKind = "sink"
+	AdoptionObjectKindSubscription AdoptionObjectKind = "subscription"
+	AdoptionObjectKindWatch        AdoptionObjectKind = "watch"
+)
+
+// Valid indicates whether the value is a known member of the AdoptionObjectKind enum.
+func (e AdoptionObjectKind) Valid() bool {
+	switch e {
+	case AdoptionObjectKindSink:
+		return true
+	case AdoptionObjectKindSubscription:
+		return true
+	case AdoptionObjectKindWatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Bump.
 const (
 	Major Bump = "major"
@@ -457,6 +499,44 @@ type AccessList struct {
 	Items []AccessEntry `json:"items"`
 }
 
+// AdoptedObject defines model for AdoptedObject.
+type AdoptedObject struct {
+	// Id ULID: 26 characters, Crockford base32, upper case.
+	Id   Ulid              `json:"id"`
+	Kind AdoptedObjectKind `json:"kind"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+}
+
+// AdoptedObjectKind defines model for AdoptedObject.Kind.
+type AdoptedObjectKind string
+
+// AdoptionObject One resource to adopt, by kind and name.
+type AdoptionObject struct {
+	Kind AdoptionObjectKind `json:"kind"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+}
+
+// AdoptionObjectKind defines model for AdoptionObject.Kind.
+type AdoptionObjectKind string
+
+// AdoptionRequest The watch-file resources to hand over to the API.
+type AdoptionRequest struct {
+	// DryRun Check the request and say what would be adopted, without changing anything.
+	DryRun  *bool            `json:"dry_run,omitempty"`
+	Objects []AdoptionObject `json:"objects"`
+}
+
+// AdoptionResult defines model for AdoptionResult.
+type AdoptionResult struct {
+	// Adopted The adopted resources (or, with `dry_run`, those that would be), sinks first, then watches, then subscriptions, each by name.
+	Adopted []AdoptedObject `json:"adopted"`
+	DryRun  bool            `json:"dry_run"`
+}
+
 // Bump defines model for Bump.
 type Bump string
 
@@ -671,7 +751,8 @@ type Labels map[string]string
 
 // ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 // created from a watch file loaded with `angelia serve --watches`; the API reads it but
-// refuses to change or delete it (`409 managed-by-file`).
+// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+// `POST /v1/adoptions`, which makes it `api`.
 type ManagedBy string
 
 // Me The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token.
@@ -1057,7 +1138,8 @@ type Sink struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
@@ -1128,7 +1210,8 @@ type Subscription struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
@@ -1419,7 +1502,8 @@ type Watch struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
@@ -1954,6 +2038,9 @@ type ListWatchVersionsParams struct {
 	// Yanked Only yanked versions (`true`) or only versions that are not yanked (`false`). Absent means both.
 	Yanked *bool `form:"yanked,omitempty" json:"yanked,omitempty"`
 }
+
+// AdoptResourcesJSONRequestBody defines body for AdoptResources for application/json ContentType.
+type AdoptResourcesJSONRequestBody = AdoptionRequest
 
 // PutConsumerJSONRequestBody defines body for PutConsumer for application/json ContentType.
 type PutConsumerJSONRequestBody = ConsumerWrite
@@ -2530,6 +2617,9 @@ type ServerInterface interface {
 	// ListAccess List the admin UI's access list
 	// (GET /v1/access)
 	ListAccess(w http.ResponseWriter, r *http.Request)
+	// AdoptResources Hand watch-file resources over to the API
+	// (POST /v1/adoptions)
+	AdoptResources(w http.ResponseWriter, r *http.Request)
 	// ListConsumers List consumers
 	// (GET /v1/consumers)
 	ListConsumers(w http.ResponseWriter, r *http.Request, params ListConsumersParams)
@@ -2656,6 +2746,12 @@ type Unimplemented struct{}
 // ListAccess List the admin UI's access list
 // (GET /v1/access)
 func (_ Unimplemented) ListAccess(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AdoptResources Hand watch-file resources over to the API
+// (POST /v1/adoptions)
+func (_ Unimplemented) AdoptResources(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2907,6 +3003,20 @@ func (siw *ServerInterfaceWrapper) ListAccess(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAccess(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AdoptResources operation middleware
+func (siw *ServerInterfaceWrapper) AdoptResources(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AdoptResources(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5017,6 +5127,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/replays", wrapper.CreateReplay)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/adoptions", wrapper.AdoptResources)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/plugins", wrapper.ListPlugins)
 	})
 	r.Group(func(r chi.Router) {
@@ -5096,6 +5209,14 @@ type ListAccessRequestObject struct {
 
 type ListAccessResponseObject interface {
 	VisitListAccessResponse(w http.ResponseWriter) error
+}
+
+type AdoptResourcesRequestObject struct {
+	Body *AdoptResourcesJSONRequestBody
+}
+
+type AdoptResourcesResponseObject interface {
+	VisitAdoptResourcesResponse(w http.ResponseWriter) error
 }
 
 type ListConsumersRequestObject struct {
@@ -5433,6 +5554,9 @@ type StrictServerInterface interface {
 	// ListAccess List the admin UI's access list
 	// (GET /v1/access)
 	ListAccess(ctx context.Context, request ListAccessRequestObject) (ListAccessResponseObject, error)
+	// AdoptResources Hand watch-file resources over to the API
+	// (POST /v1/adoptions)
+	AdoptResources(ctx context.Context, request AdoptResourcesRequestObject) (AdoptResourcesResponseObject, error)
 	// ListConsumers List consumers
 	// (GET /v1/consumers)
 	ListConsumers(ctx context.Context, request ListConsumersRequestObject) (ListConsumersResponseObject, error)
@@ -5608,6 +5732,37 @@ func (sh *strictHandler) ListAccess(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListAccessResponseObject); ok {
 		if err := validResponse.VisitListAccessResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AdoptResources operation middleware
+func (sh *strictHandler) AdoptResources(w http.ResponseWriter, r *http.Request) {
+	var request AdoptResourcesRequestObject
+
+	var body AdoptResourcesJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AdoptResources(ctx, request.(AdoptResourcesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AdoptResources")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AdoptResourcesResponseObject); ok {
+		if err := validResponse.VisitAdoptResourcesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

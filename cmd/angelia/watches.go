@@ -89,6 +89,10 @@ func applyWatchFile(ctx context.Context, cfg *config.Config, path string, log *s
 		log.Warn(w)
 	}
 	for _, c := range plan.Changes {
+		if c.Action == watchfile.Skip {
+			log.Warn("watch file entry skipped", "kind", c.Kind, "name", c.Name, "detail", c.Detail)
+			continue
+		}
 		if c.Action != watchfile.Unchanged {
 			log.Info("watch file applied", "action", string(c.Action), "kind", c.Kind, "name", c.Name, "detail", c.Detail)
 		}

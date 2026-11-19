@@ -608,3 +608,22 @@ ON CONFLICT (provider, login) DO NOTHING;
 
 -- name: GetUIIdentityPin :one
 SELECT subject FROM ui_identity_pin WHERE provider = $1 AND login = $2;
+
+-- name: AdoptWatch :execrows
+UPDATE watch SET managed_by = 'api' WHERE id = $1 AND managed_by = 'file';
+
+-- name: AdoptSink :execrows
+UPDATE sink SET managed_by = 'api' WHERE id = $1 AND managed_by = 'file';
+
+-- name: AdoptSubscription :execrows
+UPDATE subscription SET managed_by = 'api' WHERE id = $1 AND managed_by = 'file';
+
+-- name: RecordAdoption :exec
+INSERT INTO adoption (kind, name, adopted_at) VALUES ($1, $2, $3)
+ON CONFLICT (kind, name) DO UPDATE SET adopted_at = excluded.adopted_at;
+
+-- name: ListAdoptions :many
+SELECT * FROM adoption ORDER BY kind, name;
+
+-- name: DeleteAdoption :execrows
+DELETE FROM adoption WHERE kind = $1 AND name = $2;

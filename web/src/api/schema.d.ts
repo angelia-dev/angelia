@@ -648,6 +648,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/adoptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hand watch-file resources over to the API
+         * @description Changes the owner of each listed resource from `file` to `api`, in place and in one
+         *     transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+         *     its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+         *     (and the admin UI) can change and delete it like any API resource.
+         *
+         *     The instance remembers each adopted name. While the watch file still declares an entry
+         *     of that kind and name, the startup apply skips it with a warning instead of failing on
+         *     the name, so the process keeps starting until the operator removes the entry from the
+         *     file. Once the file no longer declares it, the name is forgotten.
+         *
+         *     The request is all or nothing. Each object must exist and be managed by the file
+         *     (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+         *     a subscription can be adopted only with its sink (in the same request, or a sink already
+         *     managed by the API), and a sink only with every file subscription that uses it.
+         *     Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+         *     the response says what would be adopted. An adoption is recorded in the audit log.
+         */
+        post: operations["adoptResources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/plugins": {
         parameters: {
             query?: never;
@@ -942,7 +977,8 @@ export interface components {
         /**
          * @description Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
          *     created from a watch file loaded with `angelia serve --watches`; the API reads it but
-         *     refuses to change or delete it (`409 managed-by-file`).
+         *     refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+         *     `POST /v1/adoptions`, which makes it `api`.
          * @enum {string}
          */
         ManagedBy: "api" | "file";
@@ -1579,6 +1615,32 @@ export interface components {
              */
             dry_run: boolean;
         } | unknown | unknown;
+        /** @description One resource to adopt, by kind and name. */
+        AdoptionObject: {
+            /** @enum {string} */
+            kind: "sink" | "watch" | "subscription";
+            name: components["schemas"]["Name"];
+        };
+        /** @description The watch-file resources to hand over to the API. */
+        AdoptionRequest: {
+            objects: components["schemas"]["AdoptionObject"][];
+            /**
+             * @description Check the request and say what would be adopted, without changing anything.
+             * @default false
+             */
+            dry_run: boolean;
+        };
+        AdoptedObject: {
+            /** @enum {string} */
+            kind: "sink" | "watch" | "subscription";
+            name: components["schemas"]["Name"];
+            id: components["schemas"]["Ulid"];
+        };
+        AdoptionResult: {
+            dry_run: boolean;
+            /** @description The adopted resources (or, with `dry_run`, those that would be), sinks first, then watches, then subscriptions, each by name. */
+            adopted: components["schemas"]["AdoptedObject"][];
+        };
         ReplayResult: {
             /** @description How many deliveries were queued again (or would be). */
             replayed: number;
@@ -3712,6 +3774,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplayResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    adoptResources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptionRequest"];
+            };
+        };
+        responses: {
+            /** @description What was adopted (or, with `dry_run`, what would be). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdoptionResult"];
                 };
             };
             400: components["responses"]["BadRequest"];

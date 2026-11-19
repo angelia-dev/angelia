@@ -44,12 +44,15 @@ function toggle<T>(list: T[], item: T, on: boolean): T[] {
  */
 export function SubscriptionForm({
   initial,
+  prefill,
   etag,
   onReload,
   onDone,
   onCancel,
 }: {
   initial?: Subscription
+  /** Starting values of a new subscription (the Configure board's cords); ignored with `initial`. */
+  prefill?: Partial<SubscriptionFormState>
   etag?: string
   onReload?: () => void
   onDone: () => void
@@ -62,7 +65,9 @@ export function SubscriptionForm({
   const canPreview = !!me.data && hasRole(me.data, 'admin')
   const sinks = useAllSinks()
   const sources = usePlugins('source')
-  const [form, setForm] = useState<SubscriptionFormState>(() => (initial ? subscriptionToForm(initial) : emptySubscriptionForm()))
+  const [form, setForm] = useState<SubscriptionFormState>(() =>
+    initial ? subscriptionToForm(initial) : { ...emptySubscriptionForm(), ...prefill },
+  )
   const [clientErrors, setClientErrors] = useState<FieldErrors>({})
   const set = (patch: Partial<SubscriptionFormState>) => setForm((f) => ({ ...f, ...patch }))
 

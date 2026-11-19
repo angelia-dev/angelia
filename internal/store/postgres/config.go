@@ -394,3 +394,42 @@ func (o txOps) FailHeldDelivery(ctx context.Context, id, reason string, now time
 }
 
 var _ store.ConfigTx = txOps{}
+
+// AdoptRow implements [store.ConfigTx].
+func (o txOps) AdoptRow(ctx context.Context, kind, id, name string, now time.Time) error {
+	var n int64
+	var err error
+	switch kind {
+	case store.KindSink:
+		n, err = o.q.AdoptSink(ctx, id)
+	case store.KindWatch:
+		n, err = o.q.AdoptWatch(ctx, id)
+	case store.KindSubscription:
+		n, err = o.q.AdoptSubscription(ctx, id)
+	default:
+		return fmt.Errorf("store: adopt %s %s: %w: unknown kind", kind, id, store.ErrInvalid)
+	}
+	if err := deleted(n, err, "adopt "+kind, id); err != nil {
+		return err
+	}
+	return wrap(o.q.RecordAdoption(ctx, RecordAdoptionParams{Kind: kind, Name: name, AdoptedAt: millis(now)}), "record adoption", kind+" "+name)
+}
+
+// ListAdoptions implements [store.ConfigTx].
+func (o txOps) ListAdoptions(ctx context.Context) ([]store.Adoption, error) {
+	rows, err := o.q.ListAdoptions(ctx)
+	if err != nil {
+		return nil, wrap(err, "list adoptions", "")
+	}
+	out := make([]store.Adoption, len(rows))
+	for i, r := range rows {
+		out[i] = store.Adoption{Kind: r.Kind, Name: r.Name, AdoptedAt: time.UnixMilli(r.AdoptedAt).UTC()}
+	}
+	return out, nil
+}
+
+// DeleteAdoption implements [store.ConfigTx].
+func (o txOps) DeleteAdoption(ctx context.Context, kind, name string) error {
+	_, err := o.q.DeleteAdoption(ctx, DeleteAdoptionParams{Kind: kind, Name: name})
+	return wrap(err, "delete adoption", kind+" "+name)
+}

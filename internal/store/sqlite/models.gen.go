@@ -8,6 +8,12 @@ import (
 	"database/sql"
 )
 
+type Adoption struct {
+	Kind      string
+	Name      string
+	AdoptedAt int64
+}
+
 type ApiToken struct {
 	ID         string
 	Name       string
