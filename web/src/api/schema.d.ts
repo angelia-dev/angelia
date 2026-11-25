@@ -1896,6 +1896,83 @@ export interface components {
             timeout: components["schemas"]["Duration"];
         } & ((unknown | unknown) & unknown);
         /**
+         * @description The `config` of an `mqtt` sink: it publishes each matching release event to one MQTT
+         *     broker (MQTT 3.1.1, publish only). Documentation of the built-in kind; the server
+         *     validates against the kind's `config_schema`.
+         *
+         *     **One connection per attempt.** Each delivery attempt opens a connection, sends
+         *     `CONNECT` (clean session, a fresh client id made of `client_id_prefix` and random
+         *     characters), `PUBLISH` and `DISCONNECT`, and closes it. The payload is the rendered
+         *     message: the CloudEvents JSON of the event by default (structured mode, the only mode
+         *     of the CloudEvents MQTT binding for MQTT 3.1.1, which has no headers), or the output of
+         *     the subscription's template. `topic` is a template rendered with the same context; the
+         *     result must be valid UTF-8, 1 to 1024 bytes, without `+`, `#` or U+0000, and must not
+         *     start with `$`. A bad result is a permanent delivery error.
+         *
+         *     **What "delivered" means.** With `qos: 1` (the default) an attempt succeeds when the
+         *     broker answers the `PUBLISH` with `PUBACK`. With `qos: 0` it succeeds once `PUBLISH`
+         *     and `DISCONNECT` were written to the connection: the broker confirms nothing. QoS 2 is
+         *     not offered. MQTT 3.1.1 has no reason code on `PUBACK`: a broker that denies a publish
+         *     by ACL may still acknowledge it (Mosquitto does) or close the connection, so a denied
+         *     publish can look delivered. Delivery is at least once, as for every sink: a `PUBACK`
+         *     lost on the way back means the event is published again on the retry. Consumers
+         *     deduplicate on the CloudEvents `id` in the payload.
+         *
+         *     **Errors.** `CONNACK` return codes 1 (unacceptable protocol version), 4 (bad user name
+         *     or password) and 5 (not authorized), a host refused by the SSRF guard, a refused
+         *     plaintext host and a topic that fails to render are permanent. `CONNACK` 2 and 3, a
+         *     refused, reset or timed-out connection, a failed TLS handshake, no `CONNACK` or
+         *     `PUBACK` before the timeout, a protocol error and an unset password variable are
+         *     retried. `last_error` names the scheme, host and port and the class of the failure,
+         *     never the user name, the password, the topic or the payload.
+         *
+         *     **Transport.** `mqtts://` (default port 8883) uses TLS 1.2 or later, verified against
+         *     the system roots plus the instance's `http.ca_file`; verification cannot be switched
+         *     off. `mqtt://` (default port 1883, cleartext) is accepted only for a host listed in the
+         *     instance's `http.allow_http_hosts`, checked at every delivery. The broker must be
+         *     reachable directly: the HTTP proxy (`HTTPS_PROXY`) does not apply, and MQTT over
+         *     WebSockets is not supported. Every connection goes through the SSRF guard on the address
+         *     actually connected; a broker on a private network needs the instance's
+         *     `http.allow_networks`, as a private webhook does. The per-host rate limits of
+         *     `http.host_limits` apply to the broker host.
+         */
+        MqttSinkConfig: {
+            /**
+             * Format: uri
+             * @description The broker, `mqtts://host[:port]` or `mqtt://host[:port]`, with no userinfo, path, query or fragment. A stored password bound to hosts (`password_ref`) is checked against this host and port (8883 for `mqtts`, 1883 for `mqtt` when no port is written), so bind it with an explicit port.
+             */
+            url: string;
+            /** @description The topic to publish to, a template (ADR 0016, core repository) with the context of a subscription template, such as `angelia/{{.data.source}}/{{.data.package}}`. 1 to 1024 bytes. The rendered topic must be 1 to 1024 bytes of valid UTF-8 without `+`, `#` or U+0000, and must not start with `$`. */
+            topic: string;
+            /**
+             * @description MQTT quality of service of the `PUBLISH`. `1` (at least once) succeeds on `PUBACK`; `0` (at most once) succeeds once the packet is written.
+             * @default 1
+             * @enum {integer}
+             */
+            qos: 0 | 1;
+            /**
+             * @description Sets the retain flag, so the broker keeps the last message of the topic for new subscribers.
+             * @default false
+             */
+            retain: boolean;
+            /** @description User name sent in `CONNECT`. Not a secret, but never put in an error or a log line. 1 to 255 bytes. */
+            username?: string;
+            /** @description Name of an environment variable of the instance that holds the password. At most one of `password_env` and `password_ref`, and only with `username`. Over `mqtt://` the password is sent in cleartext, and `config check` warns. */
+            password_env?: string;
+            /** @description Name of a stored secret (`/v1/secrets`) that holds the password. At most one of `password_env` and `password_ref`, and only with `username`. */
+            password_ref?: string;
+            /**
+             * @description The start of the client id of each connection; random letters and digits complete it to 23 characters, the length every MQTT 3.1.1 broker must accept.
+             * @default angelia
+             */
+            client_id_prefix: string;
+            /**
+             * @description Per-attempt timeout, `1s` to `2m`, covering the connection, the TLS handshake and the wait for `CONNACK` and `PUBACK`.
+             * @default 10s
+             */
+            timeout: components["schemas"]["Duration"];
+        };
+        /**
          * @description The `config` of a `shoutrrr` sink: it sends a plain-text message to one chat or push
          *     service through the shoutrrr library (ADR 0026, core repository). Documentation of the
          *     built-in kind; the server validates against the kind's `config_schema`.
