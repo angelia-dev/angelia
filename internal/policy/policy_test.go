@@ -76,7 +76,7 @@ func TestDecodeInvalid(t *testing.T) {
 		"cooldown too long":   `{"cooldown":"8761h"}`,
 		"constraint syntax":   `{"constraint":">="}`,
 		"constraint newline":  `{"constraint":">=1\n<2"}`,
-		"scheme":              `{"scheme":"maven"}`,
+		"scheme":              `{"scheme":"debian"}`,
 		"baseline type":       `{"baseline":"yes"}`,
 		"not an object":       `["none"]`,
 		"trailing data":       `{} {}`,

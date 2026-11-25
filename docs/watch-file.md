@@ -66,7 +66,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
-| `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
+| `scheme` | string | no | by source kind | one of `semver`, `pep440`, `maven`, `calver`, `lexical` (#68, #96) |
 | `labels` | map string to string | no | `{}` | at most 32 entries; key `^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`, value at most 253 characters, no control characters |
 | `policy` | policy | no | all defaults | section 2.3 |
 
@@ -81,8 +81,8 @@ also across owners: apply refuses a name that a row created through the API alre
   it was created for and is refused if the name later becomes a source of another kind
   ([private-registries.md](private-registries.md#what-a-name-is-bound-to)).
 - `scheme` overrides the default chosen by source kind (`internal/version/schemes.ForSourceKind`).
-  The loader checks the value against `schemes.Names()`, so it accepts `calver` as soon as #68 merges.
-  `maven` is not accepted (Phase 1).
+  The loader checks the value against `schemes.Names()`: `calver` since #68, `maven` (Maven's
+  `ComparableVersion` order, ADR 0007 addendum) since #96.
 - Two watches may point at the same `source` + `coordinates`; they share one target (coalescing,
   architecture.md section 3.2) and differ only by labels, scheme and policy. The target's interval is the
   smallest interval among the watches that use it.
@@ -343,7 +343,7 @@ Details:
 3. architecture.md section 3.4 says policy applies "per watch or subscription"; the watch carries the
    full policy, a subscription only the narrowing keys of section 2.6 (D6, amended by #69).
 4. The store had no `name`, `managed_by` or `interval` columns; migration 00004 adds them (section 3).
-5. PRD F3 lists Maven as a scheme; #68 added calver and not Maven. The `scheme` enum follows #68.
+5. PRD F3 lists Maven as a scheme; #68 added calver, #96 added `maven`. The `scheme` enum follows them.
 6. `schemes.Names()` now lists `calver`, so `scheme: calver` is accepted.
 
 ## 6. JSON Schema
