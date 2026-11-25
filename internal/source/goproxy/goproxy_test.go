@@ -63,7 +63,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	code := p.codes[r.URL.Path]
 	p.mu.Unlock()
 	switch {
-	case code == http.StatusTooManyRequests:
+	case code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable:
 		w.Header().Set("Retry-After", "120")
 		http.Error(w, "slow down", code)
 	case code != 0:
@@ -130,7 +130,7 @@ func libProxy(t testing.TB) *proxy {
 
 func newSource(t testing.TB, srv *httptest.Server, base string, buf *bytes.Buffer) *goproxy.Source {
 	t.Helper()
-	var h slog.Handler = slog.DiscardHandler
+	h := slog.Handler(slog.DiscardHandler)
 	if buf != nil {
 		h = slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	}
@@ -368,6 +368,21 @@ func TestLookupFailures(t *testing.T) {
 		}
 		if !strings.Contains(res.State.Cursor, "v1.3.0") {
 			t.Errorf("cursor %q did not take the version", res.State.Cursor)
+		}
+	})
+	t.Run("503 with Retry-After leaves the version undated", func(t *testing.T) {
+		p, srv := setup(t)
+		p.fail(newVer, http.StatusServiceUnavailable)
+		var buf bytes.Buffer
+		res, err := newSource(t, srv, "", &buf).List(t.Context(), target(capMod), source.FetchState{Cursor: base})
+		if err != nil {
+			t.Fatalf("a 5xx with Retry-After failed the call: %v", err)
+		}
+		if res.Versions[0].Raw != "v1.3.0" || !res.Versions[0].PublishedAt.IsZero() {
+			t.Errorf("v1.3.0 = %+v", res.Versions[0])
+		}
+		if !strings.Contains(buf.String(), "level=WARN") {
+			t.Errorf("log = %q, want a WARN", buf.String())
 		}
 	})
 	t.Run("404 of .info leaves the version undated", func(t *testing.T) {

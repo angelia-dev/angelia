@@ -72,8 +72,8 @@ func TestGoProxyInstanceWithPathAndBasicAuth(t *testing.T) {
 	e.put(t, "go-password", regCanary, hostOf(t, srv.URL))
 	cfg := config.Default()
 	cfg.Sources["goproxy-corp"] = config.Source{Kind: "go-proxy", BaseURL: srv.URL + prefix, Auth: config.SourceAuth{Type: config.AuthBasic, Username: "ci-bot", PasswordRef: "go-password"}}
-	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
-	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8", "::1/128")
+	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1", "::1")
 
 	reg := e.registry(t, cfg)
 	src, err := reg.Get("goproxy-corp")
@@ -103,8 +103,8 @@ func TestGoProxyTokenEnvIsBearer(t *testing.T) {
 	}
 	cfg.Sources["goproxy-corp"] = config.Source{Kind: "go-proxy", BaseURL: srv.URL, TokenEnv: "GOPROXY_TEST_TOKEN"} //nolint:gosec // G101: an environment variable name
 	cfg.Tokens["goproxy-corp"] = secrets.NewValueString(regCanary)
-	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
-	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8", "::1/128")
+	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1", "::1")
 	e := newRegEnv(t)
 	src, err := e.registry(t, cfg).Get("goproxy-corp")
 	if err != nil {
@@ -186,8 +186,8 @@ func TestGoProxyWatchFileEvents(t *testing.T) {
 		e := newRegEnv(t)
 		cfg := config.Default()
 		cfg.Sources["goproxy-corp"] = config.Source{Kind: "go-proxy", BaseURL: srv.URL}
-		cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
-		cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+		cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8", "::1/128")
+		cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1", "::1")
 		reg := e.registry(t, cfg)
 		f, err := parseWatchFile(cfg, writeFile(t, "w.yaml", `version: 1
 sinks:
@@ -288,8 +288,8 @@ func TestGoProxyRetractionEmitsYanked(t *testing.T) {
 	e := newRegEnv(t)
 	cfg := config.Default()
 	cfg.Sources["goproxy-corp"] = config.Source{Kind: "go-proxy", BaseURL: srv.URL}
-	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
-	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8", "::1/128")
+	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1", "::1")
 	reg := e.registry(t, cfg)
 	f, err := parseWatchFile(cfg, writeFile(t, "w.yaml", `version: 1
 sinks:

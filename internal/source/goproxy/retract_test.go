@@ -3,6 +3,7 @@ package goproxy_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -236,7 +237,7 @@ func TestLatestFallbacks(t *testing.T) {
 // A go.mod that cannot be read keeps the retractions of the cursor, and is
 // asked for again; one that cannot be parsed is not.
 func TestGoModFailures(t *testing.T) {
-	known := func(t *testing.T, p *proxy, srv *httptest.Server) source.FetchState {
+	known := func(t *testing.T, srv *httptest.Server) source.FetchState {
 		res, err := newSource(t, srv, "", nil).List(t.Context(), dbTarget(), source.FetchState{})
 		if err != nil {
 			t.Fatal(err)
@@ -251,7 +252,7 @@ func TestGoModFailures(t *testing.T) {
 		p := dbProxy(t)
 		srv := httptest.NewServer(p)
 		defer srv.Close()
-		st := known(t, p, srv)
+		st := known(t, srv)
 		newLatest(p)
 		p.fail(dbPrefix+"v1.14.54.mod", http.StatusBadGateway)
 		var buf bytes.Buffer
@@ -284,7 +285,7 @@ func TestGoModFailures(t *testing.T) {
 		p := dbProxy(t)
 		srv := httptest.NewServer(p)
 		defer srv.Close()
-		st := known(t, p, srv)
+		st := known(t, srv)
 		newLatest(p)
 		p.set(dbPrefix+"v1.14.54.mod", "module (\nretract [\n")
 		var buf bytes.Buffer
@@ -304,11 +305,52 @@ func TestGoModFailures(t *testing.T) {
 			t.Error("a malformed go.mod was asked for again")
 		}
 	})
+	t.Run("too large go.mod keeps the retractions", func(t *testing.T) {
+		p := dbProxy(t)
+		srv := httptest.NewServer(p)
+		defer srv.Close()
+		st := known(t, srv)
+		newLatest(p)
+		p.set(dbPrefix+"v1.14.54.mod", "module example.test/db/sqlite\n// "+strings.Repeat("x", 1<<20)+"\n")
+		var buf bytes.Buffer
+		res, err := newSource(t, srv, "", &buf).List(t.Context(), dbTarget(), st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !versionsByRaw(res.Versions)["v2.0.0+incompatible"].Yanked || !strings.Contains(buf.String(), "level=WARN") {
+			t.Errorf("the old retractions were not kept, log %q", buf.String())
+		}
+		if !strings.Contains(res.State.Cursor, `"latest":"v1.14.53"`) {
+			t.Errorf("cursor %q moved to the rejected go.mod", res.State.Cursor)
+		}
+	})
+	t.Run("retract intervals are capped", func(t *testing.T) {
+		p := dbProxy(t)
+		var mod strings.Builder
+		mod.WriteString("module example.test/db/sqlite\n")
+		for i := 0; i < 1500; i++ {
+			fmt.Fprintf(&mod, "retract v9.%d.0\n", i)
+		}
+		p.set(dbPrefix+"v1.14.53.mod", mod.String())
+		srv := httptest.NewServer(p)
+		defer srv.Close()
+		var buf bytes.Buffer
+		res, err := newSource(t, srv, "", &buf).List(t.Context(), dbTarget(), source.FetchState{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(res.State.Cursor, `"low"`); n != 1000 {
+			t.Errorf("%d intervals kept, want 1000", n)
+		}
+		if n := strings.Count(buf.String(), "level=WARN"); n != 1 {
+			t.Errorf("%d warnings, want one: %q", n, buf.String())
+		}
+	})
 	t.Run("@latest 5xx keeps the retractions", func(t *testing.T) {
 		p := dbProxy(t)
 		srv := httptest.NewServer(p)
 		defer srv.Close()
-		st := known(t, p, srv)
+		st := known(t, srv)
 		p.fail(dbLatest, http.StatusInternalServerError)
 		var buf bytes.Buffer
 		res, err := newSource(t, srv, "", &buf).List(t.Context(), dbTarget(), st)

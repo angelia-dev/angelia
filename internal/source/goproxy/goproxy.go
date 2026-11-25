@@ -89,6 +89,10 @@ const (
 	// maxNoteLen bounds a retraction rationale or deprecation message kept
 	// in Metadata and in the cursor.
 	maxNoteLen = 256
+	// maxModBytes bounds a go.mod read from the proxy, and maxRetractIntervals
+	// the retract intervals kept from it: both come from an untrusted module.
+	maxModBytes         = 1 << 20
+	maxRetractIntervals = 1000
 )
 
 // Option configures a Source.
@@ -300,7 +304,7 @@ func (s *Source) retractions(ctx context.Context, mod, esc string, names []strin
 	}
 	escVer, err := module.EscapeVersion(latest)
 	if err != nil {
-		return next, nil // latest was validated; not reachable
+		return next, nil
 	}
 	body, err := s.get(ctx, s.base+"/"+esc+"/@v/"+escVer+".mod")
 	if err != nil {
@@ -311,6 +315,10 @@ func (s *Source) retractions(ctx context.Context, mod, esc string, names []strin
 		s.log.WarnContext(ctx, "go-proxy: go.mod lookup failed, keeping the known retractions", "module", mod, "version", latest)
 		return next, nil
 	}
+	if len(body) > maxModBytes {
+		s.log.WarnContext(ctx, "go-proxy: go.mod is too large, keeping the known retractions", "module", mod, "version", latest, "bytes", len(body))
+		return next, nil
+	}
 	next.Latest = latest
 	f, err := modfile.ParseLax("go.mod", body, nil)
 	if err != nil {
@@ -318,11 +326,19 @@ func (s *Source) retractions(ctx context.Context, mod, esc string, names []strin
 		return next, nil
 	}
 	next.Retracted, next.Deprecated = nil, ""
+	capped := false
 	for _, r := range f.Retract {
 		if !semver.IsValid(r.Low) || !semver.IsValid(r.High) {
 			continue
 		}
+		if len(next.Retracted) >= maxRetractIntervals {
+			capped = true
+			break
+		}
 		next.Retracted = append(next.Retracted, interval{Low: r.Low, High: r.High, Why: truncate(r.Rationale, maxNoteLen)})
+	}
+	if capped {
+		s.log.WarnContext(ctx, "go-proxy: go.mod has too many retract intervals, ignoring the rest", "module", mod, "version", latest, "max", maxRetractIntervals)
 	}
 	if f.Module != nil {
 		next.Deprecated = truncate(f.Module.Deprecated, maxNoteLen)
@@ -472,11 +488,12 @@ func (s *Source) get(ctx context.Context, u string) ([]byte, error) {
 }
 
 // isFatal reports whether a lookup error must fail List: a context error or a
-// rate limit (429, or a server that named a retry time).
+// rate limit (429, or a 403 that named a retry time). A 5xx with Retry-After is
+// not one: the lookup is skipped with a warning.
 func isFatal(ctx context.Context, err error) bool {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var se *netguard.StatusError
-	return errors.As(err, &se) && (se.StatusCode == http.StatusTooManyRequests || !se.RetryAt.IsZero())
+	return errors.As(err, &se) && (se.StatusCode == http.StatusTooManyRequests || (se.StatusCode == http.StatusForbidden && !se.RetryAt.IsZero()))
 }

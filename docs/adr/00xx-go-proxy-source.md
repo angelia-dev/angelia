@@ -1,6 +1,6 @@
 # ADR 00xx: The go-proxy source reads the GOPROXY protocol with golang.org/x/mod
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-25
 - **Story:** angelia-dev/angelia#95 (sub-stories 95-A and 95-B)
 
@@ -54,7 +54,7 @@ Both are kept in the cursor with the latest version. A listed version inside an 
 on every version. A yanked new version never emits, and the retraction of a known version becomes
 `release.yanked` through the existing yank path. If `@latest` is a 404, a 410 or a pseudo-version, the latest
 is the highest release of the list that is not `+incompatible` (else the highest version). If `@latest` or the
-`.mod` cannot be read (5xx), the previous retractions stay and the call logs a WARN, asking again next time;
+`.mod` cannot be read (5xx), the previous retractions stay and the call logs a WARN, asking again next time; a `.mod` over 1 MiB is skipped the same way, and at most 1000 retract intervals are kept (one WARN).
 a `.mod` that cannot be parsed logs a WARN and is not asked for again; a 429 or a cancelled context fails the
 call. A major-version module (`.../v2`) is a separate module and needs its own watch.
 
