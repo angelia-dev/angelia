@@ -70,6 +70,10 @@ type Config struct {
 	Timeout        string `json:"timeout,omitempty"`
 }
 
+// ValidClientIDPrefix reports whether s is a client_id_prefix: 1 to 15
+// letters or digits.
+func ValidClientIDPrefix(s string) bool { return clientIDPrefixRE.MatchString(s) }
+
 // CheckURL checks url: mqtts://host[:port] or mqtt://host[:port], with no
 // userinfo, path, query or fragment, and a host that is ASCII and, if an IP
 // address, in canonical form. The message never echoes the URL.
@@ -216,7 +220,7 @@ func parseConfig(raw sink.Config, deep bool) (parsed, error) {
 	p.password = p.PasswordEnv != "" || p.PasswordRef != ""
 	p.prefix = DefaultClientIDPrefix
 	if p.ClientIDPrefix != "" {
-		if !clientIDPrefixRE.MatchString(p.ClientIDPrefix) {
+		if !ValidClientIDPrefix(p.ClientIDPrefix) {
 			return p, invalid("client_id_prefix must be 1 to 15 letters or digits")
 		}
 		p.prefix = p.ClientIDPrefix

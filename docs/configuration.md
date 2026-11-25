@@ -142,7 +142,8 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   a prefix of length 0 (`0.0.0.0/0`, `::/0`) turns the guard off for that address family, and
   `config check` warns about it.
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
-  D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
+  D12), and the brokers an [`mqtt` sink](mqtt.md) may reach over plain `mqtt://`. Every other webhook URL
+  must be `https://`, every other broker `mqtts://`. Matching is by host name, case-insensitive.
 - Both lists live only here: the watch file and the REST API cannot widen them.
 - `angelia serve` builds one HTTP client from these keys, shared by the scheduler role (sources) and the
   dispatcher role (sinks): `allow_networks` is what both may dial. The webhook sink checks
@@ -166,9 +167,14 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   `http.allow_http_hosts` (`config check` rejects a credentialed source whose `base_url` is such an `http://`
   URL outside the list). See [Private registries and mirrors](private-registries.md#proxy).
 
-See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink
-and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
-secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
+See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink,
+[shoutrrr.md](shoutrrr.md) for the chat and push sink and [mqtt.md](mqtt.md) for the MQTT sink. A `shoutrrr` sink derives
+its HTTP origins from its URL secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
+
+**MQTT brokers** are reached over TCP, not HTTP, but through the same guard
+([ADR 0039](adr/0039-non-http-sinks-dial-through-netguard.md)): `http.allow_networks` opens a private broker, the
+address actually connected is checked (DNS rebinding), `http.host_limits` applies to the broker host, `http.ca_file`
+adds roots for `mqtts://`, and `HTTPS_PROXY` does not apply: brokers are dialled directly.
 
 ### Per-host rate limits
 

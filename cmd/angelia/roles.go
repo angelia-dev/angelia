@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
+	"github.com/angelia-dev/angelia/internal/sink/mqtt"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -222,10 +224,13 @@ func registryURL(cfg *config.Config) func(name string) string {
 	}
 }
 
-// builtinSinks returns the built-in sinks, sending through hc. A new
-// built-in kind is added here and to watchfile.SinkKinds (a test checks
-// that both list the same kinds).
-func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.Sink {
+// builtinSinks returns the built-in sinks, sending through the netguard
+// client nc: HTTP sinks through nc.HTTPClient, the mqtt sink through
+// nc.DialContext (ADR 0039) with roots, the instance pool (system roots
+// plus http.ca_file). A new built-in kind is added here and to
+// watchfile.SinkKinds (a test checks that both list the same kinds).
+func builtinSinks(cfg *config.Config, nc *netguard.Client, roots *x509.CertPool, log *slog.Logger) []sink.Sink {
+	hc := nc.HTTPClient()
 	return []sink.Sink{
 		// http.allow_http_hosts is checked at every delivery (ADR 0023,
 		// decided question 4 and D12).
@@ -234,6 +239,8 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// The dispatcher checks the origins it derives from the URL secret
 		// (ADR 0026 §2); the sink sends only to them.
 		shoutrrr.New(hc, shoutrrr.Options{}),
+		// Plain mqtt:// only for hosts of http.allow_http_hosts (D78).
+		mqtt.New(nc, mqtt.Options{RootCAs: roots, AllowPlaintextHosts: cfg.HTTP.AllowHTTPHosts}),
 	}
 }
 
@@ -335,7 +342,11 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	}
 	if withDispatcher {
 		reg := sink.NewRegistry()
-		for _, s := range builtinSinks(d.cfg, hc, d.log) {
+		roots, err := d.cfg.HTTP.LoadCAPool()
+		if err != nil {
+			return out, fmt.Errorf("sinks: %w", err)
+		}
+		for _, s := range builtinSinks(d.cfg, client, roots, d.log) {
 			if err := reg.Register(s); err != nil {
 				return out, err
 			}

@@ -22,6 +22,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/api"
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/netguard"
+	"github.com/angelia-dev/angelia/internal/sink/mqtt"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
@@ -408,7 +409,11 @@ func TestNetClientAllowNetworks(t *testing.T) {
 // new built-in kind plugs in through builtinSinks.
 func TestBuiltinSinksMatchWatchFileKinds(t *testing.T) {
 	var kinds []string
-	for _, s := range builtinSinks(&config.Config{}, &http.Client{Transport: http.DefaultTransport}, nil) {
+	nc, err := netguard.New(netguard.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range builtinSinks(&config.Config{}, nc, nil, nil) {
 		kinds = append(kinds, s.Kind())
 	}
 	slices.Sort(kinds)
@@ -489,6 +494,10 @@ func TestPipelineRolesWiring(t *testing.T) {
 	dest, err := api.SinkDestinations(d.plugins)
 	if err != nil || dest[webhook.Kind] != "/url" {
 		t.Fatalf("webhook destination = %v, %v", dest, err)
+	}
+	// A stored MQTT password bound to hosts is checked against url (ADR 0039).
+	if dest[mqtt.Kind] != "/url" {
+		t.Fatalf("mqtt destination = %q", dest[mqtt.Kind])
 	}
 }
 
