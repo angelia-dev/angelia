@@ -95,6 +95,14 @@ func (p *proxy) requests() []string {
 	return slices.Clone(p.reqs)
 }
 
+// lookups returns the requests that are not @latest or go.mod ones: the list
+// and the dates.
+func (p *proxy) lookups() []string {
+	return slices.DeleteFunc(p.requests(), func(r string) bool {
+		return strings.HasSuffix(r, "/@latest") || strings.HasSuffix(r, ".mod")
+	})
+}
+
 func (p *proxy) reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -106,12 +114,14 @@ func libProxy(t testing.TB) *proxy {
 	return &proxy{
 		codes: map[string]int{},
 		docs: map[string]string{
-			capPrefix + "list":              string(fixture(t, "team-lib.list")),
-			capPrefix + "v1.2.0.info":       string(fixture(t, "team-lib-v1.2.0.info")),
-			capPrefix + "v1.1.0.info":       string(fixture(t, "team-lib-v1.1.0.info")),
-			capPrefix + "v1.0.0.info":       `{"Version":"v1.0.0","Time":"2026-01-01T10:00:00Z"}`,
-			capPrefix + "v1.2.0-rc.1.info":  `{"Version":"v1.2.0-rc.1","Time":"2026-02-20T10:00:00Z"}`,
-			capPrefix + "v1.0.0-!r!c1.info": `{"Version":"v1.0.0-RC1","Time":"2025-12-01T10:00:00Z"}`,
+			capPrefix + "list":                 string(fixture(t, "team-lib.list")),
+			capPrefix + "v1.2.0.info":          string(fixture(t, "team-lib-v1.2.0.info")),
+			"/example.test/!team/!lib/@latest": string(fixture(t, "team-lib-v1.2.0.info")),
+			capPrefix + "v1.2.0.mod":           "module example.test/Team/Lib\n\ngo 1.22\n",
+			capPrefix + "v1.1.0.info":          string(fixture(t, "team-lib-v1.1.0.info")),
+			capPrefix + "v1.0.0.info":          `{"Version":"v1.0.0","Time":"2026-01-01T10:00:00Z"}`,
+			capPrefix + "v1.2.0-rc.1.info":     `{"Version":"v1.2.0-rc.1","Time":"2026-02-20T10:00:00Z"}`,
+			capPrefix + "v1.0.0-!r!c1.info":    `{"Version":"v1.0.0-RC1","Time":"2025-12-01T10:00:00Z"}`,
 			// A second, lower-case module: another module for Go.
 			"/example.test/team/lib/@v/list": "v0.1.0\n",
 		},
@@ -187,7 +197,7 @@ func TestCaseEncodingInRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{capPrefix + "list", capPrefix + "v1.0.0-!r!c1.info"}
-	if got := p.requests(); !slices.Equal(got, want) {
+	if got := p.lookups(); !slices.Equal(got, want) {
 		t.Fatalf("requests = %v, want %v", got, want)
 	}
 	for _, v := range res.Versions {
@@ -277,7 +287,7 @@ func TestEmptyListIsNotAnError(t *testing.T) {
 	if _, err := newSource(t, srv, "", nil).List(t.Context(), target(capMod), res.State); err != nil {
 		t.Fatal(err)
 	}
-	if got := p.requests(); len(got) != 2 {
+	if got := p.lookups(); len(got) != 2 {
 		t.Errorf("requests = %v, want list and one .info", got)
 	}
 }
@@ -294,7 +304,7 @@ func TestLookups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.requests(); len(got) != 1 {
+	if got := p.lookups(); len(got) != 1 {
 		t.Fatalf("first scan sent %v, want only the list", got)
 	}
 	for _, v := range res.Versions {
@@ -305,7 +315,7 @@ func TestLookups(t *testing.T) {
 	// Unchanged: one request.
 	p.reset()
 	res2, err := s.List(ctx, target(capMod), res.State)
-	if err != nil || len(p.requests()) != 1 || res2.State.Cursor != res.State.Cursor {
+	if err != nil || len(p.lookups()) != 1 || res2.State.Cursor != res.State.Cursor {
 		t.Fatalf("unchanged scan: requests %v, err %v, cursor %q vs %q", p.requests(), err, res2.State.Cursor, res.State.Cursor)
 	}
 	// A new version: one .info, dated.
@@ -316,8 +326,8 @@ func TestLookups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{capPrefix + "list", capPrefix + "v1.3.0.info"}; !slices.Equal(p.requests(), want) {
-		t.Fatalf("requests = %v, want %v", p.requests(), want)
+	if want := []string{capPrefix + "list", capPrefix + "v1.3.0.info"}; !slices.Equal(p.lookups(), want) {
+		t.Fatalf("requests = %v, want %v", p.lookups(), want)
 	}
 	if res3.Versions[0].Raw != "v1.3.0" || !res3.Versions[0].PublishedAt.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("newest = %+v", res3.Versions[0])
@@ -327,7 +337,7 @@ func TestLookups(t *testing.T) {
 	}
 	// An unreadable cursor counts as a first scan.
 	p.reset()
-	if _, err := s.List(ctx, target(capMod), source.FetchState{Cursor: "{nope"}); err != nil || len(p.requests()) != 1 {
+	if _, err := s.List(ctx, target(capMod), source.FetchState{Cursor: "{nope"}); err != nil || len(p.lookups()) != 1 {
 		t.Errorf("unreadable cursor: requests %v, err %v", p.requests(), err)
 	}
 }
@@ -421,7 +431,7 @@ func TestAtMost50Lookups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(p.requests()); got != 51 {
+	if got := len(p.lookups()); got != 51 {
 		t.Errorf("%d requests, want the list and 50 lookups", got)
 	}
 	dated := 0
@@ -435,7 +445,7 @@ func TestAtMost50Lookups(t *testing.T) {
 	}
 	// The cursor holds all 60: the 10 left undated are not looked up again.
 	p.reset()
-	if _, err := s.List(t.Context(), target(capMod), res.State); err != nil || len(p.requests()) != 1 {
+	if _, err := s.List(t.Context(), target(capMod), res.State); err != nil || len(p.lookups()) != 1 {
 		t.Errorf("second scan: %d requests, err %v", len(p.requests()), err)
 	}
 }
@@ -478,7 +488,7 @@ func TestBaseURLWithPath(t *testing.T) {
 	if err != nil || len(res.Versions) != 1 {
 		t.Fatalf("res %+v, err %v", res, err)
 	}
-	if got := p.requests(); !slices.Equal(got, []string{prefix + capPrefix + "list"}) {
+	if got := p.lookups(); !slices.Equal(got, []string{prefix + capPrefix + "list"}) {
 		t.Errorf("requests = %v", got)
 	}
 }
@@ -494,8 +504,8 @@ func TestEveryRequestUsesTheInjectedClient(t *testing.T) {
 	if _, err := goproxy.New(srv.URL, hc).List(t.Context(), target(capMod), source.FetchState{Cursor: `{"versions":["v1.0.0"]}`}); err != nil {
 		t.Fatal(err)
 	}
-	if n.Load() != 1+4 { // the list and four new versions
-		t.Errorf("injected client saw %d requests, want 5", n.Load())
+	if n.Load() != 1+1+1+4 { // list, @latest, go.mod and four new versions
+		t.Errorf("injected client saw %d requests, want 7", n.Load())
 	}
 }
 

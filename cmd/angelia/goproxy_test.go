@@ -258,3 +258,99 @@ watches:
 		srv.Close()
 	}
 }
+
+// A retraction in a later go.mod turns a known, emitted version yanked and
+// the check pipeline emits release.yanked for it (95-B).
+func TestGoProxyRetractionEmitsYanked(t *testing.T) {
+	var step atomic.Int32 // 0: v1.0.0; 1: and v1.1.0; 2: and v1.2.0, which retracts v1.1.0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const base = "/example.test/!team/!lib/"
+		n := step.Load()
+		latest := []string{"v1.0.0", "v1.1.0", "v1.2.0"}[n]
+		switch p := strings.TrimPrefix(r.URL.Path, base); {
+		case p == "@v/list":
+			_, _ = w.Write([]byte(strings.Join([]string{"v1.0.0", "v1.1.0", "v1.2.0"}[:n+1], "\n") + "\n"))
+		case p == "@latest":
+			_, _ = w.Write([]byte(`{"Version":"` + latest + `","Time":"2026-03-01T00:00:00Z"}`))
+		case p == "@v/"+latest+".mod":
+			mod := "module example.test/Team/Lib\n"
+			if n == 2 {
+				mod += "\nretract v1.1.0 // broken release\n"
+			}
+			_, _ = w.Write([]byte(mod))
+		case strings.HasSuffix(p, ".info"):
+			_, _ = w.Write([]byte(`{"Time":"2026-03-01T00:00:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	e := newRegEnv(t)
+	cfg := config.Default()
+	cfg.Sources["goproxy-corp"] = config.Source{Kind: "go-proxy", BaseURL: srv.URL}
+	cfg.HTTP.AllowNetworks = append(cfg.HTTP.AllowNetworks, "127.0.0.0/8")
+	cfg.HTTP.AllowHTTPHosts = append(cfg.HTTP.AllowHTTPHosts, "127.0.0.1")
+	reg := e.registry(t, cfg)
+	f, err := parseWatchFile(cfg, writeFile(t, "w.yaml", `version: 1
+sinks:
+  - {name: hook, kind: webhook, config: {url: 'https://hook.example.org/x', secret_env: HOOK_SECRET}}
+subscriptions:
+  - {name: all, sink: hook}
+watches:
+  - name: lib
+    source: goproxy-corp
+    coordinates: {module: example.test/Team/Lib}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := watchfile.Apply(t.Context(), e.st, f, watchfile.ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var tgt store.Target
+	err = e.st.InConfigTx(t.Context(), func(tx store.ConfigTx) (err error) {
+		tgt, err = tx.FindTarget(t.Context(), "goproxy-corp", map[string]string{"module": "example.test/Team/Lib"})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chk := &detect.Checker{
+		Store: e.st, Sources: reg, Instance: "test", RegistryURL: registryURL(cfg), Matcher: event.NewMatcherCache(),
+		Now: func() time.Time { return time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC) },
+	}
+	for i := range int32(3) {
+		step.Store(i)
+		if _, err := chk.Check(t.Context(), tgt); err != nil {
+			t.Fatalf("check %d: %v", i, err)
+		}
+	}
+	evs, err := e.st.ListEventsAfter(t.Context(), 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	var yankedVersion string
+	for _, ev := range evs {
+		types = append(types, ev.Type)
+		if ev.Type == "dev.angelia.release.yanked.v1" {
+			var p struct {
+				Data struct {
+					Version string `json:"version"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			yankedVersion = p.Data.Version
+		}
+	}
+	// v1.1.0 published, then v1.2.0 published and v1.1.0 yanked. v1.0.0 is
+	// the baseline: no event.
+	if yankedVersion != "v1.1.0" {
+		t.Fatalf("event types %v, yanked version %q, want a release.yanked for v1.1.0", types, yankedVersion)
+	}
+	if n := strings.Count(strings.Join(types, " "), "release.yanked"); n != 1 {
+		t.Errorf("%d yanked events: %v", n, types)
+	}
+}

@@ -31,11 +31,27 @@
 // versions and no error. A 404 or 410 is an error: the module does not exist,
 // or its path has the wrong case.
 //
+// # Retractions and deprecation
+//
+// Each List also requests GET {base}/{module}/@latest. When the latest
+// version differs from the one in the cursor, GET {base}/{module}/@v/{latest}.mod
+// is parsed with modfile.ParseLax for its "retract" directives and the
+// "// Deprecated:" comment of the module line, and both are kept in the
+// cursor. A listed version inside a retracted interval is Yanked, with
+// Metadata["retracted"] = the rationale (at most 256 bytes). A deprecated
+// module sets Metadata["deprecated"] on every version. If @latest is a 404,
+// a 410 or a pseudo-version, the latest is the highest release of the list
+// that is not "+incompatible" (else the highest version). If @latest or the
+// .mod cannot be read, the retractions of the cursor are kept and a WARN is
+// logged; a .mod that cannot be parsed is the same, but is not asked for
+// again. A 429 or a cancelled context fails the call.
+//
 // # What a Version carries
 //
-// Raw, PublishedAt, and URL (https://pkg.go.dev/{module}@{version}, only for
-// the default base URL: pkg.go.dev cannot show a module of a private proxy).
-// Prerelease is nil: the version scheme decides.
+// Raw, PublishedAt, Yanked, URL (https://pkg.go.dev/{module}@{version}, only for
+// the default base URL: pkg.go.dev cannot show a module of a private proxy)
+// and Metadata (retracted, deprecated). Prerelease is nil: the version scheme
+// decides.
 package goproxy
 
 import (
@@ -48,7 +64,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
@@ -68,6 +86,9 @@ const (
 	// maxLookups bounds the .info requests of one List call. Versions past
 	// the bound are returned undated and are not looked up again.
 	maxLookups = 50
+	// maxNoteLen bounds a retraction rationale or deprecation message kept
+	// in Metadata and in the cursor.
+	maxNoteLen = 256
 )
 
 // Option configures a Source.
@@ -149,6 +170,18 @@ func modulePath(t source.Target) (string, error) {
 // already reported, sorted.
 type cursor struct {
 	Versions []string `json:"versions"`
+	// Latest is the version whose go.mod Retracted and Deprecated come from.
+	Latest     string     `json:"latest,omitempty"`
+	Retracted  []interval `json:"retracted,omitempty"`
+	Deprecated string     `json:"deprecated,omitempty"`
+}
+
+// interval is a retracted range of versions, bounds included; a single
+// version has Low == High.
+type interval struct {
+	Low  string `json:"low"`
+	High string `json:"high"`
+	Why  string `json:"why,omitempty"`
 }
 
 // parseCursor decodes c. ok is false for an empty or unreadable cursor, which
@@ -184,6 +217,10 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		return source.Result{}, fmt.Errorf("go-proxy: list %s: %w", mod, err)
 	}
 	names := s.parseList(ctx, mod, body)
+	next, err := s.retractions(ctx, mod, esc, names, cur)
+	if err != nil {
+		return source.Result{}, err
+	}
 
 	known := make(map[string]bool, len(cur.Versions))
 	for _, n := range cur.Versions {
@@ -193,6 +230,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	lookups := 0
 	for _, raw := range names {
 		v := source.Version{Raw: raw, URL: s.pageLink(mod, raw)}
+		next.mark(&v)
 		// A first scan (no readable cursor) is a baseline: no lookups.
 		if haveCursor && !known[raw] && lookups < maxLookups {
 			lookups++
@@ -201,7 +239,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 				if ctx.Err() != nil {
 					return source.Result{}, fmt.Errorf("go-proxy: date of %s %s: %w", mod, raw, context.Cause(ctx))
 				}
-				if fatalLookup(err) {
+				if isFatal(ctx, err) {
 					// The cursor does not advance: the next call retries.
 					return source.Result{}, fmt.Errorf("go-proxy: date of %s %s: %w", mod, raw, err)
 				}
@@ -214,10 +252,139 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	sorted := slices.Clone(names)
 	slices.Sort(sorted)
 	state := source.FetchState{}
-	if b, err := json.Marshal(cursor{Versions: sorted}); err == nil {
+	next.Versions = sorted
+	if b, err := json.Marshal(next); err == nil {
 		state.Cursor = string(b)
 	}
 	return source.Result{Versions: out, State: state}, nil
+}
+
+// mark sets Yanked and the metadata of v from the retractions and deprecation
+// of c.
+func (c *cursor) mark(v *source.Version) {
+	for _, iv := range c.Retracted {
+		if semver.Compare(v.Raw, iv.Low) >= 0 && semver.Compare(v.Raw, iv.High) <= 0 {
+			v.Yanked = true
+			if v.Metadata == nil {
+				v.Metadata = map[string]any{}
+			}
+			if why, ok := v.Metadata["retracted"].(string); !ok || why == "" {
+				v.Metadata["retracted"] = iv.Why
+			}
+		}
+	}
+	if c.Deprecated != "" {
+		if v.Metadata == nil {
+			v.Metadata = map[string]any{}
+		}
+		v.Metadata["deprecated"] = c.Deprecated
+	}
+}
+
+// retractions returns the cursor to carry forward, with the retractions and
+// deprecation up to date: those of cur when the latest version has not
+// changed or cannot be read, else those of the go.mod of the new latest. The
+// Versions of the result are not set.
+func (s *Source) retractions(ctx context.Context, mod, esc string, names []string, cur cursor) (cursor, error) {
+	next := cursor{Latest: cur.Latest, Retracted: cur.Retracted, Deprecated: cur.Deprecated}
+	latest, err := s.latest(ctx, mod, esc, names)
+	if err != nil {
+		if isFatal(ctx, err) {
+			return cursor{}, fmt.Errorf("go-proxy: latest of %s: %w", mod, err)
+		}
+		s.log.WarnContext(ctx, "go-proxy: @latest lookup failed, keeping the known retractions", "module", mod)
+		return next, nil
+	}
+	if latest == "" || latest == cur.Latest {
+		return next, nil
+	}
+	escVer, err := module.EscapeVersion(latest)
+	if err != nil {
+		return next, nil // latest was validated; not reachable
+	}
+	body, err := s.get(ctx, s.base+"/"+esc+"/@v/"+escVer+".mod")
+	if err != nil {
+		if isFatal(ctx, err) {
+			return cursor{}, fmt.Errorf("go-proxy: go.mod of %s %s: %w", mod, latest, err)
+		}
+		// Latest stays as it was: the next call asks again.
+		s.log.WarnContext(ctx, "go-proxy: go.mod lookup failed, keeping the known retractions", "module", mod, "version", latest)
+		return next, nil
+	}
+	next.Latest = latest
+	f, err := modfile.ParseLax("go.mod", body, nil)
+	if err != nil {
+		s.log.WarnContext(ctx, "go-proxy: go.mod is malformed, keeping the known retractions", "module", mod, "version", latest)
+		return next, nil
+	}
+	next.Retracted, next.Deprecated = nil, ""
+	for _, r := range f.Retract {
+		if !semver.IsValid(r.Low) || !semver.IsValid(r.High) {
+			continue
+		}
+		next.Retracted = append(next.Retracted, interval{Low: r.Low, High: r.High, Why: truncate(r.Rationale, maxNoteLen)})
+	}
+	if f.Module != nil {
+		next.Deprecated = truncate(f.Module.Deprecated, maxNoteLen)
+	}
+	return next, nil
+}
+
+// latest returns the version whose go.mod holds the current retractions: the
+// answer of @latest, or, when the proxy has none (404, 410, a pseudo-version
+// or an unreadable answer), the highest release of names that is not
+// "+incompatible", else the highest version. It is "" if there is none.
+func (s *Source) latest(ctx context.Context, mod, esc string, names []string) (string, error) {
+	body, err := s.get(ctx, s.base+"/"+esc+"/@latest")
+	if err == nil {
+		var info struct{ Version string }
+		if json.Unmarshal(body, &info) == nil && validVersion(info.Version) {
+			return info.Version, nil
+		}
+		s.log.DebugContext(ctx, "go-proxy: @latest is not a tagged version, using the list", "module", mod)
+	} else {
+		var se *netguard.StatusError
+		if !errors.As(err, &se) || (se.StatusCode != http.StatusNotFound && se.StatusCode != http.StatusGone) {
+			return "", err
+		}
+	}
+	return fallbackLatest(names), nil
+}
+
+// fallbackLatest picks, from versions sorted newest first, the highest
+// release that is not "+incompatible", else the highest one that is not
+// "+incompatible", else the first.
+func fallbackLatest(names []string) string {
+	var pre string
+	for _, n := range names {
+		if semver.Build(n) == "+incompatible" {
+			continue
+		}
+		if semver.Prerelease(n) == "" {
+			return n
+		}
+		if pre == "" {
+			pre = n
+		}
+	}
+	if pre != "" {
+		return pre
+	}
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+// truncate cuts s to at most n bytes at a rune boundary.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // parseList returns the valid, de-duplicated versions of an @v/list body,
@@ -304,10 +471,10 @@ func (s *Source) get(ctx context.Context, u string) ([]byte, error) {
 	return res.Body, nil
 }
 
-// fatalLookup reports whether a date lookup error must fail List: a context
-// error or a rate limit (429, or a server that named a retry time).
-func fatalLookup(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+// isFatal reports whether a lookup error must fail List: a context error or a
+// rate limit (429, or a server that named a retry time).
+func isFatal(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var se *netguard.StatusError

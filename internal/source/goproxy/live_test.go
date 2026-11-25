@@ -49,3 +49,18 @@ func TestLiveBurntSushiToml(t *testing.T) {
 		t.Errorf("v1.4.0 not listed: %d versions", len(vs))
 	}
 }
+
+// TestLiveSQLiteRetractions: the accidental v2.0.x+incompatible tags of
+// go-sqlite3 are retracted, so they are reported as yanked.
+func TestLiveSQLiteRetractions(t *testing.T) {
+	vs := liveList(t, "github.com/mattn/go-sqlite3")
+	for _, v := range vs {
+		if v.Raw == "v2.0.0+incompatible" {
+			if !v.Yanked {
+				t.Errorf("v2.0.0+incompatible is not yanked: %+v", v)
+			}
+			return
+		}
+	}
+	t.Error("v2.0.0+incompatible not listed")
+}

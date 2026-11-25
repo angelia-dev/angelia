@@ -83,6 +83,11 @@ also across owners: apply refuses a name that a row created through the API alre
     `data.package` keep the case too (`pkg:golang/github.com/BurntSushi/toml@v1.4.0`).
   - Give the path only: no version (`@v1.2.3`), no `https://`, no leading or trailing `/`.
   - A major-version module (`github.com/x/y/v2`) is a separate module and needs its own watch.
+  - A version the module retracts (`retract` in the `go.mod` of its latest version) is reported as yanked: it
+    never emits, and a retraction that appears after you saw the version emits `release.yanked`. The
+    retraction rationale is kept as `retracted` in the version metadata, and a
+    `// Deprecated:` comment on the module line is kept as `deprecated`. The latest version is the one `@latest`
+    answers (Go's own rule), so accidental high tags such as `v2.0.0+incompatible` do not hide the real latest.
   - Only tagged versions are reported. Pseudo-versions (untagged commits) never are.
   - `+incompatible` versions (`v2.0.3+incompatible`) are reported and order by their number, as in Go. To
     ignore them: `exclude: ['\+incompatible$']` in the policy `filter`.

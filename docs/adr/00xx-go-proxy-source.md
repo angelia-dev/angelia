@@ -10,7 +10,7 @@ Epic #21 asks for a `go-proxy` source: the tagged versions of one Go module, fro
 server that speaks the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol). The code already treats
 the kind as known: `schemes.ForSourceKind("go-proxy")` is the coercing SemVer scheme (ADR 0007) and
 `internal/event/purl.go` maps it to `pkg:golang/<module path>@<version>` with the case kept. The decisions
-D90 to D93 below were accepted by the maintainer on 2026-11-25. D94 (retractions) is recorded with 95-B.
+D90 to D93 below were accepted by the maintainer on 2026-11-25. D94 (retractions) was accepted on the same day and is recorded below (95-B).
 
 ## Decision
 
@@ -46,6 +46,18 @@ supported: a `GOPROXY` list, `direct`, `off`, `file://`, `GOPRIVATE`, the checks
 `GOPRIVATE`-like refusal list. The leak of a private module name to the public proxy is documented in
 private-registries.md instead.
 
+**D94, retractions, deprecation and major-version modules.** Each check also requests `@latest`. When its
+version differs from the one in the cursor, `@v/{latest}.mod` is parsed with `modfile.ParseLax` for `retract`
+directives (single versions and intervals, `low == high` for a single one) and the `// Deprecated:` comment.
+Both are kept in the cursor with the latest version. A listed version inside an interval is `Yanked: true` with
+`Metadata["retracted"]` (the rationale, at most 256 bytes); a deprecated module sets `Metadata["deprecated"]`
+on every version. A yanked new version never emits, and the retraction of a known version becomes
+`release.yanked` through the existing yank path. If `@latest` is a 404, a 410 or a pseudo-version, the latest
+is the highest release of the list that is not `+incompatible` (else the highest version). If `@latest` or the
+`.mod` cannot be read (5xx), the previous retractions stay and the call logs a WARN, asking again next time;
+a `.mod` that cannot be parsed logs a WARN and is not asked for again; a 429 or a cancelled context fails the
+call. A major-version module (`.../v2`) is a separate module and needs its own watch.
+
 ## Consequences
 
 ### Positive
@@ -57,6 +69,7 @@ private-registries.md instead.
 ### Negative
 
 - Asking the public proxy for a private module name discloses it (documented, not prevented).
+- Every check costs one more request (`@latest`), and a `.mod` only when the latest version changes.
 - A date costs one request per new version; cooldown still counts from detection, because `.info` `Time` is
   set by the publisher (`go-proxy` is not in `trustedPublishedAt`).
 
@@ -71,6 +84,8 @@ private-registries.md instead.
   the dependency had been refused.
 - **A `Canonicalizer` that lower-cases the host part**: would merge modules Go keeps apart.
 - **Reporting `@latest` of an untagged module**: would emit an event per commit.
+- **No retractions** (D94 b): `go-sqlite3`'s accidental `v2.0.x+incompatible` tags would look like the newest releases forever.
+- **Probing `<module>/v<N+1>` for a new major module** (D94 c): mixes two modules in one watch, and its events would carry the wrong `data.package`.
 - **No `.info` lookups**: saves a request per new version but loses the date notifications show.
 
 ## References
