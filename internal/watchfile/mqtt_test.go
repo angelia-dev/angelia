@@ -26,6 +26,7 @@ func TestMQTTStoredConfig(t *testing.T) {
 	for yaml, want := range map[string]string{ //nolint:gosec // G101: secret names, not secrets.
 		`{url: 'mqtts://broker.example.net', topic: 'angelia/{{.data.source}}/{{.data.package}}'}`:                                                                             `{"url":"mqtts://broker.example.net","topic":"angelia/{{.data.source}}/{{.data.package}}","qos":1,"client_id_prefix":"angelia","timeout":"10s"}`,
 		`{url: 'mqtts://broker.example.net:8883', topic: releases, qos: 0, retain: true, username: angelia, password_ref: mqtt-broker, client_id_prefix: relbus, timeout: 5s}`: `{"url":"mqtts://broker.example.net:8883","topic":"releases","qos":0,"retain":true,"username":"angelia","password_ref":"mqtt-broker","client_id_prefix":"relbus","timeout":"5s"}`,
+		`{url: 'mqtt://Mosquitto.LAN.', topic: releases}`:                                                                                                                      `{"url":"mqtt://Mosquitto.LAN.","topic":"releases","qos":1,"client_id_prefix":"angelia","timeout":"10s"}`,
 		`{url: 'mqtt://mosquitto.lan', topic: releases}`:                                                                                                                       `{"url":"mqtt://mosquitto.lan","topic":"releases","qos":1,"client_id_prefix":"angelia","timeout":"10s"}`,
 	} {
 		f, err := Parse([]byte(mqttSink(yaml)), "w.yaml", mqttOpts(t))

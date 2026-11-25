@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"time"
 
@@ -59,7 +60,7 @@ type Options struct {
 type Sink struct {
 	dialer    Dialer
 	roots     *x509.CertPool
-	plainOK   map[string]bool
+	plainOK   []string
 	newClient func(prefix string) string
 }
 
@@ -71,14 +72,8 @@ func New(d Dialer, opts Options) *Sink {
 	if d == nil {
 		panic("mqtt.New: nil dialer")
 	}
-	plain := make(map[string]bool, len(opts.AllowPlaintextHosts))
-	for _, h := range opts.AllowPlaintextHosts {
-		plain[normHost(h)] = true
-	}
-	return &Sink{dialer: d, roots: opts.RootCAs, plainOK: plain, newClient: clientID}
+	return &Sink{dialer: d, roots: opts.RootCAs, plainOK: slices.Clone(opts.AllowPlaintextHosts), newClient: clientID}
 }
-
-func normHost(h string) string { return strings.TrimSuffix(strings.ToLower(h), ".") }
 
 // Kind implements sink.Sink.
 func (*Sink) Kind() string { return Kind }
@@ -113,7 +108,7 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 		return sink.Result{}, sink.Permanent(err)
 	}
 	host := cfg.host
-	if !cfg.tls && !s.plainOK[normHost(host)] {
+	if !cfg.tls && !netguard.HostListed(s.plainOK, host) {
 		return sink.Result{}, sink.Permanent(&failure{
 			origin: cfg.origin,
 			class:  "plain mqtt:// is not allowed for " + host + "; add it to http.allow_http_hosts or use mqtts://",

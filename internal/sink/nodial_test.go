@@ -20,13 +20,15 @@ var forbiddenDials = map[string]map[string]bool{
 }
 
 // directDials returns "file:line: pkg.Name" for each use of a forbidden
-// name in the Go source src.
+// name in the Go source src, and "file:line: dot import of pkg" for a dot
+// import of net or crypto/tls, whose names the selector scan cannot see.
 func directDials(fset *token.FileSet, name string, src any) ([]string, error) {
 	f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
 	if err != nil {
 		return nil, err
 	}
 	imports := map[string]string{} // local name -> import path
+	var found []string
 	for _, imp := range f.Imports {
 		path, _ := strconv.Unquote(imp.Path.Value)
 		if forbiddenDials[path] == nil {
@@ -36,9 +38,12 @@ func directDials(fset *token.FileSet, name string, src any) ([]string, error) {
 		if imp.Name != nil {
 			local = imp.Name.Name
 		}
+		if local == "." {
+			found = append(found, fset.Position(imp.Pos()).String()+": dot import of "+path)
+			continue
+		}
 		imports[local] = path
 	}
-	var found []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
@@ -86,6 +91,23 @@ func TestSinksDoNotDialDirectly(t *testing.T) {
 	}
 	if files < 10 {
 		t.Fatalf("scanned only %d Go files; is the walk rooted at internal/sink?", files)
+	}
+}
+
+func TestDirectDialsDotImport(t *testing.T) {
+	for _, path := range []string{"net", "crypto/tls"} {
+		src := "package x\nimport . \"" + path + "\"\nfunc f() { _, _ = Dial(\"tcp\", \"h:1\") }\n"
+		found, err := directDials(token.NewFileSet(), "x.go", src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(found) != 1 || !strings.HasSuffix(found[0], ": dot import of "+path) {
+			t.Errorf("dot import of %s: found %v", path, found)
+		}
+	}
+	found, err := directDials(token.NewFileSet(), "x.go", "package x\nimport . \"strings\"\nvar _ = ToLower(\"A\")\n")
+	if err != nil || len(found) != 0 {
+		t.Fatalf("dot import of strings: %v, %v", found, err)
 	}
 }
 

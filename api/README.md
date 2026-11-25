@@ -1,7 +1,7 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `cab0a85` ("feat(openapi): mqtt sink config (spec 0.13.0)") on
+`openapi/angelia.v1.yaml` is at commit `01b1647` ("fix(openapi): mqtt url pattern refuses an empty or over-long port", spec 0.13.0) on
 the spec repository's branch `story/93-mqtt-sink-schema` (angelia-dev/angelia#93), not yet on `main`; it
 must be re-vendored from `main` once that branch and the concurrent 0.10.1, 0.11.0 and 0.12.0 branches
 are merged and their versions reconciled.

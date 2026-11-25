@@ -15,16 +15,35 @@ import (
 
 var loopbackBoth = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
 
+// countingListener accepts connections on 127.0.0.1 and counts them.
+type countingListener struct {
+	net.Listener
+	n    atomic.Int64
+	done chan struct{}
+}
+
+func (c *countingListener) Load() int64 { return c.n.Load() }
+
+// closedCount closes the listener, waits until its accept loop has
+// returned, and gives the number of connections accepted.
+func (c *countingListener) closedCount() int64 {
+	_ = c.Close()
+	<-c.done
+	return c.n.Load()
+}
+
 // tcpListener accepts connections on 127.0.0.1 and counts them.
-func tcpListener(t *testing.T) (net.Listener, *atomic.Int64) {
+func tcpListener(t *testing.T) (net.Listener, *countingListener) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	var n atomic.Int64
+	cl := &countingListener{Listener: ln, done: make(chan struct{})}
+	n := &cl.n
 	go func() {
+		defer close(cl.done)
 		for {
 			c, err := ln.Accept()
 			if err != nil {
@@ -34,7 +53,7 @@ func tcpListener(t *testing.T) (net.Listener, *atomic.Int64) {
 			_ = c.Close()
 		}
 	}()
-	return ln, &n
+	return ln, cl
 }
 
 func tcpClient(t *testing.T, mutate func(*Config)) *Client {
@@ -119,9 +138,8 @@ func TestDialContextRefusesRebinding(t *testing.T) {
 	c := tcpClient(t, func(cfg *Config) { cfg.Resolver = fakeResolver{"localhost": addrs("203.0.113.10")} })
 	_, err := c.DialContext(t.Context(), "tcp", "localhost:"+lnPort(t, ln))
 	assertDialBlocked(t, err, "localhost", "127.0.0.1", "::1")
-	time.Sleep(20 * time.Millisecond)
-	if hits.Load() != 0 {
-		t.Fatalf("server reached %d times", hits.Load())
+	if n := hits.closedCount(); n != 0 {
+		t.Fatalf("server reached %d times", n)
 	}
 }
 
@@ -142,9 +160,8 @@ func TestDialContextProxyNotExempt(t *testing.T) {
 			t.Fatalf("proxy address %s: got %v, want ErrBlocked", pu.Host, err)
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
-	if hits.Load() != 0 {
-		t.Fatalf("proxy reached %d times", hits.Load())
+	if n := hits.closedCount(); n != 0 {
+		t.Fatalf("proxy reached %d times", n)
 	}
 }
 
@@ -209,9 +226,8 @@ func TestDialContextRateLimit(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled wait: got %v, want context.Canceled", err)
 	}
-	time.Sleep(20 * time.Millisecond)
-	if hits.Load() != 2 {
-		t.Fatalf("a cancelled dial reached the server (%d accepts)", hits.Load())
+	if n := hits.closedCount(); n != 2 {
+		t.Fatalf("a cancelled dial reached the server (%d accepts)", n)
 	}
 }
 

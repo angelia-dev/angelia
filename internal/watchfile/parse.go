@@ -520,7 +520,7 @@ func (p *parser) mqtt(n *yaml.Node, jp string) json.RawMessage {
 			switch {
 			case err != nil:
 				p.errf(un, jp+".url", "%v", err)
-			case u.Scheme == mqtt.SchemePlain && !slices.ContainsFunc(p.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, u.Hostname()) }):
+			case u.Scheme == mqtt.SchemePlain && !netguard.HostListed(p.opts.AllowHTTPHosts, u.Hostname()):
 				p.errf(un, jp+".url", "plain mqtt:// is not allowed for %s; add it to http.allow_http_hosts or use mqtts://", u.Hostname())
 			default:
 				cfg.URL, plain = s, u.Scheme == mqtt.SchemePlain
@@ -754,7 +754,7 @@ func (p *parser) webhookURL(s string, n *yaml.Node, jp string) bool {
 		return false
 	case u.Scheme == "https":
 	case u.Scheme == "http":
-		if !slices.ContainsFunc(p.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, u.Hostname()) }) {
+		if !netguard.HostListed(p.opts.AllowHTTPHosts, u.Hostname()) {
 			p.errf(n, jp, "must be https:// (http:// is accepted only for hosts on the instance allowlist)")
 			return false
 		}

@@ -3967,7 +3967,7 @@ components:
           description: The broker, `mqtts://host[:port]` or `mqtt://host[:port]`, with no userinfo, path, query or fragment. A stored password bound to hosts (`password_ref`) is checked against this host and port (8883 for `mqtts`, 1883 for `mqtt` when no port is written), so bind it with an explicit port.
           type: string
           format: uri
-          pattern: '^mqtts?://[^/?#@\s]+$'
+          pattern: '^mqtts?://([^/?#@\s:\[\]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$'
           x-angelia-destination: true
         topic:
           description: The topic to publish to, a template (ADR 0016, core repository) with the context of a subscription template, such as `angelia/{{.data.source}}/{{.data.package}}`. 1 to 1024 bytes. The rendered topic must be 1 to 1024 bytes of valid UTF-8 without `+`, `#` or U+0000, and must not start with `$`.

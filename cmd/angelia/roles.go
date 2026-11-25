@@ -260,9 +260,17 @@ func warnDrainBudget(log *slog.Logger, drain time.Duration) {
 // SSRF guard's allowlist from http.allow_networks and the per-host rate
 // limits from http.host_limits (ADR 0027). obs may be nil.
 func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
+	c, _, err := newNetClientRoots(cfg, log, obs)
+	return c, err
+}
+
+// newNetClientRoots is newNetClient that also returns the CA pool it built
+// (system roots plus http.ca_file), for the sinks that do their own TLS
+// (mqtt), so the file is read once.
+func newNetClientRoots(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, *x509.CertPool, error) {
 	roots, err := cfg.HTTP.LoadCAPool()
 	if err != nil {
-		return nil, fmt.Errorf("http client: %w", err)
+		return nil, nil, fmt.Errorf("http client: %w", err)
 	}
 	hosts, fallback := netguardLimits(cfg)
 	c, err := netguard.New(netguard.Config{
@@ -270,9 +278,9 @@ func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (
 		Proxy: outgoingProxy, HostLimits: hosts, FallbackLimit: fallback,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("http client: %w", err)
+		return nil, nil, fmt.Errorf("http client: %w", err)
 	}
-	return c, nil
+	return c, roots, nil
 }
 
 // pipelineDeps is what the scheduler and dispatcher roles are built from.
@@ -312,7 +320,7 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 		obs, schedM, dispM = d.metrics, d.metrics, d.metrics
 		wrapSrc = d.metrics.Source
 	}
-	client, err := newNetClient(d.cfg, d.log, obs)
+	client, roots, err := newNetClientRoots(d.cfg, d.log, obs)
 	if err != nil {
 		return out, err
 	}
@@ -342,10 +350,6 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	}
 	if withDispatcher {
 		reg := sink.NewRegistry()
-		roots, err := d.cfg.HTTP.LoadCAPool()
-		if err != nil {
-			return out, fmt.Errorf("sinks: %w", err)
-		}
 		for _, s := range builtinSinks(d.cfg, client, roots, d.log) {
 			if err := reg.Register(s); err != nil {
 				return out, err

@@ -42,19 +42,28 @@ A broker is reached over raw TCP. Before this decision:
 2. **No direct dial under `internal/sink`.** The `sink` package doc says so, and a test
    ([nodial_test.go](../../internal/sink/nodial_test.go)) parses every Go file under `internal/sink/`
    with `go/parser` and fails on `net.Dial`, `net.DialTimeout`, `net.Dialer`, `tls.Dial` and their
-   variants. `.golangci.yml` is unchanged (no `forbidigo` or `depguard`).
+   variants, and on any dot import of `net` or `crypto/tls`. `.golangci.yml` is unchanged (no `forbidigo`
+   or `depguard`). The scan is a **tripwire, not a proof**: it does not see a dial wrapped in a helper
+   package outside `internal/sink`, nor a `net.Resolver` whose `Dial` field opens connections. Review
+   keeps those out.
 3. **Private brokers** need `http.allow_networks`, exactly like a webhook on a LAN. No new YAML key.
 4. **TLS by default.** A TLS sink wraps the netguard connection in `tls.Client` with `MinVersion` TLS 1.2,
    `ServerName` the URL host and `RootCAs` the instance pool (system roots plus `http.ca_file`, the pool
    `cfg.HTTP.LoadCAPool()` builds for the HTTP client). No option disables verification. Client
    certificates are a later, additive option.
 5. **Plaintext reuses `http.allow_http_hosts`.** A cleartext scheme (`mqtt://`) is accepted only for a host
-   listed there, checked at every delivery; the key already means "hosts I accept cleartext to", and the
+   listed there, checked at every delivery with `netguard.HostListed` (case-insensitive, trailing dot
+   ignored), the helper every `allow_http_hosts` check now uses; the key already means "hosts I accept cleartext to", and the
    docs now say it covers MQTT.
 6. **Secret destinations learn broker schemes.** `secrets.Destination` accepts `mqtt` (default port 1883)
    and `mqtts` (default port 8883) besides `http` and `https`. `hostKey` is unchanged: a hosts entry
    without a port still means 443, so the docs say to bind a broker secret with an explicit port
    (`--host broker.example.net:8883`). The NATS story adds its own schemes.
+   A secret bound to `host:port` matches a destination by host and port, **not by scheme**: a secret
+   bound to `broker.example.net:8883` also resolves for `https://broker.example.net:8883`. This is
+   deliberate and unchanged from ADR 0024 §2: the binding says where a secret may be sent, and the scheme
+   rules (TLS by default, cleartext only for `http.allow_http_hosts`) are enforced by each sink, not by
+   the binding.
 
 ## Consequences
 

@@ -181,7 +181,7 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	if id == "" || strings.ContainsAny(id, ". \t\r\n\v\f") {
 		return sink.Result{}, sink.Permanent(errors.New("webhook: invalid webhook-id: empty, or holds '.' or white space"))
 	}
-	if cfg.url.Scheme == "http" && !slices.ContainsFunc(s.httpHosts, func(h string) bool { return strings.EqualFold(h, cfg.url.Hostname()) }) {
+	if cfg.url.Scheme == "http" && !netguard.HostListed(s.httpHosts, cfg.url.Hostname()) {
 		return sink.Result{}, sink.Permanent(fmt.Errorf("webhook: %s: http:// is not allowed for this host (http.allow_http_hosts); use https://", origin))
 	}
 	var keys [][]byte

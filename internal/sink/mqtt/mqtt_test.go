@@ -77,6 +77,7 @@ type broker struct {
 	port     string
 	conns    atomic.Int64
 	sessions chan session
+	done     chan struct{} // closed when the accept loop returns
 	mu       sync.Mutex
 	raw      bytes.Buffer // every byte received on TCP, before any TLS
 }
@@ -88,11 +89,12 @@ func newBroker(t *testing.T, sc script, cert *tls.Certificate) *broker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &broker{t: t, sessions: make(chan session, 16)}
+	b := &broker{t: t, sessions: make(chan session, 16), done: make(chan struct{})}
 	b.ln = ln
 	_, b.port, _ = net.SplitHostPort(ln.Addr().String())
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
+		defer close(b.done)
 		for {
 			c, err := ln.Accept()
 			if err != nil {
@@ -120,6 +122,14 @@ func (c *recConn) Read(p []byte) (int, error) {
 	c.b.raw.Write(p[:n])
 	c.b.mu.Unlock()
 	return n, err
+}
+
+// closedConns closes the listener, waits until the accept loop has
+// returned, and gives the number of connections accepted.
+func (b *broker) closedConns() int64 {
+	_ = b.ln.Close()
+	<-b.done
+	return b.conns.Load()
 }
 
 func (b *broker) rawBytes() []byte {
@@ -419,9 +429,8 @@ func TestDeliverSSRFRefused(t *testing.T) {
 	if !errors.Is(err, netguard.ErrBlocked) {
 		t.Fatalf("%v does not wrap ErrBlocked", err)
 	}
-	time.Sleep(20 * time.Millisecond)
-	if b.conns.Load() != 0 {
-		t.Fatal("the broker was reached")
+	if n := b.closedConns(); n != 0 {
+		t.Fatalf("the broker was reached %d times", n)
 	}
 }
 
