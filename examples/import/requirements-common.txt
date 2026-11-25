@@ -1,2 +1,2 @@
 # Included with -r from requirements.txt.
-urllib3>=2
+urllib3
