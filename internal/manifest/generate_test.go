@@ -309,8 +309,12 @@ func TestIntervalExcludeSubscribe(t *testing.T) {
 		t.Errorf("6h: %s", g)
 	}
 	for _, bad := range []Options{
-		{Project: "api", Interval: "1m"}, {Project: "api", Interval: "soon"}, {Project: "api", Interval: "9999h"},
-		{Project: "api", Interval: "5m0.5s"}, {Project: "api", Exclude: []string{"[a"}}, {Project: "api", Subscribe: "Bad Sink"},
+		{Project: "api", Interval: "1m"},
+		{Project: "api", Interval: "soon"},
+		{Project: "api", Interval: "9999h"},
+		{Project: "api", Interval: "5m0.5s"},
+		{Project: "api", Exclude: []string{"[a"}},
+		{Project: "api", Subscribe: "Bad Sink"},
 	} {
 		if _, err := Generate(deps, bad); err == nil {
 			t.Errorf("%+v accepted", bad)

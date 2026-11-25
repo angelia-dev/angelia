@@ -27,7 +27,7 @@ func runCLIIn(t *testing.T, stdin string, args ...string) (stdout, stderr string
 func importWrite(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil { //nolint:gosec // test data

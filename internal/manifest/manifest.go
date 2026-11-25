@@ -5,6 +5,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -88,7 +89,8 @@ func readFile(fsys fs.FS, name string) ([]byte, error) {
 }
 
 func unwrapPath(err error) error {
-	if pe, ok := err.(*fs.PathError); ok {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
 		return pe.Err
 	}
 	return err

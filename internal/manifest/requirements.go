@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/angelia-dev/angelia/internal/source/pypi"
 )
 
 // MaxIncludeDepth is how deep `-r` includes may nest (the first file is 0).
@@ -270,9 +268,6 @@ func pyPin(spec string) string {
 	}
 	return ""
 }
-
-// canonicalPyPI is the stored coordinate of a PyPI dependency.
-func canonicalPyPI(name string) string { return pypi.Normalize(name) }
 
 // clip shortens a line echoed in a warning, so that a file that is not a
 // requirements file is not dumped into logs.

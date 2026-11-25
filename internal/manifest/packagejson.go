@@ -152,7 +152,7 @@ func jsonError(file string, raw []byte, err error) error {
 	var se *json.SyntaxError
 	switch {
 	case errors.As(err, &se):
-		return fmt.Errorf("%s:%d: invalid JSON: %s", file, lineAt(raw, int(se.Offset)-1), se)
+		return fmt.Errorf("%s:%d: invalid JSON: %w", file, lineAt(raw, int(se.Offset)-1), se)
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 		return fmt.Errorf("%s:%d: invalid JSON: unexpected end of file", file, lineAt(raw, len(raw)))
 	}
