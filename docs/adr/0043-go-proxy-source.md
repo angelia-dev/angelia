@@ -1,4 +1,4 @@
-# ADR 00xx: The go-proxy source reads the GOPROXY protocol with golang.org/x/mod
+# ADR 0043: The go-proxy source reads the GOPROXY protocol with golang.org/x/mod
 
 - **Status:** Accepted
 - **Date:** 2026-11-25
