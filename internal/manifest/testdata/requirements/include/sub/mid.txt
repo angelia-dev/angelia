@@ -1,0 +1,3 @@
+-r ../base.txt
+--requirement=leaf.txt
+mid-pkg

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,5 +41,30 @@ func TestComposeExampleConfigsLoadWithTheRealLoaders(t *testing.T) {
 				t.Fatalf("watch file: %v", err)
 			}
 		})
+	}
+}
+
+// The example of `angelia import` (docs/cli.md, "Import") is what the command
+// prints for its manifests, and passes the watch-file loader of serve --watches.
+func TestImportExampleIsCurrent(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	out, errOut, err := runCLI(t, "import", "examples/import/requirements.txt", "--dev", "examples/import/requirements-dev.txt",
+		"--project", "shop", "--interval", "6h")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, errOut)
+	}
+	want, err := os.ReadFile("examples/import/watches.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != string(want) {
+		t.Errorf("examples/import/watches.yaml is stale; regenerate it with the command in examples/import/requirements.txt:\n%s", out)
+	}
+	cfg, err := config.Load(context.Background(), config.Options{Environ: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseWatchFile(cfg, "examples/import/watches.yaml"); err != nil {
+		t.Fatalf("watch file: %v", err)
 	}
 }

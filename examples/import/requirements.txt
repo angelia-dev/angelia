@@ -1,0 +1,19 @@
+# Example for `angelia import` (docs/cli.md, "Import"). Generate the watch file next to this one:
+#
+#   angelia import examples/import/requirements.txt --dev examples/import/requirements-dev.txt \
+#     --project shop --interval 6h > examples/import/watches.yaml
+#
+# or apply it directly and prune what the manifests dropped:
+#
+#   angelia import examples/import/requirements.txt --dev examples/import/requirements-dev.txt \
+#     --project shop --interval 6h | angelia apply -f - --prune -l project=shop
+#
+# Synthetic manifest: public package names only.
+requests==2.31.0
+Flask[async]>=2.0,<3
+Django>=4.2 ; python_version >= "3.9"
+PyYAML
+zope.interface~=6.0
+-r requirements-common.txt
+-e ./vendored/local-package        # skipped: not a registry dependency
+--extra-index-url https://pypi.example.com/simple   # ignored: use --source pypi=NAME

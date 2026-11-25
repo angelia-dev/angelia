@@ -18,6 +18,7 @@ angelia event stream [--after SEQ] [--watch W] [--type T] [--source S] [--no-rec
 angelia delivery list [--status dead] [--subscription S] [--event ID]
 angelia delivery get ID
 angelia apply -f FILE|DIR|- [--dry-run] [--prune -l key=value]
+angelia import FILE... --project NAME [--dev FILE] [-l key=value] [--source KIND=NAME]
 angelia mcp [--server URL] [--insecure-http]
 ```
 
@@ -157,6 +158,94 @@ emits no event for the new watch. This holds in both cases: when the old target
 was deleted in step 1, and when another watch kept it (the other watch's checks
 may find the version, but only that watch emits for it). Keep the gap between
 the restart and the apply short.
+
+## Import
+
+`angelia import` reads dependency manifests and prints a [watch file](watch-file.md) with one watch
+per registry dependency. It makes no network request, needs no server and reads no client
+configuration. You apply its output with the config-as-code path above:
+
+```
+angelia import requirements.txt --dev requirements-dev.txt --project api \
+  | angelia apply -f - --prune -l project=api
+```
+
+Running it again on the same manifests prints the same bytes. Piped into `apply --prune` with the same
+label scope, it creates watches for new dependencies, leaves the others `unchanged` and deletes the
+watches of dependencies the manifests dropped. Angelia does not compare a pin with the registry and
+does not open pull requests (that stays Renovate's job): the import tells Angelia what to watch, and
+events then tell your pipeline that something shipped. See [examples/import](../examples/import).
+
+```
+angelia import FILE... --project NAME [--dev FILE]... [-l key=value]...
+               [--include runtime,dev,optional,peer] [--exclude GLOB]...
+               [--source KIND=NAME]... [--interval DURATION] [--policy FILE]
+               [--subscribe SINK] [--format auto|requirements] [--strict] [-v]
+```
+
+- **Formats.** `requirements*.txt` and `*.requirements.txt` (the format is chosen from the file name,
+  or forced with `--format`). Several files of one or more formats make one watch file, watches
+  sorted by name. `--dev FILE` is a requirements file whose entries are `dev` dependencies. Not yet
+  supported: `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Dockerfile`.
+- **Output.** Stdout is the watch file; its first line is a comment naming the input files (no time,
+  no path outside the arguments). Stderr gets warnings and, with `-v`, one line per dependency
+  (`requests 2.31.0 -> api-pypi-requests`). Exit status 0 on success, non-zero when a manifest cannot
+  be read or `--strict` finds a skipped line.
+- **Names.** `<project>-<kind>-<package>`, for example `api-pypi-requests`. `--project` is required and
+  matches `^[a-z0-9][a-z0-9-]{0,23}$`. `kind` is the source kind (`pypi`), never the instance name, so
+  moving a dependency to a mirror keeps the watch. The package is the canonical name (PEP 503 for PyPI)
+  with every character outside `[a-z0-9._-]` replaced by `-`. A name over 63 characters is cut to 54 and
+  gets `-` and the first 8 hex digits of the SHA-256 of kind, a NUL byte and the canonical name. Two
+  dependencies that map to one name are an error naming both.
+- **Labels.** The owner labels are the `-l key=value` pairs, the same ones you pass to `apply --prune -l`;
+  without `-l` the owner label is `project=<project>`. Each watch also gets `dependency: runtime`,
+  `dev`, `optional` or `peer` (a package declared with several types gets the first of that
+  order), so a subscription can route only runtime dependencies. They show up in every event as
+  `data.watch.labels`. `dependency` is reserved. Label rules are the watch file's.
+- **Types.** `--include` keeps the listed types and drops the rest; the default is every type but `peer`.
+  A requirements file is `runtime`, or `dev` when passed with `--dev`.
+- **Pins and ranges** (`requests==2.31.0`, `django>=4.2`) are ignored: every watch keeps the default
+  `baseline: true`, so versions known at its first check are recorded without events and later
+  releases are reported. Pins show in `-v` only.
+- **`--exclude GLOB`** leaves out packages whose name (as written or canonical) matches the glob
+  (`path.Match` syntax, repeatable).
+- **`--interval`** sets `interval` on every watch; `--policy FILE` copies the policy block in the file
+  (the keys of a watch's [`policy`](watch-file.md), for example `cooldown: 48h`) into every watch,
+  validated like a watch's and reported with the line in the file. The scheme is never set: it is the
+  kind's default.
+- **`--source KIND=NAME`** (`--source pypi=pypi-internal`) sets `source: NAME` on every watch of the kind,
+  where NAME is a named instance of the [instance configuration](private-registries.md). The import
+  never reads `--index-url` lines, `.npmrc` or `.pypirc`; the server validates the name at `apply`.
+- **`--subscribe SINK`** adds one subscription `<project>-deps` on an existing sink, with `filter.labels`
+  equal to the owner labels. `apply --prune` does not delete subscriptions (they carry no owner labels
+  in API v1, angelia-dev/spec#8): one that leaves the file is reported `kept` and stays. Remove it with
+  `angelia sub delete`.
+
+What `requirements.txt` supports (a documented subset of pip's grammar, no network, no `pip`):
+
+- Comments (`#` at the start of a line or after whitespace), `\` line continuations and blank lines.
+  PEP 508 requirements `name[extras] specifier ; marker`: extras, specifiers and markers are parsed and
+  ignored (a dependency for one platform is still a dependency).
+- `-r FILE` / `--requirement FILE`, relative to the including file, nested at most 8 deep; a cycle
+  is an error naming the files. `-r https://...` is an error.
+- Skipped with one warning each (file, line, reason): `-c` / `--constraint`, `-e` / `--editable`, local
+  paths, VCS and URL requirements (`git+...`, `name @ https://...`), lines with `${VAR}` in the name
+  and unknown options. `--strict` turns each into an error, which is useful in CI.
+- Ignored with one warning per file: `-i`, `--index-url`, `--extra-index-url`, `-f`, `--find-links`,
+  `--trusted-host` (use `--source`). Ignored silently: `--hash`, `--pre`, `--no-binary`,
+  `--only-binary`, `--prefer-binary`.
+
+Watch what happens next:
+
+- **`PUT` replaces the whole object.** Whatever you tuned by hand or in the [admin UI](admin-ui.md) on an
+  imported watch (interval, labels, policy) is put back by the next `import | apply`. Leave such a
+  watch out of the import with `--exclude` and manage it separately.
+- **The admin UI** edits the rows `apply` creates, since they are API-managed. If you load the output
+  with `serve --watches` instead, the rows are file-managed and the UI shows them read-only until
+  they are [adopted](adr/0035-adopt-watch-file-resources.md); the startup apply then skips adopted
+  names with a warning. The recommended path is `apply`.
+- Changing the name of a dependency's watch (a new `--project`) is a delete and a create: the new
+  watch starts a new baseline.
 
 ## Connection
 
