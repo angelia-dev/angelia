@@ -17,6 +17,48 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for AdoptedObjectKind.
+const (
+	AdoptedObjectKindSink         AdoptedObjectKind = "sink"
+	AdoptedObjectKindSubscription AdoptedObjectKind = "subscription"
+	AdoptedObjectKindWatch        AdoptedObjectKind = "watch"
+)
+
+// Valid indicates whether the value is a known member of the AdoptedObjectKind enum.
+func (e AdoptedObjectKind) Valid() bool {
+	switch e {
+	case AdoptedObjectKindSink:
+		return true
+	case AdoptedObjectKindSubscription:
+		return true
+	case AdoptedObjectKindWatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdoptionObjectKind.
+const (
+	AdoptionObjectKindSink         AdoptionObjectKind = "sink"
+	AdoptionObjectKindSubscription AdoptionObjectKind = "subscription"
+	AdoptionObjectKindWatch        AdoptionObjectKind = "watch"
+)
+
+// Valid indicates whether the value is a known member of the AdoptionObjectKind enum.
+func (e AdoptionObjectKind) Valid() bool {
+	switch e {
+	case AdoptionObjectKindSink:
+		return true
+	case AdoptionObjectKindSubscription:
+		return true
+	case AdoptionObjectKindWatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Bump.
 const (
 	Major Bump = "major"
@@ -458,6 +500,44 @@ type AccessList struct {
 	Items []AccessEntry `json:"items"`
 }
 
+// AdoptedObject defines model for AdoptedObject.
+type AdoptedObject struct {
+	// Id ULID: 26 characters, Crockford base32, upper case.
+	Id   Ulid              `json:"id"`
+	Kind AdoptedObjectKind `json:"kind"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+}
+
+// AdoptedObjectKind defines model for AdoptedObject.Kind.
+type AdoptedObjectKind string
+
+// AdoptionObject One resource to adopt, by kind and name.
+type AdoptionObject struct {
+	Kind AdoptionObjectKind `json:"kind"`
+
+	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
+	Name Name `json:"name"`
+}
+
+// AdoptionObjectKind defines model for AdoptionObject.Kind.
+type AdoptionObjectKind string
+
+// AdoptionRequest The watch-file resources to hand over to the API.
+type AdoptionRequest struct {
+	// DryRun Check the request and say what would be adopted, without changing anything.
+	DryRun  *bool            `json:"dry_run,omitempty"`
+	Objects []AdoptionObject `json:"objects"`
+}
+
+// AdoptionResult defines model for AdoptionResult.
+type AdoptionResult struct {
+	// Adopted The adopted resources (or, with `dry_run`, those that would be), sinks first, then watches, then subscriptions, each by name.
+	Adopted []AdoptedObject `json:"adopted"`
+	DryRun  bool            `json:"dry_run"`
+}
+
 // Bump defines model for Bump.
 type Bump string
 
@@ -672,7 +752,8 @@ type Labels map[string]string
 
 // ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 // created from a watch file loaded with `angelia serve --watches`; the API reads it but
-// refuses to change or delete it (`409 managed-by-file`).
+// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+// `POST /v1/adoptions`, which makes it `api`.
 type ManagedBy string
 
 // Me The caller of `GET /v1/me`. `role`, `user` and `session_id` are `null` for an API token.
@@ -1058,7 +1139,8 @@ type Sink struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// MaskedFields The `config` keys replaced by `[REDACTED]` because the kind marks them secret, sorted.
@@ -1129,7 +1211,8 @@ type Subscription struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
@@ -1420,7 +1503,8 @@ type Watch struct {
 
 	// ManagedBy Who owns the resource. `api`: created through this API (or `angelia apply`). `file`:
 	// created from a watch file loaded with `angelia serve --watches`; the API reads it but
-	// refuses to change or delete it (`409 managed-by-file`).
+	// refuses to change or delete it (`409 managed-by-file`) until an admin adopts it with
+	// `POST /v1/adoptions`, which makes it `api`.
 	ManagedBy ManagedBy `json:"managed_by"`
 
 	// Name The stable key of a watch, sink, subscription, secret or consumer (the first three as in the watch file), or the label of an API token. Unique per resource type, whoever manages the resource (for tokens, among active tokens).
@@ -1955,6 +2039,9 @@ type ListWatchVersionsParams struct {
 	// Yanked Only yanked versions (`true`) or only versions that are not yanked (`false`). Absent means both.
 	Yanked *bool `form:"yanked,omitempty" json:"yanked,omitempty"`
 }
+
+// AdoptResourcesJSONRequestBody defines body for AdoptResources for application/json ContentType.
+type AdoptResourcesJSONRequestBody = AdoptionRequest
 
 // PutConsumerJSONRequestBody defines body for PutConsumer for application/json ContentType.
 type PutConsumerJSONRequestBody = ConsumerWrite
@@ -2611,6 +2698,54 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /v1/access (the `ListAccess` operationId).
 	ListAccess(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AdoptResourcesWithBody Hand watch-file resources over to the API
+	//
+	// Changes the owner of each listed resource from `file` to `api`, in place and in one
+	// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+	// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+	// (and the admin UI) can change and delete it like any API resource.
+	//
+	// The instance remembers each adopted name. While the watch file still declares an entry
+	// of that kind and name, the startup apply skips it with a warning instead of failing on
+	// the name, so the process keeps starting until the operator removes the entry from the
+	// file. Once the file no longer declares it, the name is forgotten.
+	//
+	// The request is all or nothing. Each object must exist and be managed by the file
+	// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+	// a subscription can be adopted only with its sink (in the same request, or a sink already
+	// managed by the API), and a sink only with every file subscription that uses it.
+	// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+	// the response says what would be adopted. An adoption is recorded in the audit log.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+	AdoptResourcesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AdoptResources Hand watch-file resources over to the API
+	//
+	// Changes the owner of each listed resource from `file` to `api`, in place and in one
+	// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+	// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+	// (and the admin UI) can change and delete it like any API resource.
+	//
+	// The instance remembers each adopted name. While the watch file still declares an entry
+	// of that kind and name, the startup apply skips it with a warning instead of failing on
+	// the name, so the process keeps starting until the operator removes the entry from the
+	// file. Once the file no longer declares it, the name is forgotten.
+	//
+	// The request is all or nothing. Each object must exist and be managed by the file
+	// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+	// a subscription can be adopted only with its sink (in the same request, or a sink already
+	// managed by the API), and a sink only with every file subscription that uses it.
+	// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+	// the response says what would be adopted. An adoption is recorded in the audit log.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+	AdoptResources(ctx context.Context, body AdoptResourcesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListConsumers List consumers
 	//
@@ -3310,6 +3445,74 @@ type ClientInterface interface {
 // Corresponds with GET /v1/access (the `ListAccess` operationId).
 func (c *Client) ListAccess(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListAccessRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AdoptResourcesWithBody Hand watch-file resources over to the API
+//
+// Changes the owner of each listed resource from `file` to `api`, in place and in one
+// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+// (and the admin UI) can change and delete it like any API resource.
+//
+// The instance remembers each adopted name. While the watch file still declares an entry
+// of that kind and name, the startup apply skips it with a warning instead of failing on
+// the name, so the process keeps starting until the operator removes the entry from the
+// file. Once the file no longer declares it, the name is forgotten.
+//
+// The request is all or nothing. Each object must exist and be managed by the file
+// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+// a subscription can be adopted only with its sink (in the same request, or a sink already
+// managed by the API), and a sink only with every file subscription that uses it.
+// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+// the response says what would be adopted. An adoption is recorded in the audit log.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+func (c *Client) AdoptResourcesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdoptResourcesRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AdoptResources Hand watch-file resources over to the API
+//
+// Changes the owner of each listed resource from `file` to `api`, in place and in one
+// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+// (and the admin UI) can change and delete it like any API resource.
+//
+// The instance remembers each adopted name. While the watch file still declares an entry
+// of that kind and name, the startup apply skips it with a warning instead of failing on
+// the name, so the process keeps starting until the operator removes the entry from the
+// file. Once the file no longer declares it, the name is forgotten.
+//
+// The request is all or nothing. Each object must exist and be managed by the file
+// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+// a subscription can be adopted only with its sink (in the same request, or a sink already
+// managed by the API), and a sink only with every file subscription that uses it.
+// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+// the response says what would be adopted. An adoption is recorded in the audit log.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+func (c *Client) AdoptResources(ctx context.Context, body AdoptResourcesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdoptResourcesRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4518,6 +4721,46 @@ func NewListAccessRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewAdoptResourcesRequest calls the generic AdoptResources builder with application/json body
+func NewAdoptResourcesRequest(server string, body AdoptResourcesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAdoptResourcesRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewAdoptResourcesRequestWithBody constructs an http.Request for the AdoptResources method, with any body, and a specified content type
+func NewAdoptResourcesRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/adoptions")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -7102,6 +7345,54 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /v1/access (the `ListAccess` operationId).
 	ListAccessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAccessResponse, error)
 
+	// AdoptResourcesWithBodyWithResponse Hand watch-file resources over to the API
+	//
+	// Changes the owner of each listed resource from `file` to `api`, in place and in one
+	// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+	// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+	// (and the admin UI) can change and delete it like any API resource.
+	//
+	// The instance remembers each adopted name. While the watch file still declares an entry
+	// of that kind and name, the startup apply skips it with a warning instead of failing on
+	// the name, so the process keeps starting until the operator removes the entry from the
+	// file. Once the file no longer declares it, the name is forgotten.
+	//
+	// The request is all or nothing. Each object must exist and be managed by the file
+	// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+	// a subscription can be adopted only with its sink (in the same request, or a sink already
+	// managed by the API), and a sink only with every file subscription that uses it.
+	// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+	// the response says what would be adopted. An adoption is recorded in the audit log.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+	AdoptResourcesWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AdoptResourcesResponse, error)
+
+	// AdoptResourcesWithResponse Hand watch-file resources over to the API
+	//
+	// Changes the owner of each listed resource from `file` to `api`, in place and in one
+	// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+	// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+	// (and the admin UI) can change and delete it like any API resource.
+	//
+	// The instance remembers each adopted name. While the watch file still declares an entry
+	// of that kind and name, the startup apply skips it with a warning instead of failing on
+	// the name, so the process keeps starting until the operator removes the entry from the
+	// file. Once the file no longer declares it, the name is forgotten.
+	//
+	// The request is all or nothing. Each object must exist and be managed by the file
+	// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+	// a subscription can be adopted only with its sink (in the same request, or a sink already
+	// managed by the API), and a sink only with every file subscription that uses it.
+	// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+	// the response says what would be adopted. An adoption is recorded in the audit log.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+	AdoptResourcesWithResponse(ctx context.Context, body AdoptResourcesJSONRequestBody, reqEditors ...RequestEditorFn) (*AdoptResourcesResponse, error)
+
 	// ListConsumersWithResponse List consumers
 	//
 	// Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
@@ -7923,6 +8214,117 @@ func (r ListAccessResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListAccessResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// AdoptResourcesResponse401Headers the declared response headers of an HTTP 401 response for AdoptResources
+type AdoptResourcesResponse401Headers struct {
+	WWWAuthenticate *string
+}
+
+// AdoptResourcesResponse503Headers the declared response headers of an HTTP 503 response for AdoptResources
+type AdoptResourcesResponse503Headers struct {
+	RetryAfter *int
+}
+
+type AdoptResourcesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AdoptionResult
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *BadRequest
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *Unauthorized
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *Forbidden
+	// ApplicationproblemJSON413 the response for an HTTP 413 `application/problem+json` response
+	ApplicationproblemJSON413 *PayloadTooLarge
+	// ApplicationproblemJSON415 the response for an HTTP 415 `application/problem+json` response
+	ApplicationproblemJSON415 *UnsupportedMediaType
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationFailed
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *InternalError
+	// ApplicationproblemJSON503 the response for an HTTP 503 `application/problem+json` response
+	ApplicationproblemJSON503 *Unavailable
+	// Headers401 the parsed response headers for an HTTP 401 response
+	Headers401 *AdoptResourcesResponse401Headers
+	// Headers503 the parsed response headers for an HTTP 503 response
+	Headers503 *AdoptResourcesResponse503Headers
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r AdoptResourcesResponse) GetJSON200() *AdoptionResult {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON400() *BadRequest {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON401() *Unauthorized {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON403() *Forbidden {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON413 returns the response for an HTTP 413 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON413() *PayloadTooLarge {
+	return r.ApplicationproblemJSON413
+}
+
+// GetApplicationproblemJSON415 returns the response for an HTTP 415 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON415() *UnsupportedMediaType {
+	return r.ApplicationproblemJSON415
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON422() *ValidationFailed {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON500() *InternalError {
+	return r.ApplicationproblemJSON500
+}
+
+// GetApplicationproblemJSON503 returns the response for an HTTP 503 `application/problem+json` response
+func (r AdoptResourcesResponse) GetApplicationproblemJSON503() *Unavailable {
+	return r.ApplicationproblemJSON503
+}
+
+// GetBody returns the raw response body bytes
+func (r AdoptResourcesResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r AdoptResourcesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AdoptResourcesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AdoptResourcesResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -11925,6 +12327,66 @@ func (c *ClientWithResponses) ListAccessWithResponse(ctx context.Context, reqEdi
 	return ParseListAccessResponse(rsp)
 }
 
+// AdoptResourcesWithBodyWithResponse Hand watch-file resources over to the API
+//
+// Changes the owner of each listed resource from `file` to `api`, in place and in one
+// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+// (and the admin UI) can change and delete it like any API resource.
+//
+// The instance remembers each adopted name. While the watch file still declares an entry
+// of that kind and name, the startup apply skips it with a warning instead of failing on
+// the name, so the process keeps starting until the operator removes the entry from the
+// file. Once the file no longer declares it, the name is forgotten.
+//
+// The request is all or nothing. Each object must exist and be managed by the file
+// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+// a subscription can be adopted only with its sink (in the same request, or a sink already
+// managed by the API), and a sink only with every file subscription that uses it.
+// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+// the response says what would be adopted. An adoption is recorded in the audit log.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+func (c *ClientWithResponses) AdoptResourcesWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AdoptResourcesResponse, error) {
+	rsp, err := c.AdoptResourcesWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAdoptResourcesResponse(rsp)
+}
+
+// AdoptResourcesWithResponse Hand watch-file resources over to the API
+//
+// Changes the owner of each listed resource from `file` to `api`, in place and in one
+// transaction: its `id`, its target, its known versions, its baseline, its cooldown holds and
+// its pending deliveries are kept, so no release is missed or sent twice. Afterwards the API
+// (and the admin UI) can change and delete it like any API resource.
+//
+// The instance remembers each adopted name. While the watch file still declares an entry
+// of that kind and name, the startup apply skips it with a warning instead of failing on
+// the name, so the process keeps starting until the operator removes the entry from the
+// file. Once the file no longer declares it, the name is forgotten.
+//
+// The request is all or nothing. Each object must exist and be managed by the file
+// (`422`). Ownership must stay consistent, as no resource may reference another owner's:
+// a subscription can be adopted only with its sink (in the same request, or a sink already
+// managed by the API), and a sink only with every file subscription that uses it.
+// Watches have no references and can be adopted alone. With `dry_run` nothing changes and
+// the response says what would be adopted. An adoption is recorded in the audit log.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/adoptions (the `AdoptResources` operationId).
+func (c *ClientWithResponses) AdoptResourcesWithResponse(ctx context.Context, body AdoptResourcesJSONRequestBody, reqEditors ...RequestEditorFn) (*AdoptResourcesResponse, error) {
+	rsp, err := c.AdoptResources(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAdoptResourcesResponse(rsp)
+}
+
 // ListConsumersWithResponse List consumers
 //
 // Consumers in ascending `name` order, one page at a time, each with its cursor (`acked_seq`).
@@ -13026,6 +13488,111 @@ func ParseListAccessResponse(rsp *http.Response) (*ListAccessResponse, error) {
 		response.Headers401 = &headers
 	case rsp.StatusCode == 503:
 		var headers ListAccessResponse503Headers
+		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
+			var value int
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.RetryAfter = &value
+		}
+		response.Headers503 = &headers
+	}
+
+	return response, nil
+}
+
+// ParseAdoptResourcesResponse parses an HTTP response from a AdoptResourcesWithResponse call
+func ParseAdoptResourcesResponse(rsp *http.Response) (*AdoptResourcesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AdoptResourcesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdoptionResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 415:
+		var dest UnsupportedMediaType
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON415 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Unavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	switch {
+	case rsp.StatusCode == 401:
+		var headers AdoptResourcesResponse401Headers
+		if values := rsp.Header.Values("WWW-Authenticate"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "WWW-Authenticate", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.WWWAuthenticate = &value
+		}
+		response.Headers401 = &headers
+	case rsp.StatusCode == 503:
+		var headers AdoptResourcesResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
