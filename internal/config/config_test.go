@@ -474,6 +474,54 @@ func TestHTTPAllowlists(t *testing.T) {
 	}
 }
 
+// D105 (ADR 0040): http.allow_private_hosts, from the file or from
+// ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS, holds exact lower-case host names; a bad
+// entry fails with its index.
+func TestHTTPAllowPrivateHosts(t *testing.T) {
+	cfg, err := load(t, "")
+	if err != nil || len(cfg.HTTP.AllowPrivateHosts) != 0 {
+		t.Fatalf("default: %v %v", cfg.HTTP.AllowPrivateHosts, err)
+	}
+	cfg, err = load(t, writeFile(t, "http:\n  allow_private_hosts: [registry.lan, nexus.corp.example, localhost, a-1.b]\n"))
+	if err != nil || !reflect.DeepEqual(cfg.HTTP.AllowPrivateHosts, []string{"registry.lan", "nexus.corp.example", "localhost", "a-1.b"}) {
+		t.Fatalf("file: %v %v", cfg.HTTP.AllowPrivateHosts, err)
+	}
+	cfg, err = load(t, writeFile(t, "http:\n  allow_private_hosts: [file.lan]\n"), "ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS=a.lan, b.lan")
+	if err != nil || !reflect.DeepEqual(cfg.HTTP.AllowPrivateHosts, []string{"a.lan", "b.lan"}) {
+		t.Fatalf("env: %v %v", cfg.HTTP.AllowPrivateHosts, err)
+	}
+	many := make([]string, 65)
+	for i := range many {
+		many[i] = fmt.Sprintf("h%d.lan", i)
+	}
+	cases := map[string]struct{ yaml, want string }{
+		"upper case":      {"[Registry.LAN]", `[0] "Registry.LAN": must be a lower-case host name`},
+		"wildcard":        {"['*.lan']", `[0] "*.lan"`},
+		"port":            {"['registry.lan:8080']", `[0] "registry.lan:8080"`},
+		"scheme":          {"['https://registry.lan']", `[0] "https://registry.lan"`},
+		"trailing dot":    {"['registry.lan.']", `[0] "registry.lan."`},
+		"empty":           {"['']", `[0] ""`},
+		"IPv4 literal":    {"[10.0.0.5]", `[0] "10.0.0.5": an IP address; use http.allow_networks`},
+		"IPv6 literal":    {"['fd00::1']", `[0] "fd00::1"`},
+		"numeric IPv4":    {"['2130706433']", `[0] "2130706433": an IP address`},
+		"hex IPv4":        {"['0x7f000001']", `[0] "0x7f000001": an IP address`},
+		"short IPv4":      {"['127.1']", `[0] "127.1": an IP address`},
+		"duplicate":       {"[a.lan, b.lan, a.lan]", `[2] "a.lan": listed twice`},
+		"too many":        {"[" + strings.Join(many, ", ") + "]", "http.allow_private_hosts: at most 64 entries, got 65"},
+		"second is bad":   {"[a.lan, 'b lan']", `[1] "b lan"`},
+		"underscore name": {"[my_host.lan]", `[0] "my_host.lan"`},
+	}
+	for name, tc := range cases {
+		_, err := load(t, writeFile(t, "http:\n  allow_private_hosts: "+tc.yaml+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "http.allow_private_hosts") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want %q", name, err, tc.want)
+		}
+	}
+	if _, err := load(t, "", "ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS=ok.lan,10.0.0.1"); err == nil || !strings.Contains(err.Error(), `http.allow_private_hosts[1] "10.0.0.1"`) {
+		t.Errorf("env with an IP: %v", err)
+	}
+}
+
 // TestLooksLikeTokenAPIToken: an Angelia API token (ADR 0030 T1) is refused
 // wherever it appears in a value, but a bare "ang_" prefix is not: ordinary
 // names such as "ang_team" stay allowed (ADR 0030 T9).

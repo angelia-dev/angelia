@@ -241,3 +241,78 @@ func TestClientCheckURL(t *testing.T) {
 		}
 	}
 }
+
+// D105 (ADR 0040): a listed host name may resolve to loopback, private and
+// CGNAT addresses; link-local and the metadata addresses stay refused, and
+// every other range of the deny list is unchanged. An unlisted host gets
+// the default deny list.
+func TestGuardAllowHosts(t *testing.T) {
+	exempt := []string{
+		"127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1",
+		"10.0.0.5", "172.16.0.1", "192.168.1.1", "::ffff:10.1.1.1",
+		"fc00::1", "fdff:ffff::1",
+		"100.64.0.1", "100.127.255.254",
+	}
+	refused := []string{
+		"169.254.169.254", "169.254.0.1", "fe80::1", "::ffff:169.254.169.254",
+		"100.100.100.200", "::ffff:100.100.100.200", "fd00:ec2::254",
+		"0.0.0.0", "::", "0.1.2.3", "224.0.0.1", "ff02::1", "255.255.255.255",
+		"64:ff9b::a9fe:a9fe", "2002:7f00:1::1", "::a9fe:a9fe", "fec0::1",
+		"192.0.0.170", "198.18.0.1", "240.0.0.1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "64:ff9b:1::a00:1",
+	}
+	g := NewGuard(nil, fakeResolver{})
+	g.setAllowHosts([]string{"registry.lan", "Mixed.Example."})
+	for _, host := range []string{"registry.lan", "REGISTRY.LAN", "registry.lan.", "mixed.example"} {
+		for _, a := range exempt {
+			if err := g.CheckAddr(host, netip.MustParseAddr(a)); err != nil {
+				t.Errorf("listed %s at %s: %v", host, a, err)
+			}
+		}
+		for _, a := range refused {
+			if err := g.CheckAddr(host, netip.MustParseAddr(a)); !errors.Is(err, ErrBlocked) {
+				t.Errorf("listed %s at %s: got %v, want ErrBlocked", host, a, err)
+			}
+		}
+	}
+	for _, host := range []string{"other.lan", "sub.registry.lan", "registry.lan.evil.example", "lan"} {
+		for _, a := range append(exempt, refused...) {
+			if err := g.CheckAddr(host, netip.MustParseAddr(a)); !errors.Is(err, ErrBlocked) {
+				t.Errorf("unlisted %s at %s: got %v, want ErrBlocked", host, a, err)
+			}
+		}
+	}
+	// allow_networks still opens what the host list never does.
+	g2 := NewGuard([]netip.Prefix{netip.MustParsePrefix("169.254.169.254/32")}, fakeResolver{})
+	g2.setAllowHosts([]string{"registry.lan"})
+	if err := g2.CheckAddr("registry.lan", netip.MustParseAddr("169.254.169.254")); err != nil {
+		t.Errorf("metadata opened by allow_networks: %v", err)
+	}
+	// An IP literal in the list is ignored: names only.
+	g3 := NewGuard(nil, fakeResolver{})
+	g3.setAllowHosts([]string{"10.0.0.5", "::1"})
+	for _, a := range []string{"10.0.0.5", "::1"} {
+		if err := g3.CheckURL(t.Context(), &url.URL{Scheme: "http", Host: netip.AddrPortFrom(netip.MustParseAddr(a), 80).String()}); !errors.Is(err, ErrBlocked) {
+			t.Errorf("IP literal %s listed as a host: got %v, want ErrBlocked", a, err)
+		}
+	}
+}
+
+// D105: the URL check accepts a listed name resolving to a private address
+// and refuses an unlisted one.
+func TestGuardAllowHostsURLCheck(t *testing.T) {
+	g := NewGuard(nil, fakeResolver{
+		"registry.lan": addrs("10.0.0.5"),
+		"other.lan":    addrs("10.0.0.5"),
+		"meta.lan":     addrs("10.0.0.5", "169.254.169.254"),
+	})
+	g.setAllowHosts([]string{"registry.lan", "meta.lan"})
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "https", Host: "registry.lan:8443"}); err != nil {
+		t.Errorf("listed name at 10.0.0.5: %v", err)
+	}
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "https", Host: "other.lan"}); !errors.Is(err, ErrBlocked) {
+		t.Errorf("unlisted name at 10.0.0.5: got %v, want ErrBlocked", err)
+	}
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "https", Host: "meta.lan"}); !errors.Is(err, ErrBlocked) {
+		t.Errorf("listed name with a link-local answer: got %v, want ErrBlocked", err)
+	}
+}

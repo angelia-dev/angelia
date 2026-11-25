@@ -22,6 +22,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/apitoken/format"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/secrets"
 )
 
@@ -41,6 +42,9 @@ const (
 // Valid roles, matching `angelia serve --roles`.
 var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "worker": true, "dispatcher": true}
 
+// MaxAllowPrivateHosts is the most entries http.allow_private_hosts takes.
+const MaxAllowPrivateHosts = 64
+
 // maxKindLen is the longest source name or kind: the API's Kind pattern
 // (^[a-z0-9][a-z0-9-]{0,62}$) allows 63 characters.
 const maxKindLen = 63
@@ -48,7 +52,8 @@ const maxKindLen = 63
 var (
 	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	// hostRE is a lower-case DNS name or IPv4 address (http.allow_http_hosts).
+	// hostRE is a lower-case DNS name or IPv4 address (http.allow_http_hosts;
+	// http.allow_private_hosts refuses the addresses separately).
 	hostRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 	unknownRE = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
 	// instanceRE is the <instance> part of the CloudEvents source
@@ -168,6 +173,14 @@ type HTTP struct {
 	// section 5). Empty by default. Only the instance configuration sets
 	// it: the watch file and the API cannot widen it.
 	AllowNetworks []string `yaml:"allow_networks"`
+	// AllowPrivateHosts lists host names (exact, lower case, no wildcard,
+	// at most MaxAllowPrivateHosts) that may resolve to loopback, private
+	// and CGNAT addresses: the SSRF guard accepts those for a hop to a
+	// listed name, at the URL check and at dial time, and still refuses
+	// link-local and the metadata addresses (ADR 0040). Empty by default.
+	// Env ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS. Like AllowNetworks, only the
+	// instance configuration sets it.
+	AllowPrivateHosts []string `yaml:"allow_private_hosts"`
 	// AllowHTTPHosts lists host names a webhook may reach over plain
 	// http:// (decision D12). Empty by default: https only.
 	AllowHTTPHosts []string `yaml:"allow_http_hosts"`
@@ -545,6 +558,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	list("ROLES", &cfg.Roles)
 	list("HTTP_ALLOW_NETWORKS", &cfg.HTTP.AllowNetworks)
 	list("HTTP_ALLOW_HTTP_HOSTS", &cfg.HTTP.AllowHTTPHosts)
+	list("HTTP_ALLOW_PRIVATE_HOSTS", &cfg.HTTP.AllowPrivateHosts)
 	if v, ok := env[envPrefix+"HTTP_CA_FILE"]; ok {
 		cfg.HTTP.CAFile = v
 	}
@@ -656,6 +670,21 @@ func (c *Config) Validate() error {
 		if !hostRE.MatchString(h) {
 			bad("http.allow_http_hosts[%d] %q: must be a lower-case host name or IPv4 address, without scheme or port", i, h)
 		}
+	}
+	if n := len(c.HTTP.AllowPrivateHosts); n > MaxAllowPrivateHosts {
+		bad("http.allow_private_hosts: at most %d entries, got %d", MaxAllowPrivateHosts, n)
+	}
+	seenPrivate := make(map[string]bool, len(c.HTTP.AllowPrivateHosts))
+	for i, h := range c.HTTP.AllowPrivateHosts {
+		switch _, err := netip.ParseAddr(h); {
+		case err == nil || netguard.NonCanonicalIP(h):
+			bad("http.allow_private_hosts[%d] %q: an IP address; use http.allow_networks for addresses", i, h)
+		case !hostRE.MatchString(h):
+			bad("http.allow_private_hosts[%d] %q: must be a lower-case host name, without wildcard, scheme, port or trailing dot", i, h)
+		case seenPrivate[h]:
+			bad("http.allow_private_hosts[%d] %q: listed twice", i, h)
+		}
+		seenPrivate[h] = true
 	}
 
 	if strings.ContainsAny(c.HTTP.CAFile, "\r\n") {

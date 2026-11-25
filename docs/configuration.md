@@ -22,6 +22,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `log.format` | `ANGELIA_LOG_FORMAT` | `json` | `json`, `text` |
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
+| `http.allow_private_hosts` | `ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS` (comma-separated) | empty | list of at most 64 exact lower-case host names, no wildcard, IP address, port or trailing dot; see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
 | `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind; makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
@@ -141,9 +142,18 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   `192.168.1.0/24` or an internal `fd00:10::/32`. It applies to sources and sinks alike. Keep it narrow:
   a prefix of length 0 (`0.0.0.0/0`, `::/0`) turns the guard off for that address family, and
   `config check` warns about it.
+- `http.allow_private_hosts` lists host names that may resolve to loopback, private (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) or CGNAT (`100.64.0.0/10`) addresses, for example an
+  internal registry `nexus.corp.example` whose address changes. It is narrower than a prefix: only a
+  request to that name gets through, not every host of its network. It never exempts link-local
+  (`169.254.0.0/16`, `fe80::/10`), the cloud metadata addresses `100.100.100.200` and `fd00:ec2::254`, or
+  any other range of the list above, even if the name's DNS answer is wrong or hijacked: only
+  `allow_networks` opens those. Names are exact (no wildcard; `sub.nexus.corp.example` is another name)
+  and the exemption is per hop: a redirect to another name is judged by that name. An IP address is
+  refused here; use `allow_networks`.
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
   D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
-- Both lists live only here: the watch file and the REST API cannot widen them.
+- These lists live only here: the watch file and the REST API cannot widen them.
 - `angelia serve` builds one HTTP client from these keys, shared by the scheduler role (sources) and the
   dispatcher role (sinks): `allow_networks` is what both may dial. The webhook sink checks
   `allow_http_hosts` again at every delivery, so removing a host stops plain `http://` even for sinks
@@ -156,6 +166,10 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
+- Redirects: sources follow at most 5 hops (a chain stops at its fifth request, the first one included,
+  counted as net/http counts its default of 10), each hop checked like the first; never from `https://` to `http://` (the request fails and is not retried; a source whose
+  `base_url` is `http://` may still be redirected to `http://`); sinks follow none. See
+  [ADR 0040](adr/0040-ssrf-guard-hostname-allowlist-and-redirects.md).
 
 - `http.ca_file` adds certificate authorities to the system roots for every outgoing HTTPS request (sources
   and sinks), for a registry behind a private CA. Certificate verification is never switched off. A file

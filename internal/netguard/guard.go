@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -68,12 +69,19 @@ type Resolver interface {
 //     IPv4 addresses.
 //
 // IPv4-mapped IPv6 addresses (::ffff:0:0/96) are checked as IPv4. An
-// address inside one of the allowlisted prefixes is accepted.
+// address inside one of the allowlisted prefixes is accepted. For a host
+// name on the host allowlist (Config.AllowHosts, ADR 0040), loopback,
+// private and CGNAT addresses are accepted too, except the metadata
+// addresses 100.100.100.200 and fd00:ec2::254; link-local and every other
+// range stay refused unless a prefix allows them.
 //
 // CheckURL alone is not proof against DNS rebinding; the default
 // transport's dialer checks the connected address too (see the package doc).
 type Guard struct {
-	allow    []netip.Prefix
+	allow []netip.Prefix
+	// hosts holds the allowlisted host names, lower case, without a
+	// trailing dot. Read-only after New.
+	hosts    map[string]bool
 	resolver Resolver
 }
 
@@ -87,13 +95,35 @@ func NewGuard(allow []netip.Prefix, resolver Resolver) *Guard {
 	return &Guard{allow: a, resolver: resolver}
 }
 
-// CheckAddr returns a *BlockedError if addr is refused.
+// setAllowHosts sets the host allowlist. Entries are matched without case
+// and without a trailing dot; an IP literal is ignored, since only
+// allow_networks opens addresses.
+func (g *Guard) setAllowHosts(hosts []string) {
+	g.hosts = make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		h = normName(h)
+		if _, err := netip.ParseAddr(h); err == nil || h == "" {
+			continue
+		}
+		g.hosts[h] = true
+	}
+}
+
+// normName is the form of a host name the host allowlist compares.
+func normName(h string) string { return strings.ToLower(strings.TrimSuffix(h, ".")) }
+
+// CheckAddr returns a *BlockedError if addr is refused. host is the name the
+// address was resolved from (the address itself for an IP literal); it
+// matters only when it is on the host allowlist.
 func (g *Guard) CheckAddr(host string, addr netip.Addr) error {
 	a := addr.Unmap().WithZone("")
 	for _, p := range g.allow {
 		if p.Contains(a) {
 			return nil
 		}
+	}
+	if len(g.hosts) > 0 && g.hosts[normName(host)] && hostExempt(a) {
+		return nil
 	}
 	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsUnspecified() || a.IsMulticast() {
 		return &BlockedError{Host: host, Addr: a}
@@ -121,6 +151,27 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),        // reserved (class E)
 	netip.MustParsePrefix("2001::/32"),          // Teredo
 	netip.MustParsePrefix("64:ff9b:1::/48"),     // NAT64 local-use
+}
+
+// cgnat is the shared address space, which a listed host may reach.
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// metadataAddrs are cloud metadata addresses inside ranges a listed host
+// may otherwise reach (CGNAT and fc00::/7): Alibaba Cloud's and the AWS
+// IMDS IPv6 endpoint. 169.254.169.254 is link-local, never exempt anyway.
+var metadataAddrs = []netip.Addr{
+	netip.MustParseAddr("100.100.100.200"),
+	netip.MustParseAddr("fd00:ec2::254"),
+}
+
+// hostExempt reports whether a (unmapped, without zone) is an address a
+// host on the host allowlist may reach: loopback, private (RFC 1918,
+// fc00::/7) or CGNAT, but not a metadata address (ADR 0040, D105).
+func hostExempt(a netip.Addr) bool {
+	if slices.Contains(metadataAddrs, a) {
+		return false
+	}
+	return a.IsLoopback() || a.IsPrivate() || cgnat.Contains(a)
 }
 
 // CheckURL checks the scheme and host of u. A hostname is resolved and
