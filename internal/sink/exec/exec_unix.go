@@ -16,26 +16,28 @@ func supported() error { return nil }
 
 // prepare puts the child in its own process group, so that a timeout or a
 // cancellation reaches every process it started: SIGTERM to the group when
-// the context is done, then, KillGrace later, SIGKILL (os/exec kills the
-// direct child at WaitDelay; killGroup the rest).
-func prepare(cmd *osexec.Cmd) {
+// the context is done, then SIGKILL to the group KillGrace later (st's
+// timer, or run once the leader has exited; os/exec also kills the leader
+// at WaitDelay). Cancel records in st that it fired.
+func prepare(cmd *osexec.Cmd, st *runState) {
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	setPdeathsig(attr)
 	cmd.SysProcAttr = attr
 	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		pid := cmd.Process.Pid
+		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
 			}
 			return fmt.Errorf("signal process group: %w", err)
 		}
+		st.fired.Store(true)
+		st.armKill(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 		return nil
 	}
 }
 
-// killGroup sends SIGKILL to the child's process group, after Wait. The
-// group id is the child's pid, which is not reused while the group has a
-// member.
+// killGroup sends SIGKILL to the child's process group.
 func killGroup(cmd *osexec.Cmd) {
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

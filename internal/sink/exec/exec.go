@@ -31,9 +31,12 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/sink"
@@ -195,6 +198,15 @@ func (s *Sink) Validate(cfg sink.Config) error {
 	return err
 }
 
+// undefinedError is a configuration that names a command this process
+// does not define: retried at delivery, since the fix (defining it on
+// this dispatcher node and restarting) needs no change to the sink.
+type undefinedError struct{ name string }
+
+func (e undefinedError) Error() string {
+	return fmt.Sprintf("exec: command %q is not defined under exec.commands in angelia.yaml", e.name)
+}
+
 func (s *Sink) command(cfg sink.Config) (*command, error) {
 	var c Config
 	dec := json.NewDecoder(bytes.NewReader(cfg))
@@ -210,17 +222,22 @@ func (s *Sink) command(cfg sink.Config) (*command, error) {
 	}
 	cmd, ok := s.cmds[c.Command]
 	if !ok {
-		return nil, fmt.Errorf("exec: command %q is not defined under exec.commands in angelia.yaml", c.Command)
+		return nil, undefinedError{c.Command}
 	}
 	return cmd, nil
 }
 
 // Deliver implements sink.Sink: one run of the command. Exit status 0 is
 // delivered; any other exit, a signal, a timeout or a cancellation is
-// retried; a command that cannot be started is permanent.
+// retried; a command that cannot be started is permanent. A malformed
+// configuration is permanent; one naming a command this process does not
+// define is retried (every dispatcher node must define every command).
 func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, error) {
 	c, err := s.command(req.Config)
 	if err != nil {
+		if errors.As(err, new(undefinedError)) {
+			return sink.Result{}, err
+		}
 		return sink.Result{}, sink.Permanent(err)
 	}
 	select {
@@ -247,40 +264,102 @@ func (s *Sink) Deliver(ctx context.Context, req sink.Request) (sink.Result, erro
 	cmd.Stdin = bytes.NewReader(req.Rendered.Body)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = KillGrace
-	prepare(cmd)
+	st := &runState{}
+	prepare(cmd, st)
 
-	if err := cmd.Start(); err != nil {
+	waitErr, err := run(cmd, st)
+	if err != nil {
 		if ctx.Err() != nil {
 			return sink.Result{}, fmt.Errorf("exec %s: canceled: %w", c.name, ctx.Err())
 		}
 		return sink.Result{}, startError(c.name, err)
 	}
-	waitErr := cmd.Wait()
-	runErr := runCtx.Err()
-	if runErr != nil {
-		// Whatever is left of the group (a grandchild that kept a pipe
-		// open, a child that ignored SIGTERM) is killed now.
-		killGroup(cmd)
-	}
-	var failure error
-	switch {
-	case runErr != nil && errors.Is(context.Cause(runCtx), errTimedOut):
-		// The command's own timeout fired first; the attempt's deadline
-		// may have passed too during KillGrace.
-		failure = fmt.Errorf("exec %s: timed out after %v", c.name, timeout.Round(time.Millisecond))
-	case runErr != nil || ctx.Err() != nil:
-		failure = fmt.Errorf("exec %s: canceled: %w", c.name, ctx.Err())
-	case waitErr == nil || errors.Is(waitErr, osexec.ErrWaitDelay):
-		// Exit 0; a descendant that kept stdout or stderr open past
-		// KillGrace does not change the outcome.
+	failure := outcome(c.name, timeout, waitErr, st.fired.Load(), context.Cause(runCtx), ctx.Err())
+	if failure == nil {
 		return sink.Result{StatusCode: 0}, nil
-	default:
-		failure = exitError(c.name, waitErr)
 	}
 	s.log.Warn("exec sink: command failed", "command", c.name, "sink_id", req.SinkID,
 		"delivery_id", req.DeliveryID, "attempt", req.Attempt, "error", failure.Error(),
 		"stderr", strings.ToValidUTF8(string(lastBytes(stderr.Bytes(), MaxLoggedStderr)), "�"))
 	return sink.Result{}, failure
+}
+
+// run starts cmd and waits for it, on one locked OS thread from start to
+// end: Linux sends the child's Pdeathsig when the thread that started it
+// exits, so the thread must outlive the child. Once the leader has exited,
+// whatever is left of its process group (a background child, a grandchild
+// holding a pipe) is killed with SIGKILL, whatever the exit status: on
+// Linux before the leader is reaped, so the group id cannot be reused in
+// between; elsewhere just after. startErr is the error of Start.
+func run(cmd *osexec.Cmd, st *runState) (waitErr, startErr error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	early := killGroupAtExit(cmd)
+	if early {
+		st.stopKill()
+	}
+	waitErr = cmd.Wait()
+	if !early {
+		st.stopKill()
+		killGroup(cmd)
+	}
+	return waitErr, nil
+}
+
+// runState is what the Cancel func of one run records.
+type runState struct {
+	// fired is set when Cancel signalled the group: the run was cut by
+	// its timeout or by the context, whatever its exit status.
+	fired   atomic.Bool
+	mu      sync.Mutex
+	kill    *time.Timer
+	stopped bool
+}
+
+// armKill schedules f (SIGKILL to the group) after KillGrace.
+func (r *runState) armKill(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.stopped {
+		r.kill = time.AfterFunc(KillGrace, f)
+	}
+}
+
+// stopKill cancels the scheduled SIGKILL, and any later one, once the
+// leader has exited: run then kills the group itself.
+func (r *runState) stopKill() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = true
+	if r.kill != nil {
+		r.kill.Stop()
+	}
+}
+
+// outcome classifies a finished run. A run whose Cancel never fired is
+// judged by its exit status alone, even when the deadline passed while it
+// was ending; one that Cancel interrupted is a timeout when cause is the
+// command's own timeout, else a cancellation (shutdown, lease end).
+func outcome(name string, timeout time.Duration, waitErr error, fired bool, cause, parentErr error) error {
+	switch {
+	case !fired && (waitErr == nil || errors.Is(waitErr, osexec.ErrWaitDelay)):
+		// Exit 0; a descendant that kept stdout or stderr open past
+		// KillGrace does not change the outcome.
+		return nil
+	case !fired:
+		return exitError(name, waitErr)
+	case errors.Is(cause, errTimedOut):
+		// The attempt's deadline may have passed too during KillGrace.
+		return fmt.Errorf("exec %s: timed out after %v", name, timeout.Round(time.Millisecond))
+	default:
+		if parentErr == nil {
+			parentErr = cause
+		}
+		return fmt.Errorf("exec %s: canceled: %w", name, parentErr)
+	}
 }
 
 // environ is the child's whole environment (ADR 0042 §3).

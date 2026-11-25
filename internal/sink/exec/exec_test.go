@@ -65,6 +65,16 @@ func helper(mode string, args []string) int {
 		signal.Ignore(syscall.SIGTERM)
 		d, _ := time.ParseDuration(args[0])
 		time.Sleep(d)
+	case "spawn-exit": // spawn-exit <pidfile> <hold>: start a grandchild, exit 0 at once
+		self, _ := os.Executable()
+		c := osexec.Command(self, helperArg, "sleep-ignore-term", "60s") //nolint:gosec // G204: the test binary itself
+		if args[1] == "hold" {
+			c.Stdout = os.Stdout
+		}
+		if err := c.Start(); err != nil {
+			return 9
+		}
+		record(args[0], []byte(strconv.Itoa(c.Process.Pid)))
 	case "grandchild": // grandchild <pidfile>: a grandchild holding stdout, then sleep
 		self, _ := os.Executable()
 		c := osexec.Command(self, helperArg, "sleep-ignore-term", "60s") //nolint:gosec // G204: the test binary itself
@@ -281,9 +291,17 @@ func TestOutcomes(t *testing.T) {
 	if !sink.IsPermanent(err) || err.Error() != "exec hook: could not start: permission denied" {
 		t.Fatalf("not executable: %v", err)
 	}
+	// A command this node does not define is retried; a malformed
+	// configuration is permanent.
 	_, err = newSink(t, helperCmd(t, "exit", "0")).Deliver(t.Context(), sink.Request{Config: sink.Config(`{"command":"nope"}`)})
-	if !sink.IsPermanent(err) {
+	if err == nil || sink.IsPermanent(err) || !strings.Contains(err.Error(), `command "nope" is not defined`) {
 		t.Fatalf("unknown command: %v", err)
+	}
+	for _, cfg := range []string{`{"command":"hook","x":1}`, `{}`, `nope`} {
+		_, err = newSink(t, helperCmd(t, "exit", "0")).Deliver(t.Context(), sink.Request{Config: sink.Config(cfg)})
+		if !sink.IsPermanent(err) {
+			t.Fatalf("%s: %v", cfg, err)
+		}
 	}
 }
 
@@ -541,7 +559,11 @@ func TestMaxConcurrentWaitCanceled(t *testing.T) {
 		_, _ = s.Deliver(t.Context(), request("{}"))
 	}()
 	<-started
-	time.Sleep(200 * time.Millisecond) // the first run holds the slot
+	for deadline := time.Now().Add(5 * time.Second); len(s.cmds["hook"].sem) == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the first run never took the slot")
+		}
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	_, err := s.Deliver(ctx, request("{}"))
@@ -564,5 +586,61 @@ func TestCheckCommand(t *testing.T) {
 		if err := CheckCommand(p); err == nil {
 			t.Errorf("%s: accepted", p)
 		}
+	}
+}
+
+// The leader exits 0 and leaves a background child, detached from the
+// pipes or holding stdout: the delivery succeeds at once and nothing of the
+// group is left alive.
+func TestExitZeroKillsLingeringGrandchild(t *testing.T) {
+	for _, hold := range []string{"detached", "hold"} {
+		t.Run(hold, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			s := newSink(t, helperCmd(t, "spawn-exit", pidFile, hold))
+			start := time.Now()
+			if _, err := s.Deliver(t.Context(), request("{}")); err != nil {
+				t.Fatal(err)
+			}
+			if took := time.Since(start); took > KillGrace {
+				t.Fatalf("took %v", took)
+			}
+			b, err := readFile(pidFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, _ := strconv.Atoi(string(b))
+			waitDead(t, pid)
+		})
+	}
+}
+
+// Only a fired Cancel makes a run a timeout or a cancellation: a run that
+// exited 0 on its own is delivered even if the deadline passed meanwhile.
+func TestOutcome(t *testing.T) {
+	if err := outcome("hook", time.Second, nil, false, errTimedOut, context.DeadlineExceeded); err != nil {
+		t.Fatalf("exit 0, Cancel not fired: %v", err)
+	}
+	if err := outcome("hook", time.Second, osexec.ErrWaitDelay, false, nil, nil); err != nil {
+		t.Fatalf("ErrWaitDelay: %v", err)
+	}
+	if err := outcome("hook", time.Second, nil, true, errTimedOut, nil); err == nil || err.Error() != "exec hook: timed out after 1s" {
+		t.Fatalf("fired, timeout: %v", err)
+	}
+	if err := outcome("hook", time.Second, nil, true, context.Canceled, nil); err == nil || err.Error() != "exec hook: canceled: context canceled" {
+		t.Fatalf("fired, canceled: %v", err)
+	}
+	if err := outcome("hook", time.Second, errors.New("x"), false, nil, nil); err == nil || err.Error() != "exec hook: failed" {
+		t.Fatalf("failed: %v", err)
+	}
+}
+
+// A Cancel after stopKill schedules nothing.
+func TestRunStateStopped(t *testing.T) {
+	var r runState
+	r.stopKill()
+	fired := make(chan struct{})
+	r.armKill(func() { close(fired) })
+	if r.kill != nil {
+		t.Fatal("armed after stop")
 	}
 }

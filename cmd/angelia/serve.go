@@ -36,6 +36,11 @@ func newServeCmd() *cobra.Command {
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
+	// First, before anything reads a secret: other processes of this user
+	// (an exec sink's command) must not read our environment through /proc.
+	if err := setNotDumpable(); err != nil {
+		return err
+	}
 	path, err := cmd.Flags().GetString("config")
 	if err != nil {
 		return err

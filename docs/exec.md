@@ -112,6 +112,7 @@ touch "$marker"
 | runs past its timeout | killed, retried | `exec deploy-hook: timed out after 10s` |
 | is cut by shutdown or the end of the lease | killed, retried | `exec deploy-hook: canceled: …` |
 | cannot be started (missing, not executable) | dead at once | `exec deploy-hook: could not start: permission denied` |
+| is not defined on this dispatcher node | retried, until the node defines it or the attempts run out | `exec: command "deploy-hook" is not defined under exec.commands in angelia.yaml` |
 
 Retries follow the dispatcher's schedule ([ADR 0017](adr/0017-dispatcher-delivery-leases-and-retries.md)):
 8 attempts, then the delivery is dead and can be replayed. Delivery is at least once, so a command can run
@@ -125,11 +126,17 @@ standard error is logged at `warn` with the sink and the command name; standard 
 
 - **Timeout**: from `1s` to `12s`, because the dispatcher gives one attempt 15 s. The command never runs past
   the attempt's deadline minus 2 s; with less than 1 s left it is not started and the attempt is retried. A
-  command that needs longer should hand the work off (enqueue a job, call a service) and exit.
+  command that needs longer should hand the work off to a service (enqueue a job, call an HTTP endpoint) and
+  exit. A background child does not work: see the next item.
 - **Process group**: the command runs in its own process group. At the timeout, or when the attempt is cut
   (shutdown, lease end), the whole group gets `SIGTERM`, then `SIGKILL` 2 s later, so a child process that
-  keeps a pipe open cannot hang the delivery. A process that leaves the group (`setsid`, a daemon) is out of
-  reach. On Linux the command also dies if Angelia crashes.
+  keeps a pipe open cannot hang the delivery. **When the command exits, whatever its status, everything left
+  in its group is killed with `SIGKILL`**: a run leaves nothing behind, so `nohup … &` or a background job
+  dies with it. A process that leaves the group (`setsid`, a daemon) is out of reach; do not do that, hand
+  the work to a service instead.
+- **If Angelia crashes**: on Linux the command itself (the direct child only, not its own children) is killed
+  with it. In a container, run Angelia with `--init` (`docker run --init`, or tini as the entrypoint) so that
+  a process left behind is reaped instead of staying a zombie under PID 1.
 - **Output**: standard output and standard error are each kept to their last 64 KiB; the rest is read and
   discarded.
 - **Concurrency**: `max_concurrent` runs of a command at a time; a delivery waiting for a free slot when its
@@ -144,8 +151,13 @@ standard error is logged at `warn` with the sink and the command name; standard 
   Angelia user cannot change them.
 - **Standard input is untrusted**: package names, versions and release notes come from public registries. Parse
   it as JSON; never pass a field to `sh -c`, `eval` or an option position without quoting and `--`.
-- **Environment**: Angelia's environment (the secrets key, tokens, webhook secrets) is not inherited. List a
-  secret the command needs, such as `DEPLOY_TOKEN`, in `env`.
+- **Environment**: the command gets a clean environment, not Angelia's (the secrets key, tokens, webhook
+  secrets). List a secret the command needs, such as `DEPLOY_TOKEN`, in `env`. This does not stop a process of
+  the same user from reading Angelia's own environment through `/proc/<pid>/environ`. On Linux, `angelia serve`
+  marks itself non-dumpable at start (`prctl(PR_SET_DUMPABLE, 0)`): its `/proc/<pid>/environ` becomes owned by
+  root and unreadable to the command (core dumps of Angelia are off as a consequence). On macOS a process of the
+  same user can see Angelia's environment (`ps -E`). Where that matters, keep the command a thin trigger that
+  hands the work to a service running as **another user**, and under systemd add `ProtectProc=invisible`.
 - **Network**: Angelia's SSRF guard (`http.allow_networks`) applies to Angelia's own requests only, not to what
   the command does.
 - **systemd**: the command inherits the unit's sandbox ([install.md](install.md#as-a-systemd-service)):
@@ -163,11 +175,17 @@ FROM ghcr.io/angelia-dev/angelia:latest
 COPY --chmod=0755 deploy-hook /usr/local/bin/deploy-hook
 ```
 
+Run it with `--init` (`docker run --init …`, `init: true` in Compose, or tini as the entrypoint): Angelia is
+then not PID 1, and any process a command leaves behind is reaped.
+
 In a container setup a [webhook sink](webhooks.md) to a small receiver in a sidecar container is usually the
 better choice: the receiver gets the same JSON, signed, and runs with its own tools and permissions.
 
 ## Several dispatcher nodes
 
-Every process running the `dispatcher` role runs commands, so every such node needs every command of
-`exec.commands` at the same path. `angelia serve` refuses to start the dispatcher role when one is missing,
-so a misconfigured node fails at once instead of failing deliveries.
+Every process running the `dispatcher` role runs commands, so **every dispatcher node must define every
+command** of `exec.commands`, with its program at the same path. `angelia serve` refuses to start the
+dispatcher role when a defined command's program is missing, so a misconfigured node fails at once. A node
+whose `angelia.yaml` does not define a command that a sink names retries the delivery (`last_error` names the
+command), so another node, or this one after its configuration is fixed, can deliver it within the
+dispatcher's attempts.

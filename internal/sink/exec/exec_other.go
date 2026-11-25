@@ -10,7 +10,9 @@ import (
 
 func supported() error { return fmt.Errorf("exec sinks are not supported on %s", runtime.GOOS) }
 
-func prepare(*osexec.Cmd) {}
+func prepare(*osexec.Cmd, *runState) {}
+
+func killGroupAtExit(*osexec.Cmd) bool { return false }
 
 func killGroup(*osexec.Cmd) {}
 
