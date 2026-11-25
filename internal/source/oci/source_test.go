@@ -48,6 +48,9 @@ type registry struct {
 	pages     map[string]string // query "last" -> body; "" first page
 	nextLink  func(host, last string) string
 	always401 bool
+	manifests map[string]string // tag -> Docker-Content-Digest header ("" for none)
+	headCode  map[string]int    // tag -> status of the HEAD
+	accepts   []string
 }
 
 func newRegistry(t testing.TB) *registry {
@@ -84,6 +87,20 @@ func (g *registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("WWW-Authenticate", ch)
 		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if tag, ok := strings.CutPrefix(r.URL.Path, "/v2/team/app/manifests/"); ok {
+		g.accepts = append(g.accepts, r.Header.Get("Accept"))
+		if c := g.headCode[tag]; c != 0 {
+			if c == 429 {
+				w.Header().Set("Retry-After", "120")
+			}
+			w.WriteHeader(c)
+			return
+		}
+		if d := g.manifests[tag]; d != "" {
+			w.Header().Set("Docker-Content-Digest", d)
+		}
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/v2/team/app/tags/list") {
@@ -181,7 +198,7 @@ func TestTokenFlow(t *testing.T) {
 	if !slices.Equal(reg.regAuth, want) {
 		t.Errorf("registry Authorization = %q", reg.regAuth)
 	}
-	if !res.State.IsZero() {
+	if res.State.Cursor == "" || res.State.ETag != "" {
 		t.Errorf("state %+v", res.State)
 	}
 	for name, s := range map[string]string{"state": fmt.Sprint(res.State), "versions": fmt.Sprint(res.Versions), "logs": logs.String()} {
@@ -349,5 +366,194 @@ func TestStatusErrors(t *testing.T) {
 	_, err = newSource(srv2.URL, sourcetest.Client(t, srv2)).List(t.Context(), img("registry.test/team/app"), source.FetchState{})
 	if err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func dig(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+
+func rawsOf(res source.Result) []string {
+	var r []string
+	for _, v := range res.Versions {
+		r = append(r, v.Raw)
+	}
+	return r
+}
+
+func heads(g *registry) []string {
+	var h []string
+	for _, p := range g.reqs() {
+		if strings.HasPrefix(p, "HEAD ") {
+			h = append(h, p)
+		}
+	}
+	return h
+}
+
+// onePage makes the fake serve one page of the given tags.
+func onePage(g *registry, tags ...string) {
+	g.nextLink = func(string, string) string { return "" }
+	g.pages[""] = `{"name":"team/app","tags":["` + strings.Join(tags, `","`) + `"]}`
+}
+
+func TestDigests(t *testing.T) {
+	reg := newRegistry(t)
+	srv := httptest.NewServer(reg)
+	defer srv.Close()
+	s := newSource(srv.URL, sourcetest.Client(t, srv))
+	tgt := img("registry.test/team/app")
+	ctx := t.Context()
+	onePage(reg, "1.0.0", "latest")
+	reg.manifests = map[string]string{"1.1.0": dig("a"), "1.0.0": dig("e")}
+
+	first, err := s.List(ctx, tgt, source.FetchState{})
+	if err != nil || len(heads(reg)) != 0 {
+		t.Fatalf("first scan: %v, %d HEADs (want a baseline without lookups)", err, len(heads(reg)))
+	}
+	for _, v := range first.Versions {
+		if v.Metadata != nil {
+			t.Errorf("baseline %s carries metadata %v", v.Raw, v.Metadata)
+		}
+	}
+	again, err := s.List(ctx, tgt, first.State)
+	if err != nil || len(heads(reg)) != 0 || again.State.Cursor != first.State.Cursor {
+		t.Fatalf("unchanged: %v, %d HEADs, cursor changed %v", err, len(heads(reg)), again.State.Cursor != first.State.Cursor)
+	}
+
+	onePage(reg, "1.0.0", "1.1.0", "latest")
+	third, err := s.List(ctx, tgt, again.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := heads(reg); len(h) != 1 || !strings.HasSuffix(h[0], "/manifests/1.1.0") {
+		t.Fatalf("HEADs = %v, want one for the new tag", h)
+	}
+	for _, want := range []string{"application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.docker.distribution.manifest.v2+json"} {
+		if !strings.Contains(reg.accepts[0], want) {
+			t.Errorf("Accept %q lacks %s", reg.accepts[0], want)
+		}
+	}
+	for _, v := range third.Versions {
+		d, _ := v.Metadata["digest"].(string)
+		if (v.Raw == "1.1.0") != (d == dig("a")) {
+			t.Errorf("%s: digest %q", v.Raw, d)
+		}
+	}
+}
+
+func TestDigestFailures(t *testing.T) {
+	setup := func(t *testing.T) (*registry, *oci.Source, source.FetchState, func(context.Context) (source.Result, error)) {
+		reg := newRegistry(t)
+		srv := httptest.NewServer(reg)
+		t.Cleanup(srv.Close)
+		s := newSource(srv.URL, sourcetest.Client(t, srv))
+		onePage(reg, "1.0.0")
+		base, err := s.List(t.Context(), img("registry.test/team/app"), source.FetchState{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		onePage(reg, "1.0.0", "2.0.0")
+		return reg, s, base.State, func(ctx context.Context) (source.Result, error) {
+			return s.List(ctx, img("registry.test/team/app"), base.State)
+		}
+	}
+	t.Run("invalid or missing digest header", func(t *testing.T) {
+		for _, hdr := range []string{"", "md5:abc", "sha256:ZZ"} {
+			reg, _, _, list := setup(t)
+			reg.manifests = map[string]string{"2.0.0": hdr}
+			res, err := list(t.Context())
+			if err != nil || len(res.Versions) != 2 || res.Versions[1].Metadata != nil {
+				t.Errorf("%q: %v, %+v", hdr, err, res.Versions)
+			}
+		}
+	})
+	t.Run("5xx and 404 leave the tag without a digest and warn", func(t *testing.T) {
+		for _, code := range []int{500, 404} {
+			var logs bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			reg, _, _, list := setup(t)
+			reg.headCode = map[string]int{"2.0.0": code}
+			res, err := list(t.Context())
+			slog.SetDefault(old)
+			if err != nil || len(res.Versions) != 2 || res.Versions[1].Metadata != nil || res.State.Cursor == "" {
+				t.Errorf("%d: %v, %+v", code, err, res)
+			}
+			if !strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), canary) {
+				t.Errorf("%d: logs %q", code, logs.String())
+			}
+		}
+	})
+	t.Run("429 fails the call", func(t *testing.T) {
+		reg, _, _, list := setup(t)
+		reg.headCode = map[string]int{"2.0.0": 429}
+		res, err := list(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "429") || res.State.Cursor != "" {
+			t.Fatalf("err = %v, state %q", err, res.State.Cursor)
+		}
+	})
+	t.Run("cancelled context fails the call", func(t *testing.T) {
+		_, _, _, list := setup(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := list(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestDigestLookupsAreBounded(t *testing.T) {
+	reg := newRegistry(t)
+	srv := httptest.NewServer(reg)
+	defer srv.Close()
+	s := newSource(srv.URL, sourcetest.Client(t, srv))
+	onePage(reg, "0.0.1")
+	base, _ := s.List(t.Context(), img("registry.test/team/app"), source.FetchState{})
+	var tags []string
+	for i := 0; i < 80; i++ {
+		tags = append(tags, fmt.Sprintf("1.0.%d", i))
+	}
+	onePage(reg, tags...)
+	if _, err := s.List(t.Context(), img("registry.test/team/app"), base.State); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(heads(reg)); n != 50 {
+		t.Errorf("HEADs = %d, want 50", n)
+	}
+}
+
+func TestUnreadableCursorIsAFirstScan(t *testing.T) {
+	reg := newRegistry(t)
+	srv := httptest.NewServer(reg)
+	defer srv.Close()
+	s := newSource(srv.URL, sourcetest.Client(t, srv))
+	onePage(reg, "1.0.0")
+	for _, c := range []string{"!!not base64!!", "QUJD"} { // bad base64; 3 bytes, not a multiple of 4
+		res, err := s.List(t.Context(), img("registry.test/team/app"), source.FetchState{Cursor: c})
+		if err != nil || len(heads(reg)) != 0 || res.State.Cursor == c {
+			t.Errorf("%q: %v, %d HEADs", c, err, len(heads(reg)))
+		}
+	}
+}
+
+func TestDockerHubTagPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"tags":["22.11.0"]}`))
+	}))
+	defer srv.Close()
+	s := oci.New("", sourcetest.Client(t, srv), oci.WithEndpoint("docker.io", srv.URL))
+	for image, want := range map[string]string{
+		"node":          "https://hub.docker.com/_/node/tags?name=22.11.0",
+		"someone/tool":  "https://hub.docker.com/r/someone/tool/tags?name=22.11.0",
+		"library/redis": "https://hub.docker.com/_/redis/tags?name=22.11.0",
+	} {
+		res, err := s.List(t.Context(), img(image), source.FetchState{})
+		if err != nil || len(res.Versions) != 1 || res.Versions[0].URL != want {
+			t.Errorf("%s: %v, %+v", image, err, res.Versions)
+		}
+	}
+	g := newRegistry(t)
+	if res, err, _, _ := listWith(t, g); err != nil || res.Versions[0].URL != "" {
+		t.Errorf("another registry: %v, URL %q", err, res.Versions[0].URL)
 	}
 }

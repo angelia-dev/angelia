@@ -10,8 +10,8 @@ The `oci` source lists the tags of an image repository on Docker Hub, GHCR or an
 Distribution API. The event contract already knows `oci` (`data.source`, `data.package` such as
 `ghcr.io/org/image`, purl type `oci`). Three security questions had no ADR: which host a watch may make the
 source contact, how the registry token is obtained and kept, and which URLs the source follows. Decisions D40 to
-D49 of the story were accepted as recommended; this ADR records D40 to D43, D45 and D48. D44 (credentials) is
-added by sub-story 94-C; D46 (digests) and D49 (URLs) by 94-B.
+D49 of the story were accepted as recommended; this ADR records D40 to D43, D45, D46, D48 and D49. D44
+(credentials) is added by sub-story 94-C.
 
 ## Decision
 
@@ -35,9 +35,20 @@ added by sub-story 94-C; D46 (digests) and D49 (URLs) by 94-B.
   `sources.<name>.auth` (94-C).
 - **D45 Tags are versions.** Every tag is returned except the referrers tag schema (`sha256-<64 hex>` with an
   optional `.sig`, `.att`, `.sbom`). Filtering is the watch policy's job (recipes in docs/watch-file.md).
+- **D46 Digests, no new event field.** For each tag new since the last check (never on the first scan, which is
+  a baseline), at most 50 per call, one `HEAD /v2/<name>/manifests/<tag>` with `Accept` for the OCI index, OCI
+  manifest, Docker manifest list and Docker manifest v2. A valid `Docker-Content-Digest` (`sha256:` and 64 hex)
+  goes into `Metadata["digest"]`, and `event.PURL` uses it as the purl version. A failed lookup (5xx, 404, a bad
+  header) leaves the tag without a digest and logs at WARN; a 429, a `Retry-After` or a cancelled context fails
+  the call and the cursor does not advance. "New" is the cursor: the sorted 32-bit FNV-1a hashes of the tag
+  names, base64 (4 bytes per tag; a collision only costs a digest). An unreadable cursor is a first scan. The
+  digest is the one the tag pointed to when Angelia saw it; tags are mutable.
 - **D48 Bounds.** `n=1000`, at most 50 pages; more fails the call, because the missing tail of a sorted list
   would look removed. No conditional requests (no registry measured sends an `ETag`). No new built-in host limit:
   the fallback limit, 429 and `Retry-After` handling of netguard apply.
+- **D49 URLs.** `urls.release` is the Docker Hub tag page for `docker.io` images (`https://hub.docker.com/_/<name>/tags?name=<tag>`
+  for `library/`, `.../r/<ns>/<name>/tags?name=<tag>` otherwise) and null for every other registry; `published_at`
+  is null (D47); the purl type is `oci`.
 
 The source uses `hc.Do` and not `netguard.Fetch`, because `Fetch` drops the headers of a 401 and the challenge
 is in `WWW-Authenticate`; the SSRF check, rate limits and body cap are in the transport and still apply.

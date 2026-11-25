@@ -18,7 +18,7 @@ import (
 )
 
 // Docker Hub spellings in a watch file are stored in canonical form, which is
-// data.package, and the purl is versionless until a digest is known (94-B).
+// data.package, and the purl is versionless until a digest is known.
 func TestOCIWatchIsStoredCanonicalAndNamesThePackage(t *testing.T) {
 	e := newRegEnv(t)
 	cfg := config.Default()

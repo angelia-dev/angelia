@@ -2,10 +2,14 @@ package oci
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -28,7 +32,16 @@ const (
 	maxPages = 50
 	// maxBody bounds a response the source reads (netguard caps it too).
 	maxBody = 16 << 20
+	// maxLookups bounds the manifest HEADs of one List call (D46). Tags past
+	// the bound are returned without a digest and are not looked up again.
+	maxLookups = 50
+	// manifestAccept lists the manifest media types a registry may answer
+	// with: OCI index and manifest, Docker manifest list and manifest v2.
+	manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, " +
+		"application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
 )
+
+var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // referrersTagRE matches the tags cosign and the referrers tag schema create
 // for signatures, attestations and SBOMs: other artifacts, not versions.
@@ -222,11 +235,114 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if err != nil {
 		return source.Result{}, fmt.Errorf("oci %s: %w", r.String(), err)
 	}
+	// A first scan (no readable cursor) is a baseline (ADR 0010 section 5):
+	// no digest lookups.
+	known, haveCursor := parseCursor(st.Cursor)
 	out := make([]source.Version, 0, len(tags))
+	lookups := 0
 	for _, tg := range tags {
-		out = append(out, source.Version{Raw: tg})
+		v := source.Version{Raw: tg, URL: hubTagURL(r, tg)}
+		if haveCursor && !known[tagHash(tg)] && lookups < maxLookups {
+			lookups++
+			d, err := s.digest(ctx, ss, tg)
+			switch {
+			case err == nil:
+				if d != "" {
+					v.Metadata = map[string]any{"digest": d}
+				}
+			case ctx.Err() != nil:
+				return source.Result{}, fmt.Errorf("oci %s: digest of %s: %w", r.String(), tg, context.Cause(ctx))
+			case fatalLookup(err):
+				// State is not advanced: the next call retries this tag.
+				return source.Result{}, fmt.Errorf("oci %s: digest of %s: %w", r.String(), tg, err)
+			default:
+				// The tag stays without a digest; the text carries no URL.
+				slog.WarnContext(ctx, "oci: manifest digest lookup failed, tag left without a digest",
+					"image", r.String(), "tag", tg, "error", err.Error())
+			}
+		}
+		out = append(out, v)
 	}
-	return source.Result{Versions: out}, nil
+	return source.Result{Versions: out, State: source.FetchState{Cursor: encodeCursor(tags)}}, nil
+}
+
+// fatalLookup reports whether a digest lookup error must fail List: a context
+// error, or a rate limit (the server named a retry time or answered 429).
+func fatalLookup(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var se *netguard.StatusError
+	return errors.As(err, &se) && (se.StatusCode == http.StatusTooManyRequests || !se.RetryAt.IsZero())
+}
+
+// digest reads Docker-Content-Digest of the manifest of tag with a HEAD. An
+// invalid or missing header gives "" and no error.
+func (s *Source) digest(ctx context.Context, ss *session, tag string) (string, error) {
+	u := ss.endpoint + "/v2/" + ss.name + "/manifests/" + url.PathEscape(tag)
+	r, err := s.do(ctx, http.MethodHead, u, ss.tok, manifestAccept)
+	if err != nil {
+		return "", err
+	}
+	if r.status < 200 || r.status > 299 {
+		return "", statusError(r)
+	}
+	if d := r.header.Get("Docker-Content-Digest"); digestRE.MatchString(d) {
+		return d, nil
+	}
+	return "", nil
+}
+
+// hubTagURL is the Docker Hub tag page of a docker.io image, "" elsewhere (D49).
+func hubTagURL(r ref, tag string) string {
+	if r.host != DockerHub {
+		return ""
+	}
+	q := "/tags?name=" + url.QueryEscape(tag)
+	if rest, ok := strings.CutPrefix(r.path, "library/"); ok && !strings.Contains(rest, "/") {
+		return "https://hub.docker.com/_/" + rest + q
+	}
+	return "https://hub.docker.com/r/" + r.path + q
+}
+
+// tagHash is the 32-bit FNV-1a hash of a tag name. A collision only costs a
+// digest lookup.
+func tagHash(tag string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(tag))
+	return h.Sum32()
+}
+
+// encodeCursor is the sorted hashes of the tags, big-endian, base64 (4 bytes
+// per tag: about 50 KB for library/node).
+func encodeCursor(tags []string) string {
+	hs := make([]uint32, len(tags))
+	for i, t := range tags {
+		hs[i] = tagHash(t)
+	}
+	slices.Sort(hs)
+	b := make([]byte, 0, 4*len(hs))
+	for _, h := range hs {
+		b = binary.BigEndian.AppendUint32(b, h)
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// parseCursor decodes c. ok is false for an empty or unreadable cursor, which
+// marks a first scan.
+func parseCursor(c string) (known map[uint32]bool, ok bool) {
+	if c == "" {
+		return nil, false
+	}
+	b, err := base64.StdEncoding.DecodeString(c)
+	if err != nil || len(b)%4 != 0 {
+		return nil, false
+	}
+	known = make(map[uint32]bool, len(b)/4)
+	for i := 0; i < len(b); i += 4 {
+		known[binary.BigEndian.Uint32(b[i:])] = true
+	}
+	return known, true
 }
 
 // tags lists the version tags of the session's repository, sorted.
