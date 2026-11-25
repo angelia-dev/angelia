@@ -145,6 +145,13 @@ func TestBuildValidatesAgainstSpecSchema(t *testing.T) {
 			typ: TypePublished, subject: "http-regex:tool@2.1.0",
 		},
 		{
+			name: "http-json, package from the name coordinate", tgt: target("http-json", map[string]string{
+				"name": "tool", "url": "https://releases.example.org/tool.json", "jsonpath": "$.current_version",
+			}),
+			rel: func(r *policy.Release) { r.Raw, r.Normalized, r.Scheme = "1.10", "", "lexical" },
+			typ: TypePublished, subject: "http-json:tool@1.10",
+		},
+		{
 			name: "gitlab numeric project id", tgt: target("gitlab-release", map[string]string{"project": "278964"}),
 			typ: TypePublished, subject: "gitlab-release:278964@1.0.0",
 		},

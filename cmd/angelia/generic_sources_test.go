@@ -33,6 +33,13 @@ type genericCase struct {
 
 var genericCases = []genericCase{
 	{
+		kind:   "http-json",
+		coords: `name: tool, jsonpath: '$.releases[*].version'`,
+		first:  `{"releases": [{"version": "1.0.0"}]}`,
+		second: `{"releases": [{"version": "1.1.0"}, {"version": "1.0.0"}]}`,
+		want:   "1.1.0",
+	},
+	{
 		kind:   "http-regex",
 		coords: `name: tool, regex: 'tool-([0-9.]+)\.tar\.gz'`,
 		first:  `<a href="tool-1.0.0.tar.gz">1.0.0</a>`,

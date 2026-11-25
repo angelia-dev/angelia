@@ -36,6 +36,60 @@ watches:
 - The expression runs over the whole body; `(?m)` makes `^` and `$` match at line breaks, `(?s)` lets `.`
   match a line break. The request sends `Accept: text/html, text/plain;q=0.9, */*;q=0.8`.
 
+## `http-json`
+
+```yaml
+watches:
+  - name: tool
+    source: http-json
+    coordinates:
+      name: tool
+      url: https://releases.example.org/api/tool.json
+      jsonpath: '$.releases[*].version'
+    scheme: semver
+```
+
+| Coordinate | Required | Rule |
+|---|---|---|
+| `name` | yes | the package name in events, see [Package identity](#package-identity) |
+| `url` | yes | see [URL rules](#url-rules) |
+| `jsonpath` | yes | a JSONPath expression of the subset below, at most 512 bytes and 32 segments |
+| `extract` | no | `values` (default): the selected strings and numbers; `keys`: the member names of the selected objects |
+
+The body must be one JSON document (the request sends `Accept: application/json`); anything else fails the
+check with the URL's host in the message. Strings are taken as they are; numbers keep their literal text
+(`1.10` stays `1.10`, not `1.1`); `true`, `false`, `null`, objects and arrays are skipped.
+
+### JSONPath subset
+
+A strict subset of [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535), so an expression keeps its meaning if a
+later version supports the full standard.
+
+| Syntax | Selects | Example |
+|---|---|---|
+| `$` | the whole document; every expression starts with it | `$` on `"1.2.3"` |
+| `.name` | the member `name` of an object (a letter, `_` or non-ASCII character first, then also digits) | `$.tag_name` |
+| `['name']`, `["name"]` | the member `name`, any characters, with the RFC escapes (`\'`, `\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`) | `$['latest-version']` |
+| `[n]`, `[-n]` | the element at index `n` of an array; negative counts from the end | `$.releases[0]`, `$[-1]` |
+| `[*]`, `.*` | every element of an array (in order) or every member value of an object (in member-name order) | `$[*].version` |
+
+Not supported, refused when the watch is written with the byte offset of the problem: descendant segments
+(`$..version`), filters (`$[?@.stable]`), slices (`$[0:5]`), unions (`$[0,1]`, `$['a','b']`) and function
+expressions. Write the path down to the field instead, and use `exclude` in the watch's `policy` to drop
+pre-releases.
+
+Examples:
+
+| Document | `jsonpath` | `extract` | Versions |
+|---|---|---|---|
+| `{"tag_name": "v2.1.0"}` | `$.tag_name` | | `v2.1.0` |
+| `[{"version": "2.1.0"}, {"version": "2.0.0"}]` | `$[*].version` | | `2.1.0`, `2.0.0` |
+| `{"releases": [{"name": "2.1.0"}]}` | `$.releases[*].name` | | `2.1.0` |
+| `{"versions": {"1.9.3": {...}, "2.0.0": {...}}}` | `$.versions` | `keys` | `1.9.3`, `2.0.0` |
+
+A single-value endpoint (`$.tag_name`) works: each new value is a new version, and the previous one is
+recorded as removed (logged only).
+
 ## Common rules
 
 ### URL rules
@@ -78,7 +132,7 @@ unchanged, without touching the database.
 ### Package identity
 
 `name` is the package of every event: `data.package`, the CloudEvents `subject`
-(`http-regex:tool@1.2.3`) and the subscription filter's `package` glob. It is 1 to 128 bytes, printable, with
+(`http-regex:tool@1.2.3`, `http-json:tool@1.2.3`) and the subscription filter's `package` glob. It is 1 to 128 bytes, printable, with
 no white space. `data.purl` and the `urls` are `null`: an arbitrary URL has no package URL type. `name` is part
 of the target, so two watches of one URL with different names are two targets fetched separately.
 

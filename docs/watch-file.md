@@ -63,7 +63,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`, `http-regex`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`, `http-json`, `http-regex`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
@@ -74,7 +74,8 @@ also across owners: apply refuses a name that a row created through the API alre
   sources: `pypi`, `npm` and `crates`: `name` (scoped npm names such as `@types/node` allowed);
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
   `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id;
-  `http-regex`: `name`, `url` and `regex` ([generic-sources.md](generic-sources.md)); each in the
+  `http-json`: `name`, `url`, `jsonpath` and optional `extract`; `http-regex`: `name`, `url` and `regex`
+  ([generic-sources.md](generic-sources.md)); each in the
   form `Source.Validate` accepts. The generic HTTP sources choose their URL in the watch (decision D18); creating
   or retargeting such a watch through the API needs the `admin` scope.
 - A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`

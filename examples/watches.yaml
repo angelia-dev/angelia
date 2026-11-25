@@ -71,6 +71,15 @@ watches:
   #     url: https://downloads.example.org/tool/
   #     regex: 'tool-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz'
   #   scheme: semver
+  #
+  # A JSON endpoint (the same rules): every "version" member of the "releases" array.
+  # - name: tool-api
+  #   source: http-json
+  #   coordinates:
+  #     name: tool
+  #     url: https://releases.example.org/api/tool.json
+  #     jsonpath: '$.releases[*].version'
+  #   scheme: semver
 
 subscriptions:
   # Everything from the platform team goes to CI.
