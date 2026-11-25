@@ -23,7 +23,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
-| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind; makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
+| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind (for a private Go proxy, `go-proxy`: [Go proxy](private-registries.md#go-proxy-athens-artifactory-nexus)); makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
 | `sources.<name>.api` | none | `json` | `pypi` sources only: `json` (the PyPI JSON API) or `simple` (the Simple API, PEP 503 / PEP 691, for pypiserver); see [pypiserver](private-registries.md#pypiserver-and-other-simple-api-only-indexes) |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
@@ -75,7 +75,7 @@ Check a configuration with `angelia config check [--config FILE]`.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `sources.<kind>.auth` authenticates requests to a private registry or mirror with a **stored secret**, bound
   to the host of the source's `base_url`; see [Private registries and mirrors](private-registries.md). At most
-  one of `token_env` and `auth` is set. `token_env` authenticates `pypi` and `npm` (as
+  one of `token_env` and `auth` is set. `token_env` authenticates `pypi`, `npm` and `go-proxy` (as
   `Authorization: Bearer`), `github-release` and `github-tag` (bearer), and `gitlab-release` (as GitLab's
   `PRIVATE-TOKEN` header; `auth` sends `Authorization: Bearer`, which GitLab also accepts). `crates` sends no
   credential: its `base_url` is the sparse index URL of a mirror, and `token_env` or `auth` on it is ignored
@@ -556,7 +556,7 @@ The folder name is the plugin's kind:
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
 - A plugin's kind should not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
-  `gitlab-release`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
+  `gitlab-release`, `go-proxy`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
   `plugin kind crates is a built-in kind; the built-in is used`. Name a plugin for a registry the built-ins do not cover, such as
   `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`
