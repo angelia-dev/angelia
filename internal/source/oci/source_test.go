@@ -26,7 +26,7 @@ const canary = "CANARY-registry-token"
 
 func fixture(t testing.TB, name string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", name))
+	b, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // test fixture path from a literal in this package
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ type registry struct {
 func newRegistry(t testing.TB) *registry {
 	return &registry{
 		pages: map[string]string{"": fixture(t, "tags-page1.json"), "p2": fixture(t, "tags-page2.json")},
-		nextLink: func(host, last string) string {
+		nextLink: func(_, last string) string {
 			if last == "" {
 				return `</v2/team/app/tags/list?last=p2&n=1000>; rel="next"`
 			}
@@ -76,7 +76,7 @@ func (g *registry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no", g.tokenCode)
 			return
 		}
-		fmt.Fprintf(w, `{"token":%q,"expires_in":300}`, canary)
+		_, _ = fmt.Fprintf(w, `{"token":%q,"expires_in":300}`, canary)
 		return
 	}
 	g.paths = append(g.paths, r.Method+" "+r.URL.RequestURI())
@@ -167,13 +167,13 @@ func TestCanonicalDockerHub(t *testing.T) {
 	}
 }
 
-func listWith(t *testing.T, reg *registry, opts ...oci.Option) (source.Result, error, *httptest.Server, *http.Client) {
+func listWith(t *testing.T, reg *registry, opts ...oci.Option) (source.Result, error) {
 	t.Helper()
 	srv := httptest.NewServer(reg)
 	t.Cleanup(srv.Close)
 	c := sourcetest.Client(t, srv)
 	res, err := newSource(srv.URL, c, opts...).List(t.Context(), img("registry.test/team/app"), source.FetchState{})
-	return res, err, srv, c
+	return res, err
 }
 
 func TestTokenFlow(t *testing.T) {
@@ -183,7 +183,7 @@ func TestTokenFlow(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 
 	reg := newRegistry(t)
-	res, err, _, _ := listWith(t, reg)
+	res, err := listWith(t, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestTokenFlowErrors(t *testing.T) {
 	t.Run("401 after a token", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.always401 = true
-		_, err, _, _ := listWith(t, reg)
+		_, err := listWith(t, reg)
 		if err == nil || !strings.Contains(err.Error(), "not found or access denied") || strings.Contains(err.Error(), canary) {
 			t.Fatalf("err = %v", err)
 		}
@@ -237,7 +237,7 @@ func TestTokenFlowErrors(t *testing.T) {
 	t.Run("basic challenge", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.challenge = func(string) string { return `Basic realm="registry"` }
-		_, err, _, _ := listWith(t, reg)
+		_, err := listWith(t, reg)
 		if err == nil || !strings.Contains(err.Error(), "sources.<name>.auth") {
 			t.Fatalf("err = %v", err)
 		}
@@ -245,7 +245,7 @@ func TestTokenFlowErrors(t *testing.T) {
 	t.Run("token refused", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.tokenCode = http.StatusForbidden
-		_, err, _, _ := listWith(t, reg)
+		_, err := listWith(t, reg)
 		if err == nil || !strings.Contains(err.Error(), "token request") {
 			t.Fatalf("err = %v", err)
 		}
@@ -253,7 +253,7 @@ func TestTokenFlowErrors(t *testing.T) {
 	t.Run("no challenge", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.challenge = func(string) string { return "" }
-		_, err, _, _ := listWith(t, reg)
+		_, err := listWith(t, reg)
 		if err == nil || !strings.Contains(err.Error(), "without a WWW-Authenticate") {
 			t.Fatalf("err = %v", err)
 		}
@@ -263,7 +263,7 @@ func TestTokenFlowErrors(t *testing.T) {
 func TestPaging(t *testing.T) {
 	t.Run("relative link", func(t *testing.T) {
 		reg := newRegistry(t)
-		res, err, _, _ := listWith(t, reg)
+		res, err := listWith(t, reg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -286,7 +286,7 @@ func TestPaging(t *testing.T) {
 			}
 			return ""
 		}
-		res, err, _, _ := listWith(t, reg)
+		res, err := listWith(t, reg)
 		if err != nil || len(res.Versions) != 6 {
 			t.Fatalf("%d versions, %v", len(res.Versions), err)
 		}
@@ -294,7 +294,7 @@ func TestPaging(t *testing.T) {
 	t.Run("another origin", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.nextLink = func(string, string) string { return `<http://evil.test/v2/team/app/tags/list?last=p2>; rel="next"` }
-		_, err, _, _ := listWith(t, reg) // the guard client fails the test on a request to evil.test
+		_, err := listWith(t, reg) // the guard client fails the test on a request to evil.test
 		if err == nil || !strings.Contains(err.Error(), "another origin") {
 			t.Fatalf("err = %v", err)
 		}
@@ -302,7 +302,7 @@ func TestPaging(t *testing.T) {
 	t.Run("too many pages", func(t *testing.T) {
 		reg := newRegistry(t)
 		reg.nextLink = func(string, string) string { return `</v2/team/app/tags/list?last=p2&n=1000>; rel="next"` }
-		_, err, _, _ := listWith(t, reg)
+		_, err := listWith(t, reg)
 		if err == nil || !strings.Contains(err.Error(), "more than 50 pages") {
 			t.Fatalf("err = %v", err)
 		}
@@ -318,7 +318,7 @@ func TestPaging(t *testing.T) {
 			}
 			return ""
 		}
-		if res, err, _, _ := listWith(t, reg); err != nil || len(res.Versions) != 6 {
+		if res, err := listWith(t, reg); err != nil || len(res.Versions) != 6 {
 			t.Fatalf("%d, %v", len(res.Versions), err)
 		}
 	})
@@ -353,7 +353,7 @@ func TestListHonoursPinnedOnList(t *testing.T) {
 }
 
 func TestStatusErrors(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -362,7 +362,7 @@ func TestStatusErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("err = %v", err)
 	}
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("not json")) }))
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("not json")) }))
 	defer srv2.Close()
 	_, err = newSource(srv2.URL, sourcetest.Client(t, srv2)).List(t.Context(), img("registry.test/team/app"), source.FetchState{})
 	if err == nil || !strings.Contains(err.Error(), "decode") {
@@ -371,14 +371,6 @@ func TestStatusErrors(t *testing.T) {
 }
 
 func dig(c string) string { return "sha256:" + strings.Repeat(c, 64) }
-
-func rawsOf(res source.Result) []string {
-	var r []string
-	for _, v := range res.Versions {
-		r = append(r, v.Raw)
-	}
-	return r
-}
 
 func heads(g *registry) []string {
 	var h []string
@@ -428,8 +420,10 @@ func TestDigests(t *testing.T) {
 	if h := heads(reg); len(h) != 1 || !strings.HasSuffix(h[0], "/manifests/1.1.0") {
 		t.Fatalf("HEADs = %v, want one for the new tag", h)
 	}
-	for _, want := range []string{"application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json",
-		"application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.docker.distribution.manifest.v2+json"} {
+	for _, want := range []string{
+		"application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.docker.distribution.manifest.v2+json",
+	} {
 		if !strings.Contains(reg.accepts[0], want) {
 			t.Errorf("Accept %q lacks %s", reg.accepts[0], want)
 		}
@@ -538,7 +532,7 @@ func TestUnreadableCursorIsAFirstScan(t *testing.T) {
 }
 
 func TestDockerHubTagPages(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"tags":["22.11.0"]}`))
 	}))
 	defer srv.Close()
@@ -554,7 +548,7 @@ func TestDockerHubTagPages(t *testing.T) {
 		}
 	}
 	g := newRegistry(t)
-	if res, err, _, _ := listWith(t, g); err != nil || res.Versions[0].URL != "" {
+	if res, err := listWith(t, g); err != nil || res.Versions[0].URL != "" {
 		t.Errorf("another registry: %v, URL %q", err, res.Versions[0].URL)
 	}
 }
