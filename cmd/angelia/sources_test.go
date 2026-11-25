@@ -20,7 +20,7 @@ import (
 
 // wantSourceKinds are the built-in source kinds. A new kind is added to
 // builtinSources and here.
-var wantSourceKinds = []string{"crates", "github-release", "github-tag", "gitlab-release", "npm", "pypi"}
+var wantSourceKinds = []string{"crates", "github-release", "github-tag", "gitlab-release", "npm", "oci", "pypi"}
 
 // coordsOf are valid watch-file coordinates for each kind.
 var coordsOf = map[string]map[string]string{
@@ -29,6 +29,7 @@ var coordsOf = map[string]map[string]string{
 	"github-tag":     {"repo": "example/tool"},
 	"gitlab-release": {"project": "example-group/sub/tool"},
 	"npm":            {"name": "left-pad"},
+	"oci":            {"image": "node"},
 	"pypi":           {"name": "requests"},
 }
 
