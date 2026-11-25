@@ -28,7 +28,8 @@ func TestNewNotesCleaning(t *testing.T) {
 		{name: "shorter fence does not close", in: "````\n" + fence + "\n<!-- keep -->\n````\n<!-- drop -->", want: "````\n" + fence + "\n<!-- keep -->\n````"},
 		{name: "unclosed fence runs to the end", in: fence + "\n<!-- keep -->", want: fence + "\n<!-- keep -->"},
 		{name: "unclosed comment kept", in: "a <!-- never closed\nb", want: "a <!-- never closed\nb"},
-		{name: "comment does not span a fence", in: "<!-- open\n" + fence + "\ncode\n" + fence + "\nclose -->", want: "<!-- open\n" + fence + "\ncode\n" + fence + "\nclose -->"},
+		{name: "comment spans a fence", in: "a\n<!-- open\n" + fence + "\nPAYLOAD\n" + fence + "\nclose -->\nb", want: "a\n\nb"},
+		{name: "fence inside a comment does not hide the next comment", in: "x\n<!--\n" + fence + "\n-->\n<!-- PAYLOAD -->", want: "x"},
 		{name: "joined comment is not rebuilt", in: "<!<!-- a -->-- b -->x", want: "<! -- b -->x"},
 		{name: "trim", in: " \n\t a \n\n", want: "a"},
 		{name: "empty", in: "", nilOut: true},
@@ -108,8 +109,65 @@ func TestNewNotesDoesNotRetainInput(t *testing.T) {
 	}
 }
 
+// nestedComments is the reviewer's input: layers of fences that each flip
+// the fence state of the next pass, around a hidden payload.
+func nestedComments(depth int) string {
+	ticks := func(n int) string { return strings.Repeat("`", n) }
+	s := "<!-- PAYLOAD -->" + ticks(3) + "\n"
+	for k := 1; k <= depth; k++ {
+		s = "<!---->" + ticks(3+k) + "\n" + ticks(3+k) + "\n" + s + ticks(3+k) + "\n"
+	}
+	return s
+}
+
+// visibleComment reports whether s has a closed comment that opens outside a
+// fenced code block, the property NewNotes guarantees.
+func visibleComment(s string) bool {
+	var fence byte
+	var fenceN int
+	for len(s) > 0 {
+		line, rest := s, ""
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			line, rest = s[:i+1], s[i+1:]
+		}
+		switch {
+		case fence != 0:
+			if fenceCloses(line, fence, fenceN) {
+				fence = 0
+			}
+		default:
+			if c, n := fenceOpen(line); c != 0 {
+				fence, fenceN = c, n
+			} else if i := strings.Index(line, "<!--"); i >= 0 && strings.Contains(s[i+4:], "-->") {
+				return true
+			}
+		}
+		s = rest
+	}
+	return false
+}
+
+func TestNewNotesNestedFencesFailClosed(t *testing.T) {
+	for _, depth := range []int{1, 5, 15, 16, 17, 18, 40} {
+		in := nestedComments(depth)
+		n := NewNotes("markdown", in)
+		if n == nil {
+			continue
+		}
+		if visibleComment(n.Body) {
+			t.Fatalf("depth %d: a closed comment survives outside a fence:\n%s", depth, n.Body)
+		}
+		if again := NewNotes("markdown", n.Body); again == nil || again.Body != n.Body {
+			t.Fatalf("depth %d: not idempotent", depth)
+		}
+		if depth >= maxCommentPasses && strings.Contains(n.Body, "<!-- PAYLOAD -->") {
+			t.Fatalf("depth %d: payload survives", depth)
+		}
+	}
+}
+
 func FuzzNewNotes(f *testing.F) {
-	for _, s := range []string{"", "a\r\nb", "<!-- x -->y", "```\n<!-- x -->\n```", "<!<!-- a -->-- b -->", "\x00\xff\u0085", strings.Repeat("é", 9000)} {
+	for _, s := range []string{"", "a\r\nb", "<!-- x -->y", "```\n<!-- x -->\n```", "<!<!-- a -->-- b -->", "<!-- o\n```\nP\n```\nc -->", nestedComments(17), "\x00\xff\u0085", strings.Repeat("é", 9000)} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
@@ -130,6 +188,9 @@ func FuzzNewNotes(f *testing.F) {
 			if r != '\n' && r != '\t' && unicode.IsControl(r) {
 				t.Fatalf("control character %U in %q", r, n.Body)
 			}
+		}
+		if visibleComment(n.Body) {
+			t.Fatalf("closed comment outside a fence: %q", n.Body)
 		}
 		again := NewNotes("markdown", n.Body)
 		if again == nil || again.Body != n.Body {

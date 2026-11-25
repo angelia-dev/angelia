@@ -89,5 +89,4 @@
 // at a character boundary with truncated set. A null, empty or blank
 // description gives nil notes. The text is untrusted upstream content, and a
 // snapshot taken when the check first sees the version (ADR 0036).
-
 package gitlabrelease

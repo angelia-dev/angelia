@@ -37,14 +37,18 @@ The spec's decisions D30 to D39, with the recommended answers:
   body that is empty or only white space after cleaning gives `nil`, never an empty object.
 - **D34. Cleaning (security).** `source.NewNotes` normalizes `\r\n` and `\r` to `\n`; removes C0, DEL and C1
   control characters except `\n` and `\t`; replaces invalid UTF-8 with U+FFFD; removes HTML comments
-  (`<!-- ... -->`) outside fenced code blocks, because GitHub and GitLab do not render them and they are the
+  (`<!-- ... -->`) that open outside a fenced code block, because GitHub and GitLab do not render them and they are the
   easiest place to hide a prompt-injection payload that a reviewer never sees and an agent reads; and trims.
-  An unclosed `<!--` is kept as text. A comment must close before the next fence line. Cleaning runs before the
+  A comment is removed through its first `-->` even when fence lines lie in between, as in CommonMark (an HTML
+  block of type 2 runs to the first `-->`); a `<!--` inside a fence is kept, and so is an unclosed one. Cleaning runs before the
   cut. It does not strip other HTML, neutralize mentions or scan for secrets: that rewrites upstream content and
   duplicates what each consumer must do for its own medium. **`notes.body` is untrusted upstream content:
-  consumers escape it for their medium and treat it as data, never as instructions.** Comment removal is bounded
-  (a join that would rebuild `<!--` keeps one space, and at most 16 passes), so hostile nesting costs a constant
-  number of linear passes.
+  consumers escape it for their medium and treat it as data, never as instructions.** Removal repeats until a pass removes nothing, because removing a comment can change the
+  fence structure around it; a join that would rebuild `<!--` keeps one space. The work is bounded to 16
+  linear passes, and **fail closed**: if the text has not settled by then, every remaining closed comment is
+  removed with fences ignored. So the result never has a closed comment outside a fence, and `NewNotes` is
+  idempotent on its body (both are fuzz properties). Known limits of this line heuristic: raw HTML blocks other
+  than comments are not parsed, and link-reference comments (`[//]: # (...)`) are not removed.
 - **D35. Cost.** Decode `body` and `description` from the pages `List` already fetches: no extra request, no
   extra byte, a `304` stays free. Tests assert the request counts.
 - **D36. Which body.** The body at the check that first saw the version. A version held by a cooldown keeps it in
@@ -75,6 +79,8 @@ The spec's decisions D30 to D39, with the recommended answers:
 - Notes of a private repository reach sinks that send the whole event (D37).
 - The notes are a snapshot: an edit after detection is not reflected (D36).
 - Removing comments changes the text compared with the raw body, as the release page already does.
+- The comment rule is a line heuristic, not a Markdown parser: raw HTML blocks are not parsed, and
+  `[//]: # (...)` link-reference comments stay in the text (a consumer's own escaping still applies).
 
 ### Open questions
 
