@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -262,6 +263,9 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 		if err := checkRefScope(ctx, before, after); err != nil {
 			return err
 		}
+		if err := checkURLSourceScope(ctx, tx, w); err != nil {
+			return err
+		}
 		change, err = s.applyWatch(ctx, tx, w)
 		if err != nil {
 			return err
@@ -282,6 +286,47 @@ func (s *Server) PutWatch(ctx context.Context, req PutWatchRequestObject) (PutWa
 		return nil, err
 	}
 	return putResponse(change, location("watches", w.Name), body).withETag(tag), nil
+}
+
+// urlSourceKinds are the source kinds whose upstream URL is a coordinate
+// the watch chooses (internal/source/httpjson, internal/source/httpregex).
+var urlSourceKinds = []string{"http-json", "http-regex"}
+
+// checkURLSourceScope enforces decision D52 of #97 (ADR 0038 §3): a write
+// that creates a watch whose source is of a urlSourceKinds kind, or that
+// changes the source or coordinates of a watch when the stored or the new
+// source is of such a kind, needs the admin scope. Otherwise a write token
+// could make the server fetch any URL the guard admits, hosts of
+// http.allow_networks included, and read strings out of it as versions.
+// Changes to labels, policy, scheme or interval keep the write scope. w
+// carries canonical coordinates, as the stored target does.
+func checkURLSourceScope(ctx context.Context, tx store.APITx, w watchfile.Watch) error {
+	if principalFrom(ctx).Scope >= ScopeAdmin {
+		return nil
+	}
+	newURL := slices.Contains(urlSourceKinds, w.SourceKind())
+	cur, err := tx.WatchByName(ctx, w.Name)
+	switch {
+	case isNotFound(err):
+		if !newURL {
+			return nil
+		}
+	case err != nil:
+		return err
+	default:
+		t, err := tx.GetTarget(ctx, cur.TargetID)
+		if err != nil {
+			return err
+		}
+		retarget := t.Kind != w.Source || !maps.Equal(t.Coordinates, w.Coordinates)
+		if !retarget || (!newURL && !slices.Contains(urlSourceKinds, t.EffectiveSourceKind())) {
+			return nil
+		}
+	}
+	p := problem(SlugForbidden, "creating a watch of kind http-json or http-regex, or changing the source or coordinates of one, needs the admin scope (these sources fetch a URL the watch chooses); the %s has %s",
+		principalFrom(ctx).credential(), principalFrom(ctx).Scope)
+	p.RequiredScope = ScopeAdmin.String()
+	return p
 }
 
 // currentWatchETag is the tag of the watch named name, "" when there is

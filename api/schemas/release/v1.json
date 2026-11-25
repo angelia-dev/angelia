@@ -31,7 +31,7 @@
       "examples": ["pypi"]
     },
     "package": {
-      "description": "Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven).",
+      "description": "Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven), the watch's `name` coordinate (`http-json`, `http-regex`).",
       "type": "string",
       "minLength": 1,
       "pattern": "\\S",
