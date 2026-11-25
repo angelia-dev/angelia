@@ -171,7 +171,8 @@ type Fetcher struct {
 // NewFetcher returns a Fetcher over hc, normally the HTTPClient of the
 // netguard client. allowHTTP is http.allow_http_hosts. hc is not modified:
 // the Fetcher keeps a shallow copy whose CheckRedirect follows at most
-// MaxRedirects hops and none to plain http outside allowHTTP, and whose
+// MaxRedirects hops, none to plain http outside allowHTTP, with user
+// information or to a non-canonical IP host, and whose
 // transport stops reading a body after MaxBodyBytes. The copy's transport
 // wraps hc's, so every request still goes through it.
 func NewFetcher(hc *http.Client, allowHTTP []string) *Fetcher {
@@ -187,6 +188,9 @@ func NewFetcher(hc *http.Client, allowHTTP []string) *Fetcher {
 		}
 		if req.URL.User != nil {
 			return fmt.Errorf("refusing a redirect to %s with user information", req.URL.Host)
+		}
+		if netguard.NonCanonicalIP(req.URL.Hostname()) {
+			return fmt.Errorf("refusing a redirect to %s: an IP address in a non-canonical form", req.URL.Host)
 		}
 		if strings.EqualFold(req.URL.Scheme, "http") && !httpAllowed(f.allowHTTP, req.URL.Hostname()) {
 			return fmt.Errorf("refusing a redirect to plain http://%s (not in http.allow_http_hosts)", req.URL.Host)

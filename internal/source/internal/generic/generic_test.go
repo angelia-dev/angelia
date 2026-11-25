@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -301,5 +302,22 @@ func TestCursorAndResult(t *testing.T) {
 	}
 	if changed := Result(b, netguard.Validators{}, first.State); changed.NotModified || len(changed.Versions) != 2 {
 		t.Errorf("changed = %+v", changed)
+	}
+}
+
+// A redirect may not reach a host that ValidateURL would refuse as a
+// non-canonical IP (2130706433 is 127.0.0.1).
+func TestFetchRedirectNonCanonicalIP(t *testing.T) {
+	var target string // set before the server starts
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	target = "http://2130706433:" + port + "/x"
+	srv.Start()
+	defer srv.Close()
+	_, err := NewFetcher(srv.Client(), []string{"127.0.0.1", "2130706433"}).Fetch(context.Background(), mustURL(t, srv.URL), "", source.FetchState{})
+	if err == nil || !strings.Contains(err.Error(), "non-canonical") {
+		t.Errorf("err = %v", err)
 	}
 }

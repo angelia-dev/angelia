@@ -27,7 +27,7 @@ watches:
 |---|---|---|
 | `name` | yes | the package name in events, see [Package identity](#package-identity) |
 | `url` | yes | see [URL rules](#url-rules) |
-| `regex` | yes | Go [`regexp` syntax](https://pkg.go.dev/regexp/syntax) (RE2: no back-references or look-around, linear time), at most 1024 bytes |
+| `regex` | yes | Go [`regexp` syntax](https://pkg.go.dev/regexp/syntax) (RE2: no back-references or look-around, linear time), at most 1024 bytes, no repetition count above 100 (`{n,m}`), and at most 2,000 instructions once compiled (an expression above it is refused as "too complex") |
 
 - No capture group: the whole match is the version (`v[0-9.]+` yields `v1.2.3`).
 - One capture group: that group is the version (`tool-([0-9.]+)\.tar` yields `1.2.3`).
@@ -105,7 +105,7 @@ Every request goes through the instance's HTTP client, with its SSRF guard, per-
   is shared by every source and sink, so allowing a private registry's network also lets watches of these kinds
   read any host on it: see [Who can create these watches](#who-can-create-these-watches).
 - At most 5 redirects are followed; a redirect to plain `http://` is refused unless its host is in
-  `http.allow_http_hosts`.
+  `http.allow_http_hosts`, and so is a redirect with user information or to an IP address in a non-canonical form.
 - The URL is stored as written except for its spelling: scheme and host in lower case, the default port
   removed and an empty path written `/`. The path and query are kept byte for byte.
 

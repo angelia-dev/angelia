@@ -233,3 +233,31 @@ func TestCanonical(t *testing.T) {
 		t.Errorf("invalid: %v", err)
 	}
 }
+
+// Review of #97: the match of a 2 MiB body cannot be cancelled, so the
+// pattern's cost is bounded when the watch is written.
+func TestCompileCost(t *testing.T) {
+	for _, bad := range []string{
+		`(a|aa|aaa){1,999}b`,
+		`a{101}`,
+		`(?:x{0,101})`,
+		strings.Repeat("[a-z]{100}", 21), // counts at the cap, program above it
+	} {
+		_, _, err := httpregex.Compile(bad)
+		if !errors.Is(err, source.ErrInvalidTarget) || (!strings.Contains(err.Error(), "repetition count") && !strings.Contains(err.Error(), "too complex")) {
+			t.Errorf("Compile(%q) = %v, want a cost error", bad, err)
+		}
+	}
+	for _, ok := range []string{
+		regex,
+		`v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)`,
+		`(?m)^Version:\s*(?P<version>[0-9]+(?:\.[0-9]+){1,3})$`,
+		`tool-([0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2})\.tar\.gz`,
+		`"tag_name":\s*"(v?[0-9][^"]{0,100})"`,
+		`a{100}`,
+	} {
+		if _, _, err := httpregex.Compile(ok); err != nil {
+			t.Errorf("Compile(%q) = %v", ok, err)
+		}
+	}
+}

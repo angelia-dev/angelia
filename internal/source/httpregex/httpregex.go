@@ -8,7 +8,8 @@
 //     printable, no white space.
 //   - url: https://, or http:// for a host in http.allow_http_hosts; no user
 //     information or fragment; at most 2048 bytes.
-//   - regex: Go regexp syntax (RE2, linear time), at most 1024 bytes. With no
+//   - regex: Go regexp syntax (RE2, linear time), at most 1024 bytes, no
+//     repetition count above 100 and at most 2,000 compiled instructions. With no
 //     capture group the whole match is the version; with one group, that
 //     group; with several, the group named "version".
 //
@@ -31,6 +32,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"regexp/syntax"
 
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/internal/generic"
@@ -41,6 +43,14 @@ const (
 	Kind = "http-regex"
 	// MaxRegexBytes is the longest regex coordinate.
 	MaxRegexBytes = 1024
+	// MaxRepeat is the largest count of a {n,m} repetition.
+	MaxRepeat = 100
+	// MaxProgInst is the most instructions the compiled program may have.
+	// RE2 runs in time linear in the input, but the factor is the program
+	// size, and a match over a 2 MiB body cannot be cancelled: a pattern
+	// such as (a|aa|aaa){1,999}b compiles to thousands of instructions and
+	// takes seconds per 64 KiB.
+	MaxProgInst = 2000
 	// accept prefers the formats a release page is served in.
 	accept = "text/html, text/plain;q=0.9, */*;q=0.8"
 )
@@ -126,6 +136,9 @@ func Compile(pattern string) (*regexp.Regexp, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: regex: %w", source.ErrInvalidTarget, err)
 	}
+	if err := checkCost(pattern); err != nil {
+		return nil, 0, fmt.Errorf("%w: regex: %w", source.ErrInvalidTarget, err)
+	}
 	switch n := re.NumSubexp(); n {
 	case 0:
 		return re, 0, nil
@@ -138,6 +151,39 @@ func Compile(pattern string) (*regexp.Regexp, int, error) {
 		}
 		return re, i, nil
 	}
+}
+
+// checkCost bounds the matching cost of pattern (ADR 0038 §4): no
+// repetition count above MaxRepeat, and at most MaxProgInst instructions
+// once simplified and compiled, the steps regexp.Compile itself takes.
+func checkCost(pattern string) error {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return err
+	}
+	if n := maxRepeat(re); n > MaxRepeat {
+		return fmt.Errorf("repetition count %d is above %d; use + or * instead", n, MaxRepeat)
+	}
+	prog, err := syntax.Compile(re.Simplify())
+	if err != nil {
+		return err
+	}
+	if n := len(prog.Inst); n > MaxProgInst {
+		return fmt.Errorf("the expression is too complex (%d instructions compiled, at most %d); simplify it", n, MaxProgInst)
+	}
+	return nil
+}
+
+// maxRepeat returns the largest count of a {n,m} repetition in re.
+func maxRepeat(re *syntax.Regexp) int {
+	n := 0
+	if re.Op == syntax.OpRepeat {
+		n = max(re.Min, re.Max)
+	}
+	for _, sub := range re.Sub {
+		n = max(n, maxRepeat(sub))
+	}
+	return n
 }
 
 // Validate implements source.Source. It does no I/O.

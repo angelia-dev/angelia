@@ -37,7 +37,8 @@ The decisions D50 to D57 of #97 were accepted by the maintainer as recommended o
    user information, no fragment, no white space or control character, no IP host in a non-canonical form
    (`netguard.NonCanonicalIP`). Every request goes through the injected netguard client; the source keeps a
    shallow copy of it whose `CheckRedirect` follows at most **5** redirects and refuses a hop to plain
-   `http://` outside `allow_http_hosts` or with user information, then runs the client's own check. The watch
+   `http://` outside `allow_http_hosts`, with user information or to an IP host in a non-canonical form, then
+   runs the client's own check. The watch
    file and the API cannot widen `allow_networks` or `allow_http_hosts`.
 3. **Admin scope (D52).** Through the REST API (and so MCP, whose tools are REST calls), a `PUT
    /v1/watches/{name}` that creates a watch whose source is of kind `http-json` or `http-regex`, or that
@@ -51,7 +52,10 @@ The decisions D50 to D57 of #97 were accepted by the maintainer as recommended o
    wildcards yield members in sorted name order, so `List` is deterministic. The JSON is decoded with
    `UseNumber`, so `1.10` stays `1.10`; strings and numbers are versions, other types are skipped. With
    `extract: keys` the selected nodes must be objects and their member names are the versions. `http-regex`
-   uses Go `regexp` (RE2, linear time), pattern at most 1024 bytes, compiled in `Validate`: no capture group
+   uses Go `regexp` (RE2, linear time), pattern at most 1024 bytes, compiled in `Validate`. Because a match over a
+   2 MiB body cannot be cancelled and RE2's time is linear with a factor of the program size
+   (`(a|aa|aaa){1,999}b` took 4.8 s on 64 KiB in review), `Validate` also refuses a repetition count above
+   100 and a program of more than 2,000 instructions (`regexp/syntax`: parse, simplify, compile). No capture group
    means the whole match, one group means that group, several need a group named `version`.
 5. **Caps (D53).** A body over **2 MiB** is refused with an error wrapping `netguard.ErrBodyTooLarge`. Raw
    values that are empty, over 256 bytes, invalid UTF-8 or that contain a control character are skipped and
@@ -92,6 +96,10 @@ every coordinate value, because the server URL is inside the target. `source.Sou
 
 - Authentication bound to hosts (D57 b), relative expressions for per-version metadata, and a `jq` key are
   follow-ups.
+- The regex caps still admit about 0.4 to 0.8 s of matching per 64 KiB in the worst cases measured
+  (`(a|aa|aaa){1,100}b`, 1,002 instructions; nineteen `[a-z]{100}`, 1,902 instructions), so up to tens of
+  seconds on a 2 MiB body. A lower instruction cap, or matching in chunks with a time budget, would bound it
+  further.
 - Whether operators want a per-host opt-in for these kinds (`sources.http-json.allowed_hosts`, D52 c).
 
 ## Alternatives considered
