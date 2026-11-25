@@ -1,4 +1,4 @@
-# ADR 0040: SSRF guard: a hostname allowlist that never opens metadata, at most 5 redirects, no https-to-http redirect
+# ADR 0040: SSRF guard: a hostname allowlist that never opens metadata, at most 5 requests per redirect chain, no https-to-http redirect
 
 - **Status:** Accepted for D105–D109 (maintainer, 2026-11-25, on the recommended options); implementation reviewed in the PR
 - **Date:** 2026-11-25

@@ -149,29 +149,43 @@ func TestHTTPClientRefusesHTTPSDowngrade(t *testing.T) {
 }
 
 // D105: the exemption is per hop. A listed host that redirects to an
-// unlisted name resolving to a private address is refused at the second
-// hop, which is never sent.
+// unlisted name resolving to a private address, to the link-local metadata
+// address, or to another listed name resolving to the CGNAT metadata
+// address is refused at the second hop, which is never sent.
 func TestAllowHostsPerHop(t *testing.T) {
-	var sent []string
-	c, _ := newTestClient(t, func(cfg *Config) {
-		cfg.Allow = nil
-		cfg.AllowHosts = []string{"registry.lan"}
-		cfg.Resolver = fakeResolver{"registry.lan": addrs("10.0.0.5"), "other.lan": addrs("10.0.0.6")}
-		cfg.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			sent = append(sent, r.URL.Host)
-			if r.URL.Host == "registry.lan" {
-				return stubResponse(r, http.StatusFound, http.Header{"Location": {"http://other.lan/x"}}, nil), nil
-			}
-			return stubResponse(r, http.StatusOK, nil, nil), nil
-		})
-	})
-	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, "http://registry.lan/simple/"), Validators{})
-	var be *BlockedError
-	if !errors.As(err, &be) || be.Host != "other.lan" {
-		t.Fatalf("got %v, want other.lan refused", err)
+	cases := []struct{ location, refusedHost, refusedAddr string }{
+		{"http://other.lan/x", "other.lan", "10.0.0.6"},
+		{"http://169.254.169.254/latest/meta-data/", "169.254.169.254", "169.254.169.254"},
+		{"http://meta.lan/x", "meta.lan", "100.100.100.200"},
 	}
-	if len(sent) != 1 || sent[0] != "registry.lan" {
-		t.Fatalf("sent %v, want only registry.lan", sent)
+	for _, tc := range cases {
+		t.Run(tc.location, func(t *testing.T) {
+			var sent []string
+			c, _ := newTestClient(t, func(cfg *Config) {
+				cfg.Allow = nil
+				cfg.AllowHosts = []string{"registry.lan", "meta.lan"}
+				cfg.Resolver = fakeResolver{
+					"registry.lan": addrs("10.0.0.5"),
+					"other.lan":    addrs("10.0.0.6"),
+					"meta.lan":     addrs("100.100.100.200"),
+				}
+				cfg.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					sent = append(sent, r.URL.Host)
+					if r.URL.Host == "registry.lan" {
+						return stubResponse(r, http.StatusFound, http.Header{"Location": {tc.location}}, nil), nil
+					}
+					return stubResponse(r, http.StatusOK, nil, nil), nil
+				})
+			})
+			_, err := Fetch(t.Context(), c.HTTPClient(), get(t, "http://registry.lan/simple/"), Validators{})
+			var be *BlockedError
+			if !errors.As(err, &be) || be.Host != tc.refusedHost || be.Addr.String() != tc.refusedAddr {
+				t.Fatalf("got %v, want %s at %s refused", err, tc.refusedHost, tc.refusedAddr)
+			}
+			if len(sent) != 1 || sent[0] != "registry.lan" {
+				t.Fatalf("sent %v, want only registry.lan", sent)
+			}
+		})
 	}
 }
 

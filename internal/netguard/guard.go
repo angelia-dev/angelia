@@ -109,8 +109,19 @@ func (g *Guard) setAllowHosts(hosts []string) {
 	}
 }
 
-// normName is the form of a host name the host allowlist compares.
-func normName(h string) string { return strings.ToLower(strings.TrimSuffix(h, ".")) }
+// normName is the form of a host name the host allowlist compares: lower
+// case, without a trailing dot. A name with a non-ASCII byte gives "", which
+// never matches: Unicode case folding would let a look-alike such as
+// "\u212aube.lan" (Kelvin sign) match "kube.lan"; an IDN is listed in its
+// xn-- form.
+func normName(h string) string {
+	for i := 0; i < len(h); i++ {
+		if h[i] >= 0x80 {
+			return ""
+		}
+	}
+	return strings.ToLower(strings.TrimSuffix(h, "."))
+}
 
 // CheckAddr returns a *BlockedError if addr is refused. host is the name the
 // address was resolved from (the address itself for an IP literal); it

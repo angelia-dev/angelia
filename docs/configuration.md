@@ -166,9 +166,9 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
-- Redirects: sources follow at most 5 hops (a chain stops at its fifth request, the first one included,
-  counted as net/http counts its default of 10), each hop checked like the first; never from `https://` to `http://` (the request fails and is not retried; a source whose
-  `base_url` is `http://` may still be redirected to `http://`); sinks follow none. See
+- Redirects: sources make at most 5 requests per redirect chain (the first one included, counted as
+  net/http counts its default of 10), each hop checked like the first; never from `https://` to
+  `http://` (the request fails and is not retried; a source whose `base_url` is `http://` may still be redirected to `http://`); sinks follow none. See
   [ADR 0040](adr/0040-ssrf-guard-hostname-allowlist-and-redirects.md).
 
 - `http.ca_file` adds certificate authorities to the system roots for every outgoing HTTPS request (sources

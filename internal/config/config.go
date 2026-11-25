@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -44,6 +45,9 @@ var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "w
 
 // MaxAllowPrivateHosts is the most entries http.allow_private_hosts takes.
 const MaxAllowPrivateHosts = 64
+
+// maxHostNameLen is the longest DNS name, without a trailing dot (RFC 1035).
+const maxHostNameLen = 253
 
 // maxKindLen is the longest source name or kind: the API's Kind pattern
 // (^[a-z0-9][a-z0-9-]{0,62}$) allows 63 characters.
@@ -677,6 +681,10 @@ func (c *Config) Validate() error {
 	seenPrivate := make(map[string]bool, len(c.HTTP.AllowPrivateHosts))
 	for i, h := range c.HTTP.AllowPrivateHosts {
 		switch _, err := netip.ParseAddr(h); {
+		case len(h) > maxHostNameLen:
+			bad("http.allow_private_hosts[%d] %q: longer than %d characters", i, h, maxHostNameLen)
+		case strings.IndexFunc(h, func(r rune) bool { return r >= utf8.RuneSelf }) >= 0:
+			bad("http.allow_private_hosts[%d] %q: must be ASCII; write an internationalised name in its xn-- form", i, h)
 		case err == nil || netguard.NonCanonicalIP(h):
 			bad("http.allow_private_hosts[%d] %q: an IP address; use http.allow_networks for addresses", i, h)
 		case !hostRE.MatchString(h):

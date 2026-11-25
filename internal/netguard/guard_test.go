@@ -281,6 +281,18 @@ func TestGuardAllowHosts(t *testing.T) {
 			}
 		}
 	}
+	// Only ASCII names match: Unicode case folding would turn the Kelvin
+	// sign into "k", and a non-ASCII entry is ignored.
+	g4 := NewGuard(nil, fakeResolver{})
+	g4.setAllowHosts([]string{"kube.lan", "\u212aube2.lan", "bücher.lan"})
+	for _, host := range []string{"\u212aube.lan", "\u212aUBE.lan", "kube2.lan", "\u212aube2.lan", "bücher.lan", "BÜCHER.lan"} {
+		if err := g4.CheckAddr(host, netip.MustParseAddr("10.0.0.5")); !errors.Is(err, ErrBlocked) {
+			t.Errorf("non-ASCII %q: got %v, want ErrBlocked", host, err)
+		}
+	}
+	if err := g4.CheckAddr("KUBE.lan", netip.MustParseAddr("10.0.0.5")); err != nil {
+		t.Errorf("ASCII KUBE.lan: %v", err)
+	}
 	// allow_networks still opens what the host list never does.
 	g2 := NewGuard([]netip.Prefix{netip.MustParsePrefix("169.254.169.254/32")}, fakeResolver{})
 	g2.setAllowHosts([]string{"registry.lan"})

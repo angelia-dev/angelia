@@ -490,6 +490,12 @@ func TestHTTPAllowPrivateHosts(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(cfg.HTTP.AllowPrivateHosts, []string{"a.lan", "b.lan"}) {
 		t.Fatalf("env: %v %v", cfg.HTTP.AllowPrivateHosts, err)
 	}
+	label := strings.Repeat("a", 63)
+	long253 := label + "." + label + "." + label + "." + strings.Repeat("b", 61) // 253 characters
+	long254 := long253 + "c"
+	if cfg, err := load(t, writeFile(t, "http:\n  allow_private_hosts: ["+long253+"]\n")); err != nil || len(cfg.HTTP.AllowPrivateHosts) != 1 {
+		t.Errorf("253 characters: %v", err)
+	}
 	many := make([]string, 65)
 	for i := range many {
 		many[i] = fmt.Sprintf("h%d.lan", i)
@@ -510,6 +516,9 @@ func TestHTTPAllowPrivateHosts(t *testing.T) {
 		"too many":        {"[" + strings.Join(many, ", ") + "]", "http.allow_private_hosts: at most 64 entries, got 65"},
 		"second is bad":   {"[a.lan, 'b lan']", `[1] "b lan"`},
 		"underscore name": {"[my_host.lan]", `[0] "my_host.lan"`},
+		"non-ASCII":       {"['bücher.lan']", `[0] "bücher.lan": must be ASCII`},
+		"Kelvin sign":     {"['\u212aube.lan']", "[0] \"\u212aube.lan\": must be ASCII"},
+		"too long":        {"[" + long254 + "]", `[0] "` + long254 + `": longer than 253 characters`},
 	}
 	for name, tc := range cases {
 		_, err := load(t, writeFile(t, "http:\n  allow_private_hosts: "+tc.yaml+"\n"))
