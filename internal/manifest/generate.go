@@ -222,11 +222,18 @@ func Generate(deps []Dependency, o Options) (*Output, error) {
 	if _, reserved := o.Labels["dependency"]; reserved {
 		return nil, errors.New(`-l dependency=...: the label "dependency" is set per watch by angelia import`)
 	}
-	policy, err := o.policyBlock()
+	merged, excluded := o.collect(deps)
+	var present []string
+	for _, d := range merged {
+		if !slices.Contains(present, d.Kind) {
+			present = append(present, d.Kind)
+		}
+	}
+	sort.Strings(present)
+	policy, err := o.policyBlock(present)
 	if err != nil {
 		return nil, err
 	}
-	merged, excluded := o.collect(deps)
 
 	var watches []watchOut
 	var entries []Entry
@@ -334,6 +341,19 @@ func (o *Options) collect(deps []Dependency) (merged []Dependency, excluded []En
 	type key struct{ kind, name string }
 	idx := map[key]int{}
 	seenEx := map[key]bool{}
+	// In a fixed order, so that what wins a tie does not depend on the order
+	// of the input files.
+	deps = slices.Clone(deps)
+	sort.SliceStable(deps, func(i, j int) bool {
+		a, b := deps[i], deps[j]
+		if a.Origin.File != b.Origin.File {
+			return a.Origin.File < b.Origin.File
+		}
+		if a.Origin.Line != b.Origin.Line {
+			return a.Origin.Line < b.Origin.Line
+		}
+		return a.Name < b.Name
+	})
 	for _, d := range deps {
 		if !o.included(d.Type) {
 			continue
@@ -376,9 +396,9 @@ func watchName(project, kind, canon string) string {
 	return name[:cutLen] + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
-// policyBlock decodes the policy file, if any, and validates it for every
-// kind the generator knows, reporting the line of the file.
-func (o *Options) policyBlock() (map[string]any, error) {
+// policyBlock decodes the policy file, if any, and validates it for the
+// source kinds of the run, reporting the line of the file.
+func (o *Options) policyBlock(kinds []string) (map[string]any, error) {
 	if len(bytes.TrimSpace(o.Policy)) == 0 {
 		if o.Policy != nil {
 			return nil, fmt.Errorf("%s: empty policy file", o.PolicyName)
@@ -400,15 +420,15 @@ func (o *Options) policyBlock() (map[string]any, error) {
 		indented.WriteString("      " + l + "\n")
 	}
 	var seen []string
-	for _, kind := range kindNames() {
+	for _, kind := range kinds {
 		probe := fmt.Sprintf("version: 1\nwatches:\n  - name: probe\n    source: %s\n    coordinates: {name: probe}\n    policy:\n%s", kind, indented.String())
 		_, err := watchfile.Parse([]byte(probe), o.PolicyName, probeOptions())
 		var errs watchfile.Errors
 		if errors.As(err, &errs) {
 			for _, e := range errs {
-				msg := fmt.Sprintf("%s: line %d: %s", o.PolicyName, max(e.Line-headerLines, 1), e.Msg)
+				msg := fmt.Sprintf("%s: line %d: %s (for %s watches)", o.PolicyName, max(e.Line-headerLines, 1), e.Msg, kind)
 				if e.Path != "" {
-					msg = fmt.Sprintf("%s: line %d: %s: %s", o.PolicyName, max(e.Line-headerLines, 1), strings.TrimPrefix(e.Path, "watches[0].policy."), e.Msg)
+					msg = fmt.Sprintf("%s: line %d: %s: %s (for %s watches)", o.PolicyName, max(e.Line-headerLines, 1), strings.TrimPrefix(e.Path, "watches[0].policy."), e.Msg, kind)
 				}
 				if !slices.Contains(seen, msg) {
 					seen = append(seen, msg)

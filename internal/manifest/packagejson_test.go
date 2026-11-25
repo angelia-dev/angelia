@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/angelia-dev/angelia/internal/apply"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -255,5 +256,17 @@ func TestNPMNameCollision(t *testing.T) {
 	out := gen(t, []Dependency{d("@a/b-c", 3), d("@a-b/c", 4)}, Options{Project: "web", Exclude: []string{"@a-b/*"}})
 	if got := names(out); len(got) != 1 || got[0] != "web-npm-a-b-c" {
 		t.Errorf("names = %v", got)
+	}
+}
+
+// A section key given twice: the last wins, as in npm.
+func TestPackageJSONDuplicateSectionKeepsLast(t *testing.T) {
+	m := fstest.MapFS{"package.json": {Data: []byte(`{"dependencies": {"first": "1.0.0"}, "dependencies": {"second": "2.0.0"}}`)}}
+	r, err := ParsePackageJSON(m, "package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Deps) != 1 || r.Deps[0].Name != "second" {
+		t.Errorf("deps: %v", summarize(r.Deps))
 	}
 }

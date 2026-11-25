@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
@@ -112,8 +113,7 @@ func TestRequirementsIncludes(t *testing.T) {
 		t.Fatal(err)
 	}
 	equal(t, summarize(r.Deps), []string{
-		"base-pkg|runtime|1.0|include/base.txt|1",
-		"base-pkg|runtime|1.0|include/base.txt|1",
+		"base-pkg|runtime|1.0|include/base.txt|1", // included twice, read once
 		"leaf-pkg|runtime||include/sub/leaf.txt|1",
 		"mid-pkg|runtime||include/sub/mid.txt|3",
 		"top|runtime|1.0|requirements.txt|3",
@@ -212,5 +212,72 @@ func TestRequirementsNamesNormalizeAndValidate(t *testing.T) {
 	// Three spellings of requests, three of typing-extensions: two watches.
 	if len(out.Entries) != 2 || out.Entries[0].Watch != "api-pypi-requests" || out.Entries[1].Watch != "api-pypi-typing-extensions" {
 		t.Errorf("entries: %+v", out.Entries)
+	}
+}
+
+// A whole-line comment that ends in a backslash does not join the next line.
+func TestRequirementsCommentBackslash(t *testing.T) {
+	m := fstest.MapFS{"r.txt": {Data: []byte("# note \\\nrequests\n  # indented \\\nflask \\\n>=2\nlast\n")}}
+	r, err := ParseRequirements(m, "r.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, summarize(r.Deps), []string{"requests|runtime||r.txt|2", "flask|runtime||r.txt|4", "last|runtime||r.txt|6"})
+	if len(r.Warnings) != 0 {
+		t.Errorf("warnings: %v", warnings(r))
+	}
+}
+
+// A UTF-8 byte order mark does not spoil the first line.
+func TestRequirementsBOM(t *testing.T) {
+	m := fstest.MapFS{"r.txt": {Data: []byte("\ufeff-e .\nrequests\n")}}
+	r, err := ParseRequirements(m, "r.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0].Msg, "skipped -e .") || len(r.Deps) != 1 {
+		t.Errorf("deps %v warnings %v", summarize(r.Deps), warnings(r))
+	}
+}
+
+// The root name in a cycle message is cleaned, and a file reached by two
+// spellings of one path is still a cycle.
+func TestRequirementsCycleCleansNames(t *testing.T) {
+	m := fstest.MapFS{
+		"a.txt": {Data: []byte("-r sub/../b.txt\n")},
+		"b.txt": {Data: []byte("-r ./a.txt\n")},
+	}
+	_, err := ParseRequirements(m, "./a.txt", false)
+	want := "b.txt:1: include cycle: a.txt -> b.txt -> a.txt"
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+}
+
+// Echoed lines are cut, so that a file that is not a requirements file is
+// not dumped into logs.
+func TestRequirementsWarningsClipLongLines(t *testing.T) {
+	long := "token" + strings.Repeat("x", 300) + " here"
+	m := fstest.MapFS{"r.txt": {Data: []byte(long + "\n-e " + strings.Repeat("é", 100) + "\n")}}
+	r, err := ParseRequirements(m, "r.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 2 {
+		t.Fatalf("warnings: %v", warnings(r))
+	}
+	for _, w := range r.Warnings {
+		if len(w.Msg) > 200 || !strings.Contains(w.Msg, "...") || !utf8.ValidString(w.Msg) {
+			t.Errorf("not clipped: %q", w.Msg)
+		}
+	}
+}
+
+// An absolute include is used as it is.
+func TestRequirementsAbsoluteInclude(t *testing.T) {
+	m := fstest.MapFS{"top.txt": {Data: []byte("-r /abs/base.txt\n")}, "abs/base.txt": {Data: []byte("x\n")}}
+	_, err := ParseRequirements(m, "top.txt", false)
+	if err == nil || !strings.Contains(err.Error(), "top.txt:1: read /abs/base.txt") {
+		t.Errorf("err = %v", err)
 	}
 }

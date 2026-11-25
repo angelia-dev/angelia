@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -37,6 +38,12 @@ func ParsePackageJSON(fsys fs.FS, name string) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{}
+	type section struct {
+		key  string
+		val  json.RawMessage
+		base int
+	}
+	var sections []section
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if tok, err := dec.Token(); err != nil {
 		return nil, jsonError(name, raw, err)
@@ -53,18 +60,21 @@ func ParsePackageJSON(fsys fs.FS, name string) (*Result, error) {
 		if err := dec.Decode(&val); err != nil {
 			return nil, jsonError(name, raw, err)
 		}
-		typ, ok := packageSections[key]
-		if !ok {
+		if _, ok := packageSections[key]; !ok {
 			continue
 		}
-		base := int(dec.InputOffset()) - len(val)
-		packageSection(res, name, raw, key, typ, val, base)
+		// A key given twice: the last wins, as in npm.
+		sections = slices.DeleteFunc(sections, func(s section) bool { return s.key == key })
+		sections = append(sections, section{key, val, int(dec.InputOffset()) - len(val)})
 	}
 	if _, err := dec.Token(); err != nil { // the closing brace
 		return nil, jsonError(name, raw, err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s:%d: unexpected data after the top-level object", name, lineAt(raw, int(dec.InputOffset())))
+	}
+	for _, s := range sections {
+		packageSection(res, name, raw, s.key, packageSections[s.key], s.val, s.base)
 	}
 	return res, nil
 }

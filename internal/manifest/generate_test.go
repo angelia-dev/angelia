@@ -367,3 +367,40 @@ func TestGeneratedCoordinatesValidate(t *testing.T) {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// --policy is checked against the kinds present in the run only, and the
+// error names the kind.
+func TestPolicyValidatedPerPresentKind(t *testing.T) {
+	policy := []byte("constraint: \">=1.0.post1\"\n") // PEP 440, not semver
+	py := dep("requests", TypeRuntime)
+	js := Dependency{Name: "react", Kind: KindNPM, Type: TypeRuntime, Origin: Origin{File: "package.json", Line: 1}}
+	if _, err := Generate([]Dependency{py}, Options{Project: "api", Policy: policy, PolicyName: "p.yaml"}); err != nil {
+		t.Errorf("pypi only: %v", err)
+	}
+	_, err := Generate([]Dependency{py, js}, Options{Project: "api", Policy: policy, PolicyName: "p.yaml"})
+	if err == nil || !strings.Contains(err.Error(), "p.yaml: line 1: constraint:") || !strings.Contains(err.Error(), "(for npm watches)") || strings.Contains(err.Error(), "for pypi") {
+		t.Errorf("both kinds: %v", err)
+	}
+}
+
+// What wins a tie, and the -v order, do not depend on the input order.
+func TestGenerateDeterministicEntries(t *testing.T) {
+	mk := func(file string, line int) Dependency {
+		d := dep("Requests", TypeRuntime)
+		d.Origin = Origin{File: file, Line: line}
+		d.Pin = file
+		return d
+	}
+	a, b := mk("a.txt", 1), mk("b.txt", 1)
+	x := gen(t, []Dependency{a, b}, Options{Project: "api", Exclude: []string{"nomatch"}})
+	y := gen(t, []Dependency{b, a}, Options{Project: "api", Exclude: []string{"nomatch"}})
+	if x.Entries[0].Dep.Pin != "a.txt" || y.Entries[0].Dep.Pin != "a.txt" {
+		t.Errorf("tie winner: %q / %q", x.Entries[0].Dep.Pin, y.Entries[0].Dep.Pin)
+	}
+	ex := func(deps ...Dependency) []Entry {
+		return gen(t, deps, Options{Project: "api", Exclude: []string{"req*"}}).Entries
+	}
+	if p, q := ex(a, b), ex(b, a); len(p) != 1 || len(q) != 1 || p[0].Dep.Pin != "a.txt" || q[0].Dep.Pin != "a.txt" {
+		t.Errorf("excluded: %+v / %+v", p, q)
+	}
+}

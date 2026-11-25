@@ -1,4 +1,4 @@
-# ADR 0036: `angelia import` prints a watch file from dependency manifests, offline
+# ADR 0041: `angelia import` prints a watch file from dependency manifests, offline
 
 - **Status:** Proposed (decisions D60 to D69 answered with the recommendations of the spec of 2026-11-25; the maintainer sets Accepted at review)
 - **Date:** 2026-11-25

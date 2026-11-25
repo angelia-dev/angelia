@@ -14,7 +14,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/manifest"
 )
 
-// `angelia import` (story #98, ADR 0036) reads dependency manifests and prints
+// `angelia import` (story #98, ADR 0041) reads dependency manifests and prints
 // a watch file with one watch per registry dependency. It makes no network
 // request and reads no client configuration: the output is applied with
 // `angelia apply -f -` or loaded with `serve --watches`.

@@ -1,6 +1,6 @@
 // Package manifest reads dependency manifests (requirements.txt, package.json)
 // and generates a watch file with one watch per registry dependency
-// (`angelia import`, story #98, ADR 0036). It does no network I/O and reads
+// (`angelia import`, story #98, ADR 0041). It does no network I/O and reads
 // only the files it is given, through an [fs.FS].
 package manifest
 

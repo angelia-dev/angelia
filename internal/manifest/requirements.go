@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 )
@@ -47,8 +49,8 @@ var requirementOptions = map[string]optionKind{
 // includes) as a dev dependency. The grammar is the documented subset of
 // pip's: docs/cli.md, "Import".
 func ParseRequirements(fsys fs.FS, name string, dev bool) (*Result, error) {
-	p := &reqParser{fsys: fsys, dev: dev, res: &Result{}}
-	if err := p.file(name, 0, nil, Origin{}); err != nil {
+	p := &reqParser{fsys: fsys, dev: dev, res: &Result{}, done: map[string]bool{}}
+	if err := p.file(path.Clean(name), 0, nil, Origin{}); err != nil {
 		return nil, err
 	}
 	return p.res, nil
@@ -58,6 +60,7 @@ type reqParser struct {
 	fsys fs.FS
 	dev  bool
 	res  *Result
+	done map[string]bool // files already parsed, by cleaned path
 }
 
 func (p *reqParser) warn(o Origin, skip bool, format string, a ...any) {
@@ -79,13 +82,17 @@ func (p *reqParser) file(name string, depth int, stack []string, from Origin) er
 			return fmt.Errorf("%sinclude cycle: %s -> %s", at, strings.Join(stack, " -> "), name)
 		}
 	}
+	if p.done[name] { // included twice: read once
+		return nil
+	}
 	stack = append(stack, name)
 	raw, err := readFile(p.fsys, name)
 	if err != nil {
 		return fmt.Errorf("%s%w", at, err)
 	}
+	p.done[name] = true
 	indexWarned := false
-	for _, ll := range logicalLines(string(raw)) {
+	for _, ll := range logicalLines(strings.TrimPrefix(string(raw), "\ufeff")) {
 		line := strings.TrimSpace(commentRE.ReplaceAllString(ll.text, ""))
 		if line == "" {
 			continue
@@ -117,7 +124,7 @@ func logicalLines(s string) []logicalLine {
 		if cur.Len() == 0 {
 			start = i + 1
 		}
-		if strings.HasSuffix(l, "\\") {
+		if strings.HasSuffix(l, "\\") && !strings.HasPrefix(strings.TrimSpace(l), "#") { // a comment line never continues
 			cur.WriteString(strings.TrimSuffix(l, "\\"))
 			continue
 		}
@@ -163,14 +170,17 @@ func (p *reqParser) option(o Origin, line string, depth int, stack []string, ind
 			return fmt.Errorf("%s: %s %s: variables are not expanded", o, opt, val)
 		}
 		inc := val
-		if !path.IsAbs(inc) {
+		if filepath.IsAbs(inc) {
+			inc = filepath.ToSlash(inc)
+		} else if !path.IsAbs(inc) {
 			inc = path.Join(path.Dir(o.File), inc)
 		}
+		inc = path.Clean(inc)
 		return p.file(inc, depth+1, stack, o)
 	case optConstraint:
-		p.warn(o, true, "skipped %s: constraint files pin versions, they do not declare dependencies", line)
+		p.warn(o, true, "skipped %s: constraint files pin versions, they do not declare dependencies", clip(line))
 	case optEditable:
-		p.warn(o, true, "skipped %s: editable requirements are not registry dependencies", line)
+		p.warn(o, true, "skipped %s: editable requirements are not registry dependencies", clip(line))
 	case optIndex:
 		if !*indexWarned {
 			*indexWarned = true
@@ -178,7 +188,7 @@ func (p *reqParser) option(o Origin, line string, depth int, stack []string, ind
 		}
 	case optSilent:
 	default:
-		p.warn(o, true, "skipped unknown option %s", opt)
+		p.warn(o, true, "skipped unknown option %s", clip(opt))
 	}
 	return nil
 }
@@ -195,36 +205,36 @@ func (p *reqParser) requirement(o Origin, line string) {
 	token := line[:end]
 	switch {
 	case strings.Contains(token, "$"):
-		p.warn(o, true, "skipped %q: the name holds a variable, which angelia import does not expand", line)
+		p.warn(o, true, "skipped %q: the name holds a variable, which angelia import does not expand", clip(line))
 		return
 	case strings.Contains(line, "://") || hasVCSPrefix(token):
-		p.warn(o, true, "skipped %q: URL and VCS requirements are not registry dependencies", line)
+		p.warn(o, true, "skipped %q: URL and VCS requirements are not registry dependencies", clip(line))
 		return
 	case strings.ContainsAny(token, `/\`) || strings.HasPrefix(token, ".") || strings.HasPrefix(token, "~") ||
 		strings.HasSuffix(token, ".whl") || strings.HasSuffix(token, ".zip") || strings.HasSuffix(token, ".tar.gz"):
-		p.warn(o, true, "skipped %q: a local path is not a registry dependency", line)
+		p.warn(o, true, "skipped %q: a local path is not a registry dependency", clip(line))
 		return
 	}
 	name := pyNameRE.FindString(line)
 	if name == "" {
-		p.warn(o, true, "skipped %q: not a requirement", line)
+		p.warn(o, true, "skipped %q: not a requirement", clip(line))
 		return
 	}
 	rest := strings.TrimSpace(line[len(name):])
 	if strings.HasPrefix(rest, "[") { // extras are ignored
 		i := strings.Index(rest, "]")
 		if i < 0 {
-			p.warn(o, true, "skipped %q: unterminated extras", line)
+			p.warn(o, true, "skipped %q: unterminated extras", clip(line))
 			return
 		}
 		rest = strings.TrimSpace(rest[i+1:])
 	}
 	if strings.HasPrefix(rest, "@") {
-		p.warn(o, true, "skipped %q: direct references are not registry dependencies", line)
+		p.warn(o, true, "skipped %q: direct references are not registry dependencies", clip(line))
 		return
 	}
 	if rest != "" && !strings.ContainsAny(rest[:1], "<>=!~(;") {
-		p.warn(o, true, "skipped %q: cannot read the version specifier", line)
+		p.warn(o, true, "skipped %q: cannot read the version specifier", clip(line))
 		return
 	}
 	spec, _, _ := strings.Cut(rest, ";") // the marker is ignored
@@ -263,3 +273,17 @@ func pyPin(spec string) string {
 
 // canonicalPyPI is the stored coordinate of a PyPI dependency.
 func canonicalPyPI(name string) string { return pypi.Normalize(name) }
+
+// clip shortens a line echoed in a warning, so that a file that is not a
+// requirements file is not dumped into logs.
+func clip(s string) string {
+	const limit = 80
+	n := limit
+	if len(s) <= limit {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
+}
