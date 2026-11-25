@@ -9,7 +9,7 @@
 #     examples/import/package.json --project shop --interval 6h | angelia apply -f - --prune -l project=shop
 #
 # Synthetic manifest: public package names only.
-requests==2.32.4
+requests>=2.32
 Flask[async]>=2.0,<3
 Django>=4.2 ; python_version >= "3.9"
 PyYAML
