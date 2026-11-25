@@ -21,7 +21,7 @@ func TestValidateName(t *testing.T) {
 			t.Errorf("ValidateName(%q) = %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", strings.Repeat("a", MaxNameBytes+1), "a b", "a\tb", "a\x00b", "a b", "\xff", "a​b"} {
+	for _, bad := range []string{"", strings.Repeat("a", MaxNameBytes+1), "a b", "a\tb", "a\x00b", "a\u00a0b", "\xff", "a\u200bb"} {
 		if err := ValidateName(bad); !errors.Is(err, source.ErrInvalidTarget) {
 			t.Errorf("ValidateName(%q) = %v, want ErrInvalidTarget", bad, err)
 		}

@@ -35,17 +35,22 @@ func tgt(kv ...string) source.Target {
 // both documents.
 func upstream(t *testing.T, rev *atomic.Int64) http.Handler {
 	t.Helper()
+	latest, err := os.ReadFile("testdata/latest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := os.ReadFile("testdata/releases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{"latest.json": latest, "releases.json": releases}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f := r.URL.Query().Get("f")
 		if f == "" {
 			f = "latest.json"
 		}
-		if r.URL.Path != "/" || strings.ContainsAny(f, "/\\") {
-			http.NotFound(w, r)
-			return
-		}
-		b, err := os.ReadFile("testdata/" + f)
-		if err != nil {
+		b, ok := files[f]
+		if r.URL.Path != "/" || !ok {
 			http.NotFound(w, r)
 			return
 		}
@@ -81,7 +86,8 @@ func invalid() []source.Target {
 	wrong := tgt(ok...)
 	wrong.Kind = "http-regex"
 	return []source.Target{
-		{Kind: httpjson.Kind}, wrong,
+		{Kind: httpjson.Kind},
+		wrong,
 		without("name"), with("name", "two words"),
 		without("url"), with("url", "http://example.org/x.json"), with("url", "https://u:p@example.org/"),
 		without("jsonpath"), with("jsonpath", ""), with("jsonpath", "$..version"), with("jsonpath", "$[?@.v]"),
@@ -226,7 +232,7 @@ func TestErrors(t *testing.T) {
 func TestSameVersionsWithoutValidatorsIsNotModified(t *testing.T) {
 	var n atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `{"served": %d, "version": "1.0"}`, n.Add(1))
+		_, _ = fmt.Fprintf(w, `{"served": %d, "version": "1.0"}`, n.Add(1))
 	}))
 	defer srv.Close()
 	s := httpjson.New(srv.Client(), httpjson.WithAllowHTTPHosts([]string{"127.0.0.1"}))

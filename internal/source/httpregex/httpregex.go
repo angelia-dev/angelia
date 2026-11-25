@@ -126,10 +126,10 @@ func Compile(pattern string) (*regexp.Regexp, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: regex: %w", source.ErrInvalidTarget, err)
 	}
-	switch n := re.NumSubexp(); {
-	case n == 0:
+	switch n := re.NumSubexp(); n {
+	case 0:
 		return re, 0, nil
-	case n == 1:
+	case 1:
 		return re, 1, nil
 	default:
 		i := re.SubexpIndex("version")

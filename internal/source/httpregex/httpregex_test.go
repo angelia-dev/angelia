@@ -177,7 +177,7 @@ func TestSameVersionsWithoutValidatorsIsNotModified(t *testing.T) {
 	var n atomic.Int64
 	srv, s := serve(t, func(w http.ResponseWriter, _ *http.Request) {
 		// No ETag or Last-Modified; the page changes, the versions do not.
-		fmt.Fprintf(w, "<p>visit %d</p> v1.0 v2.0", n.Add(1))
+		_, _ = fmt.Fprintf(w, "<p>visit %d</p> v1.0 v2.0", n.Add(1))
 	})
 	tg := tgt("tool", srv.URL, `v[0-9.]+`)
 	first, err := s.List(context.Background(), tg, source.FetchState{})

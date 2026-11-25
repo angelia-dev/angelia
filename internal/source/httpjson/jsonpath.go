@@ -302,12 +302,23 @@ func (p *parser) hex4(at int) (rune, error) {
 	if p.pos+4 > len(p.s) {
 		return 0, pathError(at, "\\u needs 4 hex digits")
 	}
-	v, err := strconv.ParseUint(p.s[p.pos:p.pos+4], 16, 32)
-	if err != nil || strings.ContainsAny(p.s[p.pos:p.pos+4], "+-") {
-		return 0, pathError(at, "\\u needs 4 hex digits")
+	var v rune
+	for _, c := range []byte(p.s[p.pos : p.pos+4]) {
+		var d byte
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, pathError(at, "\\u needs 4 hex digits")
+		}
+		v = v<<4 | rune(d)
 	}
 	p.pos += 4
-	return rune(v), nil
+	return v, nil
 }
 
 // Select returns the nodes the path selects in root, a value decoded by
