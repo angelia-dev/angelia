@@ -269,6 +269,10 @@ const (
 // credentialKinds are the source kinds that send token_env or auth.
 var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "npm", "pypi"}
 
+// urlKinds are the source kinds whose URL is a watch coordinate (ADR 0038):
+// they take no key under sources.<kind> and no named instance (#97 D57).
+var urlKinds = []string{"http-json", "http-regex"}
+
 // SendsCredential reports whether the built-in source of kind sends
 // token_env or auth.
 func SendsCredential(kind string) bool { return slices.Contains(credentialKinds, kind) }
@@ -676,6 +680,17 @@ func (c *Config) Validate() error {
 		}
 		if s.Kind != "" && (len(s.Kind) > maxKindLen || !kindRE.MatchString(s.Kind)) {
 			bad("sources.%s.kind: invalid kind (want 1 to %d lower-case letters, digits and single hyphens)", k, maxKindLen)
+		}
+		if kind := kindOf(k, s); slices.Contains(urlKinds, kind) {
+			// The URL is each watch's url coordinate; credentials for
+			// watch-chosen URLs are a follow-up (ADR 0038, #97 D57).
+			switch {
+			case k != kind:
+				bad("sources.%s.kind: %s takes its URL from each watch and has no named instances; use source: %s in the watch", k, kind, kind)
+			case s != (Source{}):
+				bad("sources.%s: this kind takes no key (no base_url, token_env, auth or api): the URL is each watch's url coordinate and no credential is sent", k)
+			}
+			continue
 		}
 		if s.BaseURL != "" {
 			u, err := url.Parse(s.BaseURL)

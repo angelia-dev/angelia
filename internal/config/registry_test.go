@@ -252,3 +252,31 @@ func TestSourceAPI(t *testing.T) {
 		t.Errorf("err = %v, want both api errors", err)
 	}
 }
+
+// #97 D57: the sources whose URL is a watch coordinate take no key and no
+// named instance, from the file or the environment.
+func TestURLKindsTakeNoKey(t *testing.T) {
+	for _, kind := range []string{"http-json", "http-regex"} {
+		for y, want := range map[string]string{
+			"sources:\n  " + kind + ":\n    base_url: https://example.org\n":       "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    token_env: SOME_TOKEN\n":               "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    auth: {token_ref: tok}\n":              "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    api: json\n":                           "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    kind: " + kind + "\n":                  "sources." + kind + ": this kind takes no key",
+			"sources:\n  mine:\n    kind: " + kind + "\n":                          "sources.mine.kind: " + kind + " takes its URL from each watch and has no named instances",
+			"sources:\n  mine:\n    kind: " + kind + "\n    base_url: https://x\n": "sources.mine.kind: " + kind,
+		} {
+			_, err := load(t, writeFile(t, y))
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: err = %v, want %q", y, err, want)
+			}
+		}
+		env := "ANGELIA_SOURCES_" + strings.ToUpper(strings.ReplaceAll(kind, "-", "_")) + "_BASE_URL=https://example.org"
+		if _, err := load(t, writeFile(t, ""), env); err == nil || !strings.Contains(err.Error(), "sources."+kind+": this kind takes no key") {
+			t.Errorf("%s: err = %v", env, err)
+		}
+		if _, err := load(t, writeFile(t, "sources:\n  "+kind+": {}\n")); err != nil {
+			t.Errorf("%s: an empty entry: %v", kind, err)
+		}
+	}
+}

@@ -32,6 +32,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/githubtag"
 	"github.com/angelia-dev/angelia/internal/source/gitlabrelease"
+	"github.com/angelia-dev/angelia/internal/source/httpregex"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
@@ -42,11 +43,17 @@ import (
 // built from the instance configuration, shared by the sources (scheduler)
 // and the sinks (dispatcher), so http.allow_networks applies to both.
 
-// builtinKinds are the source kinds this binary implements, which a named
-// instance (sources.<name>.kind) may select.
+// builtinKinds are the source kinds this binary implements. A named
+// instance (sources.<name>.kind) may select any of them except the
+// urlKinds.
 var builtinKinds = []string{
-	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind,
+	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind, httpregex.Kind,
 }
+
+// urlKinds are the built-in kinds whose URL is a watch coordinate (ADR
+// 0038). They take no instance key and no named instance (decision D57 of
+// #97; config.Validate refuses both too).
+var urlKinds = []string{httpregex.Kind}
 
 // builtinSources registers the built-in source kinds with hc, and one more
 // source for each named instance of sources.<name>.kind. A non-nil wrap
@@ -67,6 +74,8 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 			continue // a built-in kind (or an unknown key, ignored)
 		case slices.Contains(builtinKinds, name):
 			return nil, fmt.Errorf("sources.%s.kind: %s is a built-in kind and cannot select another; give the instance its own name", name, name)
+		case slices.Contains(urlKinds, kind):
+			return nil, fmt.Errorf("sources.%s.kind: %s takes its URL from each watch and has no named instances", name, kind)
 		case !slices.Contains(builtinKinds, kind):
 			return nil, fmt.Errorf("sources.%s.kind: unknown source kind %q (kinds: %s)", name, kind, strings.Join(builtinKinds, ", "))
 		}
@@ -89,6 +98,15 @@ func builtinSources(cfg *config.Config, hc *http.Client, log *slog.Logger, wrap 
 // sources.<name>: its kind itself or an instance of it, with its own base
 // URL, token and auth.
 func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog.Logger, res registryauth.Resolver) source.Source {
+	if kind == httpregex.Kind {
+		// The URL is the watch's, so the source gets the netguard client
+		// itself: no base URL, no credential (D57).
+		opts := []httpregex.Option{httpregex.WithAllowHTTPHosts(cfg.HTTP.AllowHTTPHosts)}
+		if log != nil {
+			opts = append(opts, httpregex.WithLogger(log))
+		}
+		return httpregex.New(hc, opts...)
+	}
 	base := baseURL(cfg, name, publicRegistries[kind])
 	c := sourceClient(cfg, name, kind, base, hc, res)
 	tok := cfg.SourceToken(name)
