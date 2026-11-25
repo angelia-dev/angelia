@@ -1,6 +1,6 @@
-# ADR 00xx: The maven source reads maven-metadata.xml and dates new versions from their POM
+# ADR 0044: The maven source reads maven-metadata.xml and dates new versions from their POM
 
-- **Status:** Proposed (the maintainer accepted the recommended D95, D96, D98 and D99 of #96 on 2026-11-25; number assigned at merge)
+- **Status:** Accepted (maintainer, 2026-11-25: the recommended D95–D99 of #96)
 - **Date:** 2026-11-25
 - **Story:** angelia-dev/angelia#96
 
@@ -24,15 +24,18 @@ the `maven` version scheme (ADR 0007 addendum).
 2. **Listing (D96).** `GET <base>/<groupId, . as />/<artifactId>/maven-metadata.xml` through the injected
    netguard client, with the stored `ETag` and `Last-Modified`; a 304 is `NotModified`. Parsed with
    `encoding/xml` (`Strict`; `CharsetReader` for `US-ASCII` and `ISO-8859-1`, anything but UTF-8 otherwise
-   refused). A `<groupId>` or `<artifactId>` that differs from the coordinate fails the call. Versions are
+   refused; `UTF8` without the hyphen is read as UTF-8). A `<groupId>` or `<artifactId>` that differs from
+   the coordinate fails the call. Versions are
    trimmed and deduplicated; an empty one, `.`, `..`, one over 256 bytes or with `/`, `\`, white space or a
    control character is skipped (one DEBUG record per call). They are returned newest first by the `maven`
-   scheme, ties by raw string. 404 and 410 fail the call.
+   scheme, ties by raw string. At most 10,000 distinct versions are kept per call: past that, a WARN, and
+   the last 10,000 in metadata (deploy) order are kept. 404 and 410 fail the call.
 3. **Dates (D96).** For versions new since the cursor (JSON with the known version names; none on the first
    scan or with an unreadable cursor), newest first, at most 50 per call:
    `HEAD <base>/<g>/<a>/<v>/<a>-<v>.pom`, `Last-Modified` as `PublishedAt`. A 404, a 5xx or another failed
    lookup leaves the version undated with a WARN; a 429 or a cancelled context fails the call, so the cursor
-   does not advance.
+   does not advance. Versions past the 50-lookup cap of a call are recorded in the cursor and stay undated:
+   they are not looked up on a later call.
 4. **What is reported (D98).** Every version, `-SNAPSHOT` included (the scheme makes it a pre-release, so the
    default `prerelease: none` drops it). `<latest>`, `<release>`, `<lastUpdated>` ignored. `Yanked` false,
    `Prerelease` nil. `URL` is `https://central.sonatype.com/artifact/<g>/<a>/<v>` for Maven Central (both

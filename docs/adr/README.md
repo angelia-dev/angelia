@@ -39,6 +39,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0033](0033-admin-web-ui.md) | The admin web UI is a React SPA in `web/`, embedded in the binary; users sign in with GitHub, and their role from `ui.access` is one of the three API scopes | Accepted | #99 |
 | [0034](0034-generic-oidc-sign-in.md) | The admin UI signs in with any OpenID Connect provider through `go-oidc`, with PKCE, state and nonce; access entries match a subject or a verified email pinned to its subject | Accepted | #268 |
 | [0035](0035-adopt-watch-file-resources.md) | Watch-file resources move to the API in place with `POST /v1/adoptions`; the startup apply skips adopted names with a warning instead of failing | Accepted | #287 |
+| [0044](0044-maven-source.md) | The maven source reads `maven-metadata.xml` conditionally with `encoding/xml`, keys watches by `package: groupId:artifactId`, dates new versions from a `HEAD` of their POM, and sends `auth` or `token_env` through `registryauth` | Accepted | #96 |
 
 ## Process
 

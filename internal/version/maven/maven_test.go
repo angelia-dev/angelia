@@ -262,7 +262,12 @@ func TestIsPrerelease(t *testing.T) {
 		"1.0-beta-2": true, "1.0-cr1": true, "1.0.0.RC1": true, "2.1.0-alpha0": true, "1.0-1-SNAPSHOT": true,
 		"1.0-alpha-1-SNAPSHOT": true, "SNAPSHOT": true,
 		"1.0": false, "1.0-sp1": false, "33.8.0-jre": false, "33.8.0-android": false, "r09": false,
-		"1.0-1": false, "1.0.Final": false, "1-ga": false, "1.0-RELEASE": false, "6.1H.5-beta": false,
+		// Flavour and service-pack snapshots and pre-releases (D98: a SNAPSHOT is always a pre-release).
+		"33.9.0-jre-SNAPSHOT": true, "33.9.0-android-SNAPSHOT": true, "1.0-sp1-SNAPSHOT": true, "1.0-jre-rc1": true,
+		"1.0-jre-a1": true, "1.0-jre-b2": true, "1.0-jre-m3": true, "1.0-jre-cr1": true, "2.0.0.Final-SNAPSHOT": true,
+		"1.0-redhat-00001-SNAPSHOT": true, "1.0-sp-1-beta": true,
+		"33.9.0-jre": false, "1.0-sp1-redhat-00001": false, "1.0-a": false, "1.0-jre-sp1": false,
+		"1.0-1": false, "1.0.Final": false, "1-ga": false, "1.0-RELEASE": false, "6.1H.5-beta": true,
 	} {
 		if got := mustParse(t, in).IsPrerelease(); got != want {
 			t.Errorf("IsPrerelease(%q) = %v, want %v", in, got, want)
@@ -289,6 +294,9 @@ func TestBump(t *testing.T) {
 		{"1.0-alpha-1", "1.0-alpha-2", version.BumpPrerelease},
 		{"1.0-alpha-2", "1.0-beta-1", version.BumpPrerelease},
 		{"1.0", "1.0-1-SNAPSHOT", version.BumpPrerelease},
+		{"33.8.0-jre", "33.9.0-jre-SNAPSHOT", version.BumpMinor},
+		{"1.0", "1.0-sp1-SNAPSHOT", version.BumpPrerelease},
+		{"1.0-sp1-SNAPSHOT", "1.0-sp1", version.BumpMajor},
 		{"1.0-rc1", "1.0", version.BumpMajor},
 		{"2.0.0-RC1", "2.0.0", version.BumpMajor},
 		{"2.1-rc1", "2.1", version.BumpMinor},

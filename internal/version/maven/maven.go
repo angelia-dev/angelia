@@ -413,14 +413,35 @@ func numericPart(l *item) *item {
 	return out
 }
 
-// IsPrerelease reports whether v orders below the release it belongs to:
-// alpha, beta, milestone, rc, cr and snapshot forms (1.0-a1, 1.0.M2,
-// 1.0-RC1, 1.0-SNAPSHOT) are; 1.0, 1.0-sp1 and 1.0-jre are not.
+// IsPrerelease reports whether v is a pre-release: it orders below the
+// release it belongs to (1.0-a1, 1.0.M2, 1.0-RC1, 1.0-SNAPSHOT), or any of
+// its qualifiers ranks below a release (alpha, beta, milestone, rc, cr,
+// snapshot, wherever they appear), so flavour snapshots such as
+// 33.9.0-jre-SNAPSHOT, 1.0-sp1-SNAPSHOT and 1.0-jre-rc1 are pre-releases too.
+// 1.0, 1.0-sp1 and 1.0-jre are not.
 func (v Version) IsPrerelease() bool {
 	if v.items == nil {
 		return false
 	}
-	return compare(v.items, numericPart(v.items)) < 0
+	return compare(v.items, numericPart(v.items)) < 0 || hasPreQualifier(v.items)
+}
+
+// hasPreQualifier reports whether l holds, at any depth, a qualifier that
+// ranks below a release.
+func hasPreQualifier(l *item) bool {
+	for _, it := range l.list {
+		switch it.kind {
+		case kindString:
+			if rank(it.value) < rankRelease {
+				return true
+			}
+		case kindList:
+			if hasPreQualifier(it) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // release returns the leading numbers of the top-level list.

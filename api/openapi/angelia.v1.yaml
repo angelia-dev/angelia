@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.10.0
+  version: 0.10.1
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -2523,7 +2523,7 @@ components:
           description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
           default: 1h
         scheme:
-          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          description: The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
           type: string
           pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
         labels:
@@ -2559,7 +2559,7 @@ components:
           description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
           default: 1h
         scheme:
-          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          description: The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
           type: string
           pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
         labels:

@@ -32,6 +32,9 @@
 // and empty for any other repository. Versions are sorted newest first by
 // the maven version scheme, ties by Raw.
 //
+// At most maxVersions (10,000) distinct versions are kept per call, the
+// last ones in metadata (deploy) order, with a WARN.
+//
 // # XML
 //
 // The document is parsed with encoding/xml in strict mode. It resolves no
@@ -79,7 +82,8 @@ const (
 	maxPartLen    = 255 // groupId and artifactId
 	maxVersionLen = mversion.MaxLen
 	maxLookups    = 50
-	maxLogged     = 3 // skipped versions named in the DEBUG record
+	maxVersions   = 10000 // versions kept per call; the newest by metadata (deploy) order
+	maxLogged     = 3     // skipped versions named in the DEBUG record
 )
 
 var (
@@ -298,6 +302,12 @@ func (s *Source) parse(ctx context.Context, pkg, group, artifact string, body []
 	if nSkipped > 0 {
 		s.log.DebugContext(ctx, "maven: skipping invalid version strings", "package", pkg, "count", nSkipped, "examples", skipped)
 	}
+	if n := len(parsed); n > maxVersions {
+		// The metadata lists versions in deploy order: keep the last ones.
+		s.log.WarnContext(ctx, "maven: too many versions, keeping the newest by metadata order",
+			"package", pkg, "versions", n, "kept", maxVersions)
+		parsed = parsed[n-maxVersions:]
+	}
 	slices.SortFunc(parsed, func(a, b mversion.Version) int {
 		if c := mversion.Compare(b, a); c != 0 {
 			return c // newest first
@@ -330,6 +340,8 @@ func validVersion(raw string) bool {
 // may declare besides UTF-8.
 func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	switch strings.ToLower(label) {
+	case "utf8":
+		return input, nil // "UTF-8" itself never reaches the reader
 	case "us-ascii", "ascii":
 		return input, nil // a subset of UTF-8
 	case "iso-8859-1", "iso8859-1", "latin1":

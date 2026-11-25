@@ -1,9 +1,13 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `da75b65` ("feat(openapi): adopt watch-file resources with POST
-/v1/adoptions (spec 0.10.0) (#21)") on the spec repository's `main`.
-Since spec 0.9.0, spec 0.10.0 adds `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `9ec8b68`
+("docs(schemas): list maven among the known version schemes (spec 0.10.1)") on the spec repository's
+branch `story/96-maven-scheme`. Spec 0.10.1 changes descriptions only: `maven` becomes a known value of
+`data.scheme` and of the watch `scheme` (OpenAPI and MCP); no schema rule changes.
+Before that, spec 0.10.0 (commit `da75b65`, "feat(openapi): adopt watch-file resources with POST
+/v1/adoptions (spec 0.10.0) (#21)"), since spec 0.9.0, added `adoptResources` (`POST /v1/adoptions`,
+`admin`) with the schemas
 `AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
 description (spec docs/api.md item 55). The MCP tool contract and the event schemas are unchanged by
 0.10.0.

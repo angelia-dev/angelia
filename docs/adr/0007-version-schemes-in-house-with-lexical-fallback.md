@@ -123,9 +123,14 @@ selected on any watch.
 - **Parse.** Any string up to 256 bytes after trimming, without white space, control characters or
   invalid UTF-8: Maven orders every string, so the lexical fallback only catches those. `String()`
   is the trimmed input (Maven has no display normal form), so `normalized_version` equals `version`.
-- **IsPrerelease.** `v` orders below its numeric part (its items up to the first qualifier):
-  `1.0-rc1`, `1.0.M2`, `1.0-SNAPSHOT`, `1.0-1-SNAPSHOT` are pre-releases; `1.0`, `1.0-sp1`,
-  `33.8.0-jre`, `r09` are not.
+- **IsPrerelease.** A version is a pre-release when either rule holds. D97: `v` orders below its
+  numeric part (its items up to the first qualifier), so `1.0-rc1`, `1.0.M2`, `1.0-SNAPSHOT` and
+  `1.0-1-SNAPSHOT` are. D98 (a SNAPSHOT is always a pre-release, which the source relies on to let
+  `prerelease: none` drop snapshots): any qualifier that ranks below a release (`alpha`, `beta`,
+  `milestone`, `rc`/`cr`, `snapshot`, with the aliases `a1`, `b1`, `m1`), wherever it appears, so
+  flavour and service-pack builds such as `33.9.0-jre-SNAPSHOT`, `1.0-sp1-SNAPSHOT` and `1.0-jre-rc1`
+  are too, although Maven orders them above `33.9.0` and `1.0`. `1.0`, `1.0-sp1`, `33.8.0-jre` and
+  `r09` are not. Ordering is unchanged: only the classification adds the second rule.
 - **Bump.** Leading numbers of the top-level list: first = `major`, second = `minor`, later =
   `patch`. With the same numbers: `prerelease` when next is a pre-release; a pre-release followed by
   a release gets the level that release introduces (rule 5); a new or higher `sp` is `patch`, as is a

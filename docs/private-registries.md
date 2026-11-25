@@ -272,7 +272,7 @@ watches:
 mismatch and the storage host receives no credential. Events from a repository other than Central carry
 `repository_url` in their purl. Not supported: `settings.xml`, mirror rules, custom header names (GitLab's
 `Private-Token`, `Deploy-Token`, `Job-Token`; GitLab also accepts Basic with a token) and client
-certificates. See [ADR 00xx](adr/00xx-maven-source.md).
+certificates. See [ADR 0044](adr/0044-maven-source.md).
 
 ## Private networks
 

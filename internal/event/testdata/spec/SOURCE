@@ -1,5 +1,5 @@
 Vendored from https://github.com/angelia-dev/spec
-Commit: 68e022e9d85cc8351fcc5cac29094af369cb8102 (main, after angelia-dev/spec#6)
+Commit: 9ec8b68c249f6857deb22cc9805f2c5f890c6ca2 (branch story/96-maven-scheme, spec 0.10.1)
 
 Files, unchanged:
   schemas/release/v1.json

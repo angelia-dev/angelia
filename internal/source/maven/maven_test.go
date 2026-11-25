@@ -430,6 +430,8 @@ func TestXML(t *testing.T) {
 		want []string // nil: List fails
 	}{
 		{"iso-8859-1", xmlDoc(`<?xml version="1.0" encoding="ISO-8859-1"?><!-- caf`+"\xe9"+` -->`, `<version>1.0</version><version>2.0</version>`), []string{"2.0", "1.0"}},
+		{"utf8 without hyphen", xmlDoc(`<?xml version="1.0" encoding="Utf8"?>`, `<version>1.0</version>`), []string{"1.0"}},
+		{"UTF8", xmlDoc(`<?xml version="1.0" encoding="UTF8"?>`, `<version>1.0</version>`), []string{"1.0"}},
 		{"us-ascii", xmlDoc(`<?xml version="1.0" encoding="US-ASCII"?>`, `<version>1.0</version>`), []string{"1.0"}},
 		{"no declaration", xmlDoc(``, `<version>1.0</version>`), []string{"1.0"}},
 		{"utf-16 refused", xmlDoc(`<?xml version="1.0" encoding="UTF-16"?>`, `<version>1.0</version>`), nil},
@@ -505,6 +507,24 @@ func TestSkippedVersionsLogOneDebugRecord(t *testing.T) {
 	e.list(t, source.FetchState{})
 	if n := strings.Count(e.log.String(), "level=DEBUG"); n != 1 || !strings.Contains(e.log.String(), "count=3") {
 		t.Errorf("log = %q, want one DEBUG record counting 3", e.log.String())
+	}
+}
+
+// More than 10,000 versions: the last 10,000 in metadata order are kept,
+// with a WARN.
+func TestVersionCap(t *testing.T) {
+	e := newEnv(t)
+	vs := make([]string, 0, 10005)
+	for i := range 10005 {
+		vs = append(vs, fmt.Sprintf("1.%d", i))
+	}
+	e.r.setMeta(vs...)
+	res := e.list(t, source.FetchState{})
+	if len(res.Versions) != 10000 || res.Versions[0].Raw != "1.10004" || res.Versions[9999].Raw != "1.5" {
+		t.Fatalf("versions = %d, newest %s, oldest %s", len(res.Versions), res.Versions[0].Raw, res.Versions[len(res.Versions)-1].Raw)
+	}
+	if !strings.Contains(e.log.String(), "level=WARN") || !strings.Contains(e.log.String(), "versions=10005") {
+		t.Errorf("no WARN: %s", e.log.String())
 	}
 }
 
