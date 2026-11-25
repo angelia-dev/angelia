@@ -1,12 +1,12 @@
 # Example for `angelia import` (docs/cli.md, "Import"). Generate the watch file next to this one:
 #
 #   angelia import examples/import/requirements.txt --dev examples/import/requirements-dev.txt \
-#     --project shop --interval 6h > examples/import/watches.yaml
+#     examples/import/package.json --project shop --interval 6h > examples/import/watches.yaml
 #
 # or apply it directly and prune what the manifests dropped:
 #
 #   angelia import examples/import/requirements.txt --dev examples/import/requirements-dev.txt \
-#     --project shop --interval 6h | angelia apply -f - --prune -l project=shop
+#     examples/import/package.json --project shop --interval 6h | angelia apply -f - --prune -l project=shop
 #
 # Synthetic manifest: public package names only.
 requests==2.31.0

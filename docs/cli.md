@@ -179,14 +179,16 @@ events then tell your pipeline that something shipped. See [examples/import](../
 ```
 angelia import FILE... --project NAME [--dev FILE]... [-l key=value]...
                [--include runtime,dev,optional,peer] [--exclude GLOB]...
-               [--source KIND=NAME]... [--interval DURATION] [--policy FILE]
-               [--subscribe SINK] [--format auto|requirements] [--strict] [-v]
+               [--source KIND=NAME | --source @scope=NAME]... [--interval DURATION]
+               [--policy FILE] [--subscribe SINK]
+               [--format auto|requirements|package-json] [--strict] [-v]
 ```
 
-- **Formats.** `requirements*.txt` and `*.requirements.txt` (the format is chosen from the file name,
-  or forced with `--format`). Several files of one or more formats make one watch file, watches
-  sorted by name. `--dev FILE` is a requirements file whose entries are `dev` dependencies. Not yet
-  supported: `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Dockerfile`.
+- **Formats.** `requirements*.txt` and `*.requirements.txt`, and `package.json` (the format is chosen
+  from the file name, or forced with `--format requirements|package-json`). Several files of one or
+  more formats make one watch file, watches sorted by name. `--dev FILE` is a requirements file
+  whose entries are `dev` dependencies. Not yet supported: `pyproject.toml`, `Cargo.toml`, `go.mod`,
+  `Dockerfile`.
 - **Output.** Stdout is the watch file; its first line is a comment naming the input files (no time,
   no path outside the arguments). Stderr gets warnings and, with `-v`, one line per dependency
   (`requests 2.31.0 -> api-pypi-requests`). Exit status 0 on success, non-zero when a manifest cannot
@@ -202,8 +204,10 @@ angelia import FILE... --project NAME [--dev FILE]... [-l key=value]...
   `dev`, `optional` or `peer` (a package declared with several types gets the first of that
   order), so a subscription can route only runtime dependencies. They show up in every event as
   `data.watch.labels`. `dependency` is reserved. Label rules are the watch file's.
-- **Types.** `--include` keeps the listed types and drops the rest; the default is every type but `peer`.
-  A requirements file is `runtime`, or `dev` when passed with `--dev`.
+- **Types.** `--include` keeps the listed types and drops the rest; the default is every type but `peer`
+  (`--include runtime,optional,dev,peer` adds it). A requirements file is `runtime`, or `dev` when
+  passed with `--dev`; `package.json` maps `dependencies` to `runtime`, `optionalDependencies` to
+  `optional`, `devDependencies` to `dev` and `peerDependencies` to `peer`.
 - **Pins and ranges** (`requests==2.31.0`, `django>=4.2`) are ignored: every watch keeps the default
   `baseline: true`, so versions known at its first check are recorded without events and later
   releases are reported. Pins show in `-v` only.
@@ -213,9 +217,12 @@ angelia import FILE... --project NAME [--dev FILE]... [-l key=value]...
   (the keys of a watch's [`policy`](watch-file.md), for example `cooldown: 48h`) into every watch,
   validated like a watch's and reported with the line in the file. The scheme is never set: it is the
   kind's default.
-- **`--source KIND=NAME`** (`--source pypi=pypi-internal`) sets `source: NAME` on every watch of the kind,
-  where NAME is a named instance of the [instance configuration](private-registries.md). The import
-  never reads `--index-url` lines, `.npmrc` or `.pypirc`; the server validates the name at `apply`.
+- **`--source KIND=NAME`** (`--source pypi=pypi-internal`, `--source npm=npm-mirror`) sets `source: NAME`
+  on every watch of the kind, where NAME is a named instance of the
+  [instance configuration](private-registries.md). For npm, `--source @acme=npm-internal` maps one
+  scope and wins over `npm=...`; a scope needs its `@`. The watch name keeps the kind (`api-npm-...`).
+  The import never reads `--index-url` lines, `.npmrc` or `.pypirc`; the server validates the name at
+  `apply`.
 - **`--subscribe SINK`** adds one subscription `<project>-deps` on an existing sink, with `filter.labels`
   equal to the owner labels. `apply --prune` does not delete subscriptions (they carry no owner labels
   in API v1, angelia-dev/spec#8): one that leaves the file is reported `kept` and stays. Remove it with
@@ -234,6 +241,18 @@ What `requirements.txt` supports (a documented subset of pip's grammar, no netwo
 - Ignored with one warning per file: `-i`, `--index-url`, `--extra-index-url`, `-f`, `--find-links`,
   `--trusted-host` (use `--source`). Ignored silently: `--hash`, `--pre`, `--no-binary`,
   `--only-binary`, `--prefer-binary`.
+
+What `package.json` supports (read with `encoding/json`; an invalid file is an error with its line):
+
+- The keys `dependencies`, `optionalDependencies`, `devDependencies` and `peerDependencies` (peer only
+  with `--include`). `bundledDependencies`, `overrides` and `resolutions` are ignored, lockfiles are
+  out of scope. A missing key is fine; a key that is not an object, or a version that is not a string,
+  is skipped with a warning.
+- `npm:real-name@range` aliases import `real-name`. Skipped with one warning each: `file:`, `link:`,
+  `portal:`, `workspace:`, `git...:`, `github:` and `user/repo` shorthands, and `http(s):` tarballs.
+- A scoped name such as `@types/node` makes the watch name `api-npm-types-node`. A package in several
+  keys is imported once, with the first type of runtime, optional, dev, peer. Two different names that
+  make one watch name (`@a/b-c` and `@a-b/c`) are an error naming both: leave one out with `--exclude`.
 
 Watch what happens next:
 

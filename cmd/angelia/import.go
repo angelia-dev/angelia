@@ -57,7 +57,9 @@ Running it again on the same manifests prints the same bytes. Version pins and
 ranges are ignored: every watch records the versions known at its first check
 and reports later releases. Lines that are not registry dependencies (URLs,
 VCS, local paths, editable installs, constraint files) are skipped with a
-warning on stderr; --strict makes them an error. See docs/cli.md, "Import".`,
+warning on stderr; --strict makes them an error. In package.json, dependencies,
+optionalDependencies and devDependencies are read (peerDependencies with
+--include peer). See docs/cli.md, "Import".`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runImport(cmd, args, f)
@@ -69,7 +71,7 @@ warning on stderr; --strict makes them an error. See docs/cli.md, "Import".`,
 	fl.StringArrayVarP(&f.labels, "label", "l", nil, "owner label key=value, replacing project=<project> (repeatable; use the same pairs as apply --prune -l)")
 	fl.StringSliceVar(&f.include, "include", nil, "dependency types to import: runtime,optional,dev,peer (default: all but peer)")
 	fl.StringArrayVar(&f.exclude, "exclude", nil, "glob of package names to leave out (repeatable)")
-	fl.StringArrayVar(&f.sources, "source", nil, "KIND=NAME: use the named source instance for every watch of a kind, e.g. pypi=pypi-internal (repeatable)")
+	fl.StringArrayVar(&f.sources, "source", nil, "KIND=NAME or @SCOPE=NAME: use the named source instance for every watch of a kind (pypi=pypi-internal, npm=npm-mirror) or of an npm scope (@acme=npm-internal; wins over npm=); repeatable")
 	fl.StringVar(&f.interval, "interval", "", "check interval of every watch, e.g. 6h (default: the server's default)")
 	fl.StringVar(&f.policy, "policy", "", "YAML file with a watch policy block, copied into every watch")
 	fl.StringVar(&f.subscr, "subscribe", "", "also print a subscription <project>-deps on this existing sink, for the owner labels")

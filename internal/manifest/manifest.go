@@ -26,6 +26,7 @@ var Types = []string{TypeRuntime, TypeOptional, TypeDev, TypePeer}
 // Source kinds of the generated watches.
 const (
 	KindPyPI = "pypi"
+	KindNPM  = "npm"
 )
 
 // Origin is where a dependency was declared.
@@ -96,12 +97,17 @@ func unwrapPath(err error) error {
 // Format names.
 const (
 	FormatRequirements = "requirements"
+	FormatPackageJSON  = "package-json"
 )
 
 // FormatOf returns the format of a manifest file name: "requirements" for
-// requirements*.txt and *.requirements.txt, or "" when it is not recognised.
+// requirements*.txt and *.requirements.txt, "package-json" for package.json,
+// or "" when it is not recognised.
 func FormatOf(name string) string {
 	base := path.Base(name)
+	if base == "package.json" {
+		return FormatPackageJSON
+	}
 	if strings.HasSuffix(base, ".txt") && (strings.HasPrefix(base, "requirements") || strings.HasSuffix(base, ".requirements.txt")) {
 		return FormatRequirements
 	}
@@ -109,14 +115,20 @@ func FormatOf(name string) string {
 }
 
 // Formats lists the format names Parse knows.
-var Formats = []string{FormatRequirements}
+var Formats = []string{FormatRequirements, FormatPackageJSON}
 
 // Parse reads the manifest name of the given format. dev marks the
-// dependencies of a requirements file as dev dependencies.
+// dependencies of a requirements file as dev dependencies; it is an error
+// for a package.json.
 func Parse(format string, fsys fs.FS, name string, dev bool) (*Result, error) {
 	switch format {
 	case FormatRequirements:
 		return ParseRequirements(fsys, name, dev)
+	case FormatPackageJSON:
+		if dev {
+			return nil, fmt.Errorf("%s: --dev applies to requirements files; package.json lists its own devDependencies", name)
+		}
+		return ParsePackageJSON(fsys, name)
 	}
 	return nil, fmt.Errorf("unknown format %q", format)
 }

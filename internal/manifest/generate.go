@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/watchfile"
 )
@@ -27,7 +28,10 @@ const (
 	cutLen     = 54
 )
 
-var projectRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
+var (
+	projectRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
+	scopeRE   = regexp.MustCompile(`^@[a-z0-9][a-z0-9._~-]*$`)
+)
 
 // kindSpec is what the generator knows about a source kind.
 type kindSpec struct {
@@ -37,6 +41,9 @@ type kindSpec struct {
 
 var kinds = map[string]kindSpec{
 	KindPyPI: {canonical: func(n string) string { return pypi.Normalize(strings.TrimSpace(n)) }},
+	// npm stores a name as written: the source has no Canonical, and its
+	// Validate (run by the generator) rejects what is not a valid name.
+	KindNPM: {canonical: func(n string) string { return n }},
 }
 
 // Options controls Generate. The zero value is not valid: Project is required.
@@ -110,8 +117,12 @@ func ParseSourceMappings(vals []string) (map[string]string, error) {
 		case !watchfile.ValidName(name):
 			return nil, fmt.Errorf("--source %q: %q is not a valid source name (%s)", v, name, watchfile.NamePattern)
 		}
-		if _, ok := kinds[k]; !ok {
-			return nil, fmt.Errorf("--source %q: unknown kind %q, want %s", v, k, strings.Join(kindNames(), ", "))
+		if strings.HasPrefix(k, "@") {
+			if !scopeRE.MatchString(k) {
+				return nil, fmt.Errorf("--source %q: %q is not an npm scope (@name)", v, k)
+			}
+		} else if _, ok := kinds[k]; !ok {
+			return nil, fmt.Errorf("--source %q: unknown kind %q, want %s, or an npm scope with the @ (@scope=NAME)", v, k, strings.Join(kindNames(), ", "))
 		}
 		if prev, dup := out[k]; dup && prev != name {
 			return nil, fmt.Errorf("--source: %q is mapped twice (%s and %s)", k, prev, name)
@@ -130,8 +141,15 @@ func kindNames() []string {
 	return n
 }
 
-// sourceFor returns the source a watch of d uses.
+// sourceFor returns the source a watch of d uses: the instance of the npm
+// scope of d, else of its kind, else the kind.
 func (o *Options) sourceFor(d Dependency) string {
+	if d.Kind == KindNPM && strings.HasPrefix(d.Name, "@") {
+		scope, _, _ := strings.Cut(d.Name, "/")
+		if s, ok := o.Sources[scope]; ok {
+			return s
+		}
+	}
 	if s, ok := o.Sources[d.Kind]; ok {
 		return s
 	}
@@ -411,7 +429,7 @@ func (o *Options) policyBlock() (map[string]any, error) {
 func probeOptions() watchfile.Options {
 	reg := source.NewRegistry()
 	hc := &http.Client{}
-	for _, s := range []source.Source{pypi.New(pypi.DefaultBaseURL, hc)} {
+	for _, s := range []source.Source{pypi.New(pypi.DefaultBaseURL, hc), npm.New("", hc)} {
 		if err := reg.Register(s); err != nil {
 			panic(err) // a duplicate kind in a fixed list
 		}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -211,5 +212,80 @@ func TestImportHelp(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("help lacks %q", want)
 		}
+	}
+}
+
+const importPackageJSON = `{
+  "dependencies": {"react": "^18.2.0", "@acme/widget": "1.0.0", "@types/node": "~20", "local": "file:../local"},
+  "devDependencies": {"typescript": "5.4.2"},
+  "peerDependencies": {"react-dom": "^18"}
+}
+`
+
+// Criterion (98-B): a mixed run through apply, with a scope mapping.
+func TestImportPackageJSONMixedThroughApply(t *testing.T) {
+	a := newApplyEnv(t)
+	dir := t.TempDir()
+	req := importWrite(t, dir, "requirements.txt", "requests==2.31.0\n")
+	pkg := importWrite(t, dir, "web/package.json", importPackageJSON)
+	yaml, errOut, err := runCLI(t, "import", req, pkg, "--project", "shop", "-v", "--source", "@acme=npm-internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"warning: " + pkg + ":2: skipped local in dependencies:",
+		"react -> shop-npm-react\n", "@acme/widget 1.0.0 -> shop-npm-acme-widget\n", "typescript 5.4.2 -> shop-npm-typescript\n",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+	if strings.Contains(yaml, "react-dom") {
+		t.Error("peerDependencies imported by default")
+	}
+	// The server does not know npm-internal: apply reports it per watch.
+	out, _, err := runCLIIn(t, yaml, append([]string{"apply", "-f", "-", "--dry-run"}, a.conn...)...)
+	if err == nil || !strings.Contains(out, "watch/shop-npm-acme-widget failed") {
+		t.Errorf("an unknown instance should fail at apply, got err=%v\n%s", err, out)
+	}
+	// Without the mapping the same file applies and a second run changes nothing.
+	yaml = mustImport(t, req, pkg, "--project", "shop", "--include", "runtime,dev,peer")
+	for i, want := range []string{"6 created, 0 updated, 0 unchanged, 0 deleted", "0 created, 0 updated, 6 unchanged, 0 deleted"} {
+		out, errOut, err := runCLIIn(t, yaml, append([]string{"apply", "-f", "-", "--prune", "-l", "project=shop"}, a.conn...)...)
+		if err != nil || summary(out) != want {
+			t.Fatalf("run %d: %v %q, want %q\n%s\n%s", i, err, summary(out), want, out, errOut)
+		}
+	}
+	got := a.names("watch")
+	slices.Sort(got)
+	if want := "shop-npm-acme-widget shop-npm-react shop-npm-react-dom shop-npm-types-node shop-npm-typescript shop-pypi-requests"; strings.Join(got, " ") != want {
+		t.Errorf("watches: %v, want %s", got, want)
+	}
+}
+
+// Criterion (98-B): usage errors of package.json and scope mappings.
+func TestImportPackageJSONUsageErrors(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	pkg := importWrite(t, dir, "package.json", importPackageJSON)
+	bad := importWrite(t, dir, "bad/package.json", "{\n  \"dependencies\": {\n    \"a\": \"1\",\n  }\n}\n")
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"import", pkg, "--project", "web", "--source", "acme=npm-internal"}, "unknown kind"},
+		{[]string{"import", pkg, "--project", "web", "--source", "@Acme=x"}, "not an npm scope"},
+		{[]string{"import", "--dev", pkg, "--project", "web"}, "--dev applies to requirements files"},
+		{[]string{"import", bad, "--project", "web"}, "package.json:4: invalid JSON"},
+	} {
+		out, _, err := runCLI(t, tc.args...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || out != "" {
+			t.Errorf("%v: err = %v, stdout = %q, want %q", tc.args[1:], err, out, tc.want)
+		}
+	}
+	// --format forces the parser whatever the file name.
+	odd := importWrite(t, dir, "deps.json", importPackageJSON)
+	if out := mustImport(t, odd, "--project", "web", "--format", "package-json"); !strings.Contains(out, "web-npm-react") {
+		t.Errorf("--format: %s", out)
 	}
 }

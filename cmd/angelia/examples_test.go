@@ -49,7 +49,7 @@ func TestComposeExampleConfigsLoadWithTheRealLoaders(t *testing.T) {
 func TestImportExampleIsCurrent(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
 	out, errOut, err := runCLI(t, "import", "examples/import/requirements.txt", "--dev", "examples/import/requirements-dev.txt",
-		"--project", "shop", "--interval", "6h")
+		"examples/import/package.json", "--project", "shop", "--interval", "6h")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, errOut)
 	}
