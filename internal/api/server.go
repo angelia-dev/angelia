@@ -76,6 +76,10 @@ type Options struct {
 	// AllowHTTPHosts is http.allow_http_hosts: the hosts a webhook may
 	// reach over plain http:// (decision D12). Empty: https only.
 	AllowHTTPHosts []string
+	// ExecCommands are the names of exec.commands, the commands an exec
+	// sink may name (ADR 0042). Empty: the exec kind is refused. The exec
+	// kind is in Plugins exactly when it is not empty.
+	ExecCommands []string
 	// Logger receives the access log and the audit records; nil discards.
 	Logger *slog.Logger
 	// Now and NewID default to the real clock and random ULIDs.

@@ -24,6 +24,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
+	execsink "github.com/angelia-dev/angelia/internal/sink/exec"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
@@ -224,9 +225,10 @@ func registryURL(cfg *config.Config) func(name string) string {
 
 // builtinSinks returns the built-in sinks, sending through hc. A new
 // built-in kind is added here and to watchfile.SinkKinds (a test checks
-// that both list the same kinds).
-func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.Sink {
-	return []sink.Sink{
+// that both list the same kinds). The exec sink is added only when
+// exec.commands defines commands (ADR 0042 §1).
+func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) ([]sink.Sink, error) {
+	sinks := []sink.Sink{
 		// http.allow_http_hosts is checked at every delivery (ADR 0023,
 		// decided question 4 and D12).
 		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
@@ -235,6 +237,41 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// (ADR 0026 §2); the sink sends only to them.
 		shoutrrr.New(hc, shoutrrr.Options{}),
 	}
+	if len(cfg.Exec.Commands) == 0 {
+		return sinks, nil
+	}
+	cmds := make(map[string]execsink.Command, len(cfg.Exec.Commands))
+	for name, c := range cfg.Exec.Commands {
+		cmds[name] = execsink.Command{Argv: c.Argv, Dir: c.Dir, Env: c.Env, Timeout: c.Timeout, MaxConcurrent: c.MaxConcurrent}
+	}
+	s, err := execsink.New(execsink.Options{Commands: cmds, Logger: log})
+	if err != nil {
+		return nil, err
+	}
+	return append(sinks, s), nil
+}
+
+// execSinkKinds is the exec kind when exec.commands defines commands, for
+// the plugin catalogue.
+func execSinkKinds(cfg *config.Config) []string {
+	if len(cfg.Exec.Commands) == 0 {
+		return nil
+	}
+	return []string{execsink.Kind}
+}
+
+// checkExecCommands fails when the program of a command of exec.commands
+// is missing, not a regular file or not executable (ADR 0042 §2, §5):
+// config check, and serve before it starts the dispatcher role, so that a
+// node without the command fails fast.
+func checkExecCommands(cfg *config.Config) error {
+	var errs []error
+	for _, name := range cfg.Exec.CommandNames() {
+		if err := execsink.CheckCommand(cfg.Exec.Commands[name].Argv[0]); err != nil {
+			errs = append(errs, fmt.Errorf("exec.commands.%s.argv[0]: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // warnDrainBudget warns when the drain timeout (after the trace flush is
@@ -334,8 +371,15 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 		}
 	}
 	if withDispatcher {
+		if err := checkExecCommands(d.cfg); err != nil {
+			return out, err
+		}
+		sinks, err := builtinSinks(d.cfg, hc, d.log)
+		if err != nil {
+			return out, err
+		}
 		reg := sink.NewRegistry()
-		for _, s := range builtinSinks(d.cfg, hc, d.log) {
+		for _, s := range sinks {
 			if err := reg.Register(s); err != nil {
 				return out, err
 			}

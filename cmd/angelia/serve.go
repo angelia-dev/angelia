@@ -120,7 +120,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		plugins := builtinPlugins(sources.Kinds())
+		plugins := builtinPlugins(sources.Kinds(), execSinkKinds(cfg)...)
 		// Every role that opens the store runs the stored-sinks check of
 		// ADR 0024 §6 here, before any role starts.
 		st, err := openStore(cmd.Context(), cfg, plugins, log)

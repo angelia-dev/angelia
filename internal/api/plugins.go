@@ -37,6 +37,27 @@ type PluginHostInfo struct {
 	CredentialPorts []int
 }
 
+// SpecKindConfig returns, as JSON, the configuration schema the embedded
+// specification documents for a built-in sink kind
+// (SinkConfig.x-angelia-kind-config), with its references inlined. A
+// built-in kind that publishes it as its PluginInfo.ConfigSchema shows it
+// in GET /v1/plugins (the exec kind, ADR 0042).
+func SpecKindConfig(kind string) (json.RawMessage, error) {
+	d, err := loadSpec()
+	if err != nil {
+		return nil, err
+	}
+	sch := d.kindConfig(kind)
+	if sch == nil {
+		return nil, fmt.Errorf("api: the specification documents no configuration for sink kind %s", kind)
+	}
+	b, err := json.Marshal(sch)
+	if err != nil {
+		return nil, fmt.Errorf("api: encode the configuration schema of %s: %w", kind, err)
+	}
+	return b, nil
+}
+
 // kindConfig returns the configuration schema the specification documents
 // for a built-in sink kind (SinkConfig's x-angelia-kind-config), with its
 // references inlined, or nil.

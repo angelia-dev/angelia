@@ -111,7 +111,7 @@ at load time with the file, line and path of the key. The policy is stored as `w
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch` or `shoutrrr` |
+| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `shoutrrr`, or `exec` when the instance configuration defines commands under `exec.commands` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -164,6 +164,15 @@ for the webhook. The defaults are written into the stored configuration.
 The URL is never in the file. It is read and checked at every delivery (allowed services, `https` or
 `http.allow_http_hosts`, the SSRF guard, the secret's hosts); a failure is retried. An unset `url_env` variable
 is a warning, as for the webhook.
+
+`exec` config ([exec.md](exec.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `command` | string | yes | none | the name of a command defined under `exec.commands` in the instance configuration; an unknown name is an error with its line |
+
+The command line, its directory, environment, timeout and concurrency are only in `angelia.yaml`: a watch file
+cannot set them. Without `exec.commands` in `angelia.yaml`, `kind: exec` is an error that points there.
 
 ### 2.5 `subscriptions[]`
 

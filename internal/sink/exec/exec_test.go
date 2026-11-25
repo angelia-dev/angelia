@@ -41,19 +41,19 @@ func helper(mode string, args []string) int {
 	switch mode {
 	case "args": // args <file> <arg>...: record os.Args
 		b, _ := json.Marshal(os.Args)
-		_ = os.WriteFile(args[0], b, 0o600)
+		record(args[0], b)
 	case "stdin": // stdin <file>: record stdin
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(os.Stdin)
-		_ = os.WriteFile(args[0], buf.Bytes(), 0o600)
+		record(args[0], buf.Bytes())
 	case "env": // env <file>: record the environment
-		_ = os.WriteFile(args[0], []byte(strings.Join(os.Environ(), "\n")), 0o600)
+		record(args[0], []byte(strings.Join(os.Environ(), "\n")))
 	case "exit": // exit <code>
 		n, _ := strconv.Atoi(args[0])
 		return n
 	case "markers": // write markers to stdout and stderr, exit 2
-		fmt.Fprint(os.Stdout, "STDOUT-MARKER")
-		fmt.Fprint(os.Stderr, strings.Repeat("x", 4096)+"STDERR-MARKER")
+		_, _ = os.Stdout.WriteString("STDOUT-MARKER")
+		_, _ = os.Stderr.WriteString(strings.Repeat("x", 4096) + "STDERR-MARKER")
 		return 2
 	case "flood": // 10 MiB on each stream
 		chunk := bytes.Repeat([]byte("y"), 1<<20)
@@ -67,20 +67,31 @@ func helper(mode string, args []string) int {
 		time.Sleep(d)
 	case "grandchild": // grandchild <pidfile>: a grandchild holding stdout, then sleep
 		self, _ := os.Executable()
-		c := osexec.Command(self, helperArg, "sleep-ignore-term", "60s")
+		c := osexec.Command(self, helperArg, "sleep-ignore-term", "60s") //nolint:gosec // G204: the test binary itself
 		c.Stdout = os.Stdout
 		if err := c.Start(); err != nil {
 			return 9
 		}
-		_ = os.WriteFile(args[0], []byte(strconv.Itoa(c.Process.Pid)), 0o600)
+		record(args[0], []byte(strconv.Itoa(c.Process.Pid)))
 		time.Sleep(60 * time.Second)
 	case "record": // record <dir>: write start and end times
 		start := time.Now().UnixNano()
 		time.Sleep(300 * time.Millisecond)
 		end := time.Now().UnixNano()
-		_ = os.WriteFile(filepath.Join(args[0], strconv.Itoa(os.Getpid())), fmt.Appendf(nil, "%d %d", start, end), 0o600)
+		record(filepath.Join(args[0], strconv.Itoa(os.Getpid())), fmt.Appendf(nil, "%d %d", start, end))
 	}
 	return 0
+}
+
+// record writes a helper's result to a path the test chose under
+// t.TempDir().
+func record(path string, b []byte) {
+	_ = os.WriteFile(path, b, 0o600) //nolint:gosec // G703: a path under the test's own t.TempDir()
+}
+
+// readFile reads a helper's result.
+func readFile(path string) ([]byte, error) {
+	return os.ReadFile(path) //nolint:gosec // G304: a path under the test's own t.TempDir()
 }
 
 func self(t *testing.T) string {
@@ -170,7 +181,7 @@ func TestArgvReachesChildUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	b, _ := os.ReadFile(out)
+	b, _ := readFile(out)
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +197,7 @@ func TestStdinIsBody(t *testing.T) {
 	if _, err := s.Deliver(t.Context(), request(body)); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(out); string(b) != body {
+	if b, _ := readFile(out); string(b) != body {
 		t.Fatalf("stdin %q", b)
 	}
 }
@@ -213,7 +224,7 @@ func TestEnvironmentIsClean(t *testing.T) {
 	if _, err := s.Deliver(t.Context(), request("{}")); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(out)
+	b, _ := readFile(out)
 	got := strings.Split(string(b), "\n")
 	slices.Sort(got)
 	want := []string{
@@ -242,7 +253,7 @@ func TestEnvLookupAndPath(t *testing.T) {
 	if _, err := s.Deliver(t.Context(), request("{}")); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(out)
+	b, _ := readFile(out)
 	if !strings.Contains(string(b), "PATH=/opt/bin\n") || !strings.Contains(string(b), "X=1\n") || strings.Count(string(b), "PATH=") != 1 {
 		t.Fatalf("environment %q", b)
 	}
@@ -279,7 +290,7 @@ func TestOutcomes(t *testing.T) {
 func TestKilledBySignal(t *testing.T) {
 	// A non-zero signal exit is reported by number. A helper that kills
 	// itself with SIGKILL is not portable, so drive exitError directly.
-	c := osexec.Command(self(t), helperArg, "sleep-ignore-term", "30s")
+	c := osexec.Command(self(t), helperArg, "sleep-ignore-term", "30s") //nolint:gosec // G204: the test binary itself
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +315,7 @@ func alive(pid int) bool {
 		return false
 	}
 	if runtime.GOOS == "linux" {
-		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		b, err := readFile("/proc/" + strconv.Itoa(pid) + "/stat")
 		if err != nil {
 			return false
 		}
@@ -356,7 +367,7 @@ func TestTimeoutKillsGrandchild(t *testing.T) {
 	if took := time.Since(start); took > time.Second+KillGrace+500*time.Millisecond {
 		t.Fatalf("took %v", took)
 	}
-	b, err := os.ReadFile(pidFile)
+	b, err := readFile(pidFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +388,7 @@ func TestContextCancelKillsGroup(t *testing.T) {
 	if took := time.Since(start); took > 500*time.Millisecond+KillGrace+500*time.Millisecond {
 		t.Fatalf("took %v", took)
 	}
-	b, _ := os.ReadFile(pidFile)
+	b, _ := readFile(pidFile)
 	pid, _ := strconv.Atoi(string(b))
 	if pid > 0 {
 		waitDead(t, pid)
@@ -506,7 +517,7 @@ func TestMaxConcurrentSerializes(t *testing.T) {
 	}
 	var spans [][2]int64
 	for _, e := range entries {
-		b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		b, _ := readFile(filepath.Join(dir, e.Name()))
 		var a, z int64
 		if _, err := fmt.Sscanf(string(b), "%d %d", &a, &z); err != nil {
 			t.Fatal(err)

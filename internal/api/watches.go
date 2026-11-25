@@ -24,6 +24,7 @@ func (s *Server) parseOptions() watchfile.Options {
 	return watchfile.Options{
 		Sources:        s.opts.Sources,
 		AllowHTTPHosts: s.opts.AllowHTTPHosts,
+		ExecCommands:   s.opts.ExecCommands,
 		// Only feeds warnings, which the API drops.
 		LookupEnv: func(string) (string, bool) { return "set", true },
 	}

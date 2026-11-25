@@ -52,8 +52,8 @@ func newAPIServer(cfg *config.Config, st store.APIStore, sources *source.Registr
 func apiOptions(cfg *config.Config, st store.APIStore, sources *source.Registry, keys *secrets.Keyring, m *metrics.Metrics, drain time.Duration, log *slog.Logger) (api.Options, error) {
 	auth := apitoken.NewAuthenticator(st, log)
 	opts := api.Options{
-		Store: st, Auth: auth, Sources: sources, Plugins: builtinPlugins(sources.Kinds()),
-		API: cfg.API, DrainWait: apiDrainWait(drain), AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Secrets: keys, Logger: log,
+		Store: st, Auth: auth, Sources: sources, Plugins: builtinPlugins(sources.Kinds(), execSinkKinds(cfg)...),
+		ExecCommands: cfg.Exec.CommandNames(), API: cfg.API, DrainWait: apiDrainWait(drain), AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Secrets: keys, Logger: log,
 		AuthLoop: func(ctx context.Context) error {
 			return auth.Run(ctx, tokenFlushTick, tokenFlushTimeout) //nolint:wrapcheck // the api role wraps it
 		},
@@ -178,15 +178,21 @@ const (
 	tokenFlushTimeout = 5 * time.Second
 )
 
-// builtinPlugins is the plugin catalogue of the built-in kinds. WASM plugins
-// join it once serve loads them.
-func builtinPlugins(sourceKinds []string) []api.PluginInfo {
+// builtinPlugins is the plugin catalogue of the built-in kinds: the source
+// kinds, watchfile.SinkKinds and the optional sink kinds (the exec kind,
+// execSinkKinds), which publish the configuration schema of the embedded
+// specification. WASM plugins join it once serve loads them.
+func builtinPlugins(sourceKinds []string, optionalSinkKinds ...string) []api.PluginInfo {
 	var out []api.PluginInfo
 	for _, k := range sourceKinds {
 		out = append(out, api.PluginInfo{Kind: k, Interface: "source", Runtime: "builtin", Version: buildinfo.Version()})
 	}
 	for _, k := range watchfile.SinkKinds {
 		out = append(out, api.PluginInfo{Kind: k, Interface: "sink", Runtime: "builtin", Version: buildinfo.Version()})
+	}
+	for _, k := range optionalSinkKinds {
+		sch, _ := api.SpecKindConfig(k) // nil: validated as a built-in without a schema
+		out = append(out, api.PluginInfo{Kind: k, Interface: "sink", Runtime: "builtin", Version: buildinfo.Version(), ConfigSchema: sch})
 	}
 	return out
 }

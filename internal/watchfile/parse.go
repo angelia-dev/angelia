@@ -25,6 +25,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/policy"
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/secrets"
+	execsink "github.com/angelia-dev/angelia/internal/sink/exec"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -50,8 +51,14 @@ const NamePattern = `^[a-z0-9][a-z0-9._-]{0,62}$`
 // ValidName reports whether s is a valid sink, watch or subscription name.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
-// SinkKinds are the sink kinds a watch file may declare.
+// SinkKinds are the sink kinds a watch file may always declare. The exec
+// kind (ExecKind) joins them only when the instance configuration defines
+// commands (Options.ExecCommands, ADR 0042).
 var SinkKinds = []string{"webhook", githubdispatch.Kind, shoutrrr.Kind}
+
+// ExecKind is the kind of the exec sink, available only with commands
+// under exec.commands in angelia.yaml.
+const ExecKind = execsink.Kind
 
 // Options controls Parse.
 type Options struct {
@@ -63,6 +70,10 @@ type Options struct {
 	// LookupEnv reports whether the environment variable named by a sink's
 	// secret_env is set; it only feeds warnings. Nil means os.LookupEnv.
 	LookupEnv func(string) (string, bool)
+	// ExecCommands are the names of exec.commands in the instance
+	// configuration, the commands an exec sink may name. Empty: the exec
+	// kind is refused.
+	ExecCommands []string
 }
 
 // Load reads and validates the watch file at path.
@@ -422,7 +433,14 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 	s := Sink{Line: n.Line}
 	s.Name = p.name(m, jp, n, seen)
 	if kn := p.need(m, "kind", jp+".kind", n); kn != nil {
-		s.Kind = p.enum(kn, jp+".kind", SinkKinds)
+		if kn.Kind == yaml.ScalarNode && kn.Value == ExecKind {
+			s.Kind = ExecKind
+			if len(p.opts.ExecCommands) == 0 {
+				p.errf(kn, jp+".kind", "the exec kind is available only when the instance defines commands under exec.commands in angelia.yaml (must be one of %s)", strings.Join(SinkKinds, ", "))
+			}
+		} else {
+			s.Kind = p.enum(kn, jp+".kind", SinkKinds)
+		}
 	}
 	if cn := p.need(m, "config", jp+".config", n); cn != nil {
 		switch s.Kind {
@@ -432,6 +450,10 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 			s.Config = p.githubDispatch(cn, jp+".config")
 		case shoutrrr.Kind:
 			s.Config = p.shoutrrr(cn, jp+".config")
+		case ExecKind:
+			if len(p.opts.ExecCommands) > 0 {
+				s.Config = p.exec(cn, jp+".config")
+			}
 		}
 	}
 	return s, len(p.errs) == before
@@ -466,6 +488,25 @@ func (p *parser) webhook(n *yaml.Node, jp string) json.RawMessage {
 				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
 					d, dispatch.DefaultDeliverTimeout)
 			}
+		}
+	}
+	return marshal(cfg)
+}
+
+// exec reads the config of an exec sink (spec ExecSinkConfig, ADR 0042):
+// only the name of a command of exec.commands.
+func (p *parser) exec(n *yaml.Node, jp string) json.RawMessage {
+	m := p.mapping(n, jp, "command")
+	if m == nil {
+		return nil
+	}
+	var cfg execsink.Config
+	if cn := p.need(m, "command", jp+".command", n); cn != nil {
+		if v, ok := p.str(cn, jp+".command"); ok {
+			if !slices.Contains(p.opts.ExecCommands, v) {
+				p.errf(cn, jp+".command", "no command named %q under exec.commands in angelia.yaml (commands: %s)", v, strings.Join(p.opts.ExecCommands, ", "))
+			}
+			cfg.Command = v
 		}
 	}
 	return marshal(cfg)
