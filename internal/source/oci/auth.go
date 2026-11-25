@@ -91,7 +91,7 @@ func (s *Source) token(ctx context.Context, c challenge, name string) (apiclient
 		return "", fmt.Errorf("token request to %s: %w", u.Host, err)
 	}
 	if r.status != http.StatusOK {
-		return "", fmt.Errorf("token request to %s refused: HTTP %d", u.Host, r.status)
+		return "", fmt.Errorf("token request to %s refused: %w", u.Host, statusError(r))
 	}
 	var body struct {
 		Token       string `json:"token"`

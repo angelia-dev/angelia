@@ -77,7 +77,7 @@ also across owners: apply refuses a name that a row created through the API alre
   form `Source.Validate` accepts. `oci`: `image`, the repository with its registry host (`ghcr.io/org/app`; no
   host means Docker Hub). It is stored in canonical form, `node` as `docker.io/library/node`, which is also
   `data.package`; a tag (`:22`), a digest (`@sha256:...`), a scheme or upper case in the path is refused.
-  See [OCI images](#oci-images-recipes) for the version filters.
+  See [OCI images](#oci-images-choosing-the-version-tags) for the version filters.
 - A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`
   validation, the default `scheme`, the events (`data.source`, purl type) and `filter.source` use the kind.
   The `source` of a stored watch, and of the API, is the name the watch gave; the target remembers the kind

@@ -56,6 +56,10 @@ func TestOCIPinnedInstanceDetectsANewTag(t *testing.T) {
 		if second.Load() {
 			tags += `,"1.1.0"`
 		}
+		if r.Method == http.MethodHead {
+			w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("ab", 32))
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{"name":"team/app","tags":[%s]}`, tags)
 	}))
 	defer srv.Close()
@@ -92,9 +96,11 @@ watches:
 		Store: e.st, Sources: reg, Instance: "test", RegistryURL: registryURL(cfg), Matcher: event.NewMatcherCache(),
 		Now: func() time.Time { return time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC) },
 	}
-	if _, err := chk.Check(t.Context(), tgt); err != nil {
+	out, err := chk.Check(t.Context(), tgt)
+	if err != nil {
 		t.Fatal(err)
 	}
+	tgt.FetchState = out.FetchState // the scheduler stores it between checks
 	second.Store(true)
 	if _, err := chk.Check(t.Context(), tgt); err != nil {
 		t.Fatal(err)
@@ -116,7 +122,23 @@ watches:
 	if p.Data.Source != "oci" || p.Data.Package != host+"/team/app" {
 		t.Errorf("source %q package %q", p.Data.Source, p.Data.Package)
 	}
-	if p.Data.PURL == nil || !strings.HasPrefix(*p.Data.PURL, "pkg:oci/app?") || !strings.HasSuffix(*p.Data.PURL, "&tag=1.1.0") {
-		t.Errorf("purl = %v", p.Data.PURL)
+	// The registry is local, so docker.io/library/node cannot show here (the
+	// canonical package is asserted in the test above); the digest purl is
+	// asserted end to end instead.
+	if p.Data.PURL == nil || !strings.HasPrefix(*p.Data.PURL, "pkg:oci/app@sha256%3A"+strings.Repeat("ab", 32)+"?") || !strings.HasSuffix(*p.Data.PURL, "&tag=1.1.0") {
+		t.Errorf("purl = %v", *p.Data.PURL)
+	}
+}
+
+// A pinned oci instance counts on its base_url host in the scheduler demand;
+// the built-in oci, which contacts the host of each image, has none.
+func TestOCISourceHost(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sources["harbor"] = config.Source{Kind: "oci", BaseURL: "https://Harbor.example.com"}
+	if h, auth, ok := sourceHost(cfg, "harbor"); !ok || auth || h != "harbor.example.com" {
+		t.Errorf("pinned: %q %v %v", h, auth, ok)
+	}
+	if _, _, ok := sourceHost(cfg, "oci"); ok {
+		t.Error("the built-in oci has no single host")
 	}
 }

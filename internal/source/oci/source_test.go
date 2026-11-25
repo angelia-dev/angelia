@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/oci"
 	"github.com/angelia-dev/angelia/internal/source/sourcetest"
@@ -555,5 +556,24 @@ func TestDockerHubTagPages(t *testing.T) {
 	g := newRegistry(t)
 	if res, err, _, _ := listWith(t, g); err != nil || res.Versions[0].URL != "" {
 		t.Errorf("another registry: %v, URL %q", err, res.Versions[0].URL)
+	}
+}
+
+func TestTokenRateLimitKeepsRetryAt(t *testing.T) {
+	reg := newRegistry(t)
+	reg.tokenCode = http.StatusTooManyRequests
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		reg.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	_, err := newSource(srv.URL, sourcetest.Client(t, srv)).List(t.Context(), img("registry.test/team/app"), source.FetchState{})
+	var se *netguard.StatusError
+	if !errors.As(err, &se) || se.StatusCode != 429 || se.RetryAt.IsZero() {
+		t.Fatalf("err = %v, want a StatusError with RetryAt", err)
 	}
 }
