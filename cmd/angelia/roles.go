@@ -32,6 +32,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/githubtag"
 	"github.com/angelia-dev/angelia/internal/source/gitlabrelease"
+	"github.com/angelia-dev/angelia/internal/source/maven"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
@@ -46,6 +47,7 @@ import (
 // instance (sources.<name>.kind) may select.
 var builtinKinds = []string{
 	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind,
+	maven.Kind,
 }
 
 // builtinSources registers the built-in source kinds with hc, and one more
@@ -104,6 +106,12 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 		return pypi.New(base, c, opts...)
 	case npm.Kind:
 		return npm.New(base, c)
+	case maven.Kind:
+		var opts []maven.Option
+		if log != nil {
+			opts = append(opts, maven.WithLogger(log))
+		}
+		return maven.New(base, c, opts...)
 	case githubrelease.Kind:
 		var opts []githubrelease.Option
 		if tok != "" {
@@ -137,7 +145,7 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 // sourceClient returns the HTTP client of the source configured as
 // sources.<name>, an instance of kind (or the kind itself): hc, or hc adding
 // the credential of its auth (stored secrets, bound to the base URL's host)
-// or, for pypi and npm, of token_env (github-release, github-tag and
+// or, for pypi, npm and maven, of token_env (github-release, github-tag and
 // gitlab-release read their token themselves, each with its own header).
 // base is the URL the source reads from.
 func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
@@ -148,7 +156,7 @@ func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, 
 		c.TokenRef = a.TokenRef
 	case a.PasswordRef != "":
 		c.PasswordRef, c.Username = a.PasswordRef, a.Username
-	case kind == pypi.Kind || kind == npm.Kind:
+	case kind == pypi.Kind || kind == npm.Kind || kind == maven.Kind:
 		c.Token = secrets.NewValueString(cfg.SourceToken(name))
 	}
 	if base == "" {
@@ -207,15 +215,18 @@ var publicRegistries = map[string]string{
 	githubtag.Kind:     githubtag.DefaultBaseURL,
 	gitlabrelease.Kind: gitlabrelease.DefaultBaseURL,
 	crates.Kind:        crates.DefaultIndexURL,
+	maven.Kind:         maven.DefaultBaseURL,
 }
 
 // registryURL returns event.CheckInput.RegistryURL for a source (a kind, or
 // the name of an instance): its configured base_url when that is not the
-// public registry of its kind, else "".
+// public registry of its kind (for maven, either URL of Maven Central),
+// else "".
 func registryURL(cfg *config.Config) func(name string) string {
 	return func(name string) string {
 		b := strings.TrimRight(cfg.Sources[name].BaseURL, "/")
-		if b == "" || strings.EqualFold(b, strings.TrimRight(publicRegistries[cfg.SourceKind(name)], "/")) {
+		kind := cfg.SourceKind(name)
+		if b == "" || strings.EqualFold(b, strings.TrimRight(publicRegistries[kind], "/")) || (kind == maven.Kind && maven.IsCentral(b)) {
 			return ""
 		}
 		return b

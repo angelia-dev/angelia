@@ -241,6 +241,39 @@ sources:
 `crates` takes the sparse index URL of a mirror as `base_url` (default `https://index.crates.io`). It sends no
 credential.
 
+### Maven (Nexus, Artifactory, GitLab, GitHub Packages)
+
+`maven` reads `<base_url>/<groupId as a path>/<artifactId>/maven-metadata.xml`; the default `base_url` is
+Maven Central, `https://repo.maven.apache.org/maven2` (`https://repo1.maven.org/maven2` is Central too). A
+private repository is the repository URL, with its path, usually as a named instance next to Central:
+
+```yaml
+sources:
+  nexus:
+    kind: maven
+    base_url: https://nexus.example.test/repository/maven-releases
+    auth: {type: basic, username: ci-reader, password_ref: nexus-password}   # as in settings.xml
+  artifactory:
+    kind: maven
+    base_url: https://artifactory.example.test/artifactory/libs-release
+    auth: {token_ref: artifactory-token}                                     # Authorization: Bearer
+```
+
+```yaml
+# watch file
+watches:
+  - name: widget
+    source: nexus
+    coordinates: {package: 'com.example.test:widget'}
+```
+
+`token_env` is sent as `Authorization: Bearer`. A repository that redirects downloads to a storage host
+(an S3 bucket, a CDN) must have that host bound to the secret too, or the request fails with a host
+mismatch and the storage host receives no credential. Events from a repository other than Central carry
+`repository_url` in their purl. Not supported: `settings.xml`, mirror rules, custom header names (GitLab's
+`Private-Token`, `Deploy-Token`, `Job-Token`; GitLab also accepts Basic with a token) and client
+certificates. See [ADR 00xx](adr/00xx-maven-source.md).
+
 ## Private networks
 
 A registry on a private address needs its network in `http.allow_networks`

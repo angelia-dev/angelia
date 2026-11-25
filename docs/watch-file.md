@@ -63,7 +63,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `maven`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `maven`, `calver`, `lexical` (#68, #96) |
@@ -73,8 +73,11 @@ also across owners: apply refuses a name that a row created through the API alre
 - `coordinates` keys are source-owned. Defined by the source stories, not here. For the built-in
   sources: `pypi`, `npm` and `crates`: `name` (scoped npm names such as `@types/node` allowed);
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
-  `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id; each in the
-  form `Source.Validate` accepts.
+  `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id;
+  `maven`: `package` as `groupId:artifactId` (`org.slf4j:slf4j-api`, case-sensitive); each in the
+  form `Source.Validate` accepts. A `maven` watch defaults to `scheme: maven`, so `-SNAPSHOT`, `-rc1` and
+  `-M2` versions are pre-releases. For artifacts that publish flavours of one version, pick one with
+  `include`: Guava publishes `33.8.0-android` and `33.8.0-jre`, so `policy: {include: ['-jre$']}`.
 - A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`
   validation, the default `scheme`, the events (`data.source`, purl type) and `filter.source` use the kind.
   The `source` of a stored watch, and of the API, is the name the watch gave; the target remembers the kind
