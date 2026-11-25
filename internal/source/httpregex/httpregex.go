@@ -9,7 +9,7 @@
 //   - url: https://, or http:// for a host in http.allow_http_hosts; no user
 //     information or fragment; at most 2048 bytes.
 //   - regex: Go regexp syntax (RE2, linear time), at most 1024 bytes, no
-//     repetition count above 100 and at most 2,000 compiled instructions. With no
+//     repetition count above 100 and at most 500 compiled instructions. With no
 //     capture group the whole match is the version; with one group, that
 //     group; with several, the group named "version".
 //
@@ -22,9 +22,18 @@
 // versions is NotModified. Versions are in document order, de-duplicated;
 // more than 1,000 distinct versions, or none, is an error. PublishedAt,
 // Prerelease and URL are left empty.
+//
+// # Matching
+//
+// The body is matched in segments of at most 64 KiB, each cut after its last
+// newline (or at 64 KiB when a line is longer), and the context is checked
+// between segments, so a cancelled check stops within one segment. A match
+// never spans two segments: with (?s) or \n in the pattern, a version must
+// still sit within one line of at most 64 KiB.
 package httpregex
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -47,10 +56,10 @@ const (
 	MaxRepeat = 100
 	// MaxProgInst is the most instructions the compiled program may have.
 	// RE2 runs in time linear in the input, but the factor is the program
-	// size, and a match over a 2 MiB body cannot be cancelled: a pattern
-	// such as (a|aa|aaa){1,999}b compiles to thousands of instructions and
-	// takes seconds per 64 KiB.
-	MaxProgInst = 2000
+	// size: a pattern such as (a|aa|aaa){1,999}b compiles to thousands of
+	// instructions and takes seconds per 64 KiB. Extract also matches in
+	// cancellable segments.
+	MaxProgInst = 500
 	// accept prefers the formats a release page is served in.
 	accept = "text/html, text/plain;q=0.9, */*;q=0.8"
 )
@@ -219,7 +228,7 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	if res.NotModified {
 		return generic.NotModified(res.Validators, st), nil
 	}
-	raw, err := Extract(tg.re, tg.group, res.Body)
+	raw, err := Extract(ctx, tg.re, tg.group, res.Body)
 	if err != nil {
 		return source.Result{}, fmt.Errorf("http-regex %s: %s: %w", tg.name, u.Host, err)
 	}
@@ -233,23 +242,60 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	return generic.Result(vs, res.Validators, st), nil
 }
 
-// Extract returns the submatch group of every match of re in body, in
-// document order. A group that did not take part in a match yields "",
-// which generic.Versions skips. More than generic.MaxMatches matches is
-// generic.ErrTooManyMatches.
-func Extract(re *regexp.Regexp, group int, body []byte) ([]string, error) {
-	ms := re.FindAllSubmatchIndex(body, generic.MaxMatches+1)
-	if len(ms) > generic.MaxMatches {
-		return nil, generic.ErrTooManyMatches
-	}
-	out := make([]string, 0, len(ms))
-	for _, m := range ms {
-		a, b := m[2*group], m[2*group+1]
-		if a < 0 {
-			out = append(out, "")
-			continue
+// SegmentBytes is the largest piece of the body one regexp call scans.
+// Go's regexp cannot be cancelled, so Extract matches segment by segment
+// and checks the context between them: a cancelled or timed-out check
+// stops within one segment's matching time.
+const SegmentBytes = 64 << 10
+
+// Segments splits body into pieces of at most size bytes, each cut after
+// the last newline within the limit, or at the limit when a line is
+// longer.
+func Segments(body []byte, size int) [][]byte {
+	var out [][]byte
+	for len(body) > size {
+		cut := bytes.LastIndexByte(body[:size], '\n') + 1
+		if cut == 0 {
+			cut = size
 		}
-		out = append(out, string(body[a:b]))
+		out = append(out, body[:cut])
+		body = body[cut:]
+	}
+	if len(body) > 0 {
+		out = append(out, body)
+	}
+	return out
+}
+
+// Extract returns the submatch group of every match of re in body, in
+// document order. The body is matched in Segments of SegmentBytes, so a
+// match never spans a segment boundary (a version must sit within one line
+// of at most SegmentBytes), and ^ and \A match at the start of every
+// segment. Between segments Extract returns ctx's error if ctx is done. A
+// group that did not take part in a match yields "", which
+// generic.Versions skips. More than generic.MaxMatches matches in all is
+// generic.ErrTooManyMatches.
+func Extract(ctx context.Context, re *regexp.Regexp, group int, body []byte) ([]string, error) {
+	var out []string
+	for _, seg := range Segments(body, SegmentBytes) {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("matching stopped: %w", err)
+		}
+		ms := re.FindAllSubmatchIndex(seg, generic.MaxMatches+1-len(out))
+		if len(out)+len(ms) > generic.MaxMatches {
+			return nil, generic.ErrTooManyMatches
+		}
+		for _, m := range ms {
+			a, b := m[2*group], m[2*group+1]
+			if a < 0 {
+				out = append(out, "")
+				continue
+			}
+			out = append(out, string(seg[a:b]))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("matching stopped: %w", err)
 	}
 	return out, nil
 }

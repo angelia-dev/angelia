@@ -52,11 +52,22 @@ The decisions D50 to D57 of #97 were accepted by the maintainer as recommended o
    wildcards yield members in sorted name order, so `List` is deterministic. The JSON is decoded with
    `UseNumber`, so `1.10` stays `1.10`; strings and numbers are versions, other types are skipped. With
    `extract: keys` the selected nodes must be objects and their member names are the versions. `http-regex`
-   uses Go `regexp` (RE2, linear time), pattern at most 1024 bytes, compiled in `Validate`. Because a match over a
-   2 MiB body cannot be cancelled and RE2's time is linear with a factor of the program size
-   (`(a|aa|aaa){1,999}b` took 4.8 s on 64 KiB in review), `Validate` also refuses a repetition count above
-   100 and a program of more than 2,000 instructions (`regexp/syntax`: parse, simplify, compile). No capture group
-   means the whole match, one group means that group, several need a group named `version`.
+   uses Go `regexp` (RE2, linear time), pattern at most 1024 bytes, compiled in `Validate`. RE2's time is linear
+   in the input with a factor of the program size (`(a|aa|aaa){1,999}b` took 4.8 s on 64 KiB in review), and a
+   Go `regexp` call cannot be cancelled, so the cost is bounded twice:
+   - `Validate` refuses a repetition count above 100 and a program of more than **500** instructions
+     (`regexp/syntax`: parse, simplify, compile).
+   - `List` matches the body in **segments of at most 64 KiB**, each cut after its last newline (or at 64 KiB
+     when a line is longer), and checks the context between segments; a done context fails the check with its
+     error. A match never spans two segments, so a version must sit within one line of at most 64 KiB, also
+     with `(?s)` or `\n` in the pattern; `^` and `\A` match at the start of every segment. The caps of item 5
+     and the de-duplication apply across segments.
+
+   Measured on the worst accepted pattern found, `(a|aa|aaa){1,49}b` (492 instructions), on 2 MiB of `a`:
+   about 160 ms per segment, about 5 s for the whole body; with a 200 ms deadline the match stops after about
+   330 ms. The race detector slows matching about 30 times.
+
+   No capture group means the whole match, one group means that group, several need a group named `version`.
 5. **Caps (D53).** A body over **2 MiB** is refused with an error wrapping `netguard.ErrBodyTooLarge`. Raw
    values that are empty, over 256 bytes, invalid UTF-8 or that contain a control character are skipped and
    counted in a debug log; duplicates keep their first position; the order is the document's. More than
@@ -96,10 +107,6 @@ every coordinate value, because the server URL is inside the target. `source.Sou
 
 - Authentication bound to hosts (D57 b), relative expressions for per-version metadata, and a `jq` key are
   follow-ups.
-- The regex caps still admit about 0.4 to 0.8 s of matching per 64 KiB in the worst cases measured
-  (`(a|aa|aaa){1,100}b`, 1,002 instructions; nineteen `[a-z]{100}`, 1,902 instructions), so up to tens of
-  seconds on a 2 MiB body. A lower instruction cap, or matching in chunks with a time budget, would bound it
-  further.
 - Whether operators want a per-host opt-in for these kinds (`sources.http-json.allowed_hosts`, D52 c).
 
 ## Alternatives considered

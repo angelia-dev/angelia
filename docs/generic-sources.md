@@ -27,14 +27,17 @@ watches:
 |---|---|---|
 | `name` | yes | the package name in events, see [Package identity](#package-identity) |
 | `url` | yes | see [URL rules](#url-rules) |
-| `regex` | yes | Go [`regexp` syntax](https://pkg.go.dev/regexp/syntax) (RE2: no back-references or look-around, linear time), at most 1024 bytes, no repetition count above 100 (`{n,m}`), and at most 2,000 instructions once compiled (an expression above it is refused as "too complex") |
+| `regex` | yes | Go [`regexp` syntax](https://pkg.go.dev/regexp/syntax) (RE2: no back-references or look-around, linear time), at most 1024 bytes, no repetition count above 100 (`{n,m}`), and at most 500 instructions once compiled (an expression above it is refused as "too complex") |
 
 - No capture group: the whole match is the version (`v[0-9.]+` yields `v1.2.3`).
 - One capture group: that group is the version (`tool-([0-9.]+)\.tar` yields `1.2.3`).
 - Several groups: one must be named `version` (`(?P<version>[0-9.]+)`); use `(?:...)` for groups that only
   group. A match in which the group did not take part is skipped.
-- The expression runs over the whole body; `(?m)` makes `^` and `$` match at line breaks, `(?s)` lets `.`
-  match a line break. The request sends `Accept: text/html, text/plain;q=0.9, */*;q=0.8`.
+- The expression runs over the body in segments of at most 64 KiB, each cut after its last line break (or at
+  64 KiB when a line is longer), so that a slow expression stops when the check's time is up. **A match never
+  spans two segments**: a version must sit within one line of at most 64 KiB, even when `(?s)` lets `.` match a
+  line break or the pattern contains `\n`. `(?m)` makes `^` and `$` match at line breaks; without it `^`
+  matches at the start of every segment. Duplicates and the limits below count over the whole body. The request sends `Accept: text/html, text/plain;q=0.9, */*;q=0.8`.
 
 ## `http-json`
 
