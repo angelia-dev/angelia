@@ -18,7 +18,7 @@ func TestNewNotesCleaning(t *testing.T) {
 		{name: "lone cr", in: "a\rb\r\rc", want: "a\nb\n\nc"},
 		{name: "c0 removed keeps newline and tab", in: "a\x00b\x07c\x1b[31m\td\ne\x7f", want: "abc[31m\td\ne"},
 		{name: "c1 removed", in: "a\u0080b\u0085c\u009fd", want: "abcd"},
-		{name: "printable and rtl kept", in: "ok � ‮ שלום \U0001F600", want: "ok � ‮ שלום \U0001F600"},
+		{name: "printable and rtl kept", in: "ok � \u202e שלום \U0001F600", want: "ok � \u202e שלום \U0001F600"},
 		{name: "invalid utf8", in: "a\xffb", want: "a�b"},
 		{name: "comment", in: "a <!-- hidden --> b", want: "a  b"},
 		{name: "two comments one line", in: "a<!--x-->b<!--y-->c", want: "abc"},
@@ -97,8 +97,8 @@ func TestNewNotesDoesNotRetainInput(t *testing.T) {
 	if !n.Truncated || len(n.Body) != MaxNotesBytes {
 		t.Fatalf("len %d truncated %v", len(n.Body), n.Truncated)
 	}
-	start := uintptr(unsafe.Pointer(unsafe.StringData(in)))
-	p := uintptr(unsafe.Pointer(unsafe.StringData(n.Body)))
+	start := uintptr(unsafe.Pointer(unsafe.StringData(in))) //nolint:gosec // asserts the body does not alias the input backing array
+	p := uintptr(unsafe.Pointer(unsafe.StringData(n.Body))) //nolint:gosec // asserts the body does not alias the input backing array
 	if p >= start && p < start+uintptr(len(in)) {
 		t.Fatal("body points into the input")
 	}
