@@ -92,11 +92,13 @@ func entries(n int) string {
 	return strings.Join(b, ", ")
 }
 
-// An unset token variable, a timeout above the deliver timeout and an http://
-// base_url each warn.
+// An unset token variable and a timeout above the deliver timeout warn; an
+// http:// base_url is an error unless its host is on http.allow_http_hosts,
+// where it warns that the token is sent in cleartext.
 func TestGitlabTriggerWarnings(t *testing.T) {
 	o := opts(t)
 	o.LookupEnv = func(string) (string, bool) { return "", false }
+	o.AllowHTTPHosts = []string{"git.example.com"}
 	f, err := Parse([]byte(glSink(`{project: g/p, ref: main, token_env: GL_TOKEN, timeout: 2m, base_url: 'http://git.example.com'}`)), "w.yaml", o)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +115,12 @@ func TestGitlabTriggerWarnings(t *testing.T) {
 	if len(f.Warnings) != 3 {
 		t.Errorf("warnings: %q", f.Warnings)
 	}
-	// https and the default: no cleartext warning.
+	// A host that is not on the allowlist: an error.
+	_, err = Parse([]byte(glSink(`{project: g/p, ref: main, token_ref: t, base_url: 'http://other.example.com'}`)), "w.yaml", opts(t))
+	if err == nil || !strings.Contains(err.Error(), "config.base_url: must be https:// (http:// is accepted only for hosts on the instance allowlist)") {
+		t.Errorf("not allowlisted: %v", err)
+	}
+	// https: no cleartext warning.
 	f = mustParse(t, glSink(`{project: g/p, ref: main, token_ref: t, base_url: 'https://git.example.com'}`))
 	if len(f.Warnings) != 0 {
 		t.Errorf("warnings: %q", f.Warnings)

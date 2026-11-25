@@ -1,7 +1,7 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `9945a1c` ("fix(openapi): gitlab-pipeline-trigger ref pattern without \u escapes")
+`openapi/angelia.v1.yaml` is at commit `0da2921` ("fix(openapi): gitlab-pipeline-trigger ref C1 controls, scheme case, empty maps")
 on the spec repository's branch `story/90-gitlab-sink-schema` (spec 0.11.0, not
 merged to `main` yet: re-vendor from the merge commit once it is). Spec 0.11.0 adds
 `GitlabPipelineTriggerSinkConfig` under `SinkConfig.x-angelia-kind-config` (the `gitlab-pipeline-trigger`

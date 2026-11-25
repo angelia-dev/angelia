@@ -7,9 +7,12 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 )
 
+//nolint:gosec // G101: the name of a synthetic environment variable.
+const triggerEnv = "GITLAB_TRIGGER_TOKEN"
+
 func withGitlabTrigger(o *Options) {
 	o.Plugins = append(o.Plugins, PluginInfo{Kind: "gitlab-pipeline-trigger", Interface: "sink", Runtime: "builtin", Version: "0.1.0"})
-	o.API = config.API{AllowedEnv: []string{"GITLAB_TRIGGER_TOKEN"}}
+	o.API = config.API{AllowedEnv: []string{triggerEnv}}
 }
 
 // 90-C: a gitlab-pipeline-trigger sink is written through the API with the
@@ -18,12 +21,12 @@ func withGitlabTrigger(o *Options) {
 func TestPutGitlabTriggerSink(t *testing.T) {
 	e := newEnv(t, withGitlabTrigger)
 	body := map[string]any{"kind": "gitlab-pipeline-trigger", "config": map[string]any{
-		"project": "platform/deploys/app", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "base_url": "https://gitlab.example.com",
+		"project": "platform/deploys/app", "ref": "main", "token_env": triggerEnv, "base_url": "https://gitlab.example.com",
 		"inputs": map[string]any{"version": "{{.data.version}}"},
 	}}
 	r := e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/gitlab-ci", tokAdmin, body))
 	cfg := r.json(t)["config"].(map[string]any)
-	for k, want := range map[string]string{"project": "platform/deploys/app", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "base_url": "https://gitlab.example.com"} {
+	for k, want := range map[string]string{"project": "platform/deploys/app", "ref": "main", "token_env": triggerEnv, "base_url": "https://gitlab.example.com"} {
 		if cfg[k] != want {
 			t.Errorf("config.%s = %v, want %q", k, cfg[k], want)
 		}
@@ -35,12 +38,12 @@ func TestPutGitlabTriggerSink(t *testing.T) {
 	}
 	for name, cfg := range map[string]map[string]any{
 		"no token":       {"project": "g/p", "ref": "main"},
-		"both tokens":    {"project": "g/p", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "token_ref": "gl"},
+		"both tokens":    {"project": "g/p", "ref": "main", "token_env": triggerEnv, "token_ref": "gl"},
 		"inline token":   {"project": "g/p", "ref": "main", "token": "glptt-x"},
-		"ftp base":       {"project": "g/p", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "base_url": "ftp://gitlab.example.com"},
-		"no ref":         {"project": "g/p", "token_env": "GITLAB_TRIGGER_TOKEN"},
-		"variable _ref":  {"project": "g/p", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "variables": map[string]any{"DEPLOY_ref": "x"}},
-		"input template": {"project": "g/p", "ref": "main", "token_env": "GITLAB_TRIGGER_TOKEN", "inputs": map[string]any{"a": "{{.data.pakage}}"}},
+		"ftp base":       {"project": "g/p", "ref": "main", "token_env": triggerEnv, "base_url": "ftp://gitlab.example.com"},
+		"no ref":         {"project": "g/p", "token_env": triggerEnv},
+		"variable _ref":  {"project": "g/p", "ref": "main", "token_env": triggerEnv, "variables": map[string]any{"DEPLOY_ref": "x"}},
+		"input template": {"project": "g/p", "ref": "main", "token_env": triggerEnv, "inputs": map[string]any{"a": "{{.data.pakage}}"}},
 	} {
 		if r := e.do("PUT", "/v1/sinks/bad", tokAdmin, map[string]any{"kind": "gitlab-pipeline-trigger", "config": cfg}); r.Status != http.StatusUnprocessableEntity {
 			t.Errorf("%s: %d %s", name, r.Status, r.Body)
@@ -79,5 +82,17 @@ func TestGitlabTriggerKindAndSchema(t *testing.T) {
 	got, err := SinkDestinations([]PluginInfo{{Kind: "gitlab-pipeline-trigger", Interface: "sink", Runtime: "builtin"}})
 	if err != nil || got["gitlab-pipeline-trigger"] != "/base_url" {
 		t.Errorf("SinkDestinations = %v, %v", got, err)
+	}
+}
+
+// The API stores the defaults, so base_url, the key a bound token is resolved
+// for, is always present.
+func TestPutGitlabTriggerSinkDefaults(t *testing.T) {
+	e := newEnv(t, withGitlabTrigger)
+	body := map[string]any{"kind": "gitlab-pipeline-trigger", "config": map[string]any{"project": "g/p", "ref": "main", "token_ref": "gl-trigger"}}
+	r := e.must(http.StatusCreated, e.do("PUT", "/v1/sinks/d", tokAdmin, body))
+	cfg := r.json(t)["config"].(map[string]any)
+	if cfg["base_url"] != "https://gitlab.com" || cfg["timeout"] != "10s" {
+		t.Errorf("stored defaults: %v", cfg)
 	}
 }

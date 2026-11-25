@@ -1896,6 +1896,77 @@ export interface components {
             timeout: components["schemas"]["Duration"];
         } & ((unknown | unknown) & unknown);
         /**
+         * @description The `config` of a `gitlab-pipeline-trigger` sink: it starts a GitLab CI/CD pipeline in one
+         *     project for each matching release event, on gitlab.com or a self-managed GitLab.
+         *     Documentation of the built-in kind; the server validates against the kind's
+         *     `config_schema`.
+         *
+         *     It calls `POST {base_url}/api/v4/projects/{project}/trigger/pipeline` with a **pipeline
+         *     trigger token**, which can only start pipelines in its own project. Exactly one of
+         *     `token_env` and `token_ref` names the token. The token is sent only in the JSON body of
+         *     that request to `base_url`: never in the URL, a header, a log line or an error. It is a
+         *     stored secret bound to the GitLab host (`hosts`) like any other sink token.
+         *
+         *     **What GitLab receives.** The body is `{"token", "ref", "variables", "inputs"}`; empty
+         *     maps are left out and every value is a string. When `variables` and/or `inputs` are set,
+         *     only those are sent: each value is an ADR 0016 template (core repository) rendered with
+         *     the context of a subscription template and cut to 2048 bytes at a UTF-8 boundary. When
+         *     neither is set (an empty map counts as unset), these pipeline variables are sent, each cut to 2048 bytes at a UTF-8
+         *     boundary (a null field is the empty string): `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`
+         *     (the short type, `release.published`), `ANGELIA_SOURCE`, `ANGELIA_PACKAGE`,
+         *     `ANGELIA_VERSION`, `ANGELIA_PREVIOUS_VERSION`, `ANGELIA_BUMP`, `ANGELIA_PURL`,
+         *     `ANGELIA_RELEASE_URL`, `ANGELIA_WATCH` (the watch name, else its id),
+         *     `ANGELIA_IDEMPOTENCY_KEY`, and `ANGELIA_TRUNCATED=true` only when a value was cut. A
+         *     template that fails to render is a permanent delivery error. The subscription's own
+         *     template has no effect on this kind. GitLab has no idempotency key: a retry after a
+         *     timeout can start a second pipeline, so a pipeline that must run once per release should
+         *     deduplicate on `ANGELIA_IDEMPOTENCY_KEY` (or an input that carries it).
+         *
+         *     `inputs` must be declared in the target pipeline's `spec:inputs` (GitLab 18.1 and later;
+         *     every value is a string, so an input declared with another type is refused with `400`).
+         *     New gitlab.com projects restrict pipeline variables by default, so `inputs` is the
+         *     better choice there.
+         *
+         *     **Responses.** `201` (any `2xx`) is success. `3xx` is permanent and not followed. `4xx`
+         *     other than `408` and `429` is permanent, with a hint: `401` and `403` (the trigger token
+         *     is not accepted or lacks access), `404` (project not found, or token without access),
+         *     `400` (GitLab refused the ref, variables or inputs; when the response says that setting
+         *     pipeline variables is not permitted, the hint recommends `inputs`). `408`, `429` and
+         *     `5xx` and transport errors are retried, after the larger of `Retry-After` and
+         *     `RateLimit-Reset`. A host refused by the SSRF guard is permanent; a self-managed GitLab
+         *     on a private network needs the instance's `http.allow_networks`. Errors name the host
+         *     only, never the token, the project or a response body.
+         */
+        GitlabPipelineTriggerSinkConfig: {
+            /** @description The target project as a full path (`group/subgroup/name`, 2 to 20 segments) or its numeric id. Sent URL-encoded as one path segment. */
+            project: string;
+            /** @description Branch or tag the pipeline runs on. A literal, not a template. 1 to 255 characters, no control characters (C0, DEL or C1). */
+            ref: string;
+            /**
+             * Format: uri
+             * @description Base URL of the GitLab instance, `https://gitlab.example.com` or with a relative root (`https://example.com/gitlab`); a trailing `/api/v4` is accepted and ignored. No userinfo, query or fragment. `https` only; `http` is accepted for a host in the instance's `http.allow_http_hosts`, checked at every delivery, and `config check` then warns that the token is sent in cleartext. The token is sent only here.
+             * @default https://gitlab.com
+             */
+            base_url: string;
+            /** @description Name of an environment variable of the instance that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`. */
+            token_env?: string;
+            /** @description Name of a stored secret (`/v1/secrets`) that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`. */
+            token_ref?: string;
+            /** @description Pipeline variables. Keys are variable names (`^[A-Za-z0-9_]{1,255}$`), values are templates. A name must not end in `_env` or `_ref`: the core reads every such key of a sink configuration as the name of an environment variable or of a stored secret. When neither `variables` nor `inputs` is set (an empty map counts as unset), the default `ANGELIA_*` variables are sent. */
+            variables?: {
+                [key: string]: string;
+            };
+            /** @description Pipeline inputs, declared in the target pipeline's `spec:inputs`. Keys are input names (`^[A-Za-z0-9_-]{1,255}$`), values are templates sent as strings. A name must not end in `_env` or `_ref`, for the reason given at `variables`. */
+            inputs?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Per-attempt timeout, `1s` to `2m`.
+             * @default 10s
+             */
+            timeout: components["schemas"]["Duration"];
+        } & (unknown | unknown);
+        /**
          * @description The `config` of a `shoutrrr` sink: it sends a plain-text message to one chat or push
          *     service through the shoutrrr library (ADR 0026, core repository). Documentation of the
          *     built-in kind; the server validates against the kind's `config_schema`.

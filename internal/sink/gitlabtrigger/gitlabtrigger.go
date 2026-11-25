@@ -225,13 +225,13 @@ func payload(ctx context.Context, cfg parsed, req sink.Request, envelope []byte)
 	if len(cfg.Variables) == 0 && len(cfg.Inputs) == 0 {
 		return defaultVariables(req), nil, nil
 	}
-	render1 := func(m map[string]string) (map[string]string, error) {
+	render1 := func(kind string, m map[string]string) (map[string]string, error) {
 		if len(m) == 0 {
 			return nil, nil
 		}
 		out := make(map[string]string, len(m))
 		for k, src := range m {
-			v, err := renderTemplate(ctx, src, envelope)
+			v, err := renderTemplate(ctx, kind+" "+k, src, envelope)
 			if err != nil {
 				return nil, err
 			}
@@ -239,10 +239,10 @@ func payload(ctx context.Context, cfg parsed, req sink.Request, envelope []byte)
 		}
 		return out, nil
 	}
-	if vars, err = render1(cfg.Variables); err != nil {
+	if vars, err = render1("variable", cfg.Variables); err != nil {
 		return nil, nil, err
 	}
-	if inputs, err = render1(cfg.Inputs); err != nil {
+	if inputs, err = render1("input", cfg.Inputs); err != nil {
 		return nil, nil, err
 	}
 	return vars, inputs, nil
@@ -301,18 +301,19 @@ func encode(v any) ([]byte, error) {
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
 }
 
-// renderTemplate renders one variable or input template on the event.
-func renderTemplate(ctx context.Context, src string, envelope []byte) (string, error) {
+// renderTemplate renders one variable or input template on the event; what
+// names it for errors ("variable NAME"), never the template text.
+func renderTemplate(ctx context.Context, what, src string, envelope []byte) (string, error) {
 	if src == "" {
 		return "", nil // render.Compile refuses an empty template
 	}
 	t, err := render.Compile(src, render.Limits{})
 	if err != nil {
-		return "", fmt.Errorf("gitlab-pipeline-trigger: value template: %w", err)
+		return "", fmt.Errorf("gitlab-pipeline-trigger: %s template: %w", what, err)
 	}
 	r, err := t.Render(ctx, envelope)
 	if err != nil {
-		return "", fmt.Errorf("gitlab-pipeline-trigger: value template: %w", err)
+		return "", fmt.Errorf("gitlab-pipeline-trigger: %s template: %w", what, err)
 	}
 	return string(r.Body), nil
 }

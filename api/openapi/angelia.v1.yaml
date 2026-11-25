@@ -3935,7 +3935,7 @@ components:
         maps are left out and every value is a string. When `variables` and/or `inputs` are set,
         only those are sent: each value is an ADR 0016 template (core repository) rendered with
         the context of a subscription template and cut to 2048 bytes at a UTF-8 boundary. When
-        neither is set, these pipeline variables are sent, each cut to 2048 bytes at a UTF-8
+        neither is set (an empty map counts as unset), these pipeline variables are sent, each cut to 2048 bytes at a UTF-8
         boundary (a null field is the empty string): `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`
         (the short type, `release.published`), `ANGELIA_SOURCE`, `ANGELIA_PACKAGE`,
         `ANGELIA_VERSION`, `ANGELIA_PREVIOUS_VERSION`, `ANGELIA_BUMP`, `ANGELIA_PURL`,
@@ -3971,16 +3971,16 @@ components:
           maxLength: 1024
           pattern: '^([0-9]{1,18}|[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*){1,19})$'
         ref:
-          description: Branch or tag the pipeline runs on. A literal, not a template. 1 to 255 characters, no control characters.
+          description: Branch or tag the pipeline runs on. A literal, not a template. 1 to 255 characters, no control characters (C0, DEL or C1).
           type: string
           minLength: 1
           maxLength: 255
-          pattern: '^[^\x00-\x1F\x7F]+$'
+          pattern: '^[^\x00-\x1F\x7F-\x9F]+$'
         base_url:
           description: Base URL of the GitLab instance, `https://gitlab.example.com` or with a relative root (`https://example.com/gitlab`); a trailing `/api/v4` is accepted and ignored. No userinfo, query or fragment. `https` only; `http` is accepted for a host in the instance's `http.allow_http_hosts`, checked at every delivery, and `config check` then warns that the token is sent in cleartext. The token is sent only here.
           type: string
           format: uri
-          pattern: '^https?://[^/?#@\s]+(/[^?#\s]*)?$'
+          pattern: '^[Hh][Tt][Tt][Pp][Ss]?://[^/?#@\s]+(/[^?#\s]*)?$'
           default: https://gitlab.com
           x-angelia-destination: true
         token_env:
@@ -3996,7 +3996,7 @@ components:
             Pipeline variables. Keys are variable names (`^[A-Za-z0-9_]{1,255}$`), values are
             templates. A name must not end in `_env` or `_ref`: the core reads every such key of
             a sink configuration as the name of an environment variable or of a stored secret.
-            When neither `variables` nor `inputs` is set, the default `ANGELIA_*` variables are sent.
+            When neither `variables` nor `inputs` is set (an empty map counts as unset), the default `ANGELIA_*` variables are sent.
           type: object
           maxProperties: 50
           propertyNames:

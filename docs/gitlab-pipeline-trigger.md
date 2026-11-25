@@ -54,7 +54,7 @@ GitLab on a private network also needs `http.allow_networks`, as for any sink.
 
 ### Default variables
 
-When neither `variables` nor `inputs` is set, the pipeline gets these variables (a `null` field is the empty
+When neither `variables` nor `inputs` is set (an empty map counts as unset), the pipeline gets these variables (a `null` field is the empty
 string):
 
 | Variable | Value |
@@ -87,7 +87,7 @@ config:
   inputs:
     package: '{{.data.package}}'
     version: '{{.data.version}}'
-    idempotency_key: '{{.id}}'
+    event_id: '{{.id}}'
   variables:
     RELEASE_URL: '{{with .data.urls.release}}{{.}}{{end}}'
 ```
@@ -157,7 +157,7 @@ a package name or version controls them. Quote the variable (`"$ANGELIA_VERSION"
 
 GitLab has no idempotency key. A delivery is one request, and a retry after a timeout that GitLab had already
 accepted creates a **second pipeline**. When a pipeline must run once per release, deduplicate on
-`ANGELIA_IDEMPOTENCY_KEY` (or on an input that carries it, such as `idempotency_key: '{{.id}}'`),
+`ANGELIA_IDEMPOTENCY_KEY` (or on an input that carries the event id, such as `event_id: '{{.id}}'`, which is the same on every attempt and replay),
 for example by skipping the job when a pipeline for that key already ran.
 
 ## Responses and retries
@@ -178,5 +178,9 @@ for example by skipping the job when a pipeline for that key already ran.
 (`gitlab-pipeline-trigger: https://gitlab.com: HTTP 404 Not Found (project not found or token without access)`).
 A permanent failure is a dead delivery: fix the cause, then [replay](cli.md) it.
 
+The watch file and the API both write the defaults into the stored configuration (`base_url: https://gitlab.com`, `timeout: 10s`), so a
+host-bound `token_ref` is resolved for the host the sink really sends to; a stored sink with no `base_url` has no
+destination, and its bound token is refused and retried.
+
 An unset `token_env` variable, a stored token that is missing or bound to another host, or a token with white
-space is retried: the operator fixes it by setting the value. A template that fails to render is permanent.
+space is retried: the operator fixes it by setting the value. A template that fails to render is permanent; the error names the failing variable or input, never the template text.

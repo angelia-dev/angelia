@@ -57,6 +57,7 @@ func TestValidate(t *testing.T) {
 		{"empty query base", `{` + base + `,"base_url":"https://git.example.com/?"}`, "must not have a query"},
 		{"fragment base", `{` + base + `,"base_url":"https://git.example.com/#x"}`, "must not have a fragment"},
 		{"octal ip base", `{` + base + `,"base_url":"https://0177.0.0.1"}`, "non-canonical"},
+		{"glptt token in path", `{` + base + `,"base_url":"https://git.example.com/glptt-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "looks like a credential"},
 		{"token in path", `{` + base + `,"base_url":"https://git.example.com/glpat-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "looks like a credential"},
 		{"timeout low", `{` + base + `,"timeout":"500ms"}`, "timeout must be a duration from"},
 		{"timeout high", `{` + base + `,"timeout":"3m"}`, "timeout must be a duration from"},

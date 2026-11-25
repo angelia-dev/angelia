@@ -245,7 +245,7 @@ func TestValidationReportsAllProblems(t *testing.T) {
 }
 
 func TestTokenEnvValueNeverEchoed(t *testing.T) {
-	for _, v := range []string{"ghp_SECRETSECRET123", "pypi-AgEIcHlwaS5vcmc", "npm_abcdef", "my token!secret", "glpat-xyz", "github_pat_11AAA"} {
+	for _, v := range []string{"ghp_SECRETSECRET123", "pypi-AgEIcHlwaS5vcmc", "npm_abcdef", "my token!secret", "glpat-xyz", "glptt-xyz", "github_pat_11AAA"} {
 		_, err := load(t, writeFile(t, "sources:\n  pypi:\n    token_env: '"+v+"'\n"))
 		if err == nil {
 			t.Fatalf("%q: expected error", v)

@@ -644,8 +644,12 @@ func (p *parser) gitlabPipelineTrigger(n *yaml.Node, jp string) json.RawMessage 
 				p.errf(un, jp+".base_url", "%v", err)
 			} else {
 				cfg.BaseURL = s
-				if strings.HasPrefix(strings.ToLower(s), "http://") {
-					p.warnf(un, jp+".base_url", "the trigger token is sent in cleartext over http://; deliveries also need the host in http.allow_http_hosts")
+				if u, _ := url.Parse(s); u != nil && u.Scheme == "http" {
+					if !slices.ContainsFunc(p.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, u.Hostname()) }) {
+						p.errf(un, jp+".base_url", "must be https:// (http:// is accepted only for hosts on the instance allowlist)")
+					} else {
+						p.warnf(un, jp+".base_url", "the trigger token is sent in cleartext over http://")
+					}
 				}
 			}
 		}

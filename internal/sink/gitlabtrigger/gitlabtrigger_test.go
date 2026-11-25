@@ -506,6 +506,9 @@ func TestTemplateFailuresArePermanent(t *testing.T) {
 			if strings.Contains(err.Error(), token) {
 				t.Errorf("error holds the token: %v", err)
 			}
+			if !strings.Contains(err.Error(), "variable A template") && !strings.Contains(err.Error(), "input a template") {
+				t.Errorf("error does not name the failing key: %v", err)
+			}
 		})
 	}
 	if got.count() != 0 {
@@ -648,7 +651,7 @@ func TestNothingHoldsTheTokenProjectOrBody(t *testing.T) {
 			b, _ := io.ReadAll(r.Body)
 			w.Header().Set("X-Echo", string(b))
 			w.WriteHeader(code)
-			_, _ = w.Write([]byte(`{"message":"` + echoed + `","token":` + string(mustJSON(token)) + `,"path":"` + r.URL.EscapedPath() + `"}`))
+			_, _ = w.Write([]byte(`{"message":"` + echoed + `","token":` + string(mustJSON(token)) + `,"path":"` + r.URL.EscapedPath() + `"}`)) //nolint:gosec // G705: a synthetic JSON body in a test server.
 		})
 		_, err := newSink(t, srv).Deliver(t.Context(), request(t, cfgOf(srv.URL, ""), testEnvelope()))
 		if err != nil {
