@@ -600,7 +600,12 @@ func TestTransportErrors(t *testing.T) {
 		}
 	})
 	t.Run("timeout", func(t *testing.T) {
-		slow, _ := github(t, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+		// The handler only returns at cleanup, so the client's timeout is the
+		// sole way out; returning on the request context would race it and
+		// could send an implicit 200.
+		stop := make(chan struct{})
+		slow, _ := github(t, func(http.ResponseWriter, *http.Request) { <-stop })
+		t.Cleanup(func() { close(stop) })
 		cfg := repoCfg(slow.URL, `,"timeout":"1s"`)
 		_, err := newSink(t, slow).Deliver(t.Context(), request(t, cfg, testEnvelope()))
 		if err == nil || sink.IsPermanent(err) || !strings.HasSuffix(err.Error(), ": timeout") {
