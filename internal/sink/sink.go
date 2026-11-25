@@ -6,6 +6,12 @@
 // leasing, retries and the dead state. A sink tells the dispatcher how an
 // attempt failed through its error: wrap it with Permanent, or return
 // HTTPStatus for an HTTP response, and the dispatcher stops retrying.
+//
+// Implementations that open TCP connections receive a dialer from netguard
+// (netguard.Client.DialContext) and never use net.Dial (ADR 0039): it
+// applies the SSRF guard on the address actually connected and the
+// per-host rate limit. A test in this package fails on any use of
+// net.Dial, net.DialTimeout, net.Dialer or tls.Dial under internal/sink.
 package sink
 
 import (
@@ -27,7 +33,9 @@ import (
 // constructor and never use http.DefaultClient, so the netguard client can
 // be substituted. They must not follow redirects (the client's
 // CheckRedirect returns http.ErrUseLastResponse): a 3xx is reported with
-// HTTPStatus, which makes it permanent.
+// HTTPStatus, which makes it permanent. Implementations that open TCP
+// connections receive a dialer from netguard (netguard.Client.DialContext)
+// and never use net.Dial.
 //
 // Errors are stored in delivery.last_error and logged. They must not carry
 // configuration secrets (tokens, passwords, signing keys). The dispatcher

@@ -133,27 +133,7 @@ func (g *Guard) CheckURL(ctx context.Context, u *url.URL) error {
 	if host == "" {
 		return invalidURL("netguard: URL %q has no host", u.Redacted())
 	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		return g.CheckAddr(addr.String(), addr)
-	}
-	if isNumericHost(host) {
-		// Decimal, octal, hex or short IPv4 forms such as 2130706433,
-		// 0x7f000001 or 127.1: some resolvers read them as addresses.
-		return invalidURL("netguard: host %q is not a canonical IP address", host)
-	}
-	addrs, err := g.resolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return fmt.Errorf("netguard: resolve %s: %w", host, err)
-	}
-	if len(addrs) == 0 {
-		return fmt.Errorf("netguard: resolve %s: no addresses", host)
-	}
-	for _, a := range addrs {
-		if err := g.CheckAddr(host, a); err != nil {
-			return err
-		}
-	}
-	return nil
+	return g.checkHost(ctx, host)
 }
 
 // NonCanonicalIP reports whether host (without port or brackets) is an IP

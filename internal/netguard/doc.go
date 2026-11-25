@@ -41,4 +41,9 @@
 // private addresses, and the proxy, not Angelia, resolves the target.
 // Through a proxy only the URL check applies, and rebinding protection is
 // the proxy's job. A custom Config.Transport bypasses the dial-time check.
+//
+// Sinks that do not speak HTTP (MQTT) open TCP connections with
+// [Client.DialContext] (ADR 0039): the same name check and dial-time check,
+// the host's anonymous rate limit bucket, and never a proxy, whose
+// exemption does not apply either.
 package netguard
