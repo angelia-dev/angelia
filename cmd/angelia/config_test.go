@@ -23,7 +23,7 @@ func runCheck(t *testing.T, args ...string) (string, string, error) {
 func writeCfg(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil { //nolint:gosec // G703: p is under t.TempDir(), test-only
 		t.Fatal(err)
 	}
 	return p
