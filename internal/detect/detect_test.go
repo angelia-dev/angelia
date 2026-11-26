@@ -31,7 +31,10 @@ type fixture struct {
 	reg *source.Registry
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T) *fixture { return newFixturePolicy(t, `{}`) }
+
+// newFixturePolicy is newFixture with the given watch policy.
+func newFixturePolicy(t *testing.T, policy string) *fixture {
 	t.Helper()
 	ctx := t.Context()
 	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "a.db"), slog.New(slog.DiscardHandler))
@@ -42,7 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	tg := store.Target{ID: "t1", Kind: "pypi", Coordinates: map[string]string{"name": "demo"}, NextCheckAt: t0}
 	for _, err := range []error{
 		st.CreateTarget(ctx, tg),
-		st.CreateWatch(ctx, store.Watch{ID: wid, TargetID: tg.ID, Name: "demo", Policy: json.RawMessage(`{}`)}),
+		st.CreateWatch(ctx, store.Watch{ID: wid, TargetID: tg.ID, Name: "demo", Policy: json.RawMessage(policy)}),
 		st.CreateSink(ctx, store.Sink{ID: "k1", Kind: "webhook", ConfigEncrypted: []byte(`{"url":"https://hooks.example.org/x"}`)}),
 		st.CreateSubscription(ctx, store.Subscription{ID: "s1", SinkID: "k1"}),
 	} {

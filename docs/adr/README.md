@@ -47,6 +47,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0041](0041-manifest-import.md) | `angelia import` prints a watch file from dependency manifests, offline; names, owner labels and the `requirements.txt` grammar are conventions, not contract changes | Proposed | #98 |
 | [0043](0043-go-proxy-source.md) | The go-proxy source reads the GOPROXY protocol with `golang.org/x/mod`: case-sensitive module coordinate, dated new versions, private proxies through `registryauth` | Accepted | #95 |
 | [0044](0044-maven-source.md) | The maven source reads `maven-metadata.xml` conditionally with `encoding/xml`, keys watches by `package: groupId:artifactId`, dates new versions from a `HEAD` of their POM, and sends `auth` or `token_env` through `registryauth` | Accepted | #96 |
+| [0045](0045-release-notes-for-pypi-and-npm-from-the-declared-github-repository.md) | PyPI and npm events get `urls.repository`, a declared changelog and, from the GitHub release of the declared repository, notes: one request per check with new versions, exact tag match, public repositories only when a token is set, off for GitHub Enterprise | Proposed | #84 |
 
 ## Process
 

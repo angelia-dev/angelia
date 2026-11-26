@@ -33,7 +33,7 @@ the same names as on the wire, lower case with underscores.
 | `.data.published_at`, `.data.cooldown_satisfied_at` | RFC 3339 timestamp or **null** |
 | `.data.detected_at` | RFC 3339 timestamp |
 | `.data.urls.release`, `.data.urls.changelog`, `.data.urls.artifact`, `.data.urls.repository` | URL or **null**. `.repository` is the source repository (`https://host/owner/name`) as the package's registry metadata or the forge declares it, not verified; **null** when unknown |
-| `.data.notes` | an object with `.format`, `.body`, `.truncated` for `github-release` and `gitlab-release` releases that have a body; **null** for other sources and for releases without one. `.body` is untrusted upstream text (at most 16384 bytes) |
+| `.data.notes` | an object with `.format`, `.body`, `.truncated` for `github-release` and `gitlab-release` releases that have a body, and for `pypi` and `npm` releases when the package declares a GitHub repository whose release tag matches the version; **null** for other sources and for releases without one. `.body` is untrusted upstream text (at most 16384 bytes) |
 | `.data.watch.id`, `.data.watch.name` (or null), `.data.watch.labels` (a map, may be empty) | the watch |
 
 **Upgrading.** `.data.urls.repository` exists from spec 0.15.0. Events stored before the upgrade lack the key (events are immutable), so they do not validate against the 0.15.0 schema when replayed or read through the API or the event stream, and a template that reads the key fails on them like on a misspelt one; guard it with `with`/`default` or expect the failure for old events. A consumer should treat a missing `urls.repository` as `null`.

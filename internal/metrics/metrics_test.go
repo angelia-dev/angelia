@@ -23,6 +23,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/webauth"
 )
@@ -249,7 +250,7 @@ func TestSourceKindsBecomeSeriesOnUse(t *testing.T) {
 	m := New(nil)
 	m.Source(fakeSource{kind: "pypi"})
 	body := scrape(t, m)
-	if strings.Contains(body, `source="pypi"`) {
+	if strings.Contains(body, `angelia_source_fetches_total{result="ok",source="pypi"}`) || strings.Contains(body, `angelia_source_fetches_total{result="error",source="pypi"}`) {
 		t.Error("a registered but unused source already has series")
 	}
 }
@@ -595,4 +596,30 @@ func TestUILogins(t *testing.T) {
 		return
 	}
 	t.Fatal("angelia_ui_logins_total is missing")
+}
+
+// angelia_notes_enrichments_total starts every pair at 0 and counts only its
+// closed label sets.
+func TestNotesEnrichments(t *testing.T) {
+	m := New(nil)
+	var _ repolink.Recorder = m
+	body := scrape(t, m)
+	for _, k := range []string{"pypi", "npm"} {
+		for _, r := range []string{"matched", "no_match", "no_repository", "not_github", "private", "rate_limited", "error"} {
+			mustHave(t, body, fmt.Sprintf(`angelia_notes_enrichments_total{result=%q,source=%q} 0`, r, k))
+		}
+	}
+	m.NotesEnrichment("pypi", "matched")
+	m.NotesEnrichment("pypi", "matched")
+	m.NotesEnrichment("npm", "private")
+	m.NotesEnrichment("crates", "matched") // not a kind of the step
+	m.NotesEnrichment("npm", "who-knows")  // not a result
+	body = scrape(t, m)
+	mustHave(t, body,
+		`angelia_notes_enrichments_total{result="matched",source="pypi"} 2`,
+		`angelia_notes_enrichments_total{result="private",source="npm"} 1`,
+	)
+	if strings.Contains(body, `source="crates"`) || strings.Contains(body, "who-knows") {
+		t.Errorf("an unbounded label value leaked:\n%s", body)
+	}
 }
