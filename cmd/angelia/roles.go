@@ -32,6 +32,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/githubrelease"
 	"github.com/angelia-dev/angelia/internal/source/githubtag"
 	"github.com/angelia-dev/angelia/internal/source/gitlabrelease"
+	"github.com/angelia-dev/angelia/internal/source/goproxy"
 	"github.com/angelia-dev/angelia/internal/source/npm"
 	"github.com/angelia-dev/angelia/internal/source/oci"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
@@ -47,6 +48,7 @@ import (
 // instance (sources.<name>.kind) may select.
 var builtinKinds = []string{
 	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind, oci.Kind,
+	goproxy.Kind,
 }
 
 // builtinSources registers the built-in source kinds with hc, and one more
@@ -133,6 +135,12 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 		// with base_url it is pinned to that origin (ADR 0037). It sends no
 		// credential yet, so it gets the plain client.
 		return oci.New(cfg.Sources[name].BaseURL, hc, oci.WithAllowHTTPHosts(cfg.HTTP.AllowHTTPHosts...))
+	case goproxy.Kind:
+		var opts []goproxy.Option
+		if log != nil {
+			opts = append(opts, goproxy.WithLogger(log))
+		}
+		return goproxy.New(base, c, opts...)
 	default: // crates.Kind
 		// crates sends no credential: its index and API are public, and a
 		// private cargo registry authenticates with a raw token that no
@@ -144,7 +152,7 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 // sourceClient returns the HTTP client of the source configured as
 // sources.<name>, an instance of kind (or the kind itself): hc, or hc adding
 // the credential of its auth (stored secrets, bound to the base URL's host)
-// or, for pypi and npm, of token_env (github-release, github-tag and
+// or, for pypi, npm and go-proxy, of token_env (github-release, github-tag and
 // gitlab-release read their token themselves, each with its own header).
 // base is the URL the source reads from.
 func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
@@ -155,7 +163,7 @@ func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, 
 		c.TokenRef = a.TokenRef
 	case a.PasswordRef != "":
 		c.PasswordRef, c.Username = a.PasswordRef, a.Username
-	case kind == pypi.Kind || kind == npm.Kind:
+	case kind == pypi.Kind || kind == npm.Kind || kind == goproxy.Kind:
 		c.Token = secrets.NewValueString(cfg.SourceToken(name))
 	}
 	if base == "" {
@@ -214,6 +222,7 @@ var publicRegistries = map[string]string{
 	githubtag.Kind:     githubtag.DefaultBaseURL,
 	gitlabrelease.Kind: gitlabrelease.DefaultBaseURL,
 	crates.Kind:        crates.DefaultIndexURL,
+	goproxy.Kind:       goproxy.DefaultBaseURL,
 }
 
 // registryURL returns event.CheckInput.RegistryURL for a source (a kind, or
