@@ -275,7 +275,10 @@ type Source struct {
 	API string `yaml:"api"`
 }
 
-const pypiKind = "pypi"
+const (
+	pypiKind = "pypi"
+	ociKind  = "oci"
+)
 
 // Source API values of a pypi source (sources.<name>.api).
 const (
@@ -284,7 +287,7 @@ const (
 )
 
 // credentialKinds are the source kinds that send token_env or auth.
-var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "go-proxy", "maven", "npm", "pypi"}
+var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "go-proxy", "maven", "npm", "oci", "pypi"}
 
 // urlKinds are the source kinds whose URL is a watch coordinate (ADR 0038):
 // they take no key under sources.<kind> and no named instance (#97 D57).
@@ -736,9 +739,9 @@ func (c *Config) Validate() error {
 				bad("sources.%s.base_url: must be an absolute http(s) URL", k)
 			case u.User != nil:
 				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env or auth", k)
-			case kindOf(k, s) == "oci" && (strings.EqualFold(u.Hostname(), "docker.io") || strings.EqualFold(u.Hostname(), "index.docker.io")):
+			case kindOf(k, s) == ociKind && (strings.EqualFold(u.Hostname(), "docker.io") || strings.EqualFold(u.Hostname(), "index.docker.io")):
 				bad("sources.%s.base_url: %s is not a registry endpoint; Docker Hub's registry is https://registry-1.docker.io (or leave base_url unset)", k, u.Hostname())
-			case kindOf(k, s) == "oci" && (strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != ""):
+			case kindOf(k, s) == ociKind && (strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != ""):
 				bad("sources.%s.base_url: an oci registry is a bare origin (scheme and host, no path, query or fragment)", k)
 			}
 		}
@@ -760,6 +763,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		validateAuth(k, s, bad)
+		if kindOf(k, s) == ociKind {
+			validateOCICredential(k, s, bad)
+		}
 		if (s.TokenEnv != "" || !s.Auth.IsZero()) && s.BaseURL != "" {
 			// A credential over plain http needs the host in
 			// http.allow_http_hosts, like a webhook (decision D12).
@@ -852,6 +858,26 @@ func validateAuth(k string, s Source, bad func(string, ...any)) {
 	}
 	if s.TokenEnv != "" {
 		bad("sources.%s: set token_env or auth, not both", k)
+	}
+}
+
+// validateOCICredential checks the credential rules of an oci source (D44
+// of ADR 0037): the credential is a username and a stored password sent to
+// the token realm or to a registry that asks for Basic, and only a source
+// pinned to its registry by base_url carries one (D41), because the built-in
+// oci contacts whatever registry each watch names.
+func validateOCICredential(k string, s Source, bad func(string, ...any)) {
+	if s.TokenEnv != "" {
+		bad("sources.%s.token_env: not accepted for an oci source; use auth with type basic (username and password_ref)", k)
+	}
+	if s.Auth.IsZero() {
+		return
+	}
+	if t := s.Auth.EffectiveType(); t != AuthBasic {
+		bad("sources.%s.auth.type: an oci source accepts basic only (username and password_ref; the password may be an access token), not %s", k, t)
+	}
+	if s.BaseURL == "" {
+		bad("sources.%s.auth: an oci source sends a credential only when pinned to one registry; set sources.%s.base_url to the registry's origin", k, k)
 	}
 }
 

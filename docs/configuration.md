@@ -27,12 +27,12 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind other than `http-json` and `http-regex` (for a private Go proxy, `go-proxy`: [Go proxy](private-registries.md#go-proxy-athens-artifactory-nexus)); makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL; for `oci` a bare origin (no path), which pins the source to that registry: without it the built-in `oci` fetches, anonymously, from the registry named in each image |
 | `sources.<name>.api` | none | `json` | `pypi` sources only: `json` (the PyPI JSON API) or `simple` (the Simple API, PEP 503 / PEP 691, for pypiserver); see [pypiserver](private-registries.md#pypiserver-and-other-simple-api-only-indexes) |
-| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
+| `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_`; refused for `oci` |
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
 | `http.host_limits.default` | none | unset (5 rps, burst 5) | `{rps, burst}` for every unlisted host: `rps` from 1/3600 to 20, `burst` from 1 to 20; see [Per-host rate limits](#per-host-rate-limits) |
 | `http.host_limits.hosts.<host>` | none | empty | `{rps, burst}` for one exact host: `rps` from 1/3600 to 100, `burst` from 1 to 200 (default `ceil(rps)`) |
 | `ui.enabled` | none | `false` | `true` serves the [admin UI](#admin-ui) and its [sign-in](#admin-ui-sign-in) from the `api` role |
-| `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token` |
+| `sources.<kind>.auth.type` | none | `bearer` | `bearer`, `basic` or `npm_auth_token`; `oci` takes `basic` only, and only with `base_url` (see [OCI registries](private-registries.md#oci-registries-harbor-ghcr-docker-hub)) |
 | `sources.<kind>.auth.token_ref` | none | empty | name of a [stored secret](#stored-secrets) (bearer, `npm_auth_token`) |
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
 | `sources.<kind>.auth.password_ref` | none | empty | name of a stored secret (basic) |

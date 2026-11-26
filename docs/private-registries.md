@@ -1,7 +1,7 @@
 # Private registries and mirrors
 
 Angelia can watch packages on a private registry or a mirror: Artifactory, Nexus, Verdaccio, devpi, a
-GitHub Enterprise Server, a self-managed GitLab. You set the registry's `base_url` and its credential once per
+GitHub Enterprise Server, a self-managed GitLab, a private OCI registry (Harbor, GHCR, Docker Hub). You set the registry's `base_url` and its credential once per
 source (or named source instance) in the [instance configuration](configuration.md). Design and security rules:
 [ADR 0024, amendment of #111](adr/0024-secrets-encrypted-at-rest.md).
 
@@ -43,7 +43,7 @@ sources:
   to a host outside the binding (a registry that redirects downloads to a CDN, say) is refused; bind the
   secret to both hosts if you want it followed.
 - `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `go-proxy`, `github-release`, `github-tag` and
-  `gitlab-release` (which sends it as `PRIVATE-TOKEN`). It
+  `gitlab-release` (which sends it as `PRIVATE-TOKEN`); `oci` refuses it ([OCI registries](#oci-registries-harbor-ghcr-docker-hub)). It
   is sent only to the host of `base_url`. Set `token_env` or `auth`, not both.
 - No value appears in `config check`, logs, errors, events or API responses. A value written in a `*_ref`
   key is refused as not being a secret name, without being printed.
@@ -299,6 +299,61 @@ mismatch and the storage host receives no credential. Events from a repository o
 `Private-Token`, `Deploy-Token`, `Job-Token`; GitLab also accepts Basic with a token) and client
 certificates. See [ADR 0044](adr/0044-maven-source.md).
 
+### OCI registries (Harbor, GHCR, Docker Hub)
+
+The built-in `oci` source fetches each image from the registry named in its `image` coordinate, and always
+anonymously. A credential needs a source **pinned** to one registry: `base_url` is the registry's API origin
+(no path), and the source then accepts only images served there
+([ADR 0037](adr/0037-oci-source-registry-selection-and-token-auth.md), D41 and D44).
+
+- `auth.type` is `basic` only: `username` and `password_ref` (the password may be an access token, as with
+  `docker login`). `bearer`, `npm_auth_token` and `token_env` fail `config check`, as does `auth` without
+  `base_url`.
+- Registries answer the first request with a challenge. To a `Bearer` challenge (Docker Hub, GHCR, Harbor,
+  Quay) the source sends the credential to the **token realm** the challenge names, and only there; the
+  registry itself receives the short-lived registry token, never the credential. To a `Basic` challenge the
+  source sends the credential to the registry. Without a challenge nothing is sent.
+- The realm is often another host than the registry (Docker Hub: `auth.docker.io` and
+  `registry-1.docker.io`). **Bind the secret to both hosts.** The start-up check can verify only the host of
+  `base_url`, since the realm is known from the registry's answer; a secret not bound to the realm's host
+  fails each check with a host mismatch, and the realm receives no request.
+
+```
+angelia secret set dockerhub-pat --from-file ./pat.txt --host registry-1.docker.io --host auth.docker.io
+angelia secret set ghcr-pat      --from-file ./ghcr.txt --host ghcr.io
+angelia secret set harbor-robot  --from-file ./robot.txt --host harbor.example.test
+```
+
+```yaml
+sources:
+  dockerhub-private:
+    kind: oci
+    base_url: https://registry-1.docker.io     # not https://docker.io
+    auth: {type: basic, username: example-user, password_ref: dockerhub-pat}
+  ghcr-private:
+    kind: oci
+    base_url: https://ghcr.io                  # realm https://ghcr.io/token: one host
+    auth: {type: basic, username: example-user, password_ref: ghcr-pat}   # a PAT with read:packages
+  harbor:
+    kind: oci
+    base_url: https://harbor.example.test      # realm https://harbor.example.test/service/token
+    auth: {type: basic, username: 'robot$ci-reader', password_ref: harbor-robot}
+```
+
+```yaml
+# watch file
+watches:
+  - name: app
+    source: harbor
+    coordinates: {image: harbor.example.test/team/app}
+  - name: private-tool
+    source: dockerhub-private
+    coordinates: {image: example-user/private-tool}   # docker.io/example-user/private-tool
+```
+
+Not supported: Docker credential helpers, `~/.docker/config.json`, the AWS ECR and GCP token exchanges, and
+registry mirrors that serve another registry's images under their own host.
+
 ## Private networks
 
 A registry on a private address needs its network in `http.allow_networks`
@@ -335,7 +390,8 @@ through a `CONNECT` tunnel. `http.ca_file` also verifies an `https://` proxy.
 
 `angelia serve` and `angelia config check` look up each secret named by `sources.<kind>.auth` (name and
 hosts only; nothing is decrypted) and fail when it does not exist or its hosts do not include the registry's
-host and port. `config check` reads the database read-only and only warns when it does not exist yet or is
+host and port (for `oci`, the host of `base_url`; the token realm's host is checked on each request).
+`config check` reads the database read-only and only warns when it does not exist yet or is
 not sqlite. `auth` or `token_env` on a kind no built-in source reads (a typo such as `nmp`) is a warning.
 
 ## Testing against real servers

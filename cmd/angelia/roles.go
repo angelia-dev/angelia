@@ -167,10 +167,17 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 		return gitlabrelease.New(base, c, opts...)
 	case oci.Kind:
 		// oci has no single default registry: without base_url the source
-		// fetches from the registry named in each image (anonymously);
-		// with base_url it is pinned to that origin (ADR 0037). It sends no
-		// credential yet, so it gets the plain client.
-		return oci.New(cfg.Sources[name].BaseURL, hc, oci.WithAllowHTTPHosts(cfg.HTTP.AllowHTTPHosts...))
+		// fetches from the registry named in each image, anonymously; with
+		// base_url it is pinned to that origin (ADR 0037). Its registry
+		// requests carry the registry's own short-lived token, which the
+		// credential client would overwrite, so the source gets the plain
+		// client and, when it has auth, the credential client separately:
+		// for the token realm and for a registry that asks for Basic (D44).
+		opts := []oci.Option{oci.WithAllowHTTPHosts(cfg.HTTP.AllowHTTPHosts...)}
+		if s := cfg.Sources[name]; s.BaseURL != "" && !s.Auth.IsZero() {
+			opts = append(opts, oci.WithCredentials(c))
+		}
+		return oci.New(cfg.Sources[name].BaseURL, hc, opts...)
 	case goproxy.Kind:
 		var opts []goproxy.Option
 		if log != nil {
@@ -190,7 +197,8 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 // the credential of its auth (stored secrets, bound to the base URL's host)
 // or, for pypi, npm, go-proxy and maven, of token_env (github-release, github-tag and
 // gitlab-release read their token themselves, each with its own header).
-// base is the URL the source reads from.
+// base is the URL the source reads from. oci uses this client for its token
+// realm and Basic challenges only (newSource).
 func sourceClient(cfg *config.Config, name, kind, base string, hc *http.Client, res registryauth.Resolver) *http.Client {
 	a := cfg.Sources[name].Auth
 	c := registryauth.Config{Resolver: res}

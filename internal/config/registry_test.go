@@ -167,12 +167,12 @@ func TestNamedSourceInstanceRejectsABadKind(t *testing.T) {
 
 // The credential warning looks at the instance's kind, not its name.
 func TestNamedSourceCredentialWarningUsesTheKind(t *testing.T) {
-	cfg, err := load(t, writeFile(t, "sources:\n  internal-oci:\n    kind: oci\n    auth: {token_ref: t}\n  internal-npm:\n    kind: npm\n    auth: {token_ref: t}\n"))
+	cfg, err := load(t, writeFile(t, "sources:\n  internal-crates:\n    kind: crates\n    auth: {token_ref: t}\n  internal-npm:\n    kind: npm\n    auth: {token_ref: t}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	w := strings.Join(cfg.Warnings(), "\n")
-	if !strings.Contains(w, "sources.internal-oci:") || strings.Contains(w, "sources.internal-npm:") {
+	if !strings.Contains(w, "sources.internal-crates:") || strings.Contains(w, "sources.internal-npm:") {
 		t.Errorf("warnings = %q", w)
 	}
 }

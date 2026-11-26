@@ -69,8 +69,11 @@ func (s *Source) realmURL(realm string) (*url.URL, error) {
 	return u, nil
 }
 
-// token fetches an anonymous registry token from the realm of c. The request
-// carries no Authorization header.
+// token fetches a registry token from the realm of c. The request goes
+// through the credential client when the source has one (D44): registryauth
+// then sends the credential only if the stored secret is bound to the realm's
+// host, and fails the request otherwise. Without one the request is anonymous
+// and carries no Authorization header.
 func (s *Source) token(ctx context.Context, c challenge, name string) (apiclient.Secret, error) {
 	u, err := s.realmURL(c.params["realm"])
 	if err != nil {
@@ -86,9 +89,16 @@ func (s *Source) token(ctx context.Context, c challenge, name string) (apiclient
 	}
 	q.Set("scope", scope)
 	u.RawQuery = q.Encode()
-	r, err := s.do(ctx, http.MethodGet, u.String(), "", "application/json")
+	hc := s.hc
+	if s.authHC != nil {
+		hc = s.authHC
+	}
+	r, err := do(ctx, hc, http.MethodGet, u.String(), "", "application/json")
 	if err != nil {
 		return "", fmt.Errorf("token request to %s: %w", u.Host, err)
+	}
+	if s.authHC != nil && (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) {
+		return "", fmt.Errorf("token request to %s: the realm refused the configured credential (sources.<name>.auth): %w", u.Host, statusError(r))
 	}
 	if r.status != http.StatusOK {
 		return "", fmt.Errorf("token request to %s refused: %w", u.Host, statusError(r))

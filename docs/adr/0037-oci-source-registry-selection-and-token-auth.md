@@ -10,8 +10,8 @@ The `oci` source lists the tags of an image repository on Docker Hub, GHCR or an
 Distribution API. The event contract already knows `oci` (`data.source`, `data.package` such as
 `ghcr.io/org/image`, purl type `oci`). Three security questions had no ADR: which host a watch may make the
 source contact, how the registry token is obtained and kept, and which URLs the source follows. Decisions D40 to
-D49 of the story were accepted as recommended; this ADR records D40 to D43, D45, D46, D48 and D49. D44
-(credentials) is added by sub-story 94-C.
+D49 of the story were accepted as recommended; this ADR records D40 to D46, D48 and D49 (D44, credentials,
+was added by sub-story 94-C: see the amendment below).
 
 ## Decision
 
@@ -33,6 +33,7 @@ D49 of the story were accepted as recommended; this ADR records D40 to D43, D45,
   of the endpoint, else the call fails without requesting it. A 401 after a token means "not found or access
   denied" (Docker Hub answers 401 for a missing repository). A `Basic` challenge fails with a message naming
   `sources.<name>.auth` (94-C).
+- **D44 Credentials for private registries.** See the [amendment of 94-C](#amendment-2026-11-26-94-c-credentials).
 - **D45 Tags are versions.** Every tag is returned except the referrers tag schema (`sha256-<64 hex>` with an
   optional `.sig`, `.att`, `.sbom`). Filtering is the watch policy's job (recipes in docs/watch-file.md).
 - **D46 Digests, no new event field.** For each tag new since the last check (never on the first scan, which is
@@ -75,6 +76,33 @@ is in `WWW-Authenticate`; the SSRF check, rate limits and body cap are in the tr
   the reference: a manifest `HEAD` carried the pull-limit headers without spending the budget. To be
   re-verified by the maintainer before 94-B relies on it for anonymous Docker Hub watches.
 - Token caching and remembering the challenge are left out (D43 b, c).
+
+## Amendment (2026-11-26, 94-C: credentials)
+
+**D44**, accepted as recommended:
+
+- `oci` accepts `auth.type: basic` only (`username` and `password_ref`; the password may be an access token).
+  `auth` requires `base_url` (D41: only a pinned source carries a credential; the built-in `oci`, which
+  contacts the registry each watch names, stays anonymous and ignores a credential client). `token_env`,
+  `type: bearer` and `type: npm_auth_token` are refused by config validation, each with a message naming the
+  key.
+- The source gets two clients: the plain netguard client for every registry request, and the
+  `registryauth`-wrapped one (`oci.WithCredentials`) for the **token realm** of a `Bearer` challenge, and for
+  the registry itself only after it answered with a `Basic` challenge (then for every later request of that
+  `List` call, which stays on the endpoint's origin). Nothing else carries the credential: a registry that
+  issues tokens receives the registry token only, which `registryauth` would otherwise overwrite.
+- The host binding of the stored secret (ADR 0024) is checked on each hop by `registryauth`: the credential
+  reaches the realm only when the secret is bound to the realm's host, else the call fails with
+  `secrets.ErrHostMismatch` and the realm receives no request. Docker Hub therefore needs
+  `--host registry-1.docker.io --host auth.docker.io`. The start-up check (`checkSourceSecrets`) covers `oci`
+  instances by the host of `base_url`; the realm's host is only known from the challenge. The realm rules of
+  D43 (https, or http for `http.allow_http_hosts`) apply before any secret is read.
+- A realm answering 401 or 403 to the credential fails the call with a message naming
+  `sources.<name>.auth`; a 401 from the registry after Basic is "not found or access denied". The password,
+  its Basic encoding and the registry token appear in no log line, error or `FetchState` (tests with canary
+  values).
+- Out of scope (unchanged): `bearer` and `token_env` for `oci` (D44 b, c, addable later without breaking
+  anything), Docker credential helpers, `~/.docker/config.json`, ECR and GCP token exchange.
 
 ## Alternatives considered
 
