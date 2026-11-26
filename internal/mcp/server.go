@@ -53,7 +53,7 @@ var tools = []tool{
 	},
 	{
 		name: "events_since", title: "Events since a cursor", run: eventsSince,
-		description: "Read release events from the event log, oldest first. Either pass after (the next_after of the previous result; absent or 0 starts at the oldest event kept) with the optional filters watch, type and source, or pass consumer alone to read after that named consumer's acknowledged position with its stored filter. Reading never acknowledges: with a consumer, call ack_event with next_after once the events are handled. A result can be empty with has_more true; call again with next_after. " + untrusted,
+		description: "Read release events from the event log, oldest first. Either pass after (the next_after of the previous result; absent or 0 starts at the oldest event kept) with the optional filters watch, type and source, or pass consumer alone to read after that named consumer's acknowledged position with its stored filter. Reading never acknowledges: with a consumer, call ack_event with next_after once the events are handled. A result can be empty with has_more true; call again with next_after. New event types can appear in a minor release; ignore events whose type you do not know. " + untrusted,
 	},
 	{
 		name: "latest_version", title: "Latest version of a watch", run: latestVersion,

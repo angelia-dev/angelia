@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { EventRecord } from '@/api/types'
+import type { ReleaseEventRecord } from '@/api/types'
 import { RelativeTime } from '@/components/badges'
 import { EmptyState } from '@/components/states'
 import { Stamp } from '@/components/ui/badge'
@@ -79,7 +79,7 @@ export function EventTape({
   selected,
   onSelect,
 }: {
-  events: EventRecord[]
+  events: ReleaseEventRecord[]
   range: TapeRange
   now: number
   selected?: number
@@ -197,7 +197,7 @@ export function TapeLegend() {
 }
 
 /** The selected release as a bulletin slip on canary paper, next to its CloudEvent. */
-export function Bulletin({ record }: { record: EventRecord }) {
+export function Bulletin({ record }: { record: ReleaseEventRecord }) {
   const e = record.event
   const d = e.data
   const p = e.type.includes('yanked') ? { tone: 'flash' as const, label: 'Yanked' } : bumpTone(d.bump)
@@ -265,7 +265,7 @@ export function Bulletin({ record }: { record: EventRecord }) {
 }
 
 /** The quiet state: an empty range still shows the tape, and says when the newest release was. */
-export function QuietTape({ newest, rangeLabel }: { newest?: EventRecord; rangeLabel: string }) {
+export function QuietTape({ newest, rangeLabel }: { newest?: ReleaseEventRecord; rangeLabel: string }) {
   return (
     <EmptyState title={`No releases in the last ${rangeLabel}`}>
       {newest ? (

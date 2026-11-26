@@ -1,12 +1,12 @@
 {
   "specversion": "1.0",
-  "type": "dev.angelia.release.advisory.v1",
+  "type": "dev.angelia.release.published.v1",
   "source": "angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2",
   "id": "01JBX2A7C8D9E0F1G2H3J4K5M6",
   "subject": "pypi:requests@2.33.0",
   "time": "2026-10-30T17:00:02.512Z",
   "datacontenttype": "application/json",
-  "dataschema": "https://github.com/angelia-dev/spec/schemas/release/v1.json",
+  "dataschema": "https://example.com/schemas/future/v1.json",
   "data": {
     "source": "pypi",
     "package": "requests",

@@ -1,0 +1,14 @@
+{
+  "specversion": "1.0",
+  "type": "dev.angelia.example.future.v1",
+  "source": "angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2",
+  "id": "01JBX2A7C8D9E0F1G2H3J4K5M7",
+  "subject": "example:requests#EX-0001",
+  "time": "2026-10-30T17:00:02.512Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://example.com/schemas/future/v1.json",
+  "data": {
+    "kind": "a payload this version of the spec does not define",
+    "ref": "EX-0001"
+  }
+}

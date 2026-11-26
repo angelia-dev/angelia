@@ -114,6 +114,17 @@ func (s *schemaSet) check(base string, schema, inst any, at string) []string {
 				if !slices.ContainsFunc(val.([]any), func(b any) bool { return len(s.check(base, b, inst, at)) == 0 }) {
 					fail("matches no anyOf branch")
 				}
+			case "allOf":
+				for _, b := range val.([]any) {
+					errs = append(errs, s.check(base, b, inst, at)...)
+				}
+			case "if":
+				if len(s.check(base, val, inst, at)) == 0 {
+					if then, ok := sc["then"]; ok {
+						errs = append(errs, s.check(base, then, inst, at)...)
+					}
+				}
+			case "then": // applied by "if"
 			case "required":
 				for _, r := range val.([]any) {
 					if _, ok := obj[r.(string)]; isObj && !ok {
@@ -260,8 +271,8 @@ func ecmaToRE2(p string) string {
 
 // supported are the keywords the validator asserts or ignores knowingly.
 var supported = append([]string{
-	"$ref", "type", "enum", "const", "pattern", "minLength", "maxLength", "format", "anyOf", "required",
-	"maxProperties", "propertyNames", "properties", "patternProperties", "additionalProperties",
+	"$ref", "type", "enum", "const", "pattern", "minLength", "maxLength", "format", "anyOf", "allOf", "if", "then",
+	"required", "maxProperties", "propertyNames", "properties", "patternProperties", "additionalProperties",
 }, annotations...)
 
 // walkKeywords visits every subschema of a schema document, including those
@@ -283,11 +294,11 @@ func walkKeywords(schema any, at string) {
 			for k, sub := range val.(map[string]any) {
 				walkKeywords(sub, at+"/"+kw+"/"+k)
 			}
-		case "anyOf":
+		case "anyOf", "allOf":
 			for i, sub := range val.([]any) {
-				walkKeywords(sub, fmt.Sprintf("%s/anyOf/%d", at, i))
+				walkKeywords(sub, fmt.Sprintf("%s/%s/%d", at, kw, i))
 			}
-		case "additionalProperties", "propertyNames":
+		case "additionalProperties", "propertyNames", "if", "then":
 			walkKeywords(val, at+"/"+kw)
 		}
 	}
@@ -361,8 +372,40 @@ func TestValidatorAgainstSpecExamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n < 40 {
-		t.Fatalf("checked %d examples, want the 41 vendored ones", n)
+	if n < 46 {
+		t.Fatalf("checked %d examples, want the 46 vendored ones", n)
+	}
+}
+
+// The event-type set is open (spec 0.16.0, angelia-dev/angelia#102): an
+// envelope of a type the spec does not define validates, its data fits no
+// data schema, and the release types keep their rules.
+func TestEnvelopeOpenTypeSet(t *testing.T) {
+	s := loadSchemas(t)
+	b, err := fs.ReadFile(specFS, "examples/valid/release/envelope/v1/unknown-type-future.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := decode(t, b).(map[string]any)
+	if errs := s.validate(envelopeSchemaID, env); len(errs) > 0 {
+		t.Fatalf("unknown-type envelope rejected: %v", errs)
+	}
+	if errs := s.validate(dataSchemaID, env["data"]); len(errs) == 0 {
+		t.Error("data of the unknown type validates against the release data schema")
+	}
+	for name, mod := range map[string]func(e map[string]any){
+		"type outside dev.angelia.":     func(e map[string]any) { e["type"] = "com.example.thing.v1" },
+		"type without major":            func(e map[string]any) { e["type"] = "dev.angelia.example.future" },
+		"release type, unknown data":    func(e map[string]any) { e["type"] = TypePublished },
+		"empty subject":                 func(e map[string]any) { e["subject"] = "" },
+		"release dataschema, bad data":  func(e map[string]any) { e["dataschema"] = dataSchemaID },
+		"release type, release subject": func(e map[string]any) { e["type"] = TypeYanked; e["subject"] = "pypi:requests@1.0" },
+	} {
+		e := decode(t, b).(map[string]any)
+		mod(e)
+		if errs := s.validate(envelopeSchemaID, e); len(errs) == 0 {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 

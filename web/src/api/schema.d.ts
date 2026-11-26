@@ -990,7 +990,11 @@ export interface components {
          */
         ManagedBy: "api" | "file";
         /**
-         * @description An event type without the `dev.angelia.` prefix and the `.v<major>` suffix.
+         * @description An event type without the `dev.angelia.` prefix and the `.v<major>` suffix. The enum lists
+         *     the event types of this version of the spec, and a request with another value is refused.
+         *     It grows in minor releases when an event type is added (an additive change), so a response
+         *     (a subscription's or a consumer's filter) can carry a value a client generated from an
+         *     older version does not know: clients must accept it.
          * @enum {string}
          */
         ShortEventType: "release.published" | "release.yanked" | "release.prerelease";
@@ -1134,6 +1138,16 @@ export interface components {
         /** @description One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered. */
         EventRecord: {
             seq: components["schemas"]["Seq"];
+            /**
+             * @description The CloudEvents envelope, a `oneOf` keyed on its `type`: each branch is the envelope
+             *     schema of a family of event types and applies its rules to the types it names. Today the
+             *     one branch is [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
+             *     whose `type` accepts any `dev.angelia.<short type>.v<major>` name and which applies the
+             *     release rules to the three release types. Further branches, for new event types, are
+             *     additive and come in minor releases. New event types can appear in a minor release.
+             *     Consumers must ignore events whose type they do not know. (No `discriminator` keyword:
+             *     generators turn its mapping into a closed list of types.)
+             */
             event: components["schemas"]["v1-2"];
             /** @description For a `release.yanked` event, the id of the event it yanks (the earlier `release.published` or `release.prerelease` of the same watch); `null` for other types. */
             ref_event_id: components["schemas"]["Ulid"] | null;
@@ -2094,16 +2108,43 @@ export interface components {
              */
             timeout: components["schemas"]["Duration"];
         } & (unknown | unknown);
-        /** @description ULID: 26 characters, Crockford base32, upper case. */
-        ulid: string;
+        /**
+         * @description The `config` of an `exec` sink: it runs a local command once per delivery (core ADR 0042,
+         *     docs/exec.md). Documentation of the built-in kind; the server validates against the
+         *     kind's `config_schema`.
+         *
+         *     The sink only **names** a command. The command itself (an absolute `argv`, no shell, no
+         *     placeholders; its working directory, the environment variables it may read, its
+         *     timeout of `1s` to `12s` and its concurrency) is defined by the operator in the
+         *     instance configuration, `exec.commands.<name>` in `angelia.yaml`, and cannot be set
+         *     through this API, the watch file or the admin UI. The kind is registered only when the
+         *     instance defines at least one command and runs on Linux or macOS; otherwise
+         *     `PUT /v1/sinks/{name}` with `kind: exec` is refused like any unknown kind. A `command`
+         *     that names no configured command is `422 validation-failed`.
+         *
+         *     The command receives the rendered message on stdin (the CloudEvents JSON in structured
+         *     mode, or the subscription's template output), and in its environment `PATH`, the
+         *     variables the operator listed, and `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`,
+         *     `ANGELIA_DELIVERY_ID`, `ANGELIA_IDEMPOTENCY_KEY`, `ANGELIA_ATTEMPT` and
+         *     `ANGELIA_CONTENT_TYPE`. Nothing from the event is put in its arguments or environment.
+         *     Exit status `0` is delivered; any other exit, a signal or a timeout is retried; a
+         *     command that cannot be started is permanent. `last_error` holds the outcome only
+         *     (`exec deploy-hook: exit status 3`), never the command's output.
+         */
+        ExecSinkConfig: {
+            /** @description Name of a command defined in the instance configuration under `exec.commands`. */
+            command: string;
+        };
+        openToken: string;
         /**
          * Format: date-time
          * @description RFC 3339 timestamp in UTC with a Z suffix and at most millisecond precision.
          */
         timestamp: string;
-        openToken: string;
         /** @description An absolute https URL (an http URL from a private registry is passed as given) with a non-empty host and no whitespace, or null when unknown. */
         urlOrNull: string | null;
+        /** @description ULID: 26 characters, Crockford base32, upper case. */
+        ulid: string;
         /**
          * Angelia release event data, v1 (draft, pre-1.0)
          * @description The CloudEvents `data` payload shared by the three release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. DRAFT: while the spec repository is at version 0.x this schema may still change in a breaking way in any 0.x minor release, without a new .v<major> type; it is frozen at spec 1.0.0. Every documented field is always present: a field with no value is null, never omitted. The objects are open: producers emit only the documented fields, and consumers must ignore fields they do not know (a new optional field is a minor change). The values of `source`, `scheme` and `notes.format` are open sets: consumers must accept values that are not in the documented list. Rules that depend on the event type (for example `yanked` is true only on release.yanked) are documented in docs/release-event-v1.md, because `data` does not carry the type.
@@ -2255,20 +2296,20 @@ export interface components {
             };
         };
         /**
-         * Angelia release event envelope, v1 (draft, pre-1.0)
-         * @description Angelia's profile of a CloudEvents 1.0 event in JSON structured mode for the release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. The three types share one data schema (schemas/release/v1.json). DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.
+         * Angelia event envelope, v1 (draft, pre-1.0)
+         * @description Angelia's profile of a CloudEvents 1.0 event in JSON structured mode. The set of event types is open: type is any dev.angelia.<short type>.v<major> name, and new types can appear in a minor release of the spec. Consumers must ignore events whose type they do not know. The release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1 share one data schema (schemas/release/v1.json); for them, subject and dataschema follow the release rules (one then branch per type), and data, like that of any event whose dataschema names schemas/release/v1.json, must validate against it. For another type, subject is a non-empty string, dataschema the URI of that type's data schema, and data is not checked by this schema. DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.
          */
-        "v1-2": {
+        "v1-2": ({
             /**
              * @description CloudEvents specification version.
              * @constant
              */
             specversion: "1.0";
             /**
-             * @description Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v1 suffix; it is what subscription filters use.
-             * @enum {unknown}
+             * @description Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v<major> suffix; it is what subscription filters use. An open set: today's types are dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1; adding a type is a minor (additive) change. Consumers must ignore events whose type they do not know.
+             * @example dev.angelia.release.published.v1
              */
-            type: "dev.angelia.release.published.v1" | "dev.angelia.release.yanked.v1" | "dev.angelia.release.prerelease.v1";
+            type: string;
             /**
              * @description The watch that produced the event: angelia://<instance>/watches/<watch_id>, where <instance> is the instance name from the instance configuration and <watch_id> equals data.watch.id.
              * @example angelia://angelia/watches/01JBX1Z3M4N5P6Q7R8S9T0V1W2
@@ -2280,7 +2321,7 @@ export interface components {
              */
             id: components["schemas"]["ulid"];
             /**
-             * @description <source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version). Lets brokers and routers filter without parsing data.
+             * @description Identifies what the event is about, so brokers and routers can filter without parsing data. The form depends on the type: for the release types, <source kind>:<package>@<version> with the raw upstream version (data.source, data.package, data.version); for another type, as that type's documentation says.
              * @example pypi:requests@2.33.0
              * @example npm:@angular/core@17.3.0
              * @example github-release:cli/cli@v2.62.0
@@ -2297,15 +2338,16 @@ export interface components {
              */
             datacontenttype: "application/json";
             /**
-             * @description URI of the data schema: the $id of schemas/release/v1.json. An identifier, not promised to be fetchable.
-             * @constant
+             * Format: uri
+             * @description URI of the data schema of the event's type: for the release types, the $id of schemas/release/v1.json. An identifier, not promised to be fetchable.
+             * @example https://github.com/angelia-dev/spec/schemas/release/v1.json
              */
-            dataschema: "https://github.com/angelia-dev/spec/schemas/release/v1.json";
-            /** @description The release event payload. */
-            data: components["schemas"]["v1"];
+            dataschema: string;
+            /** @description The event payload, described by the data schema of the event's type: for the release types, schemas/release/v1.json. */
+            data: unknown;
         } & {
             [key: string]: unknown;
-        };
+        }) & (unknown & unknown & unknown & unknown);
     };
     responses: {
         /** @description The request is malformed (bad JSON, an unknown query parameter, an invalid cursor, `consumer` combined with `after` or a filter). */

@@ -707,7 +707,14 @@ type EventPage struct {
 
 // EventRecord One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered.
 type EventRecord struct {
-	// Event Angelia's profile of a CloudEvents 1.0 event in JSON structured mode for the release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. The three types share one data schema (schemas/release/v1.json). DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.
+	// Event The CloudEvents envelope, a `oneOf` keyed on its `type`: each branch is the envelope
+	// schema of a family of event types and applies its rules to the types it names. Today the
+	// one branch is [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
+	// whose `type` accepts any `dev.angelia.<short type>.v<major>` name and which applies the
+	// release rules to the three release types. Further branches, for new event types, are
+	// additive and come in minor releases. New event types can appear in a minor release.
+	// Consumers must ignore events whose type they do not know. (No `discriminator` keyword:
+	// generators turn its mapping into a closed list of types.)
 	Event json.RawMessage `json:"event"`
 
 	// RefEventId For a `release.yanked` event, the id of the event it yanks (the earlier `release.published` or `release.prerelease` of the same watch); `null` for other types.
@@ -1107,7 +1114,11 @@ type SessionUser struct {
 	Subject string `json:"subject"`
 }
 
-// ShortEventType An event type without the `dev.angelia.` prefix and the `.v<major>` suffix.
+// ShortEventType An event type without the `dev.angelia.` prefix and the `.v<major>` suffix. The enum lists
+// the event types of this version of the spec, and a request with another value is refused.
+// It grows in minor releases when an event type is added (an additive change), so a response
+// (a subscription's or a consumer's filter) can carry a value a client generated from an
+// older version does not know: clients must accept it.
 type ShortEventType string
 
 // Sink A sink as the server returns it, with every default filled in. Below the `admin` scope,

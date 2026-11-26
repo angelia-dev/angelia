@@ -1,7 +1,7 @@
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { eventPageDesc, eventRecord, me } from '@/test/fixtures'
+import { eventPageDesc, eventRecord, me, unknownEventRecord } from '@/test/fixtures'
 import { MockEventSource, mockApi, problem, renderApp } from '@/test/mock-api'
 
 beforeEach(() => {
@@ -28,6 +28,23 @@ describe('events timeline', () => {
     expect(MockEventSource.last?.url).toBe('/v1/events/stream?after=9')
     expect(api.count('/v1/events')).toBe(1)
     expect(screen.queryByRole('button', { name: 'Show older events' })).not.toBeInTheDocument()
+  })
+
+  it('skips events of a type it does not know, stored or live', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/events': eventPageDesc([eventRecord(9), unknownEventRecord(8), eventRecord(7)]),
+    })
+    renderApp('/ui/events')
+    const table = await screen.findByRole('table', { name: 'Events, newest first' })
+    const rows = () => within(table).getAllByRole('row').slice(1)
+    expect(rows().map((r) => within(r).getAllByRole('cell')[0]?.textContent)).toEqual(['9', '7'])
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const es = MockEventSource.last!
+    act(() => es.open())
+    act(() => es.emit(unknownEventRecord(10)))
+    act(() => es.emit(eventRecord(11)))
+    await vi.waitFor(() => expect(rows().map((r) => within(r).getAllByRole('cell')[0]?.textContent)).toEqual(['11', '9', '7']))
   })
 
   it('loads older events with `before` when the user asks', async () => {
@@ -194,6 +211,16 @@ describe('event detail', () => {
     expect(pre.tagName).toBe('PRE')
     expect(JSON.parse(pre.textContent ?? '')).toEqual(rec.event)
     expect(screen.getByRole('link', { name: 'requests' })).toHaveAttribute('href', '/ui/watches/requests')
+  })
+
+  it('shows an event of an unknown type as its envelope, without a watch', async () => {
+    const rec = unknownEventRecord(8)
+    mockApi({ '/v1/me': me(), [`/v1/events/${rec.event.id}`]: rec })
+    renderApp(`/ui/events/${rec.event.id}`)
+    const pre = await screen.findByLabelText('CloudEvent JSON')
+    expect(JSON.parse(pre.textContent ?? '')).toEqual(rec.event)
+    expect(screen.getByRole('table', { name: 'Event summary' })).toHaveTextContent('example.future')
+    expect(screen.queryByText('Watch')).not.toBeInTheDocument()
   })
 
   it('shows a not-found problem', async () => {

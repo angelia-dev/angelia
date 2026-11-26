@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/angelia-dev/spec/schemas/release/envelope/v1.json",
-  "title": "Angelia release event envelope, v1 (draft, pre-1.0)",
-  "description": "Angelia's profile of a CloudEvents 1.0 event in JSON structured mode for the release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1. The three types share one data schema (schemas/release/v1.json). DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.",
+  "title": "Angelia event envelope, v1 (draft, pre-1.0)",
+  "description": "Angelia's profile of a CloudEvents 1.0 event in JSON structured mode. The set of event types is open: type is any dev.angelia.<short type>.v<major> name, and new types can appear in a minor release of the spec. Consumers must ignore events whose type they do not know. The release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1 share one data schema (schemas/release/v1.json); for them, subject and dataschema follow the release rules (one then branch per type), and data, like that of any event whose dataschema names schemas/release/v1.json, must validate against it. For another type, subject is a non-empty string, dataschema the URI of that type's data schema, and data is not checked by this schema. DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.",
   "$comment": "DRAFT (spec 0.x). Profile: docs/proposals/0001-release-event-v1-fields.md section 2 (Accepted). Per-attribute docs: docs/release-event-v1.md.",
   "type": "object",
   "required": [
@@ -28,12 +28,10 @@
       "const": "1.0"
     },
     "type": {
-      "description": "Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v1 suffix; it is what subscription filters use.",
-      "enum": [
-        "dev.angelia.release.published.v1",
-        "dev.angelia.release.yanked.v1",
-        "dev.angelia.release.prerelease.v1"
-      ]
+      "description": "Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v<major> suffix; it is what subscription filters use. An open set: today's types are dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1; adding a type is a minor (additive) change. Consumers must ignore events whose type they do not know.",
+      "type": "string",
+      "pattern": "^dev\\.angelia\\.[a-z0-9.]+\\.v[0-9]+$",
+      "examples": ["dev.angelia.release.published.v1"]
     },
     "source": {
       "description": "The watch that produced the event: angelia://<instance>/watches/<watch_id>, where <instance> is the instance name from the instance configuration and <watch_id> equals data.watch.id.",
@@ -47,9 +45,9 @@
       "examples": ["01JBX2A7C8D9E0F1G2H3J4K5M6"]
     },
     "subject": {
-      "description": "<source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version). Lets brokers and routers filter without parsing data.",
+      "description": "Identifies what the event is about, so brokers and routers can filter without parsing data. The form depends on the type: for the release types, <source kind>:<package>@<version> with the raw upstream version (data.source, data.package, data.version); for another type, as that type's documentation says.",
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]{0,62}:.+@.+$",
+      "minLength": 1,
       "examples": ["pypi:requests@2.33.0", "npm:@angular/core@17.3.0", "github-release:cli/cli@v2.62.0"]
     },
     "time": {
@@ -62,12 +60,92 @@
       "const": "application/json"
     },
     "dataschema": {
-      "description": "URI of the data schema: the $id of schemas/release/v1.json. An identifier, not promised to be fetchable.",
-      "const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"
+      "description": "URI of the data schema of the event's type: for the release types, the $id of schemas/release/v1.json. An identifier, not promised to be fetchable.",
+      "type": "string",
+      "format": "uri",
+      "examples": ["https://github.com/angelia-dev/spec/schemas/release/v1.json"]
     },
     "data": {
-      "description": "The release event payload.",
-      "$ref": "../v1.json"
+      "description": "The event payload, described by the data schema of the event's type: for the release types, schemas/release/v1.json."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {"const": "dev.angelia.release.published.v1"}
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "description": "<source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version).",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}:.+@.+$"
+          },
+          "dataschema": {
+            "description": "The $id of schemas/release/v1.json.",
+            "const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {"const": "dev.angelia.release.yanked.v1"}
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "description": "<source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version).",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}:.+@.+$"
+          },
+          "dataschema": {
+            "description": "The $id of schemas/release/v1.json.",
+            "const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {"const": "dev.angelia.release.prerelease.v1"}
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "description": "<source kind>:<package>@<version>, with the raw upstream version (data.source, data.package, data.version).",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}:.+@.+$"
+          },
+          "dataschema": {
+            "description": "The $id of schemas/release/v1.json.",
+            "const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"
+          }
+        }
+      }
+    },
+    {
+      "$comment": "data is checked against the release data schema whenever dataschema names it, so every release type (whose dataschema is that const) has its data checked. One entry only: the release data schema is referenced once, so bundlers that inline it do not get its $id twice.",
+      "if": {
+        "properties": {
+          "dataschema": {"const": "https://github.com/angelia-dev/spec/schemas/release/v1.json"}
+        },
+        "required": ["dataschema"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "description": "The release event payload.",
+            "$ref": "../v1.json"
+          }
+        }
+      }
+    }
+  ]
 }

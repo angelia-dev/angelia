@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { fetchCapped, fetchDeliveries, fetchEventsNewest, fetchWatches } from '@/api/queries'
-import type { Delivery, EventRecord, Watch } from '@/api/types'
+import { isReleaseRecord, type Delivery, type ReleaseEventRecord, type Watch } from '@/api/types'
 import { DeliveryStatusBadge, ErrorCount, RelativeTime } from '@/components/badges'
 import { EmptyState, ErrorState, Head, PageHeader, Skeleton } from '@/components/states'
 import { Stamp } from '@/components/ui/badge'
@@ -80,27 +80,29 @@ function Count({
  * the safety bound (`capped`). The first page also gives each watch's latest release.
  */
 async function loadEvents(): Promise<{
-  recent: EventRecord[]
-  latest: Record<string, EventRecord>
+  recent: ReleaseEventRecord[]
+  latest: Record<string, ReleaseEventRecord>
   last24h: number
   capped: boolean
 }> {
   const day = Date.now() - DAY_MS
   let before: number | undefined
   let last24h = 0
-  let recent: EventRecord[] | undefined
-  const latest: Record<string, EventRecord> = {}
+  let recent: ReleaseEventRecord[] | undefined
+  const latest: Record<string, ReleaseEventRecord> = {}
   for (let i = 0; i < EVENT_COUNT_PAGES; i++) {
     const page = await fetchEventsNewest({}, before, EVENT_COUNT_PAGE)
+    // Events of a type this UI does not know are skipped (spec: consumers ignore unknown types).
+    const releases = page.items.filter(isReleaseRecord)
     if (recent === undefined) {
-      recent = page.items.slice(0, 10)
-      for (const r of page.items) {
+      recent = releases.slice(0, 10)
+      for (const r of releases) {
         const name = r.event.data.watch.name
         if (name && !latest[name] && !r.event.type.includes('yanked')) latest[name] = r
       }
     }
     const inDay = page.items.filter((r) => Date.parse(r.event.time) >= day).length
-    last24h += inDay
+    last24h += releases.filter((r) => Date.parse(r.event.time) >= day).length
     if (inDay < page.items.length || !page.has_more || page.next_before == null) return { recent, latest, last24h, capped: false }
     before = page.next_before
   }
@@ -131,7 +133,7 @@ function readDensity(): 'rack' | 'compact' | undefined {
 }
 
 /** The slip sticking out of a cubby: the watch's latest release and what happened to it. */
-function ReleaseSlip({ record, trouble }: { record: EventRecord; trouble?: Delivery }) {
+function ReleaseSlip({ record, trouble }: { record: ReleaseEventRecord; trouble?: Delivery }) {
   const d = record.event.data
   const p = bumpTone(d.bump)
   return (
@@ -153,7 +155,7 @@ function ReleaseSlip({ record, trouble }: { record: EventRecord; trouble?: Deliv
 }
 
 /** One pigeonhole of the rack: a watch, its latest version and when it is checked next. */
-function Cubby({ watch: w, record, trouble, now }: { watch: Watch; record?: EventRecord; trouble?: Delivery; now: number }) {
+function Cubby({ watch: w, record, trouble, now }: { watch: Watch; record?: ReleaseEventRecord; trouble?: Delivery; now: number }) {
   const progress = checkProgress(w, now)
   const failing = w.status.error_count > 0
   const d = record?.event.data
@@ -227,7 +229,7 @@ function Cubby({ watch: w, record, trouble, now }: { watch: Watch; record?: Even
 }
 
 /** The compact form for many watches: grouped by source, one dense row per watch. */
-function CompactRack({ watches, latest, now }: { watches: Watch[]; latest: Record<string, EventRecord>; now: number }) {
+function CompactRack({ watches, latest, now }: { watches: Watch[]; latest: Record<string, ReleaseEventRecord>; now: number }) {
   const groups = new Map<string, Watch[]>()
   for (const w of watches) groups.set(w.source, [...(groups.get(w.source) ?? []), w])
   return (

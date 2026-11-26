@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { delivery, eventPageDesc, eventRecord, me, page, watch } from '@/test/fixtures'
+import { delivery, eventPageDesc, eventRecord, me, page, unknownEventRecord, watch } from '@/test/fixtures'
 import { mockApi, problem, renderApp } from '@/test/mock-api'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -34,6 +34,24 @@ describe('overview', () => {
     const failing = screen.getByRole('table', { name: 'Failing watches' })
     expect(within(failing).getByRole('link', { name: 'b' })).toBeInTheDocument()
     expect(within(failing).queryByRole('link', { name: 'a' })).not.toBeInTheDocument()
+  })
+
+  it('skips events of a type it does not know in the counts and the latest events', async () => {
+    mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([watch('a')]),
+      '/v1/events': eventPageDesc([unknownEventRecord(3), eventRecord(2), eventRecord(1)]),
+      '/v1/deliveries': page([]),
+    })
+    renderApp()
+    const counts = await screen.findByRole('region', { name: 'Counts' })
+    await vi.waitFor(() =>
+      expect(within(counts).getByText('Events in the last 24 hours').closest('div')?.parentElement).toHaveTextContent('2'),
+    )
+    const latest = await screen.findByRole('table', { name: 'Latest events' })
+    const rows = within(latest).getAllByRole('row').slice(1)
+    expect(rows).toHaveLength(2)
+    expect(latest).not.toHaveTextContent('example:requests')
   })
 
   it('labels a capped count with a plus sign and stops paging', async () => {

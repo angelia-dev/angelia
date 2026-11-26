@@ -74,6 +74,23 @@ export const eventRecord = (seq: number, over: { version?: string; time?: string
   }
 }
 
+/** An event of a type this spec version does not define (spec: the event-type set is open). */
+export const unknownEventRecord = (seq: number, time = new Date(Date.now() - seq * 60_000).toISOString()): S['EventRecord'] => ({
+  seq,
+  ref_event_id: null,
+  event: {
+    specversion: '1.0',
+    type: 'dev.angelia.example.future.v1',
+    source: 'angelia://test/watches/ID-requests',
+    id: `EVT${String(seq).padStart(23, '0')}`,
+    subject: 'example:requests#EX-0001',
+    time,
+    datacontenttype: 'application/json',
+    dataschema: 'https://example.com/schemas/future/v1.json',
+    data: { ref: 'EX-0001' },
+  },
+})
+
 export const eventPage = (items: S['EventRecord'][], has_more = false): S['EventPage'] => ({
   items,
   next_after: items.length ? (items[items.length - 1] as S['EventRecord']).seq : 0,

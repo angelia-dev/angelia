@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { fetchEvent, type EventFilters } from '@/api/queries'
-import type { EventRecord, ShortEventType } from '@/api/types'
+import { isReleaseRecord, type ReleaseEventRecord, type ShortEventType } from '@/api/types'
 import { RelativeTime } from '@/components/badges'
 import { FilterBar, SelectFilter, TextFilter } from '@/components/filters'
 import { EmptyState, ErrorState, Head, PageHeader, Skeleton, TableSkeleton } from '@/components/states'
@@ -60,7 +60,8 @@ export function EventsPage() {
     after: timeline.head,
     enabled: timeline.ready && !paused,
   })
-  const events = useMemo(() => mergeEvents(timeline.loaded, stream.events), [timeline.loaded, stream.events])
+  // Events of a type this UI does not know are skipped (spec: consumers ignore unknown types).
+  const events = useMemo(() => mergeEvents(timeline.loaded, stream.events).filter(isReleaseRecord), [timeline.loaded, stream.events])
   const shown = events.slice(0, rows)
   const now = Date.now()
   const rangeInfo = RANGES.find((r) => r.value === range)!
@@ -185,7 +186,7 @@ export function EventsPage() {
   )
 }
 
-function EventRow({ record, selected, onPick }: { record: EventRecord; selected: boolean; onPick: () => void }) {
+function EventRow({ record, selected, onPick }: { record: ReleaseEventRecord; selected: boolean; onPick: () => void }) {
   const e = record.event
   return (
     <TableRow className={cn(selected && 'bg-primary/15')}>
@@ -219,6 +220,8 @@ export function EventDetailPage() {
   if (query.isPending) return <Skeleton className="h-40 w-full" />
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
   const { event: e, seq } = query.data
+  // Only a release event has a watch in its data; another type shows its envelope as is.
+  const release = isReleaseRecord(query.data) ? query.data : undefined
   return (
     <>
       <PageHeader title={e.subject} />
@@ -249,20 +252,22 @@ export function EventDetailPage() {
               <RelativeTime value={e.time} />
             </TableCell>
           </TableRow>
-          <TableRow>
-            <th scope="row" className="p-3 text-left font-medium text-muted-foreground">
-              Watch
-            </th>
-            <TableCell>
-              {e.data.watch.name ? (
-                <Link to="/watches/$name" params={{ name: e.data.watch.name }} className="underline">
-                  {e.data.watch.name}
-                </Link>
-              ) : (
-                e.data.watch.id
-              )}
-            </TableCell>
-          </TableRow>
+          {release && (
+            <TableRow>
+              <th scope="row" className="p-3 text-left font-medium text-muted-foreground">
+                Watch
+              </th>
+              <TableCell>
+                {release.event.data.watch.name ? (
+                  <Link to="/watches/$name" params={{ name: release.event.data.watch.name }} className="underline">
+                    {release.event.data.watch.name}
+                  </Link>
+                ) : (
+                  release.event.data.watch.id
+                )}
+              </TableCell>
+            </TableRow>
+          )}
         </TableBody>
       </Table>
       <h2 className="mb-2 text-lg font-semibold">CloudEvent</h2>
