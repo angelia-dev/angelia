@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,11 +103,89 @@ func TestHTTPClientStopsAfterMaxRedirects(t *testing.T) {
 			return stubResponse(r, http.StatusFound, http.Header{"Location": {"/again"}}, nil), nil
 		})
 	})
-	if _, err := Fetch(t.Context(), c.HTTPClient(), get(t, "https://192.0.2.1/"), Validators{}); err == nil {
-		t.Fatal("want redirect limit error")
+	_, err := Fetch(t.Context(), c.HTTPClient(), get(t, "https://192.0.2.1/"), Validators{})
+	if err == nil || !strings.Contains(err.Error(), "stopped after 5 redirects") {
+		t.Fatalf("got %v, want an error naming the cap of 5", err)
 	}
-	if hops.Load() != maxRedirects {
-		t.Fatalf("hops: %d, want %d", hops.Load(), maxRedirects)
+	if MaxRedirects != 5 || hops.Load() != 5 {
+		t.Fatalf("hops: %d, MaxRedirects %d, want 5", hops.Load(), MaxRedirects)
+	}
+}
+
+// D109: a redirect from https to http is refused with ErrInvalidURL (not
+// retried), and the http hop is never sent. An http base URL may still
+// redirect to http.
+func TestHTTPClientRefusesHTTPSDowngrade(t *testing.T) {
+	var sent []string
+	c, _ := newTestClient(t, func(cfg *Config) {
+		cfg.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			sent = append(sent, r.URL.String())
+			switch r.URL.Path {
+			case "/down":
+				return stubResponse(r, http.StatusFound, http.Header{"Location": {"http://192.0.2.1/plain"}}, nil), nil
+			case "/up-down":
+				return stubResponse(r, http.StatusFound, http.Header{"Location": {"https://192.0.2.1/down"}}, nil), nil
+			case "/hop":
+				return stubResponse(r, http.StatusFound, http.Header{"Location": {"http://192.0.2.2/plain"}}, nil), nil
+			}
+			return stubResponse(r, http.StatusOK, nil, nil), nil
+		})
+	})
+	for _, start := range []string{"https://192.0.2.1/down", "http://192.0.2.1/up-down"} {
+		sent = nil
+		_, err := Fetch(t.Context(), c.HTTPClient(), get(t, start), Validators{})
+		if !errors.Is(err, ErrInvalidURL) || !strings.Contains(err.Error(), "from https to http") {
+			t.Errorf("%s: got %v, want ErrInvalidURL for the downgrade", start, err)
+		}
+		if slices.Contains(sent, "http://192.0.2.1/plain") {
+			t.Errorf("%s: the http hop was sent: %v", start, sent)
+		}
+	}
+	sent = nil
+	res, err := Fetch(t.Context(), c.HTTPClient(), get(t, "http://192.0.2.1/hop"), Validators{})
+	if err != nil || res.StatusCode != http.StatusOK || len(sent) != 2 {
+		t.Fatalf("http to http: %v, sent %v", err, sent)
+	}
+}
+
+// D105: the exemption is per hop. A listed host that redirects to an
+// unlisted name resolving to a private address, to the link-local metadata
+// address, or to another listed name resolving to the CGNAT metadata
+// address is refused at the second hop, which is never sent.
+func TestAllowHostsPerHop(t *testing.T) {
+	cases := []struct{ location, refusedHost, refusedAddr string }{
+		{"http://other.lan/x", "other.lan", "10.0.0.6"},
+		{"http://169.254.169.254/latest/meta-data/", "169.254.169.254", "169.254.169.254"},
+		{"http://meta.lan/x", "meta.lan", "100.100.100.200"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.location, func(t *testing.T) {
+			var sent []string
+			c, _ := newTestClient(t, func(cfg *Config) {
+				cfg.Allow = nil
+				cfg.AllowHosts = []string{"registry.lan", "meta.lan"}
+				cfg.Resolver = fakeResolver{
+					"registry.lan": addrs("10.0.0.5"),
+					"other.lan":    addrs("10.0.0.6"),
+					"meta.lan":     addrs("100.100.100.200"),
+				}
+				cfg.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					sent = append(sent, r.URL.Host)
+					if r.URL.Host == "registry.lan" {
+						return stubResponse(r, http.StatusFound, http.Header{"Location": {tc.location}}, nil), nil
+					}
+					return stubResponse(r, http.StatusOK, nil, nil), nil
+				})
+			})
+			_, err := Fetch(t.Context(), c.HTTPClient(), get(t, "http://registry.lan/simple/"), Validators{})
+			var be *BlockedError
+			if !errors.As(err, &be) || be.Host != tc.refusedHost || be.Addr.String() != tc.refusedAddr {
+				t.Fatalf("got %v, want %s at %s refused", err, tc.refusedHost, tc.refusedAddr)
+			}
+			if len(sent) != 1 || sent[0] != "registry.lan" {
+				t.Fatalf("sent %v, want only registry.lan", sent)
+			}
+		})
 	}
 }
 

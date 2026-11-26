@@ -1,10 +1,8 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` and `schemas/release/v1.json` are at commit `6e47195` ("docs(release): say which
-sources fill notes and that it is untrusted (spec 0.10.1)") on the spec repository's branch
-`story/83-notes-description` (angelia-dev/spec, to be merged and released as spec 0.10.1 before this change
-merges; update this commit to the one on `main`). Spec 0.10.1 changes descriptions only: the `notes`
+`openapi/angelia.v1.yaml` and `schemas/release/v1.json` are at commit `a8250b0` ("docs(release): say which
+sources fill notes and that it is untrusted (spec 0.10.1) (#22)") on the spec repository's `main`. Spec 0.10.1 changes descriptions only: the `notes`
 description of the release event schema (which sources fill it, and that its text is untrusted upstream
 content) and `info.version` of the OpenAPI document. No field, type, required-ness or enum changed.
 Before that, spec 0.10.0 (commit `da75b65`, "feat(openapi): adopt watch-file resources with POST

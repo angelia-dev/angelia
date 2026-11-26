@@ -40,6 +40,7 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0034](0034-generic-oidc-sign-in.md) | The admin UI signs in with any OpenID Connect provider through `go-oidc`, with PKCE, state and nonce; access entries match a subject or a verified email pinned to its subject | Accepted | #268 |
 | [0035](0035-adopt-watch-file-resources.md) | Watch-file resources move to the API in place with `POST /v1/adoptions`; the startup apply skips adopted names with a warning instead of failing | Accepted | #287 |
 | [0036](0036-release-notes-on-source-version.md) | `source.Version` carries release notes (`Notes`), filled from the GitHub and GitLab release body, cleaned and capped by `source.NewNotes` (amends ADR 0006) | Proposed | #83 |
+| [0040](0040-ssrf-guard-hostname-allowlist-and-redirects.md) | The SSRF guard accepts loopback, private and CGNAT addresses for host names in `http.allow_private_hosts`, never link-local or metadata; at most 5 requests per redirect chain, and redirects never go from https to http | Accepted for D105–D109 (maintainer 2026-11-25); implementation reviewed in the PR | #76 |
 
 ## Process
 
