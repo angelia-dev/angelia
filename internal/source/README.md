@@ -61,7 +61,12 @@ func TestContract(t *testing.T) {
 ```
 
 `Run` starts the `httptest` server for `Handler`, builds the source with `New(srv.URL, client)` and
-checks:
+checks the subtests below. For a source whose upstream URL is a coordinate (`http-json`, `http-regex`), set
+`ServerURLPlaceholder` (say `"{{server}}"`) and write the targets with it (`"url": "{{server}}/tool.json"`):
+`Run` replaces it with `srv.URL` in every coordinate value of `Valid`, `Invalid`, `Missing` and `Aliases`
+before the checks, without modifying the caller's maps.
+
+The checks:
 
 | Subtest | Checks |
 |---|---|

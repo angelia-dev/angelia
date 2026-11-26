@@ -64,7 +64,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `oci`, `go-proxy`, `maven`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `oci`, `go-proxy`, `maven`, `github-release`, `github-tag`, `gitlab-release`, `http-json`, `http-regex`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `maven`, `calver`, `lexical` (#68, #96) |
@@ -76,11 +76,15 @@ also across owners: apply refuses a name that a row created through the API alre
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
   `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id;
   `go-proxy`: `module`, the module path as written in `go.mod` (see below);
-  `maven`: `package` as `groupId:artifactId` (`org.slf4j:slf4j-api`, case-sensitive); each in the
+  `maven`: `package` as `groupId:artifactId` (`org.slf4j:slf4j-api`, case-sensitive);
+  `http-json`: `name`, `url`, `jsonpath` and optional `extract`; `http-regex`: `name`, `url` and `regex`
+  ([generic-sources.md](generic-sources.md)); each in the
   form `Source.Validate` accepts. `oci`: `image`, the repository with its registry host (`ghcr.io/org/app`; no
   host means Docker Hub). It is stored in canonical form, `node` as `docker.io/library/node`, which is also
   `data.package`; a tag (`:22`), a digest (`@sha256:...`), a scheme or upper case in the path is refused.
   See [OCI images](#oci-images-choosing-the-version-tags) for the version filters.
+  The generic HTTP sources choose their URL in the watch (decision D18); creating
+  or retargeting such a watch through the API needs the `admin` scope.
   A `maven` watch defaults to `scheme: maven`, so `-SNAPSHOT`, `-rc1` and
   `-M2` versions are pre-releases. For artifacts that publish flavours of one version, pick one with
   `include`: Guava publishes `33.8.0-android` and `33.8.0-jre`, so `policy: {include: ['-jre$']}`.
@@ -436,3 +440,4 @@ is a public contract consumers use for editor completion and CI linting. Any cha
 | D15 | Whole-file validation, all-or-nothing, process exits non-zero on error | skip invalid entries and continue | All-or-nothing; a half-applied GitOps file is worse than a crash |
 | D16 | Filter keys `source`, `labels`, `bump`, `package`, `type`; `source` instead of the PRD's "ecosystem" | `ecosystem` | `source`: it is the same word as the watch key and the CloudEvents attribute |
 | D17 | `scheme` is a top-level watch key, stored in `policy_json` | inside `policy` | Top-level, as #68 specifies; storage detail is internal |
+| D18 | A watch of `http-json` or `http-regex` chooses its URL (a coordinate); no watch chooses a token. Amends D9 and section 1 for these two kinds (#97, [ADR 0038](adr/0038-generic-http-sources.md)) | URL only in the instance config (one named instance per URL); a per-host opt-in in the instance config | The URL in the watch, behind netguard, `https://` (or `http.allow_http_hosts`), and the `admin` scope for API writes that create or retarget such a watch; approved by the maintainer (#97 D52) |

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.11.0
+  version: 0.12.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -159,6 +159,13 @@ paths:
 
         A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
         needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+
+        The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+        (its `url` coordinate). A request that creates a watch whose source is of either kind,
+        or that changes the `source` or `coordinates` of a watch when the stored or the new
+        source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+        `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+        a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 
         Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
         writes only if the watch is still that version, else `412 precondition-failed`;
@@ -1998,7 +2005,7 @@ components:
         An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
         ordered, and a token satisfies an operation whose scope is at or below its own:
         `read` (every `GET`), `write` (watches, subscriptions, replays, consumers and their acks), `admin` (sinks, secrets, API tokens,
-        any change to a `*_ref` key, and everything else). The scope an operation needs is listed in its `security` requirement.
+        any change to a `*_ref` key, creating or retargeting a watch of `http-json` or `http-regex`, and everything else). The scope an operation needs is listed in its `security` requirement.
         The token and its scope are checked before anything else, so a `401` or `403` never
         reveals whether a resource exists.
 
@@ -2513,7 +2520,7 @@ components:
           $ref: '#/components/schemas/Kind'
           description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
-          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form."
           type: object
           minProperties: 1
           additionalProperties:
@@ -2549,7 +2556,7 @@ components:
           $ref: '#/components/schemas/Kind'
           description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
-          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form."
           type: object
           minProperties: 1
           additionalProperties:

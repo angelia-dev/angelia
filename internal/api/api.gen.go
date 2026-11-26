@@ -1486,7 +1486,7 @@ type VersionPage struct {
 // Watch A watch as the server returns it: the write keys with every default filled in, plus
 // response-only fields. Sending the write keys back with `PUT` changes nothing.
 type Watch struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Id Generated when the watch is created; kept across updates. Equals `data.watch.id` in its events.
@@ -1575,7 +1575,7 @@ type WatchStatus struct {
 // WatchWrite The body of `PUT /v1/watches/{name}`: the keys of `watches[]` in the watch file. Omitted
 // optional keys take their defaults.
 type WatchWrite struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Interval The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.

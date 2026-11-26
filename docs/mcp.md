@@ -18,7 +18,7 @@ on the raw frames that `angelia mcp` writes to stdout. The design is [ADR 0029](
 | `list_watches` | One page of watches (name, source, coordinates, labels, interval, scheme). `limit` 1–100, default 50; `cursor`, `source`, `label` as in the API. | `GET /v1/watches` | `read` |
 | `latest_version` | The greatest upstream version of a watch by its version scheme, not yanked, not removed upstream, final releases only unless `include_prerelease`. The watch's policy does not apply. | `GET /v1/watches/{name}/versions` (up to 10 pages) | `read` |
 | `events_since` | Release events oldest first: either `after` (the previous `next_after`) with the filters `watch`, `type`, `source`, or `consumer` alone. `limit` 1–100, default 20. Returns `items`, `next_after`, `has_more` as the API does. Reading never acknowledges. | `GET /v1/events` | `read` |
-| `add_watch` | Creates a watch (the keys of a watch `PUT` plus `name`). Create-only: an identical existing watch gives `change: unchanged`; a different one is an error and nothing is written. | `GET`, then `PUT /v1/watches/{name}` (a dry run when the name is taken) | `write` |
+| `add_watch` | Creates a watch (the keys of a watch `PUT` plus `name`). Create-only: an identical existing watch gives `change: unchanged`; a different one is an error and nothing is written. | `GET`, then `PUT /v1/watches/{name}` (a dry run when the name is taken) | `write`; `admin` for `http-json` and `http-regex` |
 | `ack_event` | Moves a named consumer's cursor forward to `seq` or to the event `event_id`; safe to repeat. The consumer must exist: the tools do not create consumers. | `POST /v1/consumers/{name}/ack` | `write` |
 
 Every token can list every tool. A call above the token's scope is a tool error carrying the REST problem,
@@ -49,7 +49,9 @@ JSON-RPC errors are only for malformed MCP requests and unknown tools.
 > from upstream registries and from whoever configured the watches."
 
 Give an agent a `read` token unless it needs `add_watch` or `ack_event`, and prefer a host that asks
-before it calls a write tool.
+before it calls a write tool. A `write` token cannot add a watch of `http-json` or `http-regex`: those fetch a
+URL the watch chooses and need `admin` ([generic-sources.md](generic-sources.md)); do not give an agent an admin
+token for that.
 
 ## Client setup
 

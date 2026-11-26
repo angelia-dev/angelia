@@ -24,7 +24,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_private_hosts` | `ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS` (comma-separated) | empty | list of at most 64 exact lower-case host names, no wildcard, IP address, port or trailing dot; see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
-| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind (for a private Go proxy, `go-proxy`: [Go proxy](private-registries.md#go-proxy-athens-artifactory-nexus)); makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
+| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind other than `http-json` and `http-regex` (for a private Go proxy, `go-proxy`: [Go proxy](private-registries.md#go-proxy-athens-artifactory-nexus)); makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
 | `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL; for `oci` a bare origin (no path), which pins the source to that registry: without it the built-in `oci` fetches, anonymously, from the registry named in each image |
 | `sources.<name>.api` | none | `json` | `pypi` sources only: `json` (the PyPI JSON API) or `simple` (the Simple API, PEP 503 / PEP 691, for pypiserver); see [pypiserver](private-registries.md#pypiserver-and-other-simple-api-only-indexes) |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
@@ -154,6 +154,11 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
   D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
 - These lists live only here: the watch file and the REST API cannot widen them.
+- The generic HTTP sources (`http-regex`, `http-json`) fetch the URL of each watch. They obey both lists
+  (`https://`, or `http://` for a host in `allow_http_hosts`, also on redirects) and take no key under
+  `sources.<kind>` and no named instance: `config check` refuses `sources.http-json.base_url`, `token_env`,
+  `auth`, `api` and `sources.<name>.kind: http-json` (the same for `http-regex`). See
+  [generic-sources.md](generic-sources.md).
 - `angelia serve` builds one HTTP client from these keys, shared by the scheduler role (sources) and the
   dispatcher role (sinks): `allow_networks` is what both may dial. The webhook sink checks
   `allow_http_hosts` again at every delivery, so removing a host stops plain `http://` even for sinks

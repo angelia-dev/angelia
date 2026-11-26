@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,6 +71,44 @@ type Fixtures struct {
 	// target of Valid. They are required when the source implements
 	// source.Canonicalizer and not allowed when it does not. See ADR 0021.
 	Aliases []source.Target
+	// ServerURLPlaceholder, if set, is a string that Run replaces with the
+	// fake server's URL (srv.URL, "http://127.0.0.1:<port>") in every
+	// coordinate value of Valid, Invalid, Missing and Aliases before the
+	// checks, for sources whose upstream URL is a coordinate (http-json,
+	// http-regex). It needs Handler and New.
+	ServerURLPlaceholder string
+}
+
+// withServerURL returns fx with ServerURLPlaceholder replaced by u in every
+// coordinate value of its targets. The caller's maps are not modified.
+func (fx Fixtures) withServerURL(u string) Fixtures {
+	if fx.ServerURLPlaceholder == "" {
+		return fx
+	}
+	sub := func(t source.Target) source.Target {
+		if t.Coordinates == nil {
+			return t
+		}
+		c := make(map[string]string, len(t.Coordinates))
+		for k, v := range t.Coordinates {
+			c[k] = strings.ReplaceAll(v, fx.ServerURLPlaceholder, u)
+		}
+		return source.Target{Kind: t.Kind, Coordinates: c}
+	}
+	fx.Valid = sub(fx.Valid)
+	fx.Invalid = slices.Clone(fx.Invalid)
+	for i := range fx.Invalid {
+		fx.Invalid[i] = sub(fx.Invalid[i])
+	}
+	if fx.Missing != nil {
+		m := sub(*fx.Missing)
+		fx.Missing = &m
+	}
+	fx.Aliases = slices.Clone(fx.Aliases)
+	for i := range fx.Aliases {
+		fx.Aliases[i] = sub(fx.Aliases[i])
+	}
+	return fx
 }
 
 // Run executes the contract suite as subtests of t. Pass src directly for a
@@ -83,11 +122,14 @@ func Run(t *testing.T, src source.Source, fx Fixtures) {
 		t.Fatal("sourcetest: pass either src or Fixtures.New, not both")
 	case src == nil && (fx.New == nil || fx.Handler == nil):
 		t.Fatal("sourcetest: pass src, or set both Fixtures.Handler and Fixtures.New")
+	case src != nil && fx.ServerURLPlaceholder != "":
+		t.Fatal("sourcetest: ServerURLPlaceholder needs Fixtures.Handler and Fixtures.New")
 	case src == nil:
 		srv := httptest.NewServer(fx.Handler)
 		t.Cleanup(srv.Close)
 		client = Client(t, srv)
 		src = fx.New(srv.URL, client)
+		fx = fx.withServerURL(srv.URL)
 	}
 	checks := []struct {
 		name string

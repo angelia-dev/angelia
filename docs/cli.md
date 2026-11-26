@@ -117,7 +117,10 @@ Safety rules:
 
 Sinks need a token with the `admin` scope, and a sink's `secret_env` must be
 listed in the instance's `api.allowed_env`. Watches and subscriptions need
-`write`. An example is [examples/apply.yaml](../examples/apply.yaml).
+`write`, except a watch of `http-json` or `http-regex`: creating one, or
+changing its `source` or `coordinates`, needs `admin`, because these sources
+fetch a URL the watch chooses ([generic-sources.md](generic-sources.md)). A
+file with such watches is therefore applied with an admin token. An example is [examples/apply.yaml](../examples/apply.yaml).
 
 ### Moving from `serve --watches` to `apply`
 

@@ -57,6 +57,13 @@ export interface paths {
          *     A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
          *     needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
          *
+         *     The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+         *     (its `url` coordinate). A request that creates a watch whose source is of either kind,
+         *     or that changes the `source` or `coordinates` of a watch when the stored or the new
+         *     source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+         *     `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+         *     a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+         *
          *     Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
          *     writes only if the watch is still that version, else `412 precondition-failed`;
          *     `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -1003,7 +1010,7 @@ export interface components {
             name?: components["schemas"]["Name"];
             /** @description A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`. */
             source: components["schemas"]["Kind"];
-            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form. */
+            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form. */
             coordinates: {
                 [key: string]: string;
             };
@@ -1029,7 +1036,7 @@ export interface components {
             managed_by: components["schemas"]["ManagedBy"];
             /** @description A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`. */
             source: components["schemas"]["Kind"];
-            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form. */
+            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form. */
             coordinates: {
                 [key: string]: string;
             };
@@ -2031,7 +2038,7 @@ export interface components {
              */
             source: components["schemas"]["openToken"];
             /**
-             * @description Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven).
+             * @description Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven), the watch's `name` coordinate (`http-json`, `http-regex`).
              * @example requests
              */
             package: string;
