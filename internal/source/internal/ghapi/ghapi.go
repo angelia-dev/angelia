@@ -77,10 +77,16 @@ func ParseRepo(kind string, t source.Target) (owner, name string, err error) {
 	}
 	repo := t.Coordinates["repo"]
 	owner, name, ok := strings.Cut(repo, "/")
-	if !ok || !ownerRe.MatchString(owner) || !nameRe.MatchString(name) || name == "." || name == ".." {
+	if !ok || !ValidRepo(owner, name) {
 		return "", "", fmt.Errorf("%w: coordinate repo must be owner/name, got %q", source.ErrInvalidTarget, repo)
 	}
 	return owner, name, nil
+}
+
+// ValidRepo reports whether owner and name are a well-formed GitHub owner and
+// repository name (the rules ParseRepo applies to the "repo" coordinate).
+func ValidRepo(owner, name string) bool {
+	return ownerRe.MatchString(owner) && nameRe.MatchString(name) && name != "." && name != ".."
 }
 
 // Get fetches u with the GitHub headers and, if tok is not empty, a bearer

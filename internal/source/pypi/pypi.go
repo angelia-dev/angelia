@@ -5,7 +5,15 @@
 // for pypiserver and other mirrors that do not serve the JSON API. The base
 // URL is configurable so mirrors work.
 //
-// Release notes are out of scope.
+// Release notes are out of scope, but the links are not: the JSON response
+// already names the project's source repository (info.project_urls,
+// info.home_page), so every Version of a JSON-API check carries
+// Metadata["repository_url"] (https://github.com/owner/name, see package
+// repolink) when the project declares a GitHub or GitLab repository, and the
+// newest Version carries NotesURL when the project declares a changelog page.
+// PyPI describes only the latest release in these fields, so they are applied
+// to every version as declared, not verified. The Simple API has no project
+// URLs and sets neither.
 package pypi
 
 import (
@@ -24,6 +32,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 )
 
@@ -104,6 +113,11 @@ func WithAPI(a API) Option {
 // Metadata["project_name"] the project name as PyPI reports it (info.name,
 // for example "Django"), from which the event's purl is built. It is left
 // out when the response has no info.name.
+//
+// Metadata["repository_url"] is the project's declared GitHub or GitLab
+// repository as https://host/owner/name, on every version, and the newest
+// version's NotesURL its declared changelog page; both are left out when the
+// project declares none (see the package documentation).
 func New(baseURL string, c *http.Client, opts ...Option) *Source {
 	s := &Source{client: c, log: slog.Default()}
 	for _, o := range opts {
@@ -223,7 +237,9 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 	}
 	var doc struct {
 		Info struct {
-			Name string `json:"name"`
+			Name        string          `json:"name"`
+			ProjectURLs json.RawMessage `json:"project_urls"`
+			HomePage    json.RawMessage `json:"home_page"`
 		} `json:"info"`
 		Releases map[string][]file `json:"releases"`
 	}
@@ -246,6 +262,15 @@ func (s *Source) List(ctx context.Context, t source.Target, st source.FetchState
 		versions = append(versions, v)
 	}
 	sortNewestFirst(versions)
+	links := repolink.PyPI(doc.Info.ProjectURLs, doc.Info.HomePage)
+	if links.HasRepo {
+		for _, v := range versions {
+			v.Metadata["repository_url"] = links.Repo.URL()
+		}
+	}
+	if links.Changelog != "" && len(versions) > 0 {
+		versions[0].NotesURL = links.Changelog // project URLs describe the latest release only
+	}
 	return source.Result{Versions: versions, State: state}, nil
 }
 

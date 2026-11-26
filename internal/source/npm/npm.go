@@ -43,6 +43,18 @@
 // "integrity" and "shasum" when the registry gives them, and
 // "unpublished": true for unpublished versions. Prerelease is left nil: npm
 // has no such flag and the core derives it from the version.
+//
+// # Repository link
+//
+// The full packument has a top-level "repository" (the latest version's
+// package.json): a string such as "github:owner/repo" or "owner/repo", a URL,
+// or {type, url, directory}. When it names a github.com or gitlab.com
+// repository every Version carries Metadata["repository_url"]
+// (https://host/owner/name, see package repolink), and
+// Metadata["repository_directory"] when the object has a "directory" (a
+// package in a monorepo). The link is as declared by the publisher, not
+// verified. The abbreviated packument has no "repository", so those watches
+// get neither key.
 package npm
 
 import (
@@ -59,6 +71,7 @@ import (
 
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 )
 
 const (
@@ -154,6 +167,9 @@ type packument struct {
 	DistTags map[string]string          `json:"dist-tags"`
 	Versions map[string]pkgInfo         `json:"versions"`
 	Time     map[string]json.RawMessage `json:"time"`
+	// Repository is the top-level repository of the full packument (the
+	// latest version's package.json): a string or {type, url, directory}.
+	Repository json.RawMessage `json:"repository"`
 }
 
 type pkgInfo struct {
@@ -214,6 +230,7 @@ func (s *Source) versions(name string, p *packument) []source.Version {
 	for tag, v := range p.DistTags {
 		tagsOf[v] = append(tagsOf[v], tag)
 	}
+	repo, dir, hasRepo := repolink.NPM(p.Repository)
 	out := make([]source.Version, 0, len(p.Versions))
 	for raw, info := range p.Versions {
 		out = append(out, s.version(name, raw, timeOf(p.Time, raw), &info, tagsOf[raw]))
@@ -242,6 +259,14 @@ func (s *Source) versions(name string, p *packument) []source.Version {
 		v.Yanked = true
 		v.Metadata["unpublished"] = true
 		out = append(out, v)
+	}
+	if hasRepo {
+		for _, v := range out {
+			v.Metadata["repository_url"] = repo.URL()
+			if dir != "" {
+				v.Metadata["repository_directory"] = dir
+			}
+		}
 	}
 	slices.SortFunc(out, func(a, b source.Version) int {
 		if c := b.PublishedAt.Compare(a.PublishedAt); c != 0 {
