@@ -25,6 +25,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
+	"github.com/angelia-dev/angelia/internal/sink/gitlabtrigger"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -283,6 +284,9 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// decided question 4 and D12).
 		webhook.New(hc, webhook.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts, Logger: log}),
 		githubdispatch.New(hc, githubdispatch.Options{}),
+		// Like the webhook, a plain-http base_url is delivered only to a host
+		// of http.allow_http_hosts, checked at every delivery (#90, D72).
+		gitlabtrigger.New(hc, gitlabtrigger.Options{AllowHTTPHosts: cfg.HTTP.AllowHTTPHosts}),
 		// The dispatcher checks the origins it derives from the URL secret
 		// (ADR 0026 §2); the sink sends only to them.
 		shoutrrr.New(hc, shoutrrr.Options{}),

@@ -63,7 +63,7 @@ var (
 	// instanceRE is the <instance> part of the CloudEvents source
 	// angelia://<instance>/watches/<watch_id> (spec envelope profile v1).
 	instanceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,62}$`)
-	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "npm_", "pypi-", "whsec_"}
+	tokenStart = []string{"ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "glptt-", "npm_", "pypi-", "whsec_"}
 )
 
 // secret holds a credential: a [secrets.Value], which prints as [REDACTED]

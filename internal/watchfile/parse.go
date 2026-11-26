@@ -26,6 +26,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/render"
 	"github.com/angelia-dev/angelia/internal/secrets"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
+	"github.com/angelia-dev/angelia/internal/sink/gitlabtrigger"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
@@ -51,7 +52,7 @@ const NamePattern = `^[a-z0-9][a-z0-9._-]{0,62}$`
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
 // SinkKinds are the sink kinds a watch file may declare.
-var SinkKinds = []string{"webhook", githubdispatch.Kind, shoutrrr.Kind}
+var SinkKinds = []string{"webhook", githubdispatch.Kind, gitlabtrigger.Kind, shoutrrr.Kind}
 
 // Options controls Parse.
 type Options struct {
@@ -406,6 +407,8 @@ func (p *parser) top(root *yaml.Node) *File {
 				p.errf(it, jp+".sink", "no sink named %q in this file", s.Sink)
 			} else if s.Template != "" && slices.ContainsFunc(f.Sinks, func(k Sink) bool { return k.Name == s.Sink && k.Kind == githubdispatch.Kind }) {
 				p.warnf(it, jp+".template", "template has no effect on a github-dispatch sink; use event_type or inputs")
+			} else if s.Template != "" && slices.ContainsFunc(f.Sinks, func(k Sink) bool { return k.Name == s.Sink && k.Kind == gitlabtrigger.Kind }) {
+				p.warnf(it, jp+".template", "template has no effect on a gitlab-pipeline-trigger sink; use variables or inputs")
 			}
 			f.Subscriptions = append(f.Subscriptions, s)
 		}
@@ -430,6 +433,8 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 			s.Config = p.webhook(cn, jp+".config")
 		case githubdispatch.Kind:
 			s.Config = p.githubDispatch(cn, jp+".config")
+		case gitlabtrigger.Kind:
+			s.Config = p.gitlabPipelineTrigger(cn, jp+".config")
 		case shoutrrr.Kind:
 			s.Config = p.shoutrrr(cn, jp+".config")
 		}
@@ -595,6 +600,87 @@ func (p *parser) githubDispatch(n *yaml.Node, jp string) json.RawMessage {
 	}
 	if tn := m["timeout"]; tn != nil {
 		if d, ok := p.duration(tn, jp+".timeout", githubdispatch.MinTimeout, githubdispatch.MaxTimeout, false); ok {
+			cfg.Timeout = d.String()
+			if d > dispatch.DefaultDeliverTimeout {
+				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
+					d, dispatch.DefaultDeliverTimeout)
+			}
+		}
+	}
+	return marshal(cfg)
+}
+
+// gitlabPipelineTrigger reads the config of a gitlab-pipeline-trigger sink
+// (spec GitlabPipelineTriggerSinkConfig) with the rules of
+// gitlabtrigger.Validate. It writes the defaults into the stored
+// configuration, so that base_url, the key a stored token is bound to
+// (x-angelia-destination), is always present.
+func (p *parser) gitlabPipelineTrigger(n *yaml.Node, jp string) json.RawMessage {
+	m := p.mapping(n, jp, "project", "ref", "base_url", "token_env", "token_ref", "variables", "inputs", "timeout")
+	if m == nil {
+		return nil
+	}
+	cfg := gitlabtrigger.Config{BaseURL: gitlabtrigger.DefaultBaseURL, Timeout: gitlabtrigger.DefaultTimeout.String()}
+	for _, k := range []struct {
+		key   string
+		check func(string) error
+		dst   *string
+	}{{"project", gitlabtrigger.CheckProject, &cfg.Project}, {"ref", gitlabtrigger.CheckRef, &cfg.Ref}} {
+		kn := p.need(m, k.key, jp+"."+k.key, n)
+		if kn == nil {
+			continue
+		}
+		if s, ok := p.secretFree(kn, jp+"."+k.key); ok {
+			if err := k.check(s); err != nil {
+				p.errf(kn, jp+"."+k.key, "%v", err)
+			} else {
+				*k.dst = s
+			}
+		}
+	}
+	if un := m["base_url"]; un != nil {
+		if s, ok := p.secretFree(un, jp+".base_url"); ok {
+			if err := gitlabtrigger.CheckBaseURL(s); err != nil {
+				p.errf(un, jp+".base_url", "%v", err)
+			} else {
+				cfg.BaseURL = s
+				if u, _ := url.Parse(s); u != nil && u.Scheme == "http" {
+					if !slices.ContainsFunc(p.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, u.Hostname()) }) {
+						p.errf(un, jp+".base_url", "must be https:// (http:// is accepted only for hosts on the instance allowlist)")
+					} else {
+						p.warnf(un, jp+".base_url", "the trigger token is sent in cleartext over http://")
+					}
+				}
+			}
+		}
+	}
+	cfg.TokenEnv, cfg.TokenRef = p.credentialRefs(m, jp, "token_env", "token_ref")
+	if m["token_env"] == nil && m["token_ref"] == nil {
+		p.errf(n, jp, "set one of token_env and token_ref: a pipeline trigger needs its token")
+	}
+	for _, k := range []struct {
+		key   string
+		check func(string) error
+		dst   *map[string]string
+	}{{"variables", gitlabtrigger.CheckVariableName, &cfg.Variables}, {"inputs", gitlabtrigger.CheckInputName, &cfg.Inputs}} {
+		in := m[k.key]
+		if in == nil {
+			continue
+		}
+		*k.dst = p.stringMap(in, join(jp, k.key), true, func(name string, kn *yaml.Node, v string, vn *yaml.Node) {
+			if err := k.check(name); err != nil {
+				p.errf(kn, join(jp+"."+k.key, name), "%v", err)
+			}
+			if err := gitlabtrigger.CheckTemplate(v, gitlabtrigger.MaxTemplate); err != nil {
+				p.errf(vn, join(jp+"."+k.key, name), "%v", err)
+			}
+		})
+		if len(*k.dst) > gitlabtrigger.MaxEntries {
+			p.errf(in, jp+"."+k.key, "at most %d %s", gitlabtrigger.MaxEntries, k.key)
+		}
+	}
+	if tn := m["timeout"]; tn != nil {
+		if d, ok := p.duration(tn, jp+".timeout", gitlabtrigger.MinTimeout, gitlabtrigger.MaxTimeout, false); ok {
 			cfg.Timeout = d.String()
 			if d > dispatch.DefaultDeliverTimeout {
 				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
