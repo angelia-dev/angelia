@@ -495,3 +495,25 @@ func TestYankDeliveriesRecordTheTraceParent(t *testing.T) {
 		t.Fatal("no yank event")
 	}
 }
+
+// A yank repeats the stored payload, so it carries the original's notes.
+func TestBuildYankKeepsNotes(t *testing.T) {
+	s := loadSchemas(t)
+	w := store.Watch{ID: "01JBX5D6E7F8G9H0J1K2M3N4P5", Name: "example-lib"}
+	r := pypiRelease("0.4.1", "0.4.0", "patch")
+	r.Notes = source.NewNotes("markdown", "## 0.4.1\n\n- fixes")
+	orig, err := Build(Input{
+		Instance: "ci.example", Target: target("pypi", map[string]string{"name": "example-lib"}), Watch: w,
+		Release: r, Time: detected,
+	})
+	must(t, err)
+	b, err := json.Marshal(orig)
+	must(t, err)
+	y, err := BuildYank(YankInput{ID: "01JBXA1B2C3D4E5F6G7H8J9K0M", Instance: "ci.example", Watch: w, Original: b, Time: detected.Add(time.Hour)})
+	must(t, err)
+	got := validEvent(t, s, y)["data"].(map[string]any)["notes"]
+	want := map[string]any{"format": "markdown", "body": "## 0.4.1\n\n- fixes", "truncated": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("yank notes = %v, want %v", got, want)
+	}
+}

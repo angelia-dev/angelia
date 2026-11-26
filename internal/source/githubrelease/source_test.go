@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -611,4 +612,95 @@ func TestWithNetguardClient(t *testing.T) {
 	if recs := f.records(); recs[0].Auth == "" || recs[1].Status != http.StatusNotModified {
 		t.Errorf("records = %+v", recs)
 	}
+}
+
+func versionsByRaw(vs []source.Version) map[string]source.Version {
+	m := map[string]source.Version{}
+	for _, v := range vs {
+		m[v.Raw] = v
+	}
+	return m
+}
+
+// The release body becomes Version.Notes: cleaned, bounded, nil when absent.
+func TestMapsReleaseBodyToNotes(t *testing.T) {
+	f := newFake(t, "")
+	s, _ := newSource(t, f)
+	res, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := versionsByRaw(res.Versions)
+	if n := by["v2.1.0-rc.1"].Notes; n != nil {
+		t.Errorf("null body: notes = %+v, want nil", n)
+	}
+	if n := by["v1.0.0"].Notes; n != nil {
+		t.Errorf("empty body: notes = %+v, want nil", n)
+	}
+	want := &source.Notes{Format: "markdown", Body: "## 1.1.0\n\n- Synthetic change"}
+	if n := by["v1.1.0"].Notes; !reflect.DeepEqual(n, want) {
+		t.Errorf("v1.1.0 notes = %+v, want %+v", n, want)
+	}
+	// CRLF and the HTML comment are cleaned.
+	want = &source.Notes{Format: "markdown", Body: "## 2.0.0\n\n\n- Synthetic change one\n- Synthetic change two"}
+	if n := by["v2.0.0"].Notes; !reflect.DeepEqual(n, want) {
+		t.Errorf("v2.0.0 notes = %+v, want %+v", n, want)
+	}
+	// Over 16 KiB: cut at the cap, flagged.
+	n := by["v1.2.0"].Notes
+	if n == nil || !n.Truncated || len(n.Body) > source.MaxNotesBytes || !strings.HasPrefix(n.Body, "Synthetic line 0000 ") {
+		t.Fatalf("v1.2.0 notes = %v, want a truncated body of at most %d bytes", n, source.MaxNotesBytes)
+	}
+	if by["v2.0.0"].NotesURL != "https://github.com/example/tool/releases/tag/v2.0.0" {
+		t.Errorf("NotesURL = %q, want the release page", by["v2.0.0"].NotesURL)
+	}
+}
+
+// D35: decoding the body costs no request: one page per List, a 304 stays a
+// 304, and an incremental check and a full rescan are one request each.
+func TestNotesCostNoExtraRequest(t *testing.T) {
+	f := newFake(t, "")
+	now := fixedNow()
+	s, _ := newSource(t, f, githubrelease.WithClock(func() time.Time { return now }))
+	reset := func() { f.mu.Lock(); f.reqs = nil; f.mu.Unlock() }
+	count := func(step string, want int, status ...int) {
+		t.Helper()
+		recs := f.records()
+		if len(recs) != want {
+			t.Fatalf("%s: %d requests, want %d: %+v", step, len(recs), want, recs)
+		}
+		if len(status) == 1 && recs[0].Status != status[0] {
+			t.Fatalf("%s: status %d, want %d", step, recs[0].Status, status[0])
+		}
+	}
+	first, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count("first fetch", 1, http.StatusOK)
+
+	reset()
+	res, err := s.List(t.Context(), valid, first.State)
+	if err != nil || !res.NotModified {
+		t.Fatalf("second: %+v, %v", res, err)
+	}
+	count("304", 1, http.StatusNotModified)
+
+	reset()
+	f.add(t)
+	res, err = s.List(t.Context(), valid, first.State)
+	if err != nil || res.NotModified {
+		t.Fatalf("incremental: %+v, %v", res, err)
+	}
+	count("incremental", 1, http.StatusOK)
+	if n := versionsByRaw(res.Versions)["v2.1.0"].Notes; n == nil || n.Body != "## 2.1.0\n\n- Synthetic new feature" {
+		t.Errorf("new release notes = %+v", n)
+	}
+
+	reset()
+	now = now.Add(25 * time.Hour)
+	if _, err := s.List(t.Context(), valid, res.State); err != nil {
+		t.Fatal(err)
+	}
+	count("full rescan", 1, http.StatusOK)
 }

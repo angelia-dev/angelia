@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -834,4 +835,46 @@ func TestRealShapedRecordIsMapped(t *testing.T) {
 		}
 	}
 	t.Error("v2.1.0 not reported")
+}
+
+// The release description becomes Version.Notes: cleaned, bounded, nil when
+// null or empty, and it costs no request.
+func TestMapsDescriptionToNotes(t *testing.T) {
+	f := newFake(t, "")
+	s, _ := newSource(t, f, gitlabrelease.WithClock(fixedNow))
+	res, err := s.List(t.Context(), valid, source.FetchState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]source.Version{}
+	for _, v := range res.Versions {
+		by[v.Raw] = v
+	}
+	want := &source.Notes{Format: "markdown", Body: "Release candidate."}
+	if n := by["v2.1.0-rc.1"].Notes; !reflect.DeepEqual(n, want) {
+		t.Errorf("rc notes = %+v, want %+v", n, want)
+	}
+	// CRLF and the HTML comment are cleaned.
+	want = &source.Notes{Format: "markdown", Body: "## 2.0.0\n\n\n- Synthetic change one\n- Synthetic change two"}
+	if n := by["v2.0.0"].Notes; !reflect.DeepEqual(n, want) {
+		t.Errorf("v2.0.0 notes = %+v, want %+v", n, want)
+	}
+	n := by["v1.2.0"].Notes
+	if n == nil || !n.Truncated || len(n.Body) > source.MaxNotesBytes || !strings.HasPrefix(n.Body, "Synthetic line 0000 ") {
+		t.Fatalf("v1.2.0 notes = %v, want a truncated body of at most %d bytes", n, source.MaxNotesBytes)
+	}
+	for _, raw := range []string{"v1.1.0" /* null */, "v1.0.0" /* empty */} {
+		if n := by[raw].Notes; n != nil {
+			t.Errorf("%s notes = %+v, want nil", raw, n)
+		}
+	}
+	if recs := f.records(); len(recs) != 1 {
+		t.Errorf("requests = %+v, want one page request (no request for notes)", recs)
+	}
+	// A 304 stays a 304.
+	f.reset()
+	second, err := s.List(t.Context(), valid, res.State)
+	if err != nil || !second.NotModified || len(f.records()) != 1 {
+		t.Errorf("second = %+v, %v, %d requests", second, err, len(f.records()))
+	}
 }
