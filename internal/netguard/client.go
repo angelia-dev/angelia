@@ -32,8 +32,14 @@ const (
 	DefaultBaseBackoff  = 500 * time.Millisecond
 	DefaultMaxBackoff   = 30 * time.Second
 	DefaultMaxRetryWait = 2 * time.Minute
-	maxRedirects        = 10 // net/http's own default
 )
+
+// MaxRedirects is the number of requests a redirect chain may make, the
+// first included, before HTTPClient stops it (net/http counts the same
+// way, with 10). No public registry a built-in source reads needs more
+// than two hops (ADR 0040, D106). apiclient.GuardRedirects and the WASM
+// plugin host use it when the client they wrap has no CheckRedirect.
+const MaxRedirects = 5
 
 // ErrBodyTooLarge is returned when reading a response body past the cap.
 var ErrBodyTooLarge = errors.New("response body exceeds size cap")
@@ -84,6 +90,15 @@ type Config struct {
 	// Allow lists prefixes the SSRF guard accepts even though they are
 	// loopback, private or link-local. Empty by default.
 	Allow []netip.Prefix
+	// AllowHosts lists host names (exact, matched without case or a
+	// trailing dot) for which the SSRF guard accepts loopback, private
+	// and CGNAT addresses, at the URL check and at dial time. Link-local
+	// and the metadata addresses 100.100.100.200 and fd00:ec2::254 stay
+	// refused unless Allow covers them (ADR 0040). An IP literal is
+	// ignored. The exemption is per hop: a redirect to another name is
+	// judged by that name. `angelia serve` fills it from
+	// http.allow_private_hosts.
+	AllowHosts []string
 	// Resolver is used by the SSRF guard's URL check. Default
 	// net.DefaultResolver. The dial-time check sees the addresses the
 	// transport's own dialer resolves (see the package doc).
@@ -236,6 +251,8 @@ func New(cfg Config) (*Client, error) {
 		cfg.Resolver = net.DefaultResolver
 	}
 	guard := NewGuard(cfg.Allow, cfg.Resolver)
+	cfg.AllowHosts = slices.Clone(cfg.AllowHosts)
+	guard.setAllowHosts(cfg.AllowHosts)
 	if cfg.Transport == nil {
 		cfg.Transport = newTransport(guard, cfg.Proxy, cfg.RootCAs)
 	}
@@ -295,18 +312,31 @@ func setDefault[T comparable](p *T, v T) {
 }
 
 // HTTPClient returns an *http.Client that sends every hop through c. It
-// follows at most 10 redirects; each hop is checked by the guard in
-// RoundTrip. Its Timeout is unset because c bounds each attempt.
+// stops a redirect chain at MaxRedirects requests and refuses a redirect
+// to plain http once a hop was https (CheckRedirect); each hop is checked
+// by the guard in RoundTrip. Its Timeout is unset because c bounds each
+// attempt.
 func (c *Client) HTTPClient() *http.Client {
-	return &http.Client{
-		Transport: c,
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			if len(via) >= maxRedirects {
-				return fmt.Errorf("netguard: stopped after %d redirects", maxRedirects)
-			}
-			return nil
-		},
+	return &http.Client{Transport: c, CheckRedirect: checkRedirect}
+}
+
+// checkRedirect is the redirect policy of HTTPClient (ADR 0040): it stops
+// a chain after MaxRedirects requests, and refuses a hop whose scheme is
+// not https after any https hop, with an error matching ErrInvalidURL (a
+// downgrade would let a network attacker read or forge the response; no
+// retry can fix it). A chain that starts on http may stay on http.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= MaxRedirects {
+		return fmt.Errorf("netguard: stopped after %d redirects", MaxRedirects)
 	}
+	if !strings.EqualFold(req.URL.Scheme, "https") {
+		for _, v := range via {
+			if strings.EqualFold(v.URL.Scheme, "https") {
+				return invalidURL("netguard: refusing a redirect from https to %s://%s", strings.ToLower(req.URL.Scheme), req.URL.Host)
+			}
+		}
+	}
+	return nil
 }
 
 // CheckURL applies the URL-level SSRF check of every hop (scheme http or

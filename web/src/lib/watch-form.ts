@@ -9,7 +9,7 @@ export const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\x00-\x1F\x7F]/
 
-export const SCHEMES = ['semver', 'pep440', 'calver', 'lexical']
+export const SCHEMES = ['semver', 'pep440', 'maven', 'calver', 'lexical']
 export const PRERELEASE = ['none', 'only', 'include'] as const
 export const BUMPS = ['major', 'minor', 'patch'] as const
 type Bump = (typeof BUMPS)[number]

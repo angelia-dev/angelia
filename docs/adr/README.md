@@ -39,7 +39,14 @@ alternatives considered. All ADRs use the same [template](0000-template.md).
 | [0033](0033-admin-web-ui.md) | The admin web UI is a React SPA in `web/`, embedded in the binary; users sign in with GitHub, and their role from `ui.access` is one of the three API scopes | Accepted | #99 |
 | [0034](0034-generic-oidc-sign-in.md) | The admin UI signs in with any OpenID Connect provider through `go-oidc`, with PKCE, state and nonce; access entries match a subject or a verified email pinned to its subject | Accepted | #268 |
 | [0035](0035-adopt-watch-file-resources.md) | Watch-file resources move to the API in place with `POST /v1/adoptions`; the startup apply skips adopted names with a warning instead of failing | Accepted | #287 |
+| [0036](0036-release-notes-on-source-version.md) | `source.Version` carries release notes (`Notes`), filled from the GitHub and GitLab release body, cleaned and capped by `source.NewNotes` (amends ADR 0006) | Proposed | #83 |
+| [0037](0037-oci-source-registry-selection-and-token-auth.md) | `oci` source: the image names its registry, the anonymous token flow lives for one list call, tags are all versions except referrers tags | Proposed | #94 |
+| [0038](0038-generic-http-sources.md) | `http-json` and `http-regex` take their URL from the watch: https only (or `http.allow_http_hosts`), no userinfo, at most 5 redirects and none downgrading, 2 MiB bodies, an in-house RFC 9535 JSONPath subset; creating or retargeting such a watch through the API needs the `admin` scope | Proposed (D50–D57 accepted by the maintainer 2026-11-25) | #97 |
+| [0040](0040-ssrf-guard-hostname-allowlist-and-redirects.md) | The SSRF guard accepts loopback, private and CGNAT addresses for host names in `http.allow_private_hosts`, never link-local or metadata; at most 5 requests per redirect chain, and redirects never go from https to http | Accepted for D105–D109 (maintainer 2026-11-25); implementation reviewed in the PR | #76 |
+| [0041](0041-manifest-import.md) | `angelia import` prints a watch file from dependency manifests, offline; names, owner labels and the `requirements.txt` grammar are conventions, not contract changes | Proposed | #98 |
 | [0042](0042-exec-sink.md) | The exec sink runs only commands the operator defined in `angelia.yaml` (`exec.commands`), with the event on stdin, a clean environment, a timeout and a killed process group; Linux and macOS only | Accepted | #92 |
+| [0043](0043-go-proxy-source.md) | The go-proxy source reads the GOPROXY protocol with `golang.org/x/mod`: case-sensitive module coordinate, dated new versions, private proxies through `registryauth` | Accepted | #95 |
+| [0044](0044-maven-source.md) | The maven source reads `maven-metadata.xml` conditionally with `encoding/xml`, keys watches by `package: groupId:artifactId`, dates new versions from a `HEAD` of their POM, and sends `auth` or `token_env` through `registryauth` | Accepted | #96 |
 
 ## Process
 

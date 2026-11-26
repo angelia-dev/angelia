@@ -1486,7 +1486,7 @@ type VersionPage struct {
 // Watch A watch as the server returns it: the write keys with every default filled in, plus
 // response-only fields. Sending the write keys back with `PUT` changes nothing.
 type Watch struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Id Generated when the watch is created; kept across updates. Equals `data.watch.id` in its events.
@@ -1512,7 +1512,7 @@ type Watch struct {
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
 	Policy WatchPolicy `json:"policy"`
 
-	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+	// Scheme The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
 	Scheme string `json:"scheme"`
 
 	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
@@ -1575,7 +1575,7 @@ type WatchStatus struct {
 // WatchWrite The body of `PUT /v1/watches/{name}`: the keys of `watches[]` in the watch file. Omitted
 // optional keys take their defaults.
 type WatchWrite struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Interval The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
@@ -1592,7 +1592,7 @@ type WatchWrite struct {
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
 	Policy *WatchPolicy `json:"policy,omitempty"`
 
-	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+	// Scheme The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
 	Scheme *string `json:"scheme,omitempty"`
 
 	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.

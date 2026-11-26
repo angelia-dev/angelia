@@ -252,3 +252,52 @@ func TestSourceAPI(t *testing.T) {
 		t.Errorf("err = %v, want both api errors", err)
 	}
 }
+
+// An oci registry is a bare origin: base_url has no path.
+func TestOCIBaseURLIsABareOrigin(t *testing.T) {
+	for _, ok := range []string{"https://harbor.example.com", "https://harbor.example.com/", "https://registry-1.docker.io"} {
+		if _, err := load(t, writeFile(t, "sources:\n  harbor:\n    kind: oci\n    base_url: "+ok+"\n")); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"https://docker.io", "https://INDEX.docker.io/"} {
+		_, err := load(t, writeFile(t, "sources:\n  hub:\n    kind: oci\n    base_url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.hub.base_url: ") || !strings.Contains(err.Error(), "registry-1.docker.io") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+	for _, bad := range []string{"https://harbor.example.com/v2", "https://harbor.example.com/proj/", "https://harbor.example.com/?x=1"} {
+		_, err := load(t, writeFile(t, "sources:\n  harbor:\n    kind: oci\n    base_url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.harbor.base_url: an oci registry is a bare origin") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+}
+
+// #97 D57: the sources whose URL is a watch coordinate take no key and no
+// named instance, from the file or the environment.
+func TestURLKindsTakeNoKey(t *testing.T) {
+	for _, kind := range []string{"http-json", "http-regex"} {
+		for y, want := range map[string]string{
+			"sources:\n  " + kind + ":\n    base_url: https://example.org\n":       "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    token_env: SOME_TOKEN\n":               "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    auth: {token_ref: tok}\n":              "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    api: json\n":                           "sources." + kind + ": this kind takes no key",
+			"sources:\n  " + kind + ":\n    kind: " + kind + "\n":                  "sources." + kind + ": this kind takes no key",
+			"sources:\n  mine:\n    kind: " + kind + "\n":                          "sources.mine.kind: " + kind + " takes its URL from each watch and has no named instances",
+			"sources:\n  mine:\n    kind: " + kind + "\n    base_url: https://x\n": "sources.mine.kind: " + kind,
+		} {
+			_, err := load(t, writeFile(t, y))
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: err = %v, want %q", y, err, want)
+			}
+		}
+		env := "ANGELIA_SOURCES_" + strings.ToUpper(strings.ReplaceAll(kind, "-", "_")) + "_BASE_URL=https://example.org"
+		if _, err := load(t, writeFile(t, ""), env); err == nil || !strings.Contains(err.Error(), "sources."+kind+": this kind takes no key") {
+			t.Errorf("%s: err = %v", env, err)
+		}
+		if _, err := load(t, writeFile(t, "sources:\n  "+kind+": {}\n")); err != nil {
+			t.Errorf("%s: an empty entry: %v", kind, err)
+		}
+	}
+}

@@ -116,6 +116,7 @@ type apiRelease struct {
 	TagName     string    `json:"tag_name"`
 	Name        string    `json:"name"`
 	HTMLURL     string    `json:"html_url"`
+	Body        *string   `json:"body"` // GitHub-flavoured Markdown, null when empty
 	Draft       bool      `json:"draft"`
 	Prerelease  bool      `json:"prerelease"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -240,12 +241,19 @@ func toVersion(r apiRelease) source.Version {
 	if r.Name != "" {
 		md["name"] = r.Name
 	}
+	var notes *source.Notes
+	if r.Body != nil {
+		// NewNotes cleans and cuts the text and copies the kept prefix, so
+		// the decoded body (up to 125,000 characters) is not retained.
+		notes = source.NewNotes("markdown", *r.Body)
+	}
 	return source.Version{
 		Raw:         r.TagName,
 		PublishedAt: published,
 		Prerelease:  &pre,
 		URL:         r.HTMLURL,
 		NotesURL:    r.HTMLURL, // release notes are rendered on the release page
+		Notes:       notes,
 		Metadata:    md,
 	}
 }

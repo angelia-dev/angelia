@@ -15,6 +15,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/scheduler"
 	"github.com/angelia-dev/angelia/internal/source/crates"
+	"github.com/angelia-dev/angelia/internal/source/oci"
 )
 
 // builtinSourceHosts are the hosts of the built-in sources' default base
@@ -128,6 +129,11 @@ func limitOrigin(e netguard.EffectiveLimit, configured bool) string {
 func sourceHost(cfg *config.Config, name string) (host string, authenticated, ok bool) {
 	kind := cfg.SourceKind(name)
 	def, builtin := publicRegistries[kind]
+	if kind == oci.Kind {
+		// No default registry: only a pinned instance has one host. The
+		// built-in oci contacts the host of each image (unknown here).
+		def, builtin = "", cfg.Sources[name].BaseURL != ""
+	}
 	if !builtin {
 		return "", false, false
 	}

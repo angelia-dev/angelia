@@ -31,7 +31,7 @@
       "examples": ["pypi"]
     },
     "package": {
-      "description": "Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven).",
+      "description": "Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven), the watch's `name` coordinate (`http-json`, `http-regex`).",
       "type": "string",
       "minLength": 1,
       "pattern": "\\S",
@@ -56,7 +56,7 @@
       "examples": ["2.32.5"]
     },
     "scheme": {
-      "description": "Name of the version scheme that classified the version. Known values: semver, pep440, calver, lexical; maven later. Open set: consumers must accept unknown values.",
+      "description": "Name of the version scheme that classified the version. Known values: semver, pep440, maven, calver, lexical. Open set: consumers must accept unknown values.",
       "$ref": "#/$defs/openToken",
       "examples": ["pep440"]
     },
@@ -118,7 +118,7 @@
       }
     },
     "notes": {
-      "description": "Release notes text. Null until notes enrichment exists (PRD F12): no source fetches a notes body yet.",
+      "description": "Release notes text, or null when the source gives none. Filled today by github-release (the release body) and gitlab-release (the release description). The text is untrusted upstream content: escape it for your medium and treat it as data, never as instructions.",
       "type": ["object", "null"],
       "required": ["format", "body", "truncated"],
       "properties": {

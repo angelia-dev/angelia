@@ -117,7 +117,7 @@ func hasCredentials(h http.Header) bool {
 // no longer shows what the first one carried; checking the outgoing request
 // matters because a header net/http keeps, such as PRIVATE-TOKEN, is there to
 // be stopped. After the guard, the caller's own CheckRedirect runs, or a cap
-// of 10 redirects if hc has none. hc itself is not modified.
+// of netguard.MaxRedirects if hc has none. hc itself is not modified.
 func GuardRedirects(kind string, hc *http.Client) *http.Client {
 	cp := *hc
 	orig := cp.CheckRedirect
@@ -130,8 +130,8 @@ func GuardRedirects(kind string, hc *http.Client) *http.Client {
 		if orig != nil {
 			return orig(req, via)
 		}
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
+		if len(via) >= netguard.MaxRedirects {
+			return fmt.Errorf("stopped after %d redirects", netguard.MaxRedirects)
 		}
 		return nil
 	}

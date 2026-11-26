@@ -56,7 +56,7 @@
     {
       "name": "add_watch",
       "title": "Add a watch",
-      "description": "Create a watch that checks an upstream package or repository for new versions. Create-only: if a watch with this name already exists and is identical once the server has filled its defaults, the result is change unchanged and nothing is written; if it differs, the call fails and nothing is written, so an existing watch is never modified. Omitted optional keys take the server's defaults. Needs a token with the write scope.",
+      "description": "Create a watch that checks an upstream package or repository for new versions. Create-only: if a watch with this name already exists and is identical once the server has filled its defaults, the result is change unchanged and nothing is written; if it differs, the call fails and nothing is written, so an existing watch is never modified. Omitted optional keys take the server's defaults. Needs a token with the write scope, or the admin scope when the source is of kind http-json or http-regex (they fetch a URL the watch chooses).",
       "inputSchema": {
         "type": "object",
         "required": ["name", "source", "coordinates"],
@@ -73,7 +73,7 @@
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
           },
           "coordinates": {
-            "description": "Source-owned parameters that name the upstream object (pypi, npm, crates: name; github-release: repo as owner/name).",
+            "description": "Source-owned parameters that name the upstream object (pypi, npm, crates: name; github-release: repo as owner/name; http-json: name, url, jsonpath, optional extract; http-regex: name, url, regex).",
             "type": "object",
             "minProperties": 1,
             "additionalProperties": {
@@ -87,7 +87,7 @@
             "default": "1h"
           },
           "scheme": {
-            "description": "The version scheme (semver, pep440, calver, lexical). Defaults by source kind.",
+            "description": "The version scheme (semver, pep440, maven, calver, lexical). Defaults by source kind.",
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
           },

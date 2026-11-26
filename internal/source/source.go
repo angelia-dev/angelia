@@ -104,7 +104,8 @@ type Version struct {
 	Prerelease  *bool          // upstream flag if available; nil if unknown
 	Yanked      bool           // yanked, unpublished or withdrawn upstream; deprecation goes in Metadata
 	URL         string         // release page
-	NotesURL    string         // release notes
+	NotesURL    string         // release notes page
+	Notes       *Notes         // release notes text, nil if the source has none; build with NewNotes (ADR 0036)
 	Metadata    map[string]any // digest, tarball url, dist-tags, ...
 }
 

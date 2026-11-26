@@ -137,7 +137,7 @@ func TestParseErrorsCarryFileLineAndPath(t *testing.T) {
 		{"coordinate not a string", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: 12}\n", "line 5: watches[0].coordinates.name: must be a string"},
 		{"interval too short", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    interval: 1m\n", "line 6: watches[0].interval: must be between 5m0s and 720h0m0s"},
 		{"interval unparsable", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    interval: soon\n", "watches[0].interval: invalid duration"},
-		{"unknown scheme", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    scheme: maven\n", "line 6: watches[0].scheme: must be one of"},
+		{"unknown scheme", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    scheme: debian\n", "line 6: watches[0].scheme: must be one of"},
 		{"bad label key", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    labels: {'-bad': v}\n", "line 6: watches[0].labels.-bad: invalid label key"},
 		{"label not a string", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    labels: {tier: 1}\n", "watches[0].labels.tier: must be a string"},
 		{"bad regex", base + "watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    policy:\n      include: ['(']\n", "line 7: watches[0].policy.include[0]: invalid regular expression"},
@@ -237,6 +237,14 @@ func TestDefaultsAreApplied(t *testing.T) {
 	want := `{"prerelease":"none","include":[],"exclude":[],"bump":[],"cooldown":"0s","baseline":true,"scheme":"pep440"}`
 	if string(w.PolicyJSON()) != want {
 		t.Fatalf("policy json = %s", w.PolicyJSON())
+	}
+}
+
+// `scheme: maven` is accepted on any watch (#96), with a constraint bound to it.
+func TestMavenSchemeAccepted(t *testing.T) {
+	f := mustParse(t, base+"watches:\n  - name: a\n    source: pypi\n    coordinates: {name: x}\n    scheme: maven\n    policy:\n      constraint: '>=2 <3'\n")
+	if w := f.Watches[0]; w.Scheme != "maven" || !strings.Contains(string(w.PolicyJSON()), `"scheme":"maven"`) {
+		t.Fatalf("scheme = %q, policy %s", w.Scheme, w.PolicyJSON())
 	}
 }
 

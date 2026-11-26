@@ -57,6 +57,13 @@ export interface paths {
          *     A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
          *     needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
          *
+         *     The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+         *     (its `url` coordinate). A request that creates a watch whose source is of either kind,
+         *     or that changes the `source` or `coordinates` of a watch when the stored or the new
+         *     source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+         *     `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+         *     a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+         *
          *     Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
          *     writes only if the watch is still that version, else `412 precondition-failed`;
          *     `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -1003,7 +1010,7 @@ export interface components {
             name?: components["schemas"]["Name"];
             /** @description A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`. */
             source: components["schemas"]["Kind"];
-            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form. */
+            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form. */
             coordinates: {
                 [key: string]: string;
             };
@@ -1012,7 +1019,7 @@ export interface components {
              * @default 1h
              */
             interval: components["schemas"]["Duration"];
-            /** @description The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind. */
+            /** @description The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind. */
             scheme?: string;
             /** @default {} */
             labels: components["schemas"]["Labels"];
@@ -1029,7 +1036,7 @@ export interface components {
             managed_by: components["schemas"]["ManagedBy"];
             /** @description A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`. */
             source: components["schemas"]["Kind"];
-            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form. */
+            /** @description Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form. */
             coordinates: {
                 [key: string]: string;
             };
@@ -1038,7 +1045,7 @@ export interface components {
              * @default 1h
              */
             interval: components["schemas"]["Duration"];
-            /** @description The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind. */
+            /** @description The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind. */
             scheme: string;
             /** @default {} */
             labels: components["schemas"]["Labels"];
@@ -1896,6 +1903,77 @@ export interface components {
             timeout: components["schemas"]["Duration"];
         } & ((unknown | unknown) & unknown);
         /**
+         * @description The `config` of a `gitlab-pipeline-trigger` sink: it starts a GitLab CI/CD pipeline in one
+         *     project for each matching release event, on gitlab.com or a self-managed GitLab.
+         *     Documentation of the built-in kind; the server validates against the kind's
+         *     `config_schema`.
+         *
+         *     It calls `POST {base_url}/api/v4/projects/{project}/trigger/pipeline` with a **pipeline
+         *     trigger token**, which can only start pipelines in its own project. Exactly one of
+         *     `token_env` and `token_ref` names the token. The token is sent only in the JSON body of
+         *     that request to `base_url`: never in the URL, a header, a log line or an error. It is a
+         *     stored secret bound to the GitLab host (`hosts`) like any other sink token.
+         *
+         *     **What GitLab receives.** The body is `{"token", "ref", "variables", "inputs"}`; empty
+         *     maps are left out and every value is a string. When `variables` and/or `inputs` are set,
+         *     only those are sent: each value is an ADR 0016 template (core repository) rendered with
+         *     the context of a subscription template and cut to 2048 bytes at a UTF-8 boundary. When
+         *     neither is set (an empty map counts as unset), these pipeline variables are sent, each cut to 2048 bytes at a UTF-8
+         *     boundary (a null field is the empty string): `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`
+         *     (the short type, `release.published`), `ANGELIA_SOURCE`, `ANGELIA_PACKAGE`,
+         *     `ANGELIA_VERSION`, `ANGELIA_PREVIOUS_VERSION`, `ANGELIA_BUMP`, `ANGELIA_PURL`,
+         *     `ANGELIA_RELEASE_URL`, `ANGELIA_WATCH` (the watch name, else its id),
+         *     `ANGELIA_IDEMPOTENCY_KEY`, and `ANGELIA_TRUNCATED=true` only when a value was cut. A
+         *     template that fails to render is a permanent delivery error. The subscription's own
+         *     template has no effect on this kind. GitLab has no idempotency key: a retry after a
+         *     timeout can start a second pipeline, so a pipeline that must run once per release should
+         *     deduplicate on `ANGELIA_IDEMPOTENCY_KEY` (or an input that carries it).
+         *
+         *     `inputs` must be declared in the target pipeline's `spec:inputs` (GitLab 18.1 and later;
+         *     every value is a string, so an input declared with another type is refused with `400`).
+         *     New gitlab.com projects restrict pipeline variables by default, so `inputs` is the
+         *     better choice there.
+         *
+         *     **Responses.** `201` (any `2xx`) is success. `3xx` is permanent and not followed. `4xx`
+         *     other than `408` and `429` is permanent, with a hint: `401` and `403` (the trigger token
+         *     is not accepted or lacks access), `404` (project not found, or token without access),
+         *     `400` (GitLab refused the ref, variables or inputs; when the response says that setting
+         *     pipeline variables is not permitted, the hint recommends `inputs`). `408`, `429` and
+         *     `5xx` and transport errors are retried, after the larger of `Retry-After` and
+         *     `RateLimit-Reset`. A host refused by the SSRF guard is permanent; a self-managed GitLab
+         *     on a private network needs the instance's `http.allow_networks`. Errors name the host
+         *     only, never the token, the project or a response body.
+         */
+        GitlabPipelineTriggerSinkConfig: {
+            /** @description The target project as a full path (`group/subgroup/name`, 2 to 20 segments) or its numeric id. Sent URL-encoded as one path segment. */
+            project: string;
+            /** @description Branch or tag the pipeline runs on. A literal, not a template. 1 to 255 characters, no control characters (C0, DEL or C1). */
+            ref: string;
+            /**
+             * Format: uri
+             * @description Base URL of the GitLab instance, `https://gitlab.example.com` or with a relative root (`https://example.com/gitlab`); a trailing `/api/v4` is accepted and ignored. No userinfo, query or fragment. `https` only; `http` is accepted for a host in the instance's `http.allow_http_hosts`, checked at every delivery, and `config check` then warns that the token is sent in cleartext. The token is sent only here.
+             * @default https://gitlab.com
+             */
+            base_url: string;
+            /** @description Name of an environment variable of the instance that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`. */
+            token_env?: string;
+            /** @description Name of a stored secret (`/v1/secrets`) that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`. */
+            token_ref?: string;
+            /** @description Pipeline variables. Keys are variable names (`^[A-Za-z0-9_]{1,255}$`), values are templates. A name must not end in `_env` or `_ref`: the core reads every such key of a sink configuration as the name of an environment variable or of a stored secret. When neither `variables` nor `inputs` is set (an empty map counts as unset), the default `ANGELIA_*` variables are sent. */
+            variables?: {
+                [key: string]: string;
+            };
+            /** @description Pipeline inputs, declared in the target pipeline's `spec:inputs`. Keys are input names (`^[A-Za-z0-9_-]{1,255}$`), values are templates sent as strings. A name must not end in `_env` or `_ref`, for the reason given at `variables`. */
+            inputs?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Per-attempt timeout, `1s` to `2m`.
+             * @default 10s
+             */
+            timeout: components["schemas"]["Duration"];
+        } & (unknown | unknown);
+        /**
          * @description The `config` of a `shoutrrr` sink: it sends a plain-text message to one chat or push
          *     service through the shoutrrr library (ADR 0026, core repository). Documentation of the
          *     built-in kind; the server validates against the kind's `config_schema`.
@@ -1987,7 +2065,7 @@ export interface components {
              */
             source: components["schemas"]["openToken"];
             /**
-             * @description Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven).
+             * @description Package name as the source normalised it; never blank. Its form depends on the source kind: `requests` (pypi), `@angular/core` (npm), `cli/cli` (GitHub owner/repo), `group/subgroup/project` (GitLab path), `ghcr.io/org/image` (OCI), `github.com/gorilla/mux` (Go module path), `org.slf4j:slf4j-api` (Maven), the watch's `name` coordinate (`http-json`, `http-regex`).
              * @example requests
              */
             package: string;
@@ -2007,7 +2085,7 @@ export interface components {
              */
             previous_version: string | null;
             /**
-             * @description Name of the version scheme that classified the version. Known values: semver, pep440, calver, lexical; maven later. Open set: consumers must accept unknown values.
+             * @description Name of the version scheme that classified the version. Known values: semver, pep440, maven, calver, lexical. Open set: consumers must accept unknown values.
              * @example pep440
              */
             scheme: components["schemas"]["openToken"];
@@ -2065,7 +2143,7 @@ export interface components {
                  */
                 artifact: components["schemas"]["urlOrNull"];
             };
-            /** @description Release notes text. Null until notes enrichment exists (PRD F12): no source fetches a notes body yet. */
+            /** @description Release notes text, or null when the source gives none. Filled today by github-release (the release body) and gitlab-release (the release description). The text is untrusted upstream content: escape it for your medium and treat it as data, never as instructions. */
             notes: {
                 /**
                  * @description Format of `body`. Known values: markdown, text (HTML is converted or sent as text, never passed through). Open set: consumers must accept unknown values.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.14.0
+  version: 0.12.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -159,6 +159,13 @@ paths:
 
         A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
         needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+
+        The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+        (its `url` coordinate). A request that creates a watch whose source is of either kind,
+        or that changes the `source` or `coordinates` of a watch when the stored or the new
+        source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+        `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+        a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 
         Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
         writes only if the watch is still that version, else `412 precondition-failed`;
@@ -1998,7 +2005,7 @@ components:
         An API token (`Authorization: Bearer <token>`). Each token has one scope; the scopes are
         ordered, and a token satisfies an operation whose scope is at or below its own:
         `read` (every `GET`), `write` (watches, subscriptions, replays, consumers and their acks), `admin` (sinks, secrets, API tokens,
-        any change to a `*_ref` key, and everything else). The scope an operation needs is listed in its `security` requirement.
+        any change to a `*_ref` key, creating or retargeting a watch of `http-json` or `http-regex`, and everything else). The scope an operation needs is listed in its `security` requirement.
         The token and its scope are checked before anything else, so a `401` or `403` never
         reveals whether a resource exists.
 
@@ -2513,7 +2520,7 @@ components:
           $ref: '#/components/schemas/Kind'
           description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
-          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form."
           type: object
           minProperties: 1
           additionalProperties:
@@ -2523,7 +2530,7 @@ components:
           description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
           default: 1h
         scheme:
-          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          description: The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
           type: string
           pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
         labels:
@@ -2549,7 +2556,7 @@ components:
           $ref: '#/components/schemas/Kind'
           description: A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
         coordinates:
-          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form."
+          description: "Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form."
           type: object
           minProperties: 1
           additionalProperties:
@@ -2559,7 +2566,7 @@ components:
           description: The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
           default: 1h
         scheme:
-          description: The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+          description: The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
           type: string
           pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
         labels:
@@ -3165,10 +3172,10 @@ components:
           $ref: '#/components/schemas/WebhookSinkConfig'
         github-dispatch:
           $ref: '#/components/schemas/GithubDispatchSinkConfig'
+        gitlab-pipeline-trigger:
+          $ref: '#/components/schemas/GitlabPipelineTriggerSinkConfig'
         shoutrrr:
           $ref: '#/components/schemas/ShoutrrrSinkConfig'
-        exec:
-          $ref: '#/components/schemas/ExecSinkConfig'
     SinkPage:
       type: object
       required: [items, next_cursor]
@@ -3918,6 +3925,119 @@ components:
                 - required: [workflow]
                 - required: [ref]
                 - required: [inputs]
+    GitlabPipelineTriggerSinkConfig:
+      description: |
+        The `config` of a `gitlab-pipeline-trigger` sink: it starts a GitLab CI/CD pipeline in one
+        project for each matching release event, on gitlab.com or a self-managed GitLab.
+        Documentation of the built-in kind; the server validates against the kind's
+        `config_schema`.
+
+        It calls `POST {base_url}/api/v4/projects/{project}/trigger/pipeline` with a **pipeline
+        trigger token**, which can only start pipelines in its own project. Exactly one of
+        `token_env` and `token_ref` names the token. The token is sent only in the JSON body of
+        that request to `base_url`: never in the URL, a header, a log line or an error. It is a
+        stored secret bound to the GitLab host (`hosts`) like any other sink token.
+
+        **What GitLab receives.** The body is `{"token", "ref", "variables", "inputs"}`; empty
+        maps are left out and every value is a string. When `variables` and/or `inputs` are set,
+        only those are sent: each value is an ADR 0016 template (core repository) rendered with
+        the context of a subscription template and cut to 2048 bytes at a UTF-8 boundary. When
+        neither is set (an empty map counts as unset), these pipeline variables are sent, each cut to 2048 bytes at a UTF-8
+        boundary (a null field is the empty string): `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`
+        (the short type, `release.published`), `ANGELIA_SOURCE`, `ANGELIA_PACKAGE`,
+        `ANGELIA_VERSION`, `ANGELIA_PREVIOUS_VERSION`, `ANGELIA_BUMP`, `ANGELIA_PURL`,
+        `ANGELIA_RELEASE_URL`, `ANGELIA_WATCH` (the watch name, else its id),
+        `ANGELIA_IDEMPOTENCY_KEY`, and `ANGELIA_TRUNCATED=true` only when a value was cut. A
+        template that fails to render is a permanent delivery error. The subscription's own
+        template has no effect on this kind. GitLab has no idempotency key: a retry after a
+        timeout can start a second pipeline, so a pipeline that must run once per release should
+        deduplicate on `ANGELIA_IDEMPOTENCY_KEY` (or an input that carries it).
+
+        `inputs` must be declared in the target pipeline's `spec:inputs` (GitLab 18.1 and later;
+        every value is a string, so an input declared with another type is refused with `400`).
+        New gitlab.com projects restrict pipeline variables by default, so `inputs` is the
+        better choice there.
+
+        **Responses.** `201` (any `2xx`) is success. `3xx` is permanent and not followed. `4xx`
+        other than `408` and `429` is permanent, with a hint: `401` and `403` (the trigger token
+        is not accepted or lacks access), `404` (project not found, or token without access),
+        `400` (GitLab refused the ref, variables or inputs; when the response says that setting
+        pipeline variables is not permitted, the hint recommends `inputs`). `408`, `429` and
+        `5xx` and transport errors are retried, after the larger of `Retry-After` and
+        `RateLimit-Reset`. A host refused by the SSRF guard is permanent; a self-managed GitLab
+        on a private network needs the instance's `http.allow_networks`. Errors name the host
+        only, never the token, the project or a response body.
+      type: object
+      required: [project, ref]
+      additionalProperties: false
+      properties:
+        project:
+          description: The target project as a full path (`group/subgroup/name`, 2 to 20 segments) or its numeric id. Sent URL-encoded as one path segment.
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^([0-9]{1,18}|[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*){1,19})$'
+        ref:
+          description: Branch or tag the pipeline runs on. A literal, not a template. 1 to 255 characters, no control characters (C0, DEL or C1).
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\x00-\x1F\x7F-\x9F]+$'
+        base_url:
+          description: Base URL of the GitLab instance, `https://gitlab.example.com` or with a relative root (`https://example.com/gitlab`); a trailing `/api/v4` is accepted and ignored. No userinfo, query or fragment. `https` only; `http` is accepted for a host in the instance's `http.allow_http_hosts`, checked at every delivery, and `config check` then warns that the token is sent in cleartext. The token is sent only here.
+          type: string
+          format: uri
+          pattern: '^[Hh][Tt][Tt][Pp][Ss]?://[^/?#@\s]+(/[^?#\s]*)?$'
+          default: https://gitlab.com
+          x-angelia-destination: true
+        token_env:
+          description: Name of an environment variable of the instance that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`.
+          type: string
+          pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+        token_ref:
+          description: Name of a stored secret (`/v1/secrets`) that holds the pipeline trigger token. Exactly one of `token_env` and `token_ref`.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+        variables:
+          description: >-
+            Pipeline variables. Keys are variable names (`^[A-Za-z0-9_]{1,255}$`), values are
+            templates. A name must not end in `_env` or `_ref`: the core reads every such key of
+            a sink configuration as the name of an environment variable or of a stored secret.
+            When neither `variables` nor `inputs` is set (an empty map counts as unset), the default `ANGELIA_*` variables are sent.
+          type: object
+          maxProperties: 50
+          propertyNames:
+            pattern: '^[A-Za-z0-9_]{1,255}$'
+            not:
+              pattern: '(_env|_ref)$'
+          additionalProperties:
+            type: string
+            maxLength: 4096
+        inputs:
+          description: >-
+            Pipeline inputs, declared in the target pipeline's `spec:inputs`. Keys are input
+            names (`^[A-Za-z0-9_-]{1,255}$`), values are templates sent as strings. A name must
+            not end in `_env` or `_ref`, for the reason given at `variables`.
+          type: object
+          maxProperties: 50
+          propertyNames:
+            pattern: '^[A-Za-z0-9_-]{1,255}$'
+            not:
+              pattern: '(_env|_ref)$'
+          additionalProperties:
+            type: string
+            maxLength: 4096
+        timeout:
+          $ref: '#/components/schemas/Duration'
+          description: Per-attempt timeout, `1s` to `2m`.
+          default: 10s
+      oneOf:
+        - required: [token_env]
+          not:
+            required: [token_ref]
+        - required: [token_ref]
+          not:
+            required: [token_env]
     ShoutrrrSinkConfig:
       description: |
         The `config` of a `shoutrrr` sink: it sends a plain-text message to one chat or push
@@ -3974,37 +4094,6 @@ components:
         - required: [url_env]
           not:
             required: [url_ref]
-    ExecSinkConfig:
-      description: |
-        The `config` of an `exec` sink: it runs a local command once per delivery (core ADR 0042,
-        docs/exec.md). Documentation of the built-in kind; the server validates against the
-        kind's `config_schema`.
-
-        The sink only **names** a command. The command itself (an absolute `argv`, no shell, no
-        placeholders; its working directory, the environment variables it may read, its
-        timeout of `1s` to `12s` and its concurrency) is defined by the operator in the
-        instance configuration, `exec.commands.<name>` in `angelia.yaml`, and cannot be set
-        through this API, the watch file or the admin UI. The kind is registered only when the
-        instance defines at least one command and runs on Linux or macOS; otherwise
-        `PUT /v1/sinks/{name}` with `kind: exec` is refused like any unknown kind. A `command`
-        that names no configured command is `422 validation-failed`.
-
-        The command receives the rendered message on stdin (the CloudEvents JSON in structured
-        mode, or the subscription's template output), and in its environment `PATH`, the
-        variables the operator listed, and `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`,
-        `ANGELIA_DELIVERY_ID`, `ANGELIA_IDEMPOTENCY_KEY`, `ANGELIA_ATTEMPT` and
-        `ANGELIA_CONTENT_TYPE`. Nothing from the event is put in its arguments or environment.
-        Exit status `0` is delivered; any other exit, a signal or a timeout is retried; a
-        command that cannot be started is permanent. `last_error` holds the outcome only
-        (`exec deploy-hook: exit status 3`), never the command's output.
-      type: object
-      required: [command]
-      additionalProperties: false
-      properties:
-        command:
-          description: Name of a command defined in the instance configuration under `exec.commands`.
-          type: string
-          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
 
   examples:
     WatchPut:

@@ -42,7 +42,7 @@ sources:
 - The secret is read from the store on every request and checked again on every redirect hop. A redirect
   to a host outside the binding (a registry that redirects downloads to a CDN, say) is refused; bind the
   secret to both hosts if you want it followed.
-- `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `github-release`, `github-tag` and
+- `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `go-proxy`, `github-release`, `github-tag` and
   `gitlab-release` (which sends it as `PRIVATE-TOKEN`). It
   is sent only to the host of `base_url`. Set `token_env` or `auth`, not both.
 - No value appears in `config check`, logs, errors, events or API responses. A value written in a `*_ref`
@@ -240,6 +240,64 @@ sources:
 
 `crates` takes the sparse index URL of a mirror as `base_url` (default `https://index.crates.io`). It sends no
 credential.
+
+### Go proxy (Athens, Artifactory, Nexus)
+
+`go-proxy` reads the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) from `https://proxy.golang.org` by
+default. A private proxy is a named instance whose `base_url` may carry a path; a watch selects it by name
+(`source: goproxy-corp`). `token_env` (Bearer) and `auth` (`bearer` or `basic`) work as for `npm` and `pypi`.
+
+```yaml
+sources:
+  goproxy-corp:
+    kind: go-proxy
+    base_url: https://artifactory.example.test/artifactory/api/go/go-virtual
+    auth: {type: basic, username: ci-bot, password_ref: artifactory-go}
+  athens:
+    kind: go-proxy
+    base_url: https://athens.example.test        # no credential
+```
+
+Not supported: a `GOPROXY` list with fallback (`a,b`, `a|b`), `direct` and `off`, `file://` proxies,
+`GOPRIVATE`, `GONOSUMDB` / `GOSUMDB` (Angelia downloads no code, so it verifies no checksum) and `.netrc`.
+
+> **Warning: the module path is sent to the proxy.** `proxy.golang.org` tries to fetch any path it is asked
+> for, so a watch of `corp.example/secret-lib` on the **public** proxy tells it that this name exists. Watch
+> internal modules only through your private instance, and do not use the built-in `go-proxy` source for them.
+> Angelia has no `GOPRIVATE`-like list that refuses such paths (the same holds for `npm` and `pypi` names).
+
+### Maven (Nexus, Artifactory, GitLab, GitHub Packages)
+
+`maven` reads `<base_url>/<groupId as a path>/<artifactId>/maven-metadata.xml`; the default `base_url` is
+Maven Central, `https://repo.maven.apache.org/maven2` (`https://repo1.maven.org/maven2` is Central too). A
+private repository is the repository URL, with its path, usually as a named instance next to Central:
+
+```yaml
+sources:
+  nexus:
+    kind: maven
+    base_url: https://nexus.example.test/repository/maven-releases
+    auth: {type: basic, username: ci-reader, password_ref: nexus-password}   # as in settings.xml
+  artifactory:
+    kind: maven
+    base_url: https://artifactory.example.test/artifactory/libs-release
+    auth: {token_ref: artifactory-token}                                     # Authorization: Bearer
+```
+
+```yaml
+# watch file
+watches:
+  - name: widget
+    source: nexus
+    coordinates: {package: 'com.example.test:widget'}
+```
+
+`token_env` is sent as `Authorization: Bearer`. A repository that redirects downloads to a storage host
+(an S3 bucket, a CDN) must have that host bound to the secret too, or the request fails with a host
+mismatch and the storage host receives no credential. Events from a repository other than Central carry
+`repository_url` in their purl. Not supported: `settings.xml`, mirror rules, custom header names (GitLab's
+`Private-Token`, `Deploy-Token`, `Job-Token`; GitLab also accepts Basic with a token) and client
+certificates. See [ADR 0044](adr/0044-maven-source.md).
 
 ## Private networks
 
