@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/diff"
+	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/version"
 )
@@ -35,6 +36,11 @@ type Release struct {
 	URL        string         `json:"url,omitempty"`
 	NotesURL   string         `json:"notes_url,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
+	// Notes is the release notes of the check that first saw the version
+	// (ADR 0036); nil when the source gives none. A held version keeps this
+	// snapshot, and a stored release written before the field existed
+	// decodes with nil.
+	Notes *source.Notes `json:"notes,omitempty"`
 	// CooldownSatisfiedAt is when the version became older than the
 	// cooldown (see Release.CooldownFrom); zero without a cooldown. Set on
 	// emitted releases only.
@@ -335,6 +341,7 @@ func (e *Engine) release(c diff.Change, now time.Time) Release {
 		Raw: c.Raw, Scheme: e.scheme.Name(), Previous: c.Previous, Bump: c.Bump,
 		Prerelease: c.Prerelease, Backport: c.Backport, DetectedAt: now.UTC(),
 		URL: c.Upstream.URL, NotesURL: c.Upstream.NotesURL, Metadata: c.Upstream.Metadata,
+		Notes: c.Upstream.Notes,
 	}
 	if c.Version != nil {
 		r.Normalized = c.Version.String()

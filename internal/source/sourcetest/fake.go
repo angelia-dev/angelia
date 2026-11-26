@@ -92,6 +92,10 @@ func cloneVersion(v source.Version) source.Version {
 		v.Prerelease = &p
 	}
 	v.Metadata = cloneMap(v.Metadata)
+	if v.Notes != nil {
+		n := *v.Notes
+		v.Notes = &n
+	}
 	return v
 }
 
