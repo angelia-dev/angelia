@@ -8,7 +8,8 @@ last section), implemented in `internal/watchfile`.** It becomes a public contra
 
 Until the REST API exists, `angelia serve --watches watches.yaml` loads **watches, sinks and
 subscriptions** from one YAML file and reconciles them into the store. A complete example is in
-[examples/watches.yaml](../examples/watches.yaml).
+[examples/watches.yaml](../examples/watches.yaml). `angelia import` writes a watch file for the dependencies of a
+manifest ([cli.md](cli.md#import)).
 
 ## 1. Relation to the instance configuration
 
@@ -63,7 +64,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `oci`, `go-proxy`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
@@ -73,8 +74,27 @@ also across owners: apply refuses a name that a row created through the API alre
 - `coordinates` keys are source-owned. Defined by the source stories, not here. For the built-in
   sources: `pypi`, `npm` and `crates`: `name` (scoped npm names such as `@types/node` allowed);
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
-  `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id; each in the
-  form `Source.Validate` accepts.
+  `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id;
+  `go-proxy`: `module`, the module path as written in `go.mod` (see below); each in the
+  form `Source.Validate` accepts. `oci`: `image`, the repository with its registry host (`ghcr.io/org/app`; no
+  host means Docker Hub). It is stored in canonical form, `node` as `docker.io/library/node`, which is also
+  `data.package`; a tag (`:22`), a digest (`@sha256:...`), a scheme or upper case in the path is refused.
+  See [OCI images](#oci-images-choosing-the-version-tags) for the version filters.
+- `go-proxy` (the tagged versions of a Go module, from `proxy.golang.org` or a [private proxy](private-registries.md#go-proxy-athens-artifactory-nexus)):
+  - Module paths are **case-sensitive**: `github.com/BurntSushi/toml` and `github.com/burntsushi/toml` are
+    different modules for Go, so Angelia keeps the path as you write it and never folds its case. A wrong-case
+    path gets the proxy's 404, reported as "module not found (module paths are case-sensitive)". The purl and
+    `data.package` keep the case too (`pkg:golang/github.com/BurntSushi/toml@v1.4.0`).
+  - Give the path only: no version (`@v1.2.3`), no `https://`, no leading or trailing `/`.
+  - A major-version module (`github.com/x/y/v2`) is a separate module and needs its own watch.
+  - A version the module retracts (`retract` in the `go.mod` of its latest version) is reported as yanked: it
+    never emits, and a retraction that appears after you saw the version emits `release.yanked`. The
+    retraction rationale is kept as `retracted` in the version metadata, and a
+    `// Deprecated:` comment on the module line is kept as `deprecated`. The latest version is the one `@latest`
+    answers (Go's own rule), so accidental high tags such as `v2.0.0+incompatible` do not hide the real latest.
+  - Only tagged versions are reported. Pseudo-versions (untagged commits) never are.
+  - `+incompatible` versions (`v2.0.3+incompatible`) are reported and order by their number, as in Go. To
+    ignore them: `exclude: ['\+incompatible$']` in the policy `filter`.
 - A named instance behaves as its kind everywhere except where the registry is chosen: `coordinates`
   validation, the default `scheme`, the events (`data.source`, purl type) and `filter.source` use the kind.
   The `source` of a stored watch, and of the API, is the name the watch gave; the target remembers the kind
@@ -105,6 +125,27 @@ The loader validates each policy structurally (types, enums, regex compilation, 
 decodes the stored form with the policy engine (`policy.Decode`) and compiles it with the watch's scheme
 (`policy.Compile`). A `constraint` with a syntax error, or with an operand the scheme cannot parse, fails
 at load time with the file, line and path of the key. The policy is stored as `watch.policy_json`.
+
+#### OCI images: choosing the version tags
+
+The `oci` source returns every tag of the image except cosign signature, attestation and SBOM tags
+(`sha256-<hex>`, with an optional `.sig`, `.att` or `.sbom`). Which tags are versions is the watch policy's job
+([ADR 0037](adr/0037-oci-source-registry-selection-and-token-auth.md)). Without a filter, tags such as `latest`,
+`main` or `sha-1a2b3c` are lexical versions and emit an event when they first appear. Recipes:
+
+```yaml
+watches:
+  # Plain releases only (22.11.0): not 22.11.0-alpine, not latest
+  - name: node
+    source: oci
+    coordinates: {image: node}
+    policy: {include: ['^\d+\.\d+\.\d+$']}
+  # One variant: 1.2.3-alpine is a SemVer pre-release under coercion, so pre-releases must be included
+  - name: node-alpine
+    source: oci
+    coordinates: {image: node}
+    policy: {include: ['-alpine$'], prerelease: include}
+```
 
 ### 2.4 `sinks[]`
 

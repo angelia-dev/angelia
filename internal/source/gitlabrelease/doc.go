@@ -78,4 +78,15 @@
 // token to another host (including another port or a subdomain) or to plain
 // http fails instead of being followed; net/http alone would forward the
 // PRIVATE-TOKEN header to any host.
+//
+// # Release notes
+//
+// Each entry of the list response carries the release description (Markdown,
+// null when empty), so List decodes it at no cost: no extra request, and a 304
+// stays a 304. It becomes source.Version.Notes with format "markdown", built
+// by source.NewNotes: line endings are normalised, control characters and HTML
+// comments outside code fences are removed, and the text is cut to 16384 bytes
+// at a character boundary with truncated set. A null, empty or blank
+// description gives nil notes. The text is untrusted upstream content, and a
+// snapshot taken when the check first sees the version (ADR 0036).
 package gitlabrelease

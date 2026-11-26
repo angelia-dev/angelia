@@ -1,0 +1,4 @@
+# Applied to every imported watch.
+prerelease: none
+cooldown: 48h
+bump: [major, minor]

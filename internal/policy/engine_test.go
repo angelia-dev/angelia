@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -463,5 +464,69 @@ func TestCompileErrors(t *testing.T) {
 	e, err := Compile(Default(), sem)
 	if err != nil || !reflect.DeepEqual(e.Policy(), Default()) {
 		t.Errorf("Compile(Default()) = %v, %v", e, err)
+	}
+}
+
+func notesVersion(raw, body string) source.Version {
+	return source.Version{Raw: raw, Notes: source.NewNotes("markdown", body)}
+}
+
+func TestReleaseCarriesNotes(t *testing.T) {
+	e := compile(t, Policy{}, sem)
+	f := []source.Version{notesVersion("1.1.0", "## 1.1.0\n\n- new"), {Raw: "1.0.1"}, {Raw: "1.0.0"}}
+	d := e.Evaluate(newChanges(sem, []string{"1.0.0"}, f, t0), nil, t0)
+	if len(d.Emit) != 2 {
+		t.Fatalf("Emit = %+v", d.Emit)
+	}
+	got := map[string]*source.Notes{}
+	for _, r := range d.Emit {
+		got[r.Raw] = r.Notes
+	}
+	if want := (&source.Notes{Format: "markdown", Body: "## 1.1.0\n\n- new"}); !reflect.DeepEqual(got["1.1.0"], want) {
+		t.Errorf("1.1.0 notes = %+v, want %+v", got["1.1.0"], want)
+	}
+	if got["1.0.1"] != nil {
+		t.Errorf("1.0.1 notes = %+v, want nil", got["1.0.1"])
+	}
+}
+
+// D36: a held version keeps the notes of the check that first saw it, even
+// if the listing later has another body.
+func TestHeldVersionKeepsNotesOfFirstCheck(t *testing.T) {
+	const cool = 72 * time.Hour
+	e := compile(t, Policy{Cooldown: Duration(cool)}, sem)
+	first := []source.Version{notesVersion("1.1.0", "first body"), {Raw: "1.0.0"}}
+	d := e.Evaluate(newChanges(sem, []string{"1.0.0"}, first, t0), nil, t0)
+	if len(d.Hold) != 1 || d.Hold[0].Notes == nil || d.Hold[0].Notes.Body != "first body" {
+		t.Fatalf("Hold = %+v", d.Hold)
+	}
+	p := held(t, d.Hold[0], nil)
+
+	// Later check: the listing's body was edited; the version is known now.
+	later := t0.Add(cool + time.Hour)
+	second := []source.Version{notesVersion("1.1.0", "edited body"), {Raw: "1.0.0"}}
+	d = e.Evaluate(newChanges(sem, []string{"1.0.0", "1.1.0"}, second, later), []store.PendingRelease{p}, later)
+	if len(d.Emit) != 1 || d.Emit[0].Raw != "1.1.0" {
+		t.Fatalf("Emit = %+v", d.Emit)
+	}
+	if n := d.Emit[0].Notes; n == nil || n.Body != "first body" || n.Format != "markdown" {
+		t.Fatalf("emitted notes = %+v, want the first check's", n)
+	}
+}
+
+// A pending_release row written before Release had Notes has no "notes" key.
+func TestHeldReleaseWithoutNotesKeyDecodes(t *testing.T) {
+	const cool = 72 * time.Hour
+	e := compile(t, Policy{Cooldown: Duration(cool)}, sem)
+	old := `{"raw":"1.1.0","normalized":"1.1.0","scheme":"semver","previous":"1.0.0","bump":"minor","prerelease":false,` +
+		`"detected_at":"2026-11-01T12:00:00Z","url":"https://example.org/r","notes_url":"https://example.org/n"}`
+	p := store.PendingRelease{WatchID: "w", TargetID: "t", Raw: "1.1.0", HeldAt: t0, Release: json.RawMessage(old)}
+	later := t0.Add(cool + time.Hour)
+	d := e.Evaluate(nil, []store.PendingRelease{p}, later)
+	if len(d.Emit) != 1 || d.Emit[0].Raw != "1.1.0" || d.Emit[0].Notes != nil {
+		t.Fatalf("Emit = %+v", d.Emit)
+	}
+	if b, err := json.Marshal(d.Emit[0]); err != nil || strings.Contains(string(b), `"notes"`) {
+		t.Fatalf("marshalled release has notes: %s (%v)", b, err)
 	}
 }

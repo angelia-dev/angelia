@@ -1,14 +1,14 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `0da2921` ("fix(openapi): gitlab-pipeline-trigger ref C1 controls, scheme case, empty maps")
-on the spec repository's branch `story/90-gitlab-sink-schema` (spec 0.11.0, not
-merged to `main` yet: re-vendor from the merge commit once it is). Spec 0.11.0 adds
-`GitlabPipelineTriggerSinkConfig` under `SinkConfig.x-angelia-kind-config` (the `gitlab-pipeline-trigger`
-sink, spec docs/api.md item 56); the event schemas and the MCP tool contract are unchanged by 0.11.0.
-Before that, the file was at commit `da75b65` ("feat(openapi): adopt watch-file resources with POST
-/v1/adoptions (spec 0.10.0) (#21)") on the spec repository's `main`.
-Since spec 0.9.0, spec 0.10.0 adds `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `87249d1`
+("feat(openapi): gitlab-pipeline-trigger sink config (0.11.0) (#24)", spec 0.11.0) on the spec repository's `main`. Spec 0.11.0 adds `GitlabPipelineTriggerSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 56); the MCP tool contract and the event schemas are unchanged by 0.11.0.
+Before that, `openapi/angelia.v1.yaml` and `schemas/release/v1.json` are at commit `a8250b0` ("docs(release): say which
+sources fill notes and that it is untrusted (spec 0.10.1) (#22)") on the spec repository's `main`. Spec 0.10.1 changes descriptions only: the `notes`
+description of the release event schema (which sources fill it, and that its text is untrusted upstream
+content) and `info.version` of the OpenAPI document. No field, type, required-ness or enum changed.
+Before that, spec 0.10.0 (commit `da75b65`, "feat(openapi): adopt watch-file resources with POST
+/v1/adoptions (spec 0.10.0) (#21)"), since spec 0.9.0, added `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
 `AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
 description (spec docs/api.md item 55). The MCP tool contract and the event schemas are unchanged by
 0.10.0.

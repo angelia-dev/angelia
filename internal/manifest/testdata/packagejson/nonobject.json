@@ -1,0 +1,6 @@
+{
+  "dependencies": ["a", "b"],
+  "devDependencies": "nope",
+  "optionalDependencies": null,
+  "peerDependencies": {}
+}

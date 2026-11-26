@@ -1513,7 +1513,7 @@ type Watch struct {
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
 	Policy WatchPolicy `json:"policy"`
 
-	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+	// Scheme The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
 	Scheme string `json:"scheme"`
 
 	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.
@@ -1593,7 +1593,7 @@ type WatchWrite struct {
 	// Policy Which new versions become events. Keys and semantics as in `watches[].policy` of the watch file.
 	Policy *WatchPolicy `json:"policy,omitempty"`
 
-	// Scheme The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind.
+	// Scheme The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind.
 	Scheme *string `json:"scheme,omitempty"`
 
 	// Source A registered source kind (`GET /v1/plugins?interface=source`), or the name of a source instance configured on the server (`sources.<name>.kind`). Events of the watch carry the base kind in `data.source`.

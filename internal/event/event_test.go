@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/policy"
+	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/version"
 )
@@ -139,6 +141,24 @@ func TestBuildValidatesAgainstSpecSchema(t *testing.T) {
 		{
 			name: "gitlab numeric project id", tgt: target("gitlab-release", map[string]string{"project": "278964"}),
 			typ: TypePublished, subject: "gitlab-release:278964@1.0.0",
+		},
+		{
+			name: "oci with a digest", tgt: target("oci", map[string]string{"image": "docker.io/library/node"}),
+			rel: func(r *policy.Release) {
+				r.Raw, r.Normalized = "22.11.0", "22.11.0"
+				r.Metadata = map[string]any{"digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+			},
+			typ: TypePublished, subject: "oci:docker.io/library/node@22.11.0",
+			purl: "pkg:oci/node@sha256%3A0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef?repository_url=docker.io/library/node&tag=22.11.0",
+		},
+		{
+			name: "oci with an invalid digest is versionless", tgt: target("oci", map[string]string{"image": "docker.io/library/node"}),
+			rel: func(r *policy.Release) {
+				r.Raw, r.Normalized = "22.11.0", "22.11.0"
+				r.Metadata = map[string]any{"digest": "sha256:xyz"}
+			},
+			typ: TypePublished, subject: "oci:docker.io/library/node@22.11.0",
+			purl: "pkg:oci/node?repository_url=docker.io/library/node&tag=22.11.0",
 		},
 		{
 			name: "sub-millisecond times", tgt: target("npm", map[string]string{"name": "left-pad"}),
@@ -398,4 +418,48 @@ func TestEncodePayloadReplacesNUL(t *testing.T) {
 	if plain := []byte(`{"a":"\\u0000","b":"x"}`); string(replaceEscapedNUL(plain)) != string(plain) {
 		t.Fatalf("replaceEscapedNUL(%s) = %s", plain, replaceEscapedNUL(plain))
 	}
+}
+
+// notesRelease builds the event of a pypi release whose source gave notes.
+func notesRelease(t *testing.T, n *source.Notes) Envelope {
+	t.Helper()
+	r := pypiRelease("0.4.1", "0.4.0", "patch")
+	r.Notes = n
+	env, err := Build(Input{
+		Instance: "ci.example", Target: target("pypi", map[string]string{"name": "example-lib"}),
+		Watch: store.Watch{ID: "01JBX5D6E7F8G9H0J1K2M3N4P5", Name: "example-lib"}, Release: r, Time: detected,
+	})
+	must(t, err)
+	return env
+}
+
+func TestBuildNotes(t *testing.T) {
+	s := loadSchemas(t)
+	t.Run("none is null", func(t *testing.T) {
+		env := notesRelease(t, nil)
+		b, err := json.Marshal(env)
+		must(t, err)
+		if !strings.Contains(string(b), `"notes":null`) {
+			t.Fatalf("event without notes: %s", b)
+		}
+		if got := validEvent(t, s, env)["data"].(map[string]any)["notes"]; got != nil {
+			t.Fatalf("notes = %v, want null", got)
+		}
+	})
+	t.Run("notes", func(t *testing.T) {
+		env := notesRelease(t, source.NewNotes("markdown", "## 0.4.1\r\n\n- fix <!-- hidden -->it\n"))
+		got := validEvent(t, s, env)["data"].(map[string]any)["notes"]
+		want := map[string]any{"format": "markdown", "body": "## 0.4.1\n\n- fix it", "truncated": false}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("notes = %v, want %v", got, want)
+		}
+	})
+	t.Run("truncated", func(t *testing.T) {
+		n := source.NewNotes("markdown", strings.Repeat("é", MaxNotesBytes))
+		env := notesRelease(t, n)
+		got := validEvent(t, s, env)["data"].(map[string]any)["notes"].(map[string]any)
+		if got["truncated"] != true || len(got["body"].(string)) != MaxNotesBytes {
+			t.Fatalf("truncated notes = truncated %v, %d bytes", got["truncated"], len(got["body"].(string)))
+		}
+	})
 }
