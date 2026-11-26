@@ -34,6 +34,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/gitlabrelease"
 	"github.com/angelia-dev/angelia/internal/source/goproxy"
 	"github.com/angelia-dev/angelia/internal/source/npm"
+	"github.com/angelia-dev/angelia/internal/source/oci"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
 	"github.com/angelia-dev/angelia/internal/store/open"
@@ -46,7 +47,7 @@ import (
 // builtinKinds are the source kinds this binary implements, which a named
 // instance (sources.<name>.kind) may select.
 var builtinKinds = []string{
-	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind,
+	pypi.Kind, npm.Kind, githubrelease.Kind, githubtag.Kind, gitlabrelease.Kind, crates.Kind, oci.Kind,
 	goproxy.Kind,
 }
 
@@ -128,6 +129,12 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 			opts = append(opts, gitlabrelease.WithToken(tok))
 		}
 		return gitlabrelease.New(base, c, opts...)
+	case oci.Kind:
+		// oci has no single default registry: without base_url the source
+		// fetches from the registry named in each image (anonymously);
+		// with base_url it is pinned to that origin (ADR 0037). It sends no
+		// credential yet, so it gets the plain client.
+		return oci.New(cfg.Sources[name].BaseURL, hc, oci.WithAllowHTTPHosts(cfg.HTTP.AllowHTTPHosts...))
 	case goproxy.Kind:
 		var opts []goproxy.Option
 		if log != nil {

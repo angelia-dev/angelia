@@ -721,6 +721,10 @@ func (c *Config) Validate() error {
 				bad("sources.%s.base_url: must be an absolute http(s) URL", k)
 			case u.User != nil:
 				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env or auth", k)
+			case kindOf(k, s) == "oci" && (strings.EqualFold(u.Hostname(), "docker.io") || strings.EqualFold(u.Hostname(), "index.docker.io")):
+				bad("sources.%s.base_url: %s is not a registry endpoint; Docker Hub's registry is https://registry-1.docker.io (or leave base_url unset)", k, u.Hostname())
+			case kindOf(k, s) == "oci" && (strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != ""):
+				bad("sources.%s.base_url: an oci registry is a bare origin (scheme and host, no path, query or fragment)", k)
 			}
 		}
 		switch {

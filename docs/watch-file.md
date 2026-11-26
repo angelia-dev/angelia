@@ -64,7 +64,7 @@ also across owners: apply refuses a name that a row created through the API alre
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `go-proxy`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
+| `source` | string | yes | none | a registered source: a kind (`pypi`, `npm`, `crates`, `oci`, `go-proxy`, `github-release`, `github-tag`, `gitlab-release`) or the name of a named source instance of the instance configuration (`sources.<name>.kind`); an unknown name is an error |
 | `coordinates` | map string to string | yes | none | flat map (ADR 0006); validated by that source's `Validate` (no I/O), which owns normalisation |
 | `interval` | duration | no | `1h` | Go syntax (`30m`, `6h`); at least `5m`, at most `720h` |
 | `scheme` | string | no | by source kind | one of `semver`, `pep440`, `calver`, `lexical` (#68) |
@@ -76,7 +76,10 @@ also across owners: apply refuses a name that a row created through the API alre
   `github-release` and `github-tag`: `repo` as `owner/name` (for example `cli/cli`);
   `gitlab-release`: `project`, the path with namespace (`group/subgroup/project`) or the numeric id;
   `go-proxy`: `module`, the module path as written in `go.mod` (see below); each in the
-  form `Source.Validate` accepts.
+  form `Source.Validate` accepts. `oci`: `image`, the repository with its registry host (`ghcr.io/org/app`; no
+  host means Docker Hub). It is stored in canonical form, `node` as `docker.io/library/node`, which is also
+  `data.package`; a tag (`:22`), a digest (`@sha256:...`), a scheme or upper case in the path is refused.
+  See [OCI images](#oci-images-choosing-the-version-tags) for the version filters.
 - `go-proxy` (the tagged versions of a Go module, from `proxy.golang.org` or a [private proxy](private-registries.md#go-proxy-athens-artifactory-nexus)):
   - Module paths are **case-sensitive**: `github.com/BurntSushi/toml` and `github.com/burntsushi/toml` are
     different modules for Go, so Angelia keeps the path as you write it and never folds its case. A wrong-case
@@ -122,6 +125,27 @@ The loader validates each policy structurally (types, enums, regex compilation, 
 decodes the stored form with the policy engine (`policy.Decode`) and compiles it with the watch's scheme
 (`policy.Compile`). A `constraint` with a syntax error, or with an operand the scheme cannot parse, fails
 at load time with the file, line and path of the key. The policy is stored as `watch.policy_json`.
+
+#### OCI images: choosing the version tags
+
+The `oci` source returns every tag of the image except cosign signature, attestation and SBOM tags
+(`sha256-<hex>`, with an optional `.sig`, `.att` or `.sbom`). Which tags are versions is the watch policy's job
+([ADR 0037](adr/0037-oci-source-registry-selection-and-token-auth.md)). Without a filter, tags such as `latest`,
+`main` or `sha-1a2b3c` are lexical versions and emit an event when they first appear. Recipes:
+
+```yaml
+watches:
+  # Plain releases only (22.11.0): not 22.11.0-alpine, not latest
+  - name: node
+    source: oci
+    coordinates: {image: node}
+    policy: {include: ['^\d+\.\d+\.\d+$']}
+  # One variant: 1.2.3-alpine is a SemVer pre-release under coercion, so pre-releases must be included
+  - name: node-alpine
+    source: oci
+    coordinates: {image: node}
+    policy: {include: ['-alpine$'], prerelease: include}
+```
 
 ### 2.4 `sinks[]`
 

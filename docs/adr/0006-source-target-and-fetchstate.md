@@ -43,6 +43,7 @@ cancellation. The data model ([§5](../architecture.md#5-data-model-simplified))
 ### Open questions
 
 - Whether `http-json` and `oci` need typed coordinates; revisit when those sources are written.
+  - 2026-11-25 note: `oci` does not: one flat `image` string ([ADR 0037](0037-oci-source-registry-selection-and-token-auth.md)). `http-json` is still open.
 
 ## Alternatives considered
 
