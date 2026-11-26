@@ -176,6 +176,7 @@ func (*Source) Validate(t source.Target) error {
 type apiRelease struct {
 	TagName         string     `json:"tag_name"`
 	Name            string     `json:"name"`
+	Description     *string    `json:"description"` // Markdown, null when empty
 	CreatedAt       time.Time  `json:"created_at"`
 	ReleasedAt      *time.Time `json:"released_at"`
 	UpcomingRelease bool       `json:"upcoming_release"`
@@ -326,12 +327,19 @@ func (s *Source) toVersion(project string, r apiRelease) source.Version {
 	if r.Commit.ID != "" {
 		md["sha"] = r.Commit.ID
 	}
+	var notes *source.Notes
+	if r.Description != nil {
+		// NewNotes cleans and cuts the text and copies the kept prefix, so
+		// the decoded description is not retained.
+		notes = source.NewNotes("markdown", *r.Description)
+	}
 	return source.Version{
 		Raw:         r.TagName,
 		PublishedAt: published,
 		// Prerelease is nil: GitLab has no prerelease flag; policy decides.
 		URL:      s.releaseURL(project, r),
 		NotesURL: s.releaseURL(project, r), // release notes are rendered on the release page
+		Notes:    notes,
 		Metadata: md,
 	}
 }

@@ -178,7 +178,7 @@ func TestRedirectGuard(t *testing.T) {
 		t.Errorf("anonymous cross-host redirect: err %v, hits %d", err, otherHits)
 	}
 	// Redirect cap when the caller's client has no CheckRedirect.
-	if _, err := fetch(t, hc, srv.URL+"/loop", ""); err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+	if _, err := fetch(t, hc, srv.URL+"/loop", ""); err == nil || !strings.Contains(err.Error(), "stopped after 5 redirects") {
 		t.Errorf("redirect loop: err = %v", err)
 	}
 }

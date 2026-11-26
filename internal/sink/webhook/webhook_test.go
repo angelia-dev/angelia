@@ -649,7 +649,7 @@ func TestNewDoesNotChangeClient(t *testing.T) {
 	if hc.CheckRedirect == nil {
 		t.Fatal("caller's CheckRedirect replaced")
 	}
-	if err := hc.CheckRedirect(nil, nil); errors.Is(err, http.ErrUseLastResponse) {
+	if err := hc.CheckRedirect(httptest.NewRequest(http.MethodGet, "https://example.com/", nil), nil); errors.Is(err, http.ErrUseLastResponse) {
 		t.Fatal("caller's client stops following redirects")
 	}
 }

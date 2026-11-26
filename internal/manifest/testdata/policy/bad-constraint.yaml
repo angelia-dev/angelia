@@ -1,0 +1,2 @@
+prerelease: none
+constraint: ">=1.0, <not-a-version"

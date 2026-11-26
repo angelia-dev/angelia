@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -402,6 +403,45 @@ func TestNetClientAllowNetworks(t *testing.T) {
 	}
 	if err := get("127.0.0.0/8"); err != nil {
 		t.Fatalf("with 127.0.0.0/8: %v", err)
+	}
+}
+
+// The netguard client serve builds takes http.allow_private_hosts (ADR
+// 0040): a loopback server reached by the name localhost is refused without
+// it and reached with localhost listed; its address 127.0.0.1 is not a name
+// on the list, so it stays refused.
+func TestNetClientAllowPrivateHosts(t *testing.T) {
+	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost")
+	if err != nil || len(as) == 0 || slices.ContainsFunc(as, func(a netip.Addr) bool { return !a.Unmap().IsLoopback() }) {
+		t.Skipf("localhost does not resolve to loopback only here: %v %v", as, err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	get := func(rawURL string, hosts ...string) error {
+		c, err := newNetClient(&config.Config{HTTP: config.HTTP{AllowPrivateHosts: hosts}}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+		resp, err := c.HTTPClient().Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	byName := "http://localhost:" + port + "/"
+	if err := get(byName); !errors.Is(err, netguard.ErrBlocked) {
+		t.Fatalf("without allow_private_hosts: %v, want ErrBlocked", err)
+	}
+	if err := get(byName, "registry.lan"); !errors.Is(err, netguard.ErrBlocked) {
+		t.Fatalf("with another host: %v, want ErrBlocked", err)
+	}
+	if err := get(byName, "localhost"); err != nil {
+		t.Fatalf("with localhost listed: %v", err)
+	}
+	if err := get(srv.URL, "localhost"); !errors.Is(err, netguard.ErrBlocked) {
+		t.Fatalf("IP literal with localhost listed: %v, want ErrBlocked", err)
 	}
 }
 

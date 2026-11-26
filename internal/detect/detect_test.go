@@ -176,3 +176,45 @@ func TestCheckErrors(t *testing.T) {
 		t.Fatalf("commit error: %v", err)
 	}
 }
+
+// A new release whose source gave notes is stored with data.notes, and its
+// urls are unchanged by them (83-B end to end; fixtures are synthetic).
+func TestCheckStoresReleaseNotes(t *testing.T) {
+	ctx := t.Context()
+	f := newFixture(t)
+	f.src.Set("demo", ver("1.0.0", t0.Add(-48*time.Hour)))
+	out, err := f.checker(t0).Check(ctx, f.tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tg.FetchState = out.FetchState
+
+	withNotes := ver("1.1.0", t1.Add(-time.Minute))
+	withNotes.URL = "https://github.com/example/demo/releases/tag/1.1.0"
+	withNotes.NotesURL = withNotes.URL
+	withNotes.Notes = source.NewNotes("markdown", "## 1.1.0\r\n\r\n<!-- draft -->- Synthetic change\r\n")
+	f.src.Set("demo", withNotes, ver("1.0.0", t0.Add(-48*time.Hour)))
+	if _, err := f.checker(t1).Check(ctx, f.tg); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := f.st.ListEventsAfter(ctx, 0, 10)
+	if err != nil || len(ev) != 1 {
+		t.Fatalf("events = %d, %v; want 1", len(ev), err)
+	}
+	var env struct {
+		Data struct {
+			Notes json.RawMessage                     `json:"notes"`
+			URLs  struct{ Release, Changelog string } `json:"urls"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(ev[0].Payload, &env); err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"format":"markdown","body":"## 1.1.0\n\n- Synthetic change","truncated":false}`
+	if string(env.Data.Notes) != want {
+		t.Errorf("data.notes = %s, want %s", env.Data.Notes, want)
+	}
+	if env.Data.URLs.Release != withNotes.URL || env.Data.URLs.Changelog != withNotes.NotesURL {
+		t.Errorf("urls = %+v", env.Data.URLs)
+	}
+}

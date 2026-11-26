@@ -28,7 +28,11 @@
 //     decides;
 //   - a basic SSRF guard ([Guard]) that refuses loopback, private,
 //     link-local, CGNAT, multicast, broadcast and IPv4-embedding IPv6
-//     addresses unless they are allowlisted.
+//     addresses unless they are allowlisted by prefix ([Config].Allow) or,
+//     for loopback, private and CGNAT but never link-local or metadata
+//     addresses, by host name ([Config].AllowHosts, ADR 0040);
+//   - redirects: at most [MaxRedirects] requests per chain, and never from
+//     https to http ([ErrInvalidURL]).
 //
 // The SSRF guard checks the URL host of each hop before it is sent,
 // resolving hostnames with Config.Resolver. The default transport then

@@ -1,17 +1,19 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml` is at commit `01b1647` ("fix(openapi): mqtt url pattern refuses an empty or over-long port", spec 0.13.0) on
-the spec repository's branch `story/93-mqtt-sink-schema` (angelia-dev/angelia#93), not yet on `main`; it
-must be re-vendored from `main` once that branch and the concurrent 0.10.1, 0.11.0 and 0.12.0 branches
-are merged and their versions reconciled.
-Since spec 0.10.0, spec 0.13.0 adds `MqttSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec
-docs/api.md item 56). The MCP tool contract and the event schemas are unchanged by 0.13.0.
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `87249d1`
+("feat(openapi): gitlab-pipeline-trigger sink config (0.11.0) (#24)", spec 0.11.0) on the spec repository's `main`. Spec 0.11.0 adds `GitlabPipelineTriggerSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 56); the MCP tool contract and the event schemas are unchanged by 0.11.0.
+Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `8e98902`
+("docs(schemas): list maven among the known version schemes (#25)", spec 0.10.2) on the spec repository's
+`main`. Spec 0.10.2 changes descriptions only: `maven` becomes a known value of `data.scheme` and of the
+watch `scheme` (OpenAPI and MCP). Spec 0.10.1 (commit `a8250b0`, #22) changed descriptions only too: which
+sources fill `notes`, and that its text is untrusted. No schema rule changes in either.
 Before that, spec 0.10.0 (commit `da75b65`, "feat(openapi): adopt watch-file resources with POST
 /v1/adoptions (spec 0.10.0) (#21)"), since spec 0.9.0, added `adoptResources` (`POST /v1/adoptions`,
-`admin`) with the schemas `AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and
-the matching `ManagedBy` description (spec docs/api.md item 55). The MCP tool contract and the event
-schemas are unchanged by 0.10.0.
+`admin`) with the schemas
+`AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
+description (spec docs/api.md item 55). The MCP tool contract and the event schemas are unchanged by
+0.10.0.
 Before that, spec 0.9.0 (commit `dbb439e`, "feat(openapi): API gaps found by the admin UI (spec 0.9.0)
 (#20)"), since spec 0.8.0, added `order=desc` and `before` to `listEvents` with
 `EventPage.next_before`; the `sink`, `since` and `until` filters of `listDeliveries` and
