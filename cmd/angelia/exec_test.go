@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/angelia-dev/angelia/internal/config"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	execsink "github.com/angelia-dev/angelia/internal/sink/exec"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
 	"github.com/angelia-dev/angelia/internal/watchfile"
@@ -59,7 +59,11 @@ func TestExecBoundsAgree(t *testing.T) {
 // plugin catalogue, only when exec.commands defines commands.
 func TestBuiltinSinksExecOnlyWithCommands(t *testing.T) {
 	cfg := &config.Config{Exec: config.Exec{Commands: map[string]config.ExecCommand{"hook": {Argv: []string{"/bin/true"}}}}}
-	sinks, err := builtinSinks(cfg, &http.Client{Transport: http.DefaultTransport}, nil)
+	nc, err := netguard.New(netguard.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sinks, err := builtinSinks(cfg, nc, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

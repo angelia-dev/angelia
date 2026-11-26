@@ -35,13 +35,15 @@ func TestDestination(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://CI.Example.com/x": "ci.example.com:443", "http://ci.example.com": "ci.example.com:80",
 		"https://ci.example.com:8443/": "ci.example.com:8443", "https://[::1]/": "[::1]:443", "HTTPS://h": "h:443",
+		"mqtts://Broker.example.net": "broker.example.net:8883", "mqtt://broker.example.net": "broker.example.net:1883",
+		"mqtts://broker.example.net:443": "broker.example.net:443", "MQTT://[2001:db8::1]:1884": "[2001:db8::1]:1884",
 	} {
 		u, _ := url.Parse(raw)
 		if got, err := Destination(u); err != nil || got != want {
 			t.Errorf("Destination(%s) = %q %v", raw, got, err)
 		}
 	}
-	for _, raw := range []string{"ftp://h/", "https:///x", "https://bücher.example/"} {
+	for _, raw := range []string{"ftp://h/", "https:///x", "https://bücher.example/", "mqtt+ws://h/", "ws://h/", "nats://h/", "mqtts:///"} {
 		u, _ := url.Parse(raw)
 		if _, err := Destination(u); err == nil {
 			t.Errorf("Destination(%s) accepted", raw)
@@ -49,6 +51,36 @@ func TestDestination(t *testing.T) {
 	}
 	if _, err := Destination(nil); err == nil {
 		t.Error("nil URL accepted")
+	}
+}
+
+// AC (#93, 93-B): a secret bound to broker.example.net:8883 resolves for
+// mqtts://broker.example.net and is refused for any other host or port; a
+// bare host still means port 443.
+func TestBoundAllowsMQTT(t *testing.T) {
+	b := Bound{Name: "broker", Value: NewValueString(canary), Hosts: []string{"broker.example.net:8883", "lan.example.net:1883"}}
+	for raw, ok := range map[string]bool{
+		"mqtts://broker.example.net": true, "mqtts://broker.example.net:8883": true, "MQTTS://BROKER.example.net": true,
+		"mqtt://lan.example.net": true, "mqtt://lan.example.net:1883": true,
+		"mqtt://broker.example.net": false, "mqtts://broker.example.net:8884": false, "mqtts://other.example.net": false,
+		"mqtts://lan.example.net": false, "https://broker.example.net:8883": true, "mqtt+ws://broker.example.net:8883": false,
+	} {
+		u, _ := url.Parse(raw)
+		err := b.Allows(u)
+		if (err == nil) != ok {
+			t.Errorf("Allows(%s) = %v", raw, err)
+		}
+		if err != nil {
+			if !errors.Is(err, ErrHostMismatch) {
+				t.Errorf("error %v", err)
+			}
+			noLeak(t, "Allows", err.Error())
+		}
+	}
+	bare := Bound{Name: "broker", Value: NewValueString(canary), Hosts: []string{"broker.example.net"}}
+	u, _ := url.Parse("mqtts://broker.example.net")
+	if err := bare.Allows(u); !errors.Is(err, ErrHostMismatch) {
+		t.Fatalf("bare host (port 443) for mqtts: got %v, want ErrHostMismatch", err)
 	}
 }
 

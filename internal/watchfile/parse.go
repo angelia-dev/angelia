@@ -28,6 +28,7 @@ import (
 	execsink "github.com/angelia-dev/angelia/internal/sink/exec"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/gitlabtrigger"
+	"github.com/angelia-dev/angelia/internal/sink/mqtt"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/subscription"
@@ -55,7 +56,7 @@ func ValidName(s string) bool { return nameRE.MatchString(s) }
 // SinkKinds are the sink kinds a watch file may always declare. The exec
 // kind (ExecKind) joins them only when the instance configuration defines
 // commands (Options.ExecCommands, ADR 0042).
-var SinkKinds = []string{"webhook", githubdispatch.Kind, gitlabtrigger.Kind, shoutrrr.Kind}
+var SinkKinds = []string{"webhook", githubdispatch.Kind, gitlabtrigger.Kind, shoutrrr.Kind, mqtt.Kind}
 
 // ExecKind is the kind of the exec sink, available only with commands
 // under exec.commands in angelia.yaml.
@@ -459,6 +460,8 @@ func (p *parser) sink(n *yaml.Node, jp string, seen map[string]int) (Sink, bool)
 			if len(p.opts.ExecCommands) > 0 {
 				s.Config = p.exec(cn, jp+".config")
 			}
+		case mqtt.Kind:
+			s.Config = p.mqtt(cn, jp+".config")
 		}
 	}
 	return s, len(p.errs) == before
@@ -535,6 +538,87 @@ func (p *parser) shoutrrr(n *yaml.Node, jp string) json.RawMessage {
 	}
 	if tn := m["timeout"]; tn != nil {
 		if d, ok := p.duration(tn, jp+".timeout", shoutrrr.MinTimeout, shoutrrr.MaxTimeout, false); ok {
+			cfg.Timeout = d.String()
+			if d > dispatch.DefaultDeliverTimeout {
+				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
+					d, dispatch.DefaultDeliverTimeout)
+			}
+		}
+	}
+	return marshal(cfg)
+}
+
+// mqtt reads the config of an mqtt sink (spec MqttSinkConfig, ADR 0039,
+// docs/mqtt.md) with the rules of the sink's own parser, and writes the
+// defaults into the stored configuration. mqtt:// is an error unless the
+// host is in http.allow_http_hosts; a password over it is a warning.
+func (p *parser) mqtt(n *yaml.Node, jp string) json.RawMessage {
+	m := p.mapping(n, jp, "url", "topic", "qos", "retain", "username", "password_env", "password_ref", "client_id_prefix", "timeout")
+	if m == nil {
+		return nil
+	}
+	qos := mqtt.DefaultQoS
+	cfg := mqtt.Config{QoS: &qos, ClientIDPrefix: mqtt.DefaultClientIDPrefix, Timeout: mqtt.DefaultTimeout.String()}
+	plain := false
+	if un := p.need(m, "url", jp+".url", n); un != nil {
+		if s, ok := p.secretFree(un, jp+".url"); ok {
+			u, err := mqtt.CheckURL(s)
+			switch {
+			case err != nil:
+				p.errf(un, jp+".url", "%v", err)
+			case u.Scheme == mqtt.SchemePlain && !netguard.HostListed(p.opts.AllowHTTPHosts, u.Hostname()):
+				p.errf(un, jp+".url", "plain mqtt:// is not allowed for %s; add it to http.allow_http_hosts or use mqtts://", u.Hostname())
+			default:
+				cfg.URL, plain = s, u.Scheme == mqtt.SchemePlain
+			}
+		}
+	}
+	if tn := p.need(m, "topic", jp+".topic", n); tn != nil {
+		if s, ok := p.secretFree(tn, jp+".topic"); ok {
+			if err := mqtt.CheckTopicTemplate(s); err != nil {
+				p.errf(tn, jp+".topic", "%v", err)
+			} else {
+				cfg.Topic = s
+			}
+		}
+	}
+	if qn := m["qos"]; qn != nil {
+		if qn.Kind != yaml.ScalarNode || qn.ShortTag() != "!!int" || (qn.Value != "0" && qn.Value != "1") {
+			p.errf(qn, jp+".qos", "must be 0 or 1")
+		} else {
+			qos = int(qn.Value[0] - '0')
+		}
+	}
+	if rn := m["retain"]; rn != nil {
+		cfg.Retain, _ = p.boolean(rn, jp+".retain")
+	}
+	if un := m["username"]; un != nil {
+		if s, ok := p.secretFree(un, jp+".username"); ok {
+			if s == "" || len(s) > mqtt.MaxUsernameBytes || strings.ContainsRune(s, 0) {
+				p.errf(un, jp+".username", "must be 1 to %d bytes without U+0000", mqtt.MaxUsernameBytes)
+			} else {
+				cfg.Username = s
+			}
+		}
+	}
+	cfg.PasswordEnv, cfg.PasswordRef = p.credentialRefs(m, jp, "password_env", "password_ref")
+	if (m["password_env"] != nil || m["password_ref"] != nil) && m["username"] == nil {
+		p.errf(n, jp, "password_env and password_ref need username")
+	}
+	if plain && (m["password_env"] != nil || m["password_ref"] != nil) {
+		p.warnf(m["url"], jp+".url", "the password is sent in cleartext over mqtt://; use mqtts://")
+	}
+	if cn := m["client_id_prefix"]; cn != nil {
+		if s, ok := p.str(cn, jp+".client_id_prefix"); ok {
+			if mqtt.ValidClientIDPrefix(s) {
+				cfg.ClientIDPrefix = s
+			} else {
+				p.errf(cn, jp+".client_id_prefix", "must be 1 to 15 letters or digits")
+			}
+		}
+	}
+	if tn := m["timeout"]; tn != nil {
+		if d, ok := p.duration(tn, jp+".timeout", mqtt.MinTimeout, mqtt.MaxTimeout, false); ok {
 			cfg.Timeout = d.String()
 			if d > dispatch.DefaultDeliverTimeout {
 				p.warnf(tn, jp+".timeout", "%v is above the dispatcher's deliver timeout (%v), which bounds every attempt: a longer timeout has no effect",
@@ -797,7 +881,7 @@ func (p *parser) webhookURL(s string, n *yaml.Node, jp string) bool {
 		return false
 	case u.Scheme == "https":
 	case u.Scheme == "http":
-		if !slices.ContainsFunc(p.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, u.Hostname()) }) {
+		if !netguard.HostListed(p.opts.AllowHTTPHosts, u.Hostname()) {
 			p.errf(n, jp, "must be https:// (http:// is accepted only for hosts on the instance allowlist)")
 			return false
 		}

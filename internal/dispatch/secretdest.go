@@ -59,7 +59,7 @@ func (d *Dispatcher) checkSecretDestinations(ctx context.Context, kind string, s
 			switch strings.ToLower(o.Scheme) {
 			case "https":
 			case "http":
-				if !slices.ContainsFunc(d.opts.AllowHTTPHosts, func(h string) bool { return strings.EqualFold(h, o.Hostname()) }) {
+				if !netguard.HostListed(d.opts.AllowHTTPHosts, o.Hostname()) {
 					return nil, fail("%s: http:// is not allowed for this host (http.allow_http_hosts)", origin)
 				}
 			default:
