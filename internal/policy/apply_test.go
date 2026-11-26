@@ -413,7 +413,7 @@ func TestApplyInvalidPolicySkipsWatch(t *testing.T) {
 
 func TestSchemeFor(t *testing.T) {
 	sf := SchemeFor("pypi", nil)
-	for policy, want := range map[string]string{"": "pep440", "{}": "pep440", `{"scheme":"calver"}`: "calver", `{"scheme":"pep440"}`: "pep440"} {
+	for policy, want := range map[string]string{"": "pep440", "{}": "pep440", `{"scheme":"calver"}`: "calver", `{"scheme":"pep440"}`: "pep440", `{"scheme":"maven"}`: "maven"} {
 		s, err := sf(store.Watch{Policy: policyJSON(policy)})
 		if err != nil || s.Name() != want {
 			t.Errorf("SchemeFor(%q) = %v, %v; want %s", policy, s, err, want)
@@ -422,7 +422,7 @@ func TestSchemeFor(t *testing.T) {
 	if _, err := sf(store.Watch{Policy: policyJSON(`{"scheme":1}`)}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("bad scheme type: %v", err)
 	}
-	if _, err := sf(store.Watch{Policy: policyJSON(`{"scheme":"maven"}`)}); err == nil {
+	if _, err := sf(store.Watch{Policy: policyJSON(`{"scheme":"debian"}`)}); err == nil {
 		t.Error("unknown scheme accepted")
 	}
 }

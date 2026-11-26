@@ -1012,7 +1012,7 @@ export interface components {
              * @default 1h
              */
             interval: components["schemas"]["Duration"];
-            /** @description The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind. */
+            /** @description The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind. */
             scheme?: string;
             /** @default {} */
             labels: components["schemas"]["Labels"];
@@ -1038,7 +1038,7 @@ export interface components {
              * @default 1h
              */
             interval: components["schemas"]["Duration"];
-            /** @description The version scheme (`semver`, `pep440`, `calver`, `lexical`). Defaults by source kind. */
+            /** @description The version scheme (`semver`, `pep440`, `maven`, `calver`, `lexical`). Defaults by source kind. */
             scheme: string;
             /** @default {} */
             labels: components["schemas"]["Labels"];
@@ -1980,7 +1980,7 @@ export interface components {
              */
             previous_version: string | null;
             /**
-             * @description Name of the version scheme that classified the version. Known values: semver, pep440, calver, lexical; maven later. Open set: consumers must accept unknown values.
+             * @description Name of the version scheme that classified the version. Known values: semver, pep440, maven, calver, lexical. Open set: consumers must accept unknown values.
              * @example pep440
              */
             scheme: components["schemas"]["openToken"];

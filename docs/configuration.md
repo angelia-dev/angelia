@@ -76,7 +76,7 @@ Check a configuration with `angelia config check [--config FILE]`.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `sources.<kind>.auth` authenticates requests to a private registry or mirror with a **stored secret**, bound
   to the host of the source's `base_url`; see [Private registries and mirrors](private-registries.md). At most
-  one of `token_env` and `auth` is set. `token_env` authenticates `pypi`, `npm` and `go-proxy` (as
+  one of `token_env` and `auth` is set. `token_env` authenticates `pypi`, `npm`, `go-proxy` and `maven` (as
   `Authorization: Bearer`), `github-release` and `github-tag` (bearer), and `gitlab-release` (as GitLab's
   `PRIVATE-TOKEN` header; `auth` sends `Authorization: Bearer`, which GitLab also accepts). `crates` sends no
   credential: its `base_url` is the sparse index URL of a mirror, and `token_env` or `auth` on it is ignored
@@ -570,7 +570,7 @@ The folder name is the plugin's kind:
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
 - A plugin's kind should not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
-  `gitlab-release`, `go-proxy`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
+  `gitlab-release`, `go-proxy`, `maven`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
   `plugin kind crates is a built-in kind; the built-in is used`. Name a plugin for a registry the built-ins do not cover, such as
   `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`

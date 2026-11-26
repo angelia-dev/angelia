@@ -11,6 +11,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/calver"
 	"github.com/angelia-dev/angelia/internal/version/lexical"
+	"github.com/angelia-dev/angelia/internal/version/maven"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 	"github.com/angelia-dev/angelia/internal/version/semver"
 )
@@ -22,8 +23,8 @@ func TestLookup(t *testing.T) {
 			t.Errorf("Lookup(%q) = %v, %v", name, s, err)
 		}
 	}
-	if _, err := Lookup("maven"); err == nil || !strings.Contains(err.Error(), "maven") {
-		t.Errorf("Lookup(maven) error = %v", err)
+	if _, err := Lookup("debian"); err == nil || !strings.Contains(err.Error(), "debian") {
+		t.Errorf("Lookup(debian) error = %v", err)
 	}
 }
 
@@ -37,7 +38,7 @@ func TestForSourceKind(t *testing.T) {
 		"github-tag":     semver.Name,
 		"gitlab-release": semver.Name,
 		"oci":            semver.Name,
-		"maven":          lexical.Name, // own scheme in Phase 1
+		"maven":          maven.Name,
 		"http-json":      lexical.Name,
 		"http-regex":     lexical.Name,
 		"":               lexical.Name,
@@ -107,7 +108,8 @@ func TestSelect(t *testing.T) {
 		{"http-json", "semver", semver.Name, false},
 		{"github-release", "calver", calver.Name, false},
 		{"", "calver", calver.Name, false},
-		{"npm", "maven", "", true},
+		{"npm", "maven", maven.Name, false},
+		{"npm", "debian", "", true},
 		{"npm", "CalVer", "", true},
 		{"npm", " calver", "", true},
 	}
@@ -282,7 +284,7 @@ func FuzzFallbackParse(f *testing.F) {
 	for _, s := range []string{"1.2.3", "v1.0.0-rc.1", "1.0.post1", "latest", "1!2.0", "", "\xff"} {
 		f.Add(s)
 	}
-	schemes := []version.Scheme{WithFallback(semver.Scheme{}, nil), WithFallback(pep440.Scheme{}, nil), WithFallback(calver.Scheme{}, nil)}
+	schemes := []version.Scheme{WithFallback(semver.Scheme{}, nil), WithFallback(pep440.Scheme{}, nil), WithFallback(maven.Scheme{}, nil), WithFallback(calver.Scheme{}, nil)}
 	f.Fuzz(func(t *testing.T, raw string) {
 		for _, s := range schemes {
 			v, err := s.Parse(raw)

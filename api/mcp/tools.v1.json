@@ -87,7 +87,7 @@
             "default": "1h"
           },
           "scheme": {
-            "description": "The version scheme (semver, pep440, calver, lexical). Defaults by source kind.",
+            "description": "The version scheme (semver, pep440, maven, calver, lexical). Defaults by source kind.",
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
           },

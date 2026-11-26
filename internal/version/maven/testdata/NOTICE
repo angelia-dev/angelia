@@ -1,0 +1,14 @@
+guava.sorted.txt and slf4j-api.sorted.txt hold the version strings (public
+data) of com.google.guava:guava and org.slf4j:slf4j-api, as listed in their
+maven-metadata.xml on Maven Central on 2026-11-25, sorted in ascending order
+by org.apache.maven.artifact.versioning.ComparableVersion from maven-artifact
+3.9.11 (its ComparableVersion.java is identical to 3.9.16, the release the
+scheme ports), with ties broken by String.compareTo:
+
+    vs.sort(Comparator.comparing((String s) -> new ComparableVersion(s))
+            .thenComparing(Comparator.naturalOrder()));
+
+The ordering vectors in maven_test.go come from Maven's
+maven-artifact/src/test/java/org/apache/maven/artifact/versioning/ComparableVersionTest.java
+at tag maven-3.9.16, Copyright The Apache Software Foundation, licensed under
+the Apache License, Version 2.0.
