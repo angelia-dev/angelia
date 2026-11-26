@@ -202,7 +202,7 @@ func TestGrantsRefuseHostLimits(t *testing.T) {
 }
 
 func TestBuiltinSourceHosts(t *testing.T) {
-	want := []string{"api.github.com", "crates.io", "gitlab.com", "index.crates.io", "pypi.org", "registry.npmjs.org"}
+	want := []string{"api.github.com", "crates.io", "gitlab.com", "index.crates.io", "proxy.golang.org", "pypi.org", "registry.npmjs.org"}
 	if got := builtinSourceHosts(); !slices.Equal(got, want) {
 		t.Errorf("builtinSourceHosts() = %v, want %v", got, want)
 	}
