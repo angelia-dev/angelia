@@ -1487,7 +1487,7 @@ type VersionPage struct {
 // Watch A watch as the server returns it: the write keys with every default filled in, plus
 // response-only fields. Sending the write keys back with `PUT` changes nothing.
 type Watch struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Id Generated when the watch is created; kept across updates. Equals `data.watch.id` in its events.
@@ -1576,7 +1576,7 @@ type WatchStatus struct {
 // WatchWrite The body of `PUT /v1/watches/{name}`: the keys of `watches[]` in the watch file. Omitted
 // optional keys take their defaults.
 type WatchWrite struct {
-	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`). Stored in the source's canonical form.
+	// Coordinates Source-owned parameters that name the upstream object (`pypi`, `npm`, `crates`: `name`; `github-release`: `repo` as `owner/name`; `http-json`: `name`, `url`, `jsonpath` and optional `extract` (`values` or `keys`); `http-regex`: `name`, `url`, `regex`). `name` of `http-json` and `http-regex` is the package in events; their `url` is `https://` (or `http://` for a host the instance allows), without user information or fragment. Stored in the source's canonical form.
 	Coordinates map[string]string `json:"coordinates"`
 
 	// Interval The requested check interval, `5m` to `720h`. Watches on one target share the smallest interval among them; `status.effective_interval` shows the one in use.
@@ -3387,6 +3387,13 @@ type ClientInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+	// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+	// or that changes the `source` or `coordinates` of a watch when the stored or the new
+	// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+	// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+	// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+	//
 	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 	// writes only if the watch is still that version, else `412 precondition-failed`;
 	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -3411,6 +3418,13 @@ type ClientInterface interface {
 	//
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
+	// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+	// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+	// or that changes the `source` or `coordinates` of a watch when the stored or the new
+	// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+	// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+	// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 	//
 	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 	// writes only if the watch is still that version, else `412 precondition-failed`;
@@ -4623,6 +4637,13 @@ func (c *Client) GetWatch(ctx context.Context, name WatchName, reqEditors ...Req
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+// or that changes the `source` or `coordinates` of a watch when the stored or the new
+// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+//
 // Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 // writes only if the watch is still that version, else `412 precondition-failed`;
 // `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -4657,6 +4678,13 @@ func (c *Client) PutWatchWithBody(ctx context.Context, name WatchName, params *P
 //
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
+// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+// or that changes the `source` or `coordinates` of a watch when the stored or the new
+// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 //
 // Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 // writes only if the watch is still that version, else `412 precondition-failed`;
@@ -8089,6 +8117,13 @@ type ClientWithResponsesInterface interface {
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 	//
+	// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+	// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+	// or that changes the `source` or `coordinates` of a watch when the stored or the new
+	// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+	// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+	// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+	//
 	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 	// writes only if the watch is still that version, else `412 precondition-failed`;
 	// `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -8113,6 +8148,13 @@ type ClientWithResponsesInterface interface {
 	//
 	// A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 	// needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+	//
+	// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+	// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+	// or that changes the `source` or `coordinates` of a watch when the stored or the new
+	// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+	// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+	// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 	//
 	// Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 	// writes only if the watch is still that version, else `412 precondition-failed`;
@@ -13359,6 +13401,13 @@ func (c *ClientWithResponses) GetWatchWithResponse(ctx context.Context, name Wat
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
 //
+// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+// or that changes the `source` or `coordinates` of a watch when the stored or the new
+// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
+//
 // Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 // writes only if the watch is still that version, else `412 precondition-failed`;
 // `If-None-Match: *` creates only, and gets `412` if the watch exists. Both are optional:
@@ -13389,6 +13438,13 @@ func (c *ClientWithResponses) PutWatchWithBodyWithResponse(ctx context.Context, 
 //
 // A request that adds, removes or changes a `*_ref` key (a reference to a stored secret)
 // needs the `admin` scope; a `write` token gets `403` with `required_scope: admin`.
+//
+// The generic HTTP sources `http-json` and `http-regex` fetch a URL that the watch chooses
+// (its `url` coordinate). A request that creates a watch whose source is of either kind,
+// or that changes the `source` or `coordinates` of a watch when the stored or the new
+// source is of either kind, needs the `admin` scope; a `write` token gets `403` with
+// `required_scope: admin`. Changing only `labels`, `policy`, `scheme` or `interval` of such
+// a watch keeps the `write` scope. The check applies to `dry_run` requests too.
 //
 // Optimistic concurrency: `If-Match` with the `ETag` of a `GET` (or of a previous `PUT`)
 // writes only if the watch is still that version, else `412 precondition-failed`;

@@ -23,6 +23,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/config"
 	"github.com/angelia-dev/angelia/internal/event"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/httpjson"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/store/sqlite"
@@ -140,8 +141,10 @@ func newHTTPEnv(t *testing.T) *httpEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	reg := source.NewRegistry()
-	if err := reg.Register(pypi.New(pypi.DefaultBaseURL, &http.Client{})); err != nil {
-		t.Fatal(err)
+	for _, src := range []source.Source{pypi.New(pypi.DefaultBaseURL, &http.Client{}), httpjson.New(&http.Client{})} {
+		if err := reg.Register(src); err != nil {
+			t.Fatal(err)
+		}
 	}
 	e := &httpEnv{st: st, auth: newHTTPAuth(), log: &logBuffer{}}
 	log := slog.New(slog.NewJSONHandler(e.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -807,4 +810,28 @@ func TestQuietLogger(t *testing.T) {
 		t.Errorf("attributes or group lost: %s", out)
 	}
 	quiet(nil).Error("discarded") // must not panic
+}
+
+// #97 D52: add_watch of an http-json watch with a write token is a tool
+// error with required_scope admin, and nothing is written; an admin token
+// creates it.
+func TestHTTPAddURLWatchNeedsAdmin(t *testing.T) {
+	e := newHTTPEnv(t)
+	const tokAdmin = "mcp-admin-token-0000000000000004"
+	e.auth.mu.Lock()
+	e.auth.tokens[tokAdmin] = api.Principal{ID: "admin", Scope: api.ScopeAdmin}
+	e.auth.mu.Unlock()
+	args := map[string]any{"name": "tool", "source": "http-json", "coordinates": map[string]string{
+		"name": "tool", "url": "https://releases.example.org/tool.json", "jsonpath": "$.version",
+	}}
+	p := failure(t, callTool(t, e.mustConnect(t, tokWrite), "add_watch", args))
+	if p["status"] != 403.0 || p["required_scope"] != "admin" {
+		t.Fatalf("write token: %v", p)
+	}
+	if _, err := e.st.WatchByName(t.Context(), "tool"); err == nil {
+		t.Fatal("the refused call wrote the watch")
+	}
+	if aw := success(t, "add_watch", callTool(t, e.mustConnect(t, tokAdmin), "add_watch", args)); aw["change"] != "created" {
+		t.Errorf("admin token: %v", aw)
+	}
 }

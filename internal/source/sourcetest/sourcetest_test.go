@@ -369,3 +369,71 @@ func TestFakeIsolation(t *testing.T) {
 		t.Fatal("unrelated package bumped this package's ETag")
 	}
 }
+
+// urlSource reads the URL in its "url" coordinate, like http-json: the base
+// URL is ignored, so the fixtures need ServerURLPlaceholder.
+type urlSource struct{ httpSource }
+
+func (u urlSource) Validate(t source.Target) error {
+	if t.Kind != "fake" || !strings.HasPrefix(t.Coordinates["url"], "http://127.0.0.1:") {
+		return fmt.Errorf("bad url %q: %w", t.Coordinates["url"], source.ErrInvalidTarget)
+	}
+	return nil
+}
+
+func (u urlSource) List(ctx context.Context, t source.Target, s source.FetchState) (source.Result, error) {
+	base, name, _ := strings.Cut(strings.TrimPrefix(t.Coordinates["url"], "http://"), "/")
+	h := u.httpSource
+	h.base = "http://" + base
+	return h.List(ctx, source.Target{Kind: t.Kind, Coordinates: map[string]string{"name": name}}, s)
+}
+
+func TestServerURLPlaceholder(t *testing.T) {
+	t.Parallel()
+	var rev atomic.Int64
+	const ph = "{{server}}"
+	valid := map[string]string{"url": ph + "/pkg"}
+	fx := Fixtures{
+		Handler: upstream(&rev),
+		New: func(_ string, c *http.Client) source.Source {
+			return urlSource{httpSource{c: c}}
+		},
+		Valid:                source.Target{Kind: "fake", Coordinates: valid},
+		Invalid:              []source.Target{{Kind: "fake", Coordinates: map[string]string{"url": "https://example.org" + "/pkg"}}, {Kind: "fake"}},
+		Missing:              &source.Target{Kind: "fake", Coordinates: map[string]string{"url": ph + "/missing"}},
+		WantRaw:              []string{"v2.0.0", "v1.0.0"},
+		Conditional:          true,
+		Change:               func() { rev.Add(1) },
+		HasPublishedAt:       true,
+		ServerURLPlaceholder: ph,
+	}
+	Run(t, nil, fx)
+	if valid["url"] != ph+"/pkg" {
+		t.Errorf("Run modified the caller's coordinates: %v", valid)
+	}
+}
+
+func TestWithServerURL(t *testing.T) {
+	const ph = "@S@"
+	alias := map[string]string{"url": ph + "/A", "other": "x"}
+	fx := Fixtures{
+		Valid:                source.Target{Kind: "k", Coordinates: map[string]string{"url": ph + "/a?b=" + ph}},
+		Invalid:              []source.Target{{Kind: "k"}, {Kind: "k", Coordinates: map[string]string{"url": ph}}},
+		Missing:              &source.Target{Kind: "k", Coordinates: map[string]string{"url": ph + "/m"}},
+		Aliases:              []source.Target{{Kind: "k", Coordinates: alias}},
+		ServerURLPlaceholder: ph,
+	}
+	missing := fx.Missing
+	got := fx.withServerURL("http://h:1")
+	if got.Valid.Coordinates["url"] != "http://h:1/a?b=http://h:1" || got.Invalid[1].Coordinates["url"] != "http://h:1" ||
+		got.Invalid[0].Coordinates != nil || got.Missing.Coordinates["url"] != "http://h:1/m" ||
+		got.Aliases[0].Coordinates["url"] != "http://h:1/A" || got.Aliases[0].Coordinates["other"] != "x" {
+		t.Errorf("withServerURL = %+v", got)
+	}
+	if alias["url"] != ph+"/A" || fx.Invalid[1].Coordinates["url"] != ph || missing.Coordinates["url"] != ph+"/m" || fx.Missing != missing {
+		t.Error("withServerURL modified its receiver's targets")
+	}
+	if none := (Fixtures{Valid: fx.Valid}).withServerURL("http://h:1"); none.Valid.Coordinates["url"] != ph+"/a?b="+ph {
+		t.Error("no placeholder: coordinates changed")
+	}
+}

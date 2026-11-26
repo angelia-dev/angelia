@@ -1,0 +1,15 @@
+{
+  "project": "tool",
+  "releases": [
+    {"name": "2.1.0", "stable": true},
+    {"name": "2.0.0", "stable": true},
+    {"name": "2.0.0-rc.1", "stable": false},
+    {"name": 1.10, "stable": true},
+    {"name": null, "stable": false},
+    {"name": "2.0.0", "stable": true}
+  ],
+  "by_version": {
+    "1.9.3": {"date": "2026-01-01"},
+    "2.0.0": {"date": "2026-06-01"}
+  }
+}
