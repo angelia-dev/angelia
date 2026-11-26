@@ -252,3 +252,24 @@ func TestSourceAPI(t *testing.T) {
 		t.Errorf("err = %v, want both api errors", err)
 	}
 }
+
+// An oci registry is a bare origin: base_url has no path.
+func TestOCIBaseURLIsABareOrigin(t *testing.T) {
+	for _, ok := range []string{"https://harbor.example.com", "https://harbor.example.com/", "https://registry-1.docker.io"} {
+		if _, err := load(t, writeFile(t, "sources:\n  harbor:\n    kind: oci\n    base_url: "+ok+"\n")); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"https://docker.io", "https://INDEX.docker.io/"} {
+		_, err := load(t, writeFile(t, "sources:\n  hub:\n    kind: oci\n    base_url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.hub.base_url: ") || !strings.Contains(err.Error(), "registry-1.docker.io") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+	for _, bad := range []string{"https://harbor.example.com/v2", "https://harbor.example.com/proj/", "https://harbor.example.com/?x=1"} {
+		_, err := load(t, writeFile(t, "sources:\n  harbor:\n    kind: oci\n    base_url: "+bad+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "sources.harbor.base_url: an oci registry is a bare origin") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+}
