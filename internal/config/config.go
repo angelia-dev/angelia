@@ -873,7 +873,8 @@ func validateOCICredential(k string, s Source, bad func(string, ...any)) {
 	if s.Auth.IsZero() {
 		return
 	}
-	if t := s.Auth.EffectiveType(); t != AuthBasic {
+	// An unknown type is reported by validateAuth already.
+	if t := s.Auth.EffectiveType(); t == AuthBearer || t == AuthNPMAuthToken {
 		bad("sources.%s.auth.type: an oci source accepts basic only (username and password_ref; the password may be an access token), not %s", k, t)
 	}
 	if s.BaseURL == "" {

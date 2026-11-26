@@ -90,7 +90,10 @@ is in `WWW-Authenticate`; the SSRF check, rate limits and body cap are in the tr
   `registryauth`-wrapped one (`oci.WithCredentials`) for the **token realm** of a `Bearer` challenge, and for
   the registry itself only after it answered with a `Basic` challenge (then for every later request of that
   `List` call, which stays on the endpoint's origin). Nothing else carries the credential: a registry that
-  issues tokens receives the registry token only, which `registryauth` would otherwise overwrite.
+  issues tokens receives the registry token only, which `registryauth` would otherwise overwrite. The
+  credential client follows no redirect that leaves the origin of its request (`registryauth` sets the header
+  inside the transport, so `apiclient.GuardRedirects` cannot see it): a realm redirecting to the registry, or
+  a Basic registry redirecting elsewhere, fails the call even when the secret is bound to the target host.
 - The host binding of the stored secret (ADR 0024) is checked on each hop by `registryauth`: the credential
   reaches the realm only when the secret is bound to the realm's host, else the call fails with
   `secrets.ErrHostMismatch` and the realm receives no request. Docker Hub therefore needs

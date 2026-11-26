@@ -97,6 +97,8 @@ func (s *Source) token(ctx context.Context, c challenge, name string) (apiclient
 	if err != nil {
 		return "", fmt.Errorf("token request to %s: %w", u.Host, err)
 	}
+	// The credential client follows no redirect off the realm's origin, so
+	// this status is the realm's own answer to the credential.
 	if s.authHC != nil && (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) {
 		return "", fmt.Errorf("token request to %s: the realm refused the configured credential (sources.<name>.auth): %w", u.Host, statusError(r))
 	}

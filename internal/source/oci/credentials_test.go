@@ -61,9 +61,11 @@ func dest(t *testing.T, raw string) string {
 // auth.docker.io.
 type privateReg struct {
 	mu        sync.Mutex
-	basic     bool // the registry asks for Basic instead of a Bearer token
-	realmCode int  // status the realm answers when the credential is right (0: 200)
-	denyAll   bool // the registry answers 401 to every request
+	basic     bool   // the registry asks for Basic instead of a Bearer token
+	realmCode int    // status the realm answers when the credential is right (0: 200)
+	denyAll   bool   // the registry answers 401 to every request
+	realmTo   string // the realm redirects (302) there
+	page2To   string // the registry redirects (302) its second page there
 	realmAuth []string
 	regAuth   []string
 	realmURL  string
@@ -86,6 +88,10 @@ func (p *privateReg) serveRealm(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.realmAuth = append(p.realmAuth, r.Header.Get("Authorization"))
+	if p.realmTo != "" && r.URL.Path == "/token" {
+		http.Redirect(w, r, p.realmTo, http.StatusFound)
+		return
+	}
 	if r.Header.Get("Authorization") != wantBasic {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -102,6 +108,10 @@ func (p *privateReg) serveRegistry(w http.ResponseWriter, r *http.Request) {
 	defer p.mu.Unlock()
 	got := r.Header.Get("Authorization")
 	p.regAuth = append(p.regAuth, got)
+	if r.URL.Path == "/steal" {
+		w.WriteHeader(http.StatusTeapot)
+		return
+	}
 	ok := got == "Bearer "+canary
 	ch := fmt.Sprintf(`Bearer realm=%q,service="registry.test",scope="repository:team/app:pull"`, p.realmURL)
 	if p.basic {
@@ -114,6 +124,10 @@ func (p *privateReg) serveRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodHead {
 		w.Header().Set("Docker-Content-Digest", dig("c"))
+		return
+	}
+	if p.page2To != "" && r.URL.Query().Get("last") != "" {
+		http.Redirect(w, r, p.page2To, http.StatusFound)
 		return
 	}
 	if r.URL.Query().Get("last") == "" {
@@ -294,7 +308,6 @@ func TestCredentialRefusals(t *testing.T) {
 // given to it is ignored, so neither the realm nor a Basic registry gets it.
 func TestUnpinnedSourceIgnoresCredentials(t *testing.T) {
 	p := newPrivateReg(t)
-	p.realmCode = 0
 	s := p.pinned(t, "", dest(t, p.reg.URL), dest(t, p.realm.URL))
 	_, err := s.List(t.Context(), p.image(), source.FetchState{})
 	if err == nil || !strings.Contains(err.Error(), "token request") {
@@ -314,4 +327,38 @@ func TestUnpinnedSourceIgnoresCredentials(t *testing.T) {
 	if _, reg := p.snapshot(); len(reg) != 1 || reg[0] != "" {
 		t.Errorf("registry Authorization = %q", reg)
 	}
+}
+
+// Review of 94-C: a redirect off the request's origin is not followed with
+// the credential, even when the secret is bound to the target host
+// (registryauth sets the header inside the transport, out of sight of
+// GuardRedirects).
+func TestCredentialIsNotFollowedAcrossOrigins(t *testing.T) {
+	t.Run("realm redirects to the registry", func(t *testing.T) {
+		p := newPrivateReg(t)
+		p.realmTo = p.reg.URL + "/steal"
+		s := p.pinned(t, p.reg.URL, dest(t, p.reg.URL), dest(t, p.realm.URL))
+		_, err := s.List(t.Context(), p.image(), source.FetchState{})
+		if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, reg := p.snapshot(); len(reg) != 1 || reg[0] != "" {
+			t.Errorf("registry Authorization = %q, want only the first anonymous request", reg)
+		}
+		noLeak(t, map[string]string{"error": err.Error()})
+	})
+	t.Run("Basic registry redirects to another origin", func(t *testing.T) {
+		p := newPrivateReg(t)
+		p.basic = true
+		p.page2To = p.realm.URL + "/elsewhere"
+		s := p.pinned(t, p.reg.URL, dest(t, p.reg.URL), dest(t, p.realm.URL))
+		_, err := s.List(t.Context(), p.image(), source.FetchState{})
+		if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect") {
+			t.Fatalf("err = %v", err)
+		}
+		if realm, _ := p.snapshot(); len(realm) != 0 {
+			t.Errorf("the other origin received %q", realm)
+		}
+		noLeak(t, map[string]string{"error": err.Error()})
+	})
 }

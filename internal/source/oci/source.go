@@ -72,8 +72,9 @@ func WithAllowHTTPHosts(hosts ...string) Option {
 // Basic challenge, for the registry itself; every other request goes through
 // the plain client, so a registry that issues tokens never receives the
 // credential, and the stored secret's host binding decides, for each hop,
-// whether the realm may receive it. An unpinned source ignores it: the
-// built-in oci is anonymous only (D41).
+// whether the realm may receive it. The source follows no redirect of this
+// client that leaves the origin of the request (sameOriginRedirects). An
+// unpinned source ignores it: the built-in oci is anonymous only (D41).
 func WithCredentials(hc *http.Client) Option {
 	return func(s *Source) { s.authHC = hc }
 }
@@ -121,9 +122,34 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	if s.pinned == "" || s.authHC == nil {
 		s.authHC = nil
 	} else {
-		s.authHC = apiclient.GuardRedirects(Kind, s.authHC)
+		s.authHC = sameOriginRedirects(s.authHC)
 	}
 	return s
+}
+
+// sameOriginRedirects returns a copy of the credential client hc that follows
+// no redirect leaving the origin of the first request. apiclient.GuardRedirects
+// does not protect it: registryauth sets Authorization on its own clone of
+// each request inside the transport, so the header is never visible to
+// CheckRedirect. Without this rule a realm could redirect to the registry (or
+// a Basic registry to another host bound to the secret) and deliver the
+// credential there.
+func sameOriginRedirects(hc *http.Client) *http.Client {
+	cp := *hc
+	orig := cp.CheckRedirect
+	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if origin(req.URL) != origin(via[0].URL) {
+			return fmt.Errorf("%s: refusing to follow a redirect from %s to %s with the credential", Kind, via[0].URL.Host, req.URL.Host)
+		}
+		if orig != nil {
+			return orig(req, via)
+		}
+		if len(via) >= netguard.MaxRedirects {
+			return fmt.Errorf("stopped after %d redirects", netguard.MaxRedirects)
+		}
+		return nil
+	}
+	return &cp
 }
 
 // Kind implements source.Source.

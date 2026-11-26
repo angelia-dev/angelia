@@ -42,6 +42,11 @@ func TestConfigCheckOCICredentialRules(t *testing.T) {
 			}
 		})
 	}
+	// An unknown type gets the generic message only.
+	_, errb, _ := runCheck(t, "--config", writeCfg(t, harbor+"auth: {type: digest, token_ref: harbor-token}\n"))
+	if !strings.Contains(errb, "sources.harbor.auth.type: want bearer, basic or npm_auth_token") || strings.Contains(errb, "accepts basic only") {
+		t.Errorf("unknown type: stderr=%q", errb)
+	}
 	ok := harbor + basic + "\n  oci:\n    base_url: https://registry-1.docker.io\n    " + basic + "\n"
 	cfg, err := config.Load(t.Context(), config.Options{Path: writeCfg(t, ok)})
 	if err != nil {
