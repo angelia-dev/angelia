@@ -1,8 +1,8 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `e3a857f`
-("feat(release): urls.repository, the declared source repository (spec 0.15.0)", branch `story/84-urls-repository` of the spec repository, built on spec 0.14.0 at `f20d2c9`). Spec 0.15.0 adds the required, nullable `urls.repository` to the release event (spec docs/api.md item 60); spec 0.14.0 added `ExecSinkConfig` (item 59). The MCP tool contract is unchanged.
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `4e93bc6`
+("fix(webhooks): vector bodies carry urls.repository, signatures recomputed"; spec 0.15.0 itself is `e3a857f`, "feat(release): urls.repository, the declared source repository", branch `story/84-urls-repository` of the spec repository, built on spec 0.14.0 at `f20d2c9`). Spec 0.15.0 adds the required, nullable `urls.repository` to the release event (spec docs/api.md item 60); spec 0.14.0 added `ExecSinkConfig` (item 59). The MCP tool contract is unchanged.
 Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `5534e1d`
 ("feat(openapi): mqtt sink config (0.13.0) (#27)", spec 0.13.0) on the spec repository's `main`. Spec 0.13.0 adds `MqttSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 58); the MCP tool contract and the event schemas are unchanged by 0.13.0.
 Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `e013106`
