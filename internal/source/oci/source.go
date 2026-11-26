@@ -66,12 +66,26 @@ func WithAllowHTTPHosts(hosts ...string) Option {
 	}
 }
 
+// WithCredentials gives a pinned source the client that adds its
+// credential: registryauth.Wrap over the same netguard client (D44). The
+// source uses it only for the token realm of a Bearer challenge and, after a
+// Basic challenge, for the registry itself; every other request goes through
+// the plain client, so a registry that issues tokens never receives the
+// credential, and the stored secret's host binding decides, for each hop,
+// whether the realm may receive it. The source follows no redirect of this
+// client that leaves the origin of the request (sameOriginRedirects). An
+// unpinned source ignores it: the built-in oci is anonymous only (D41).
+func WithCredentials(hc *http.Client) Option {
+	return func(s *Source) { s.authHC = hc }
+}
+
 // Source implements source.Source for OCI registries. It is safe for
 // concurrent use.
 type Source struct {
 	hc        *http.Client
-	pinned    string // origin of base_url, "" for the unpinned built-in
-	pinnedRef string // image host that origin serves ("docker.io" for Docker Hub)
+	authHC    *http.Client // adds the credential; nil when there is none
+	pinned    string       // origin of base_url, "" for the unpinned built-in
+	pinnedRef string       // image host that origin serves ("docker.io" for Docker Hub)
 	endpoints map[string]string
 	httpHosts map[string]bool
 }
@@ -105,7 +119,37 @@ func New(baseURL string, hc *http.Client, opts ...Option) *Source {
 	for _, o := range opts {
 		o(s)
 	}
+	if s.pinned == "" || s.authHC == nil {
+		s.authHC = nil
+	} else {
+		s.authHC = sameOriginRedirects(s.authHC)
+	}
 	return s
+}
+
+// sameOriginRedirects returns a copy of the credential client hc that follows
+// no redirect leaving the origin of the first request. apiclient.GuardRedirects
+// does not protect it: registryauth sets Authorization on its own clone of
+// each request inside the transport, so the header is never visible to
+// CheckRedirect. Without this rule a realm could redirect to the registry (or
+// a Basic registry to another host bound to the secret) and deliver the
+// credential there.
+func sameOriginRedirects(hc *http.Client) *http.Client {
+	cp := *hc
+	orig := cp.CheckRedirect
+	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if origin(req.URL) != origin(via[0].URL) {
+			return fmt.Errorf("%s: refusing to follow a redirect from %s to %s with the credential", Kind, via[0].URL.Host, req.URL.Host)
+		}
+		if orig != nil {
+			return orig(req, via)
+		}
+		if len(via) >= netguard.MaxRedirects {
+			return fmt.Errorf("stopped after %d redirects", netguard.MaxRedirects)
+		}
+		return nil
+	}
+	return &cp
 }
 
 // Kind implements source.Source.
@@ -139,7 +183,7 @@ type reply struct {
 }
 
 // do sends one request with hc. A non-2xx status is not an error here.
-func (s *Source) do(ctx context.Context, method, u string, tok apiclient.Secret, accept string) (*reply, error) {
+func do(ctx context.Context, hc *http.Client, method, u string, tok apiclient.Secret, accept string) (*reply, error) {
 	req, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
 		return nil, err
@@ -150,7 +194,7 @@ func (s *Source) do(ctx context.Context, method, u string, tok apiclient.Secret,
 	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+string(tok))
 	}
-	resp, err := s.hc.Do(req) //nolint:gosec // G704: hc is the injected netguard client.
+	resp, err := hc.Do(req) //nolint:gosec // G704: hc is the injected netguard client, or it wrapped by registryauth.
 	if err != nil {
 		return nil, err
 	}
@@ -177,18 +221,29 @@ type session struct {
 	name     string
 	endpoint string
 	tok      apiclient.Secret
-	authed   bool // a token was fetched (a later 401 is final)
+	authed   bool // a token was fetched or Basic is on (a later 401 is final)
+	basic    bool // the registry asked for Basic: its requests carry the credential
+}
+
+// registry sends one request to the registry endpoint of ss: through the
+// credential client after a Basic challenge, else through the plain client
+// with the session's registry token, if any.
+func (s *Source) registry(ctx context.Context, ss *session, method, u, accept string) (*reply, error) {
+	if ss.basic {
+		return do(ctx, s.authHC, method, u, "", accept)
+	}
+	return do(ctx, s.hc, method, u, ss.tok, accept)
 }
 
 // get requests u on the registry, answering one 401 challenge.
 func (s *Source) get(ctx context.Context, ss *session, u string) (*reply, error) {
-	r, err := s.do(ctx, http.MethodGet, u, ss.tok, "application/json")
+	r, err := s.registry(ctx, ss, http.MethodGet, u, "application/json")
 	if err != nil {
 		return nil, err
 	}
 	if r.status == http.StatusUnauthorized {
 		if ss.authed {
-			return nil, errors.New("not found or access denied (HTTP 401 after a registry token)")
+			return nil, ss.denied()
 		}
 		c, ok := pickChallenge(parseChallenges(r.header))
 		switch {
@@ -200,16 +255,20 @@ func (s *Source) get(ctx context.Context, ss *session, u string) (*reply, error)
 				return nil, err
 			}
 			ss.tok, ss.authed = tok, true
-			if r, err = s.do(ctx, http.MethodGet, u, ss.tok, "application/json"); err != nil {
-				return nil, err
-			}
-			if r.status == http.StatusUnauthorized {
-				return nil, errors.New("not found or access denied (HTTP 401 after a registry token)")
-			}
+		case c.scheme == "basic" && s.authHC != nil:
+			// The registry itself takes the credential (D44): only this
+			// origin, the pinned base_url, and only after it asked.
+			ss.basic, ss.authed = true, true
 		case c.scheme == "basic":
 			return nil, errors.New("the registry requires credentials (Basic challenge); configure sources.<name>.auth on a source with base_url")
 		default:
 			return nil, fmt.Errorf("the registry asks for unsupported authentication %q", c.scheme)
+		}
+		if r, err = s.registry(ctx, ss, http.MethodGet, u, "application/json"); err != nil {
+			return nil, err
+		}
+		if r.status == http.StatusUnauthorized {
+			return nil, ss.denied()
 		}
 	}
 	switch {
@@ -219,6 +278,15 @@ func (s *Source) get(ctx context.Context, ss *session, u string) (*reply, error)
 		return nil, statusError(r)
 	}
 	return r, nil
+}
+
+// denied is the error of a 401 after authenticating: Docker Hub answers 401
+// for a missing repository too.
+func (ss *session) denied() error {
+	if ss.basic {
+		return errors.New("not found or access denied (HTTP 401 with the configured credential)")
+	}
+	return errors.New("not found or access denied (HTTP 401 after a registry token)")
 }
 
 // List implements source.Source.
@@ -280,7 +348,7 @@ func fatalLookup(err error) bool {
 // invalid or missing header gives "" and no error.
 func (s *Source) digest(ctx context.Context, ss *session, tag string) (string, error) {
 	u := ss.endpoint + "/v2/" + ss.name + "/manifests/" + url.PathEscape(tag)
-	r, err := s.do(ctx, http.MethodHead, u, ss.tok, manifestAccept)
+	r, err := s.registry(ctx, ss, http.MethodHead, u, manifestAccept)
 	if err != nil {
 		return "", err
 	}
