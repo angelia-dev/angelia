@@ -64,6 +64,9 @@ ADR 0004 left open whether the outbox is a separate table or the `delivery` rows
 
 - oci, go-proxy and maven purls are built from `data.package`; their sources do not exist yet and may report
   digests or coordinates that change this.
+  - 2026-11-25 note (story #94): the `oci` source reports the manifest digest in `Metadata["digest"]`, and the
+    purl uses it as its version (`pkg:oci/node@sha256%3A...`); without a valid digest the purl stays versionless.
+    No event field was added ([ADR 0037](0037-oci-source-registry-selection-and-token-auth.md)).
 - `release.yanked` emission is not part of this story.
 
 ## Update: matcher cache (story #166)

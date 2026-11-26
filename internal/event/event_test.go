@@ -143,6 +143,24 @@ func TestBuildValidatesAgainstSpecSchema(t *testing.T) {
 			typ: TypePublished, subject: "gitlab-release:278964@1.0.0",
 		},
 		{
+			name: "oci with a digest", tgt: target("oci", map[string]string{"image": "docker.io/library/node"}),
+			rel: func(r *policy.Release) {
+				r.Raw, r.Normalized = "22.11.0", "22.11.0"
+				r.Metadata = map[string]any{"digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+			},
+			typ: TypePublished, subject: "oci:docker.io/library/node@22.11.0",
+			purl: "pkg:oci/node@sha256%3A0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef?repository_url=docker.io/library/node&tag=22.11.0",
+		},
+		{
+			name: "oci with an invalid digest is versionless", tgt: target("oci", map[string]string{"image": "docker.io/library/node"}),
+			rel: func(r *policy.Release) {
+				r.Raw, r.Normalized = "22.11.0", "22.11.0"
+				r.Metadata = map[string]any{"digest": "sha256:xyz"}
+			},
+			typ: TypePublished, subject: "oci:docker.io/library/node@22.11.0",
+			purl: "pkg:oci/node?repository_url=docker.io/library/node&tag=22.11.0",
+		},
+		{
 			name: "sub-millisecond times", tgt: target("npm", map[string]string{"name": "left-pad"}),
 			rel: func(r *policy.Release) {
 				r.PublishedAt = time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.FixedZone("x", 3600))
