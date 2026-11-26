@@ -152,7 +152,8 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   and the exemption is per hop: a redirect to another name is judged by that name. An IP address is
   refused here; use `allow_networks`.
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
-  D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
+  D12), and the brokers an [`mqtt` sink](mqtt.md) may reach over plain `mqtt://`. Every other webhook URL
+  must be `https://`, every other broker `mqtts://`. Matching is by host name, case-insensitive.
 - These lists live only here: the watch file and the REST API cannot widen them.
 - The generic HTTP sources (`http-regex`, `http-json`) fetch the URL of each watch. They obey both lists
   (`https://`, or `http://` for a host in `allow_http_hosts`, also on redirects) and take no key under
@@ -188,8 +189,13 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
 See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink,
 [gitlab-pipeline-trigger.md](gitlab-pipeline-trigger.md) for the GitLab pipeline trigger sink (a plain-`http://`
 `base_url` is delivered only to a host of `allow_http_hosts`, checked at every delivery)
-and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
+[shoutrrr.md](shoutrrr.md) for the chat and push sink and [mqtt.md](mqtt.md) for the MQTT sink. A `shoutrrr` sink derives its HTTP origins from its URL
 secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
+
+**MQTT brokers** are reached over TCP, not HTTP, but through the same guard
+([ADR 0039](adr/0039-non-http-sinks-dial-through-netguard.md)): `http.allow_networks` opens a private broker, the
+address actually connected is checked (DNS rebinding), `http.host_limits` applies to the broker host, `http.ca_file`
+adds roots for `mqtts://`, and `HTTPS_PROXY` does not apply: brokers are dialled directly.
 
 ### Per-host rate limits
 

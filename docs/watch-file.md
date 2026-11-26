@@ -160,7 +160,7 @@ watches:
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `gitlab-pipeline-trigger` or `shoutrrr` |
+| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `gitlab-pipeline-trigger`, `shoutrrr` or `mqtt` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -231,6 +231,23 @@ subscription template, and cut to 2048 bytes. A subscription's own `template` ha
 The URL is never in the file. It is read and checked at every delivery (allowed services, `https` or
 `http.allow_http_hosts`, the SSRF guard, the secret's hosts); a failure is retried. An unset `url_env` variable
 is a warning, as for the webhook.
+
+`mqtt` config ([mqtt.md](mqtt.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `url` | string | yes | none | `mqtts://host[:port]` (port 8883) or `mqtt://host[:port]` (port 1883, only for a host in `http.allow_http_hosts`); no userinfo, path, query or fragment. A stored password is checked against this host and port (`x-angelia-destination`) |
+| `topic` | string (template) | yes | none | 1 to 1024 bytes; the result on the sample events must be a valid topic: no `+`, `#` or U+0000, not starting with `$` |
+| `qos` | integer | no | `1` | `0` or `1`; `1` succeeds on `PUBACK` |
+| `retain` | boolean | no | `false` | |
+| `username` | string | no | none | 1 to 255 bytes; not a secret |
+| `password_env` | string | at most one of the two, only with `username` | none | name of an environment variable holding the password; a name starting with `ANGELIA_` is refused |
+| `password_ref` | string | at most one of the two, only with `username` | none | name of a [stored secret](configuration.md#stored-secrets); bind it with an explicit port, `--host broker.example.net:8883` |
+| `client_id_prefix` | string | no | `angelia` | 1 to 15 letters or digits; random characters complete the client id to 23 |
+| `timeout` | duration | no | `10s` | `1s` to `2m`; above the dispatcher's 15 s deliver timeout has no effect and `config check` warns |
+
+A password over `mqtt://` is a warning: it travels in cleartext. `config check` also warns when the broker is a
+private address literal outside `http.allow_networks`. The defaults are written into the stored configuration.
 
 ### 2.5 `subscriptions[]`
 

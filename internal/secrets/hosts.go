@@ -71,16 +71,24 @@ func canonicalHost(h string) bool {
 // destination outside them.
 var ErrHostMismatch = errors.New("secrets: host not allowed")
 
-// Destination is the canonical "host:port" of an http(s) URL: the host
-// lower-cased, the port explicit (443 for https, 80 for http). A host that
-// is not ASCII must be written as punycode; it is refused, never converted.
+// defaultPorts are the schemes a destination may have, with the port used
+// when the URL has none: http(s), and mqtt(s) for the mqtt sink (ADR 0039).
+var defaultPorts = map[string]string{"https": "443", "http": "80", "mqtts": "8883", "mqtt": "1883"}
+
+// Destination is the canonical "host:port" of an http, https, mqtt or mqtts
+// URL: the host lower-cased, the port explicit (443 for https, 80 for http,
+// 8883 for mqtts, 1883 for mqtt). A host that is not ASCII must be written
+// as punycode; it is refused, never converted. A hosts entry without a port
+// still means port 443 (hostKey), so a secret for a broker is bound with an
+// explicit port, such as broker.example.net:8883.
 func Destination(u *url.URL) (string, error) {
 	if u == nil {
 		return "", errors.New("secrets: no destination URL")
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if scheme != "https" && scheme != "http" {
-		return "", fmt.Errorf("secrets: destination scheme %q is not http or https", scheme)
+	defaultPort, ok := defaultPorts[scheme]
+	if !ok {
+		return "", fmt.Errorf("secrets: destination scheme %q is not http, https, mqtt or mqtts", scheme)
 	}
 	host := strings.ToLower(u.Hostname())
 	for i := range len(host) {
@@ -96,10 +104,7 @@ func Destination(u *url.URL) (string, error) {
 	}
 	port := u.Port()
 	if port == "" {
-		port = "443"
-		if scheme == "http" {
-			port = "80"
-		}
+		port = defaultPort
 	}
 	return net.JoinHostPort(host, port), nil
 }

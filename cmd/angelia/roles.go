@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/sink"
 	"github.com/angelia-dev/angelia/internal/sink/githubdispatch"
 	"github.com/angelia-dev/angelia/internal/sink/gitlabtrigger"
+	"github.com/angelia-dev/angelia/internal/sink/mqtt"
 	"github.com/angelia-dev/angelia/internal/sink/shoutrrr"
 	"github.com/angelia-dev/angelia/internal/sink/webhook"
 	"github.com/angelia-dev/angelia/internal/source"
@@ -275,10 +277,13 @@ func registryURL(cfg *config.Config) func(name string) string {
 	}
 }
 
-// builtinSinks returns the built-in sinks, sending through hc. A new
-// built-in kind is added here and to watchfile.SinkKinds (a test checks
-// that both list the same kinds).
-func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.Sink {
+// builtinSinks returns the built-in sinks, sending through the netguard
+// client nc: HTTP sinks through nc.HTTPClient, the mqtt sink through
+// nc.DialContext (ADR 0039) with roots, the instance pool (system roots
+// plus http.ca_file). A new built-in kind is added here and to
+// watchfile.SinkKinds (a test checks that both list the same kinds).
+func builtinSinks(cfg *config.Config, nc *netguard.Client, roots *x509.CertPool, log *slog.Logger) []sink.Sink {
+	hc := nc.HTTPClient()
 	return []sink.Sink{
 		// http.allow_http_hosts is checked at every delivery (ADR 0023,
 		// decided question 4 and D12).
@@ -290,6 +295,8 @@ func builtinSinks(cfg *config.Config, hc *http.Client, log *slog.Logger) []sink.
 		// The dispatcher checks the origins it derives from the URL secret
 		// (ADR 0026 §2); the sink sends only to them.
 		shoutrrr.New(hc, shoutrrr.Options{}),
+		// Plain mqtt:// only for hosts of http.allow_http_hosts (D78).
+		mqtt.New(nc, mqtt.Options{RootCAs: roots, AllowPlaintextHosts: cfg.HTTP.AllowHTTPHosts}),
 	}
 }
 
@@ -310,9 +317,17 @@ func warnDrainBudget(log *slog.Logger, drain time.Duration) {
 // http.allow_private_hosts (ADR 0040) and the per-host rate limits from
 // http.host_limits (ADR 0027). obs may be nil.
 func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
+	c, _, err := newNetClientRoots(cfg, log, obs)
+	return c, err
+}
+
+// newNetClientRoots is newNetClient that also returns the CA pool it built
+// (system roots plus http.ca_file), for the sinks that do their own TLS
+// (mqtt), so the file is read once.
+func newNetClientRoots(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, *x509.CertPool, error) {
 	roots, err := cfg.HTTP.LoadCAPool()
 	if err != nil {
-		return nil, fmt.Errorf("http client: %w", err)
+		return nil, nil, fmt.Errorf("http client: %w", err)
 	}
 	hosts, fallback := netguardLimits(cfg)
 	c, err := netguard.New(netguard.Config{
@@ -320,9 +335,9 @@ func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (
 		Proxy: outgoingProxy, HostLimits: hosts, FallbackLimit: fallback,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("http client: %w", err)
+		return nil, nil, fmt.Errorf("http client: %w", err)
 	}
-	return c, nil
+	return c, roots, nil
 }
 
 // pipelineDeps is what the scheduler and dispatcher roles are built from.
@@ -362,7 +377,7 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 		obs, schedM, dispM = d.metrics, d.metrics, d.metrics
 		wrapSrc = d.metrics.Source
 	}
-	client, err := newNetClient(d.cfg, d.log, obs)
+	client, roots, err := newNetClientRoots(d.cfg, d.log, obs)
 	if err != nil {
 		return out, err
 	}
@@ -392,7 +407,7 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	}
 	if withDispatcher {
 		reg := sink.NewRegistry()
-		for _, s := range builtinSinks(d.cfg, hc, d.log) {
+		for _, s := range builtinSinks(d.cfg, client, roots, d.log) {
 			if err := reg.Register(s); err != nil {
 				return out, err
 			}
