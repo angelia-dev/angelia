@@ -42,7 +42,7 @@ sources:
 - The secret is read from the store on every request and checked again on every redirect hop. A redirect
   to a host outside the binding (a registry that redirects downloads to a CDN, say) is refused; bind the
   secret to both hosts if you want it followed.
-- `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `github-release`, `github-tag` and
+- `token_env` (the name of an environment variable) still works, for `pypi`, `npm`, `go-proxy`, `github-release`, `github-tag` and
   `gitlab-release` (which sends it as `PRIVATE-TOKEN`). It
   is sent only to the host of `base_url`. Set `token_env` or `auth`, not both.
 - No value appears in `config check`, logs, errors, events or API responses. A value written in a `*_ref`
@@ -240,6 +240,31 @@ sources:
 
 `crates` takes the sparse index URL of a mirror as `base_url` (default `https://index.crates.io`). It sends no
 credential.
+
+### Go proxy (Athens, Artifactory, Nexus)
+
+`go-proxy` reads the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) from `https://proxy.golang.org` by
+default. A private proxy is a named instance whose `base_url` may carry a path; a watch selects it by name
+(`source: goproxy-corp`). `token_env` (Bearer) and `auth` (`bearer` or `basic`) work as for `npm` and `pypi`.
+
+```yaml
+sources:
+  goproxy-corp:
+    kind: go-proxy
+    base_url: https://artifactory.example.test/artifactory/api/go/go-virtual
+    auth: {type: basic, username: ci-bot, password_ref: artifactory-go}
+  athens:
+    kind: go-proxy
+    base_url: https://athens.example.test        # no credential
+```
+
+Not supported: a `GOPROXY` list with fallback (`a,b`, `a|b`), `direct` and `off`, `file://` proxies,
+`GOPRIVATE`, `GONOSUMDB` / `GOSUMDB` (Angelia downloads no code, so it verifies no checksum) and `.netrc`.
+
+> **Warning: the module path is sent to the proxy.** `proxy.golang.org` tries to fetch any path it is asked
+> for, so a watch of `corp.example/secret-lib` on the **public** proxy tells it that this name exists. Watch
+> internal modules only through your private instance, and do not use the built-in `go-proxy` source for them.
+> Angelia has no `GOPRIVATE`-like list that refuses such paths (the same holds for `npm` and `pypi` names).
 
 ## Private networks
 
