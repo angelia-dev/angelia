@@ -221,7 +221,7 @@ func TestBuiltinSourcesRefuseABadInstance(t *testing.T) {
 		src  map[string]config.Source
 		want string
 	}{
-		"unknown kind":        {map[string]config.Source{"mine": {Kind: "maven"}}, `unknown source kind "maven"`},
+		"unknown kind":        {map[string]config.Source{"mine": {Kind: "debian"}}, `unknown source kind "debian"`},
 		"built-in name other": {map[string]config.Source{"npm": {Kind: "pypi"}}, "npm is a built-in kind"},
 	} {
 		t.Run(name, func(t *testing.T) {
