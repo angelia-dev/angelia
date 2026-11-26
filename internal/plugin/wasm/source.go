@@ -446,15 +446,11 @@ func (s *Source) checkRedirect(req *http.Request, via []*http.Request, inner fun
 	if inner != nil {
 		return inner(req, via)
 	}
-	if len(via) >= defaultMaxRedirects {
-		return fmt.Errorf("stopped after %d redirects", defaultMaxRedirects)
+	if len(via) >= netguard.MaxRedirects {
+		return fmt.Errorf("stopped after %d redirects", netguard.MaxRedirects)
 	}
 	return nil
 }
-
-// defaultMaxRedirects is net/http's own limit, used when the injected
-// client has no CheckRedirect.
-const defaultMaxRedirects = 10
 
 // errInsecureRedirect refuses a redirect from https to another scheme.
 var errInsecureRedirect = errors.New("redirect downgrades https")

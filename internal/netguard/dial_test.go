@@ -20,11 +20,11 @@ import (
 func noProxy(*http.Request) (*url.URL, error) { return nil, nil }
 
 // dialClient is a netguard client on the default transport (with its
-// dial-time check), a stub resolver for the URL check, and proxy as the
-// proxy function.
-func dialClient(t *testing.T, resolver Resolver, allow []netip.Prefix, proxy func(*http.Request) (*url.URL, error)) *http.Client {
+// dial-time check), a stub resolver for the URL check, proxy as the proxy
+// function and hosts as Config.AllowHosts.
+func dialClient(t *testing.T, resolver Resolver, allow []netip.Prefix, proxy func(*http.Request) (*url.URL, error), hosts ...string) *http.Client {
 	t.Helper()
-	c, err := New(Config{Resolver: resolver, Allow: allow, Proxy: proxy, MaxAttempts: 1})
+	c, err := New(Config{Resolver: resolver, Allow: allow, AllowHosts: hosts, Proxy: proxy, MaxAttempts: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,16 +34,24 @@ func dialClient(t *testing.T, resolver Resolver, allow []netip.Prefix, proxy fun
 
 // needLocalhost skips a test when the system resolver does not answer
 // "localhost" with loopback addresses only: the rebinding tests use it as
-// the name whose dial-time answer differs from the stub's.
+// the name whose dial-time answer differs from the stub's. In CI (the CI
+// variable is set) it fails instead: a runner image change must not turn
+// the rebinding test off without anyone noticing (ADR 0040, D107).
 func needLocalhost(t *testing.T) {
 	t.Helper()
+	skip := t.Skipf
+	if os.Getenv("CI") != "" {
+		skip = t.Fatalf
+	}
 	as, err := net.DefaultResolver.LookupNetIP(t.Context(), "ip", "localhost")
 	if err != nil || len(as) == 0 {
-		t.Skipf("localhost does not resolve here: %v", err)
+		skip("localhost does not resolve here: %v", err)
+		return
 	}
 	for _, a := range as {
 		if !a.Unmap().IsLoopback() {
-			t.Skipf("localhost resolves to %s, not loopback", a)
+			skip("localhost resolves to %s, not loopback", a)
+			return
 		}
 	}
 }
@@ -105,6 +113,55 @@ func TestDialAllowlistedCIDR(t *testing.T) {
 	_ = resp.Body.Close()
 	if string(b) != "reached" || hits.Load() != 1 {
 		t.Fatalf("body %q, hits %d", b, hits.Load())
+	}
+}
+
+// D105: a listed host name is accepted when the dial reaches loopback
+// (localhost may answer 127.0.0.1 or ::1; both are exempt for a listed
+// name). The same request without the list is refused.
+func TestDialAllowHostsLoopback(t *testing.T) {
+	needLocalhost(t)
+	srv, hits := countingServer(t, "reached")
+	res := fakeResolver{"localhost": addrs("127.0.0.1", "::1")}
+	resp, err := dialClient(t, res, nil, noProxy, "localhost").Get("http://localhost:" + port(t, srv) + "/")
+	if err != nil {
+		t.Fatalf("listed localhost: %v", err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(b) != "reached" || hits.Load() != 1 {
+		t.Fatalf("body %q, hits %d", b, hits.Load())
+	}
+	resp, err = dialClient(t, res, nil, noProxy, "other.example").Get("http://localhost:" + port(t, srv) + "/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrBlocked) || hits.Load() != 1 {
+		t.Fatalf("unlisted localhost: got %v (hits %d), want ErrBlocked", err, hits.Load())
+	}
+}
+
+// D105/D107: a listed name whose URL-check answer is private but whose
+// dial reaches link-local or a metadata address is refused at dial time.
+// Nothing listens there, so the dial hook is called directly.
+func TestDialAllowHostsRefusesMetadata(t *testing.T) {
+	g := NewGuard(nil, fakeResolver{"registry.lan": addrs("10.0.0.5")})
+	g.setAllowHosts([]string{"registry.lan"})
+	if err := g.CheckURL(t.Context(), &url.URL{Scheme: "http", Host: "registry.lan"}); err != nil {
+		t.Fatalf("URL check of the listed name: %v", err)
+	}
+	for _, a := range []string{"169.254.169.254:80", "[fd00:ec2::254]:80", "100.100.100.200:80", "[fe80::1%eth0]:80"} {
+		err := g.checkDial("registry.lan", a)
+		var be *BlockedError
+		if !errors.As(err, &be) || be.Host != "registry.lan" {
+			t.Errorf("dial %s: got %v, want a *BlockedError for registry.lan", a, err)
+		}
+	}
+	if err := g.checkDial("registry.lan", "10.0.0.5:80"); err != nil {
+		t.Errorf("dial 10.0.0.5: %v", err)
+	}
+	if err := g.checkDial("other.lan", "10.0.0.5:80"); !errors.Is(err, ErrBlocked) {
+		t.Errorf("unlisted dial 10.0.0.5: got %v, want ErrBlocked", err)
 	}
 }
 

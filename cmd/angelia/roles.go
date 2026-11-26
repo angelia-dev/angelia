@@ -257,8 +257,9 @@ func warnDrainBudget(log *slog.Logger, drain time.Duration) {
 }
 
 // newNetClient builds the one outgoing HTTP client of the process, with the
-// SSRF guard's allowlist from http.allow_networks and the per-host rate
-// limits from http.host_limits (ADR 0027). obs may be nil.
+// SSRF guard's allowlists from http.allow_networks and
+// http.allow_private_hosts (ADR 0040) and the per-host rate limits from
+// http.host_limits (ADR 0027). obs may be nil.
 func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (*netguard.Client, error) {
 	roots, err := cfg.HTTP.LoadCAPool()
 	if err != nil {
@@ -266,7 +267,7 @@ func newNetClient(cfg *config.Config, log *slog.Logger, obs netguard.Observer) (
 	}
 	hosts, fallback := netguardLimits(cfg)
 	c, err := netguard.New(netguard.Config{
-		Allow: cfg.HTTP.AllowPrefixes(), UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs, RootCAs: roots,
+		Allow: cfg.HTTP.AllowPrefixes(), AllowHosts: cfg.HTTP.AllowPrivateHosts, UserAgent: cfg.HTTP.UserAgent, Logger: log, Observer: obs, RootCAs: roots,
 		Proxy: outgoingProxy, HostLimits: hosts, FallbackLimit: fallback,
 	})
 	if err != nil {
