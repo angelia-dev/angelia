@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/angelia-dev/angelia/internal/event"
@@ -27,6 +28,27 @@ type Sources interface {
 	Get(kind string) (source.Source, error)
 }
 
+// NotesFiller fills the release notes of new versions from outside their
+// source (the GitHub release of the repository a PyPI or npm package
+// declares, ADR 0045). Fill gets the new versions of one check, newest first,
+// and returns them with Notes and NotesURL set where it found some; it never
+// fails, and an unchanged copy is a valid answer. repolink.Filler implements
+// it.
+type NotesFiller interface {
+	Fill(ctx context.Context, t source.Target, versions []source.Version) []source.Version
+}
+
+// KnownVersions is the optional part of the store that reads a target's known
+// set outside a check transaction; the SQLite and Postgres stores implement
+// it ([store.Tx].ListVersions). Without it the notes step is skipped.
+type KnownVersions interface {
+	ListVersions(ctx context.Context, targetID string) ([]store.Version, error)
+}
+
+// MaxNotesVersions is how many of a check's new versions the notes step
+// looks at (the newest ones).
+const MaxNotesVersions = 5
+
 // Checker implements scheduler.Checker. Its fields are read-only after the
 // scheduler starts, so one Checker serves every worker.
 type Checker struct {
@@ -41,6 +63,14 @@ type Checker struct {
 	// kind, or an instance) when it is not the public registry, otherwise ""
 	// (event.CheckInput.RegistryURL). Nil means "" for every source.
 	RegistryURL func(name string) string
+	// Notes, when set, fills the notes of the new versions of a check before
+	// it is committed (ADR 0045). The step runs only for a fetch that
+	// returned data (not a 304), only when the target already has a known
+	// set (its first check is the baseline and emits nothing), only for
+	// versions that are new, not yanked and not among the MaxNotesVersions
+	// newest, and never inside the commit's transaction. A failure of the
+	// step never fails the check.
+	Notes NotesFiller
 	// Matcher caches the compiled subscriptions across checks; nil loads
 	// them on every commit.
 	Matcher *event.MatcherCache
@@ -91,6 +121,9 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 	if err != nil {
 		return scheduler.Outcome{}, fmt.Errorf("detect: target %s: %w", t.ID, err)
 	}
+	if c.Notes != nil && !res.NotModified {
+		res.Versions = c.fillNotes(ctx, log, t, res.Versions)
+	}
 	now := time.Now
 	if c.Now != nil {
 		now = c.Now
@@ -115,4 +148,59 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 		return scheduler.Outcome{}, fmt.Errorf("detect: target %s: encode fetch state: %w", t.ID, err)
 	}
 	return scheduler.Outcome{FetchState: b}, nil
+}
+
+// fillNotes runs the notes step (D81): the versions of fetched that the
+// target's known set lacks, are not yanked and are among the newest
+// MaxNotesVersions go to Notes, and only their Notes and NotesURL are taken
+// back. It reads the known set with its own short read, before the commit's
+// transaction, so no network call happens inside it. fetched is not modified.
+func (c *Checker) fillNotes(ctx context.Context, log *slog.Logger, t store.Target, fetched []source.Version) []source.Version {
+	kv, ok := c.Store.(KnownVersions)
+	if !ok || len(fetched) == 0 {
+		return fetched
+	}
+	known, err := kv.ListVersions(ctx, t.ID)
+	if err != nil {
+		log.WarnContext(ctx, "release notes: cannot read the known versions", "error", err)
+		return fetched
+	}
+	if len(known) == 0 {
+		return fetched // the baseline check: nothing is emitted
+	}
+	seen := make(map[string]bool, len(known))
+	for _, v := range known {
+		seen[v.Raw] = true
+	}
+	var picked []source.Version
+	for _, v := range fetched {
+		if len(picked) == MaxNotesVersions {
+			break
+		}
+		if v.Raw == "" || v.Yanked || seen[v.Raw] {
+			continue
+		}
+		picked = append(picked, v)
+	}
+	if len(picked) == 0 {
+		return fetched
+	}
+	filled := c.Notes.Fill(ctx, source.Target{Kind: t.Kind, Coordinates: maps.Clone(t.Coordinates)}, slices.Clone(picked))
+	if len(filled) != len(picked) {
+		log.WarnContext(ctx, "release notes: the filler returned a different number of versions; ignored")
+		return fetched
+	}
+	byRaw := make(map[string]source.Version, len(filled))
+	for i, v := range filled {
+		if v.Raw == picked[i].Raw {
+			byRaw[v.Raw] = v
+		}
+	}
+	out := slices.Clone(fetched)
+	for i, v := range out {
+		if f, ok := byRaw[v.Raw]; ok && !seen[v.Raw] && !v.Yanked {
+			out[i].Notes, out[i].NotesURL = f.Notes, f.NotesURL
+		}
+	}
+	return out
 }

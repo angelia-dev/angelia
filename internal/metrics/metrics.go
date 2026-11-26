@@ -38,6 +38,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/dispatch"
 	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/source"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/webauth"
 )
 
@@ -61,6 +62,7 @@ type Metrics struct {
 	uiLogins   *prometheus.CounterVec
 	checkLag   prometheus.Histogram
 	fetches    *prometheus.CounterVec
+	notes      *prometheus.CounterVec
 	rateWait   *prometheus.HistogramVec
 	attempts   *prometheus.CounterVec
 	log        *slog.Logger
@@ -129,6 +131,15 @@ func New(log *slog.Logger) *Metrics {
 		Name: "angelia_source_fetches_total",
 		Help: "Source fetches by source kind and result: ok, not_modified, rate_limited, canceled or error.",
 	}, []string{"source", "result"})
+	m.notes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "angelia_notes_enrichments_total",
+		Help: "Release notes enrichments of PyPI and npm versions from the declared GitHub repository, by source kind and result: matched, no_match, no_repository, not_github, private, rate_limited or error.",
+	}, []string{"source", "result"})
+	for _, k := range repolink.Kinds {
+		for _, r := range repolink.Results {
+			m.notes.WithLabelValues(k, r) // every pair starts at 0
+		}
+	}
 	m.rateWait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "angelia_netguard_rate_limit_wait_seconds",
 		Help:    "Time an outgoing request waited for the per-host rate limit, by upstream host.",
@@ -171,7 +182,7 @@ func New(log *slog.Logger) *Metrics {
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		info, m.dueTargets, m.streams, m.authFails, m.uiLogins, m.checkLag, m.fetches, m.rateWait, m.attempts,
+		info, m.dueTargets, m.streams, m.authFails, m.uiLogins, m.checkLag, m.fetches, m.notes, m.rateWait, m.attempts,
 		m.hostLimitRate, m.hostLimitBurst, m.hostDemand, m.serverPauses, m.responses, m.deadlineRefusals,
 	)
 	return m
@@ -357,6 +368,15 @@ func (m *Metrics) SetHostDemand(rps map[string]float64) {
 	m.demandSet = map[string]bool{}
 	for host := range sum {
 		m.demandSet[host] = true
+	}
+}
+
+// NotesEnrichment counts one notes enrichment of a source kind
+// (repolink.Recorder); a kind or result outside repolink.Kinds and
+// repolink.Results is not counted, so the label values stay bounded.
+func (m *Metrics) NotesEnrichment(kind, result string) {
+	if slices.Contains(repolink.Kinds, kind) && slices.Contains(repolink.Results, result) {
+		m.notes.WithLabelValues(kind, result).Inc()
 	}
 }
 

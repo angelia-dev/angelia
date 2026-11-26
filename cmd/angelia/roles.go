@@ -43,6 +43,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/oci"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/source/registryauth"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/store/open"
 )
 
@@ -183,6 +184,34 @@ func newSource(cfg *config.Config, name, kind string, hc *http.Client, log *slog
 		// source option defines yet.
 		return crates.New(base, hc)
 	}
+}
+
+// newNotesFiller builds the notes step of the checker (ADR 0045): release
+// notes for new PyPI and npm versions from the GitHub repository the package
+// declares. It uses the client, token and stored secret of the built-in
+// github-release source, and only when that source's base URL is the public
+// https://api.github.com: a GitHub Enterprise token must never reach
+// api.github.com, and a package's metadata names github.com. Otherwise it
+// returns nil (the step is off) and logs why, once.
+func newNotesFiller(cfg *config.Config, hc *http.Client, res registryauth.Resolver, log *slog.Logger, rec repolink.Recorder) *repolink.Filler {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	const name = githubrelease.Kind
+	base := baseURL(cfg, name, publicRegistries[name])
+	if !strings.EqualFold(strings.TrimRight(base, "/"), githubrelease.DefaultBaseURL) {
+		log.Info("release notes for pypi and npm are off: sources.github-release.base_url is not " + githubrelease.DefaultBaseURL)
+		return nil
+	}
+	tok := cfg.SourceToken(name)
+	opts := []repolink.Option{
+		repolink.WithToken(tok), repolink.WithLogger(log),
+		repolink.WithAuthenticated(!cfg.Sources[name].Auth.IsZero()),
+	}
+	if rec != nil {
+		opts = append(opts, repolink.WithRecorder(rec))
+	}
+	return repolink.NewFiller(githubrelease.DefaultBaseURL, sourceClient(cfg, name, name, base, hc, res), opts...)
 }
 
 // sourceClient returns the HTTP client of the source configured as
@@ -386,13 +415,21 @@ func newPipelineRoles(d pipelineDeps, withScheduler, withDispatcher bool) (pipel
 	}
 	hc := client.HTTPClient()
 	if withScheduler {
-		sources, err := builtinSources(d.cfg, hc, d.log, wrapSrc, &secrets.Resolver{Store: d.store, Keys: d.keys})
+		res := &secrets.Resolver{Store: d.store, Keys: d.keys}
+		sources, err := builtinSources(d.cfg, hc, d.log, wrapSrc, res)
 		if err != nil {
 			return out, err
+		}
+		var rec repolink.Recorder // a nil *metrics.Metrics must stay a nil interface
+		if d.metrics != nil {
+			rec = d.metrics
 		}
 		checker := &detect.Checker{
 			Store: d.store, Sources: sources, Instance: d.cfg.Instance.Name,
 			RegistryURL: registryURL(d.cfg), Matcher: event.NewMatcherCache(), Logger: d.log,
+		}
+		if f := newNotesFiller(d.cfg, hc, res, d.log, rec); f != nil {
+			checker.Notes = f
 		}
 		demand, err := newHostDemand(d.cfg, client, d.metrics, d.store, d.log)
 		if err != nil {
