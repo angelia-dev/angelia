@@ -1,0 +1,16 @@
+{
+  "devDependencies": {
+    "shared": "1.0.0",
+    "dev-only": "1.0.0"
+  },
+  "peerDependencies": {
+    "shared": "^1",
+    "peer-only": "^1"
+  },
+  "dependencies": {
+    "shared": "2.0.0"
+  },
+  "optionalDependencies": {
+    "dev-only": "1.0.0"
+  }
+}

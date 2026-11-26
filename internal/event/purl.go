@@ -1,8 +1,12 @@
 package event
 
 import (
+	"regexp"
 	"strings"
 )
+
+// ociDigestRE is a sha256 content digest.
+var ociDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // PURL returns data.purl, the Package URL of version raw of package pkg (as
 // Package returns it), built per source kind as the spec's purl table says,
@@ -61,10 +65,14 @@ func PURL(kind, pkg, raw string, md map[string]any, registryURL string) *string 
 		}
 		typ, path = "maven", []string{g, a}
 	case "oci":
-		// The version is the manifest digest; until a source reports one
-		// the purl is versionless, with the tag as a qualifier.
+		// The version is the manifest digest the tag pointed to when the
+		// source saw it; without a valid one the purl is versionless, with
+		// the tag as a qualifier.
 		segs := strings.Split(pkg, "/")
 		typ, path, version = "oci", []string{strings.ToLower(segs[len(segs)-1])}, ""
+		if d, _ := md["digest"].(string); ociDigestRE.MatchString(d) {
+			version = d
+		}
 		quals["repository_url"], quals["tag"] = pkg, raw
 		registryURL = ""
 	default:

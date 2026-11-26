@@ -10,6 +10,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/calver"
 	"github.com/angelia-dev/angelia/internal/version/lexical"
+	"github.com/angelia-dev/angelia/internal/version/maven"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 	"github.com/angelia-dev/angelia/internal/version/semver"
 )
@@ -19,7 +20,9 @@ const maxLoggedRaw = 128
 
 // Names lists the scheme names accepted by Lookup and in a watch's
 // `scheme` override.
-func Names() []string { return []string{semver.Name, pep440.Name, calver.Name, lexical.Name} }
+func Names() []string {
+	return []string{semver.Name, pep440.Name, maven.Name, calver.Name, lexical.Name}
+}
 
 // Lookup returns the scheme called name, without fallback. "semver" is
 // strict SemVer.
@@ -29,6 +32,8 @@ func Lookup(name string) (version.Scheme, error) {
 		return semver.Scheme{}, nil
 	case pep440.Name:
 		return pep440.Scheme{}, nil
+	case maven.Name:
+		return maven.Scheme{}, nil
 	case calver.Name:
 		return calver.Scheme{}, nil
 	case lexical.Name:
@@ -44,7 +49,8 @@ func Lookup(name string) (version.Scheme, error) {
 //     loose "v" prefix);
 //   - oci, github-tag, go-proxy: SemVer that coerces short cores, so tags
 //     like "3.12" or "v2" order as 3.12.0 and 2.0.0;
-//   - anything else: lexical. Maven gets its own scheme in Phase 1.
+//   - maven: Maven's ComparableVersion order;
+//   - anything else: lexical.
 //
 // No source kind defaults to calver and the scheme is never auto-detected
 // from the tags: a watch that wants calendar versions says `scheme: calver`
@@ -53,6 +59,8 @@ func ForSourceKind(kind string) version.Scheme {
 	switch kind {
 	case "pypi":
 		return pep440.Scheme{}
+	case "maven":
+		return maven.Scheme{}
 	case "npm", "crates", "github-release", "gitlab-release":
 		return semver.Scheme{}
 	case "oci", "github-tag", "go-proxy":

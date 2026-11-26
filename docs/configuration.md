@@ -22,9 +22,10 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `log.format` | `ANGELIA_LOG_FORMAT` | `json` | `json`, `text` |
 | `http.user_agent` | `ANGELIA_HTTP_USER_AGENT` | `angelia/<version>` | non-empty, single line |
 | `http.allow_networks` | `ANGELIA_HTTP_ALLOW_NETWORKS` (comma-separated) | empty | list of CIDR prefixes (`10.0.0.0/8`, `fd00::/8`); see [Outgoing HTTP](#outgoing-http-and-private-networks) |
+| `http.allow_private_hosts` | `ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS` (comma-separated) | empty | list of at most 64 exact lower-case host names, no wildcard, IP address, port or trailing dot; see [Outgoing HTTP](#outgoing-http-and-private-networks) |
 | `http.allow_http_hosts` | `ANGELIA_HTTP_ALLOW_HTTP_HOSTS` (comma-separated) | empty | list of lower-case host names or IPv4 addresses, no scheme or port |
-| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind other than `http-json` and `http-regex`; makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
-| `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL |
+| `sources.<name>.kind` | none | empty (the key is the kind) | a built-in source kind other than `http-json` and `http-regex` (for a private Go proxy, `go-proxy`: [Go proxy](private-registries.md#go-proxy-athens-artifactory-nexus)); makes the key a [named instance](private-registries.md#several-registries-of-one-kind), such as `sources.npm-internal.kind: npm` |
+| `sources.<kind>.base_url` | `ANGELIA_SOURCES_<KIND>_BASE_URL` | empty | absolute http(s) URL; for `oci` a bare origin (no path), which pins the source to that registry: without it the built-in `oci` fetches, anonymously, from the registry named in each image |
 | `sources.<name>.api` | none | `json` | `pypi` sources only: `json` (the PyPI JSON API) or `simple` (the Simple API, PEP 503 / PEP 691, for pypiserver); see [pypiserver](private-registries.md#pypiserver-and-other-simple-api-only-indexes) |
 | `sources.<kind>.token_env` | `ANGELIA_SOURCES_<KIND>_TOKEN_ENV` | empty | name of an environment variable, never one starting with `ANGELIA_` |
 | `http.ca_file` | `ANGELIA_HTTP_CA_FILE` | empty | path of a PEM file of certificate authorities added to the system roots; see [Private registries](private-registries.md#custom-ca-bundle) |
@@ -75,7 +76,7 @@ Check a configuration with `angelia config check [--config FILE]`.
   A sqlite DSN needs a path, a postgres DSN a host.
 - `sources.<kind>.auth` authenticates requests to a private registry or mirror with a **stored secret**, bound
   to the host of the source's `base_url`; see [Private registries and mirrors](private-registries.md). At most
-  one of `token_env` and `auth` is set. `token_env` authenticates `pypi` and `npm` (as
+  one of `token_env` and `auth` is set. `token_env` authenticates `pypi`, `npm`, `go-proxy` and `maven` (as
   `Authorization: Bearer`), `github-release` and `github-tag` (bearer), and `gitlab-release` (as GitLab's
   `PRIVATE-TOKEN` header; `auth` sends `Authorization: Bearer`, which GitLab also accepts). `crates` sends no
   credential: its `base_url` is the sparse index URL of a mirror, and `token_env` or `auth` on it is ignored
@@ -141,9 +142,18 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   `192.168.1.0/24` or an internal `fd00:10::/32`. It applies to sources and sinks alike. Keep it narrow:
   a prefix of length 0 (`0.0.0.0/0`, `::/0`) turns the guard off for that address family, and
   `config check` warns about it.
+- `http.allow_private_hosts` lists host names that may resolve to loopback, private (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) or CGNAT (`100.64.0.0/10`) addresses, for example an
+  internal registry `nexus.corp.example` whose address changes. It is narrower than a prefix: only a
+  request to that name gets through, not every host of its network. It never exempts link-local
+  (`169.254.0.0/16`, `fe80::/10`), the cloud metadata addresses `100.100.100.200` and `fd00:ec2::254`, or
+  any other range of the list above, even if the name's DNS answer is wrong or hijacked: only
+  `allow_networks` opens those. Names are exact (no wildcard; `sub.nexus.corp.example` is another name)
+  and the exemption is per hop: a redirect to another name is judged by that name. An IP address is
+  refused here; use `allow_networks`.
 - `http.allow_http_hosts` lists the hosts a webhook may reach over plain `http://` (watch-file decision
   D12). Every other webhook URL must be `https://`. Matching is by host name, case-insensitive.
-- Both lists live only here: the watch file and the REST API cannot widen them.
+- These lists live only here: the watch file and the REST API cannot widen them.
 - The generic HTTP sources (`http-regex`, `http-json`) fetch the URL of each watch. They obey both lists
   (`https://`, or `http://` for a host in `allow_http_hosts`, also on redirects) and take no key under
   `sources.<kind>` and no named instance: `config check` refuses `sources.http-json.base_url`, `token_env`,
@@ -161,6 +171,10 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   start, with `NO_PROXY`), connections to the proxy are not checked, since proxies usually have private
   addresses, and only the URL check applies: the proxy resolves the target, so rebinding protection is
   its job.
+- Redirects: sources make at most 5 requests per redirect chain (the first one included, counted as
+  net/http counts its default of 10), each hop checked like the first; never from `https://` to
+  `http://` (the request fails and is not retried; a source whose `base_url` is `http://` may still be redirected to `http://`); sinks follow none. See
+  [ADR 0040](adr/0040-ssrf-guard-hostname-allowlist-and-redirects.md).
 
 - `http.ca_file` adds certificate authorities to the system roots for every outgoing HTTPS request (sources
   and sinks), for a registry behind a private CA. Certificate verification is never switched off. A file
@@ -561,7 +575,7 @@ The folder name is the plugin's kind:
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
 - A plugin's kind should not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
-  `gitlab-release`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
+  `gitlab-release`, `go-proxy`, `maven`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
   `plugin kind crates is a built-in kind; the built-in is used`. Name a plugin for a registry the built-ins do not cover, such as
   `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`

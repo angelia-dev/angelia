@@ -28,6 +28,19 @@
 // (at most maxPages, 10 requests) when the last full scan is 24 hours old or
 // missing.
 //
+// # Release notes
+//
+// The list response already carries each release's body (GitHub-flavoured
+// Markdown, null when empty), so List decodes it at no cost: no extra
+// request, no extra byte, and a 304 stays free. The body becomes
+// source.Version.Notes with format "markdown", built by source.NewNotes:
+// line endings are normalised, control characters and HTML comments outside
+// code fences are removed, and the text is cut to 16384 bytes at a character
+// boundary with truncated set. A null, empty or blank body gives nil notes.
+// The text is untrusted upstream content. It is a snapshot taken when the
+// check first sees the version: editing the release later changes nothing
+// (ADR 0036).
+//
 // # Tokens
 //
 // The token is read at request time from WithToken or WithTokenEnv; a

@@ -1,16 +1,16 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml`, `mcp/tools.v1.json` and `schemas/release/v1.json` are at commit `ef25595`
-("feat(openapi): admin scope for watches of http-json and http-regex (spec 0.12.0)") on the spec
-repository's branch `story/97-http-sources-api` (#97; re-point this line to its `main` commit once merged).
-Since spec 0.10.0, spec 0.12.0 changes descriptions only: `putWatch`, `bearerAuth` and the
-`coordinates` of `WatchWrite` and `Watch` state that creating or retargeting a watch of `http-json` or
-`http-regex` needs the `admin` scope (spec docs/api.md item 56, core ADR 0038); MCP `add_watch` says the
-same; `data.package` of the release schema names the `name` coordinate of these kinds. No field changes.
-Before that, `openapi/angelia.v1.yaml` was at commit `da75b65` ("feat(openapi): adopt watch-file resources
-with POST /v1/adoptions (spec 0.10.0) (#21)") on the spec repository's `main`.
-Since spec 0.9.0, spec 0.10.0 adds `adoptResources` (`POST /v1/adoptions`, `admin`) with the schemas
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `e013106`
+("docs(openapi): http-json and http-regex watches (0.12.0) (#26)", spec 0.12.0) on the spec repository's `main`. Spec 0.12.0 documents the `http-json` and `http-regex` watch coordinates and the `admin` scope needed to create or retarget such a watch (spec docs/api.md item 57), in the OpenAPI document and the MCP `add_watch` tool; no schema rule changes.
+Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `8e98902`
+("docs(schemas): list maven among the known version schemes (#25)", spec 0.10.2) on the spec repository's
+`main`. Spec 0.10.2 changes descriptions only: `maven` becomes a known value of `data.scheme` and of the
+watch `scheme` (OpenAPI and MCP). Spec 0.10.1 (commit `a8250b0`, #22) changed descriptions only too: which
+sources fill `notes`, and that its text is untrusted. No schema rule changes in either.
+Before that, spec 0.10.0 (commit `da75b65`, "feat(openapi): adopt watch-file resources with POST
+/v1/adoptions (spec 0.10.0) (#21)"), since spec 0.9.0, added `adoptResources` (`POST /v1/adoptions`,
+`admin`) with the schemas
 `AdoptionObject`, `AdoptionRequest`, `AdoptedObject` and `AdoptionResult`, and the matching `ManagedBy`
 description (spec docs/api.md item 55). The MCP tool contract and the event schemas are unchanged by
 0.10.0.

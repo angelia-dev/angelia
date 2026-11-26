@@ -8,6 +8,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/version"
 	"github.com/angelia-dev/angelia/internal/version/calver"
 	"github.com/angelia-dev/angelia/internal/version/lexical"
+	"github.com/angelia-dev/angelia/internal/version/maven"
 	"github.com/angelia-dev/angelia/internal/version/pep440"
 	"github.com/angelia-dev/angelia/internal/version/schemes"
 	"github.com/angelia-dev/angelia/internal/version/semver"
@@ -96,6 +97,7 @@ func TestRangeMatch(t *testing.T) {
 		{schemes.WithFallback(semver.Scheme{Coerce: true}, nil), ">=3.12", []string{"3.12", "v4", "3.12.1"}, []string{"3.11", "latest"}},
 		{schemes.WithFallback(pep440.Scheme{}, nil), ">=2,<3", []string{"2", "2.0.0", "2.31.0", "3.0rc1", "2.0.post1"}, []string{"1.9", "3.0", "3", "2.0rc1"}},
 		{schemes.WithFallback(pep440.Scheme{}, nil), "==1.0", []string{"1.0", "1.0.0", "1"}, []string{"1.0.1"}},
+		{schemes.WithFallback(maven.Scheme{}, nil), ">=2 <3", []string{"2", "2.0.0", "2-ga", "2.31.0", "2.9-jre", "3.0-rc1", "3-SNAPSHOT"}, []string{"1.9", "2-rc1", "3.0", "3-sp1", "10.0"}},
 		{schemes.WithFallback(calver.Scheme{}, nil), ">=2026 <2027", []string{"2026.1", "2026.10.15", "v2026.3"}, []string{"2025.12", "2027.1", "24.04"}},
 		{schemes.WithFallback(calver.Scheme{}, nil), ">=24.04", []string{"24.04", "24.10", "2026.1"}, []string{"23.10"}},
 		{lexical.Scheme{}, ">=1.9 <1.11", []string{"1.9", "1.10"}, []string{"1.8", "1.11", "1.100"}},

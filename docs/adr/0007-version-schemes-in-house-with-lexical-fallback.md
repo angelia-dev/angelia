@@ -62,7 +62,8 @@ PEP 440 and Maven comparators. Upstream data is untrusted: one odd tag must not 
 
 ### Open questions
 
-- Maven scheme (Phase 1); until then Maven sources use lexical order. Calver is described below.
+- ~~Maven scheme (Phase 1); until then Maven sources use lexical order.~~ Done in #96, see the
+  addendum below. Calver is described below.
 - Conformance against real registry ordering (benchmark 6) is a separate story.
 
 ## Addendum: calver (story #68)
@@ -95,6 +96,46 @@ PEP 440 and Maven comparators. Upstream data is untrusted: one odd tag must not 
   tag would give a watch an unstable order. A watch that wants calver says `scheme: calver`;
   `schemes.Select(kind, override, logger)` is the lookup (an unknown name is an error). Tags that
   are not calver fall back to lexical like for any other scheme.
+
+## Addendum: maven (story #96)
+
+`internal/version/maven` (`scheme: maven`) is the default scheme of source kind `maven` and can be
+selected on any watch.
+
+- **Pinned release.** A port (not a copy) of `org.apache.maven.artifact.versioning.ComparableVersion`
+  from **maven-artifact 3.9.16**, the latest Maven 3.9.x on 2026-11-25. Its `ComparableVersion.java`
+  is identical to 3.9.11's. Maven 4.0 is not released yet (4.0.0-rc-7); its ordering was not compared.
+  Test vectors: Maven's `ComparableVersionTest` at tag `maven-3.9.16` (Apache-2.0, attributed in
+  `testdata/NOTICE`), plus the Guava and slf4j version lists sorted by maven-artifact. A one-off
+  differential run against maven-artifact on 700 random strings (490,000 pairs, Unicode digits,
+  numbers above 2^63, leading separators) found no difference.
+- **Order.** Items split at `.`, `-` and digit/letter transitions, `-` opening a sub-list; trailing
+  null items (`0`, `""`, `ga`, `final`, `release`, empty lists) dropped; `alpha` (`a1`) < `beta`
+  (`b1`) < `milestone` (`m1`) < `rc` = `cr` < `snapshot` < release < `sp` < unknown qualifiers
+  (lexical, by UTF-16 code unit as in Java); case-insensitive; numbers of any length. Unicode decimal
+  digits of the BMP are digits, as for Java's `Character.isDigit`.
+- **Not transitive everywhere, like Maven.** When a sub-list starts with a sub-list (`1-0.alpha`,
+  `-1`, `0A0`) or a qualifier follows another item in its list (`1.A.`, `1-a.b.c`), Maven compares
+  a list and a qualifier by type only: `1-0.alpha < 1 < 1-sp < 1-0.alpha`. The port keeps Maven's
+  results, since the point of the scheme is to agree with Maven; the fuzz test checks transitivity
+  outside those shapes. None of the real-world lists hits them. Go's sort does not panic on such
+  input; the order of those versions is then unspecified.
+- **Parse.** Any string up to 256 bytes after trimming, without white space, control characters or
+  invalid UTF-8: Maven orders every string, so the lexical fallback only catches those. `String()`
+  is the trimmed input (Maven has no display normal form), so `normalized_version` equals `version`.
+- **IsPrerelease.** A version is a pre-release when either rule holds. D97: `v` orders below its
+  numeric part (its items up to the first qualifier), so `1.0-rc1`, `1.0.M2`, `1.0-SNAPSHOT` and
+  `1.0-1-SNAPSHOT` are. D98 (a SNAPSHOT is always a pre-release, which the source relies on to let
+  `prerelease: none` drop snapshots): any qualifier that ranks below a release (`alpha`, `beta`,
+  `milestone`, `rc`/`cr`, `snapshot`, with the aliases `a1`, `b1`, `m1`), wherever it appears, so
+  flavour and service-pack builds such as `33.9.0-jre-SNAPSHOT`, `1.0-sp1-SNAPSHOT` and `1.0-jre-rc1`
+  are too, although Maven orders them above `33.9.0` and `1.0`. `1.0`, `1.0-sp1`, `33.8.0-jre` and
+  `r09` are not. Ordering is unchanged: only the classification adds the second rule.
+- **Bump.** Leading numbers of the top-level list: first = `major`, second = `minor`, later =
+  `patch`. With the same numbers: `prerelease` when next is a pre-release; a pre-release followed by
+  a release gets the level that release introduces (rule 5); a new or higher `sp` is `patch`, as is a
+  build number (`1.0` to `1.0-1`, like a PEP 440 implicit post-release); any other qualifier change
+  (`33.8.0-android` to `33.8.0-jre`) is `other`.
 
 ## Alternatives considered
 

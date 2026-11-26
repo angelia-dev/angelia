@@ -17,11 +17,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/angelia-dev/angelia/internal/apitoken/format"
 	"github.com/angelia-dev/angelia/internal/buildinfo"
+	"github.com/angelia-dev/angelia/internal/netguard"
 	"github.com/angelia-dev/angelia/internal/secrets"
 )
 
@@ -41,6 +43,12 @@ const (
 // Valid roles, matching `angelia serve --roles`.
 var validRoles = map[string]bool{"all": true, "api": true, "scheduler": true, "worker": true, "dispatcher": true}
 
+// MaxAllowPrivateHosts is the most entries http.allow_private_hosts takes.
+const MaxAllowPrivateHosts = 64
+
+// maxHostNameLen is the longest DNS name, without a trailing dot (RFC 1035).
+const maxHostNameLen = 253
+
 // maxKindLen is the longest source name or kind: the API's Kind pattern
 // (^[a-z0-9][a-z0-9-]{0,62}$) allows 63 characters.
 const maxKindLen = 63
@@ -48,7 +56,8 @@ const maxKindLen = 63
 var (
 	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kindRE    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	// hostRE is a lower-case DNS name or IPv4 address (http.allow_http_hosts).
+	// hostRE is a lower-case DNS name or IPv4 address (http.allow_http_hosts;
+	// http.allow_private_hosts refuses the addresses separately).
 	hostRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 	unknownRE = regexp.MustCompile(`^(line \d+): field (\S+) not found in type .*$`)
 	// instanceRE is the <instance> part of the CloudEvents source
@@ -168,6 +177,14 @@ type HTTP struct {
 	// section 5). Empty by default. Only the instance configuration sets
 	// it: the watch file and the API cannot widen it.
 	AllowNetworks []string `yaml:"allow_networks"`
+	// AllowPrivateHosts lists host names (exact, lower case, no wildcard,
+	// at most MaxAllowPrivateHosts) that may resolve to loopback, private
+	// and CGNAT addresses: the SSRF guard accepts those for a hop to a
+	// listed name, at the URL check and at dial time, and still refuses
+	// link-local and the metadata addresses (ADR 0040). Empty by default.
+	// Env ANGELIA_HTTP_ALLOW_PRIVATE_HOSTS. Like AllowNetworks, only the
+	// instance configuration sets it.
+	AllowPrivateHosts []string `yaml:"allow_private_hosts"`
 	// AllowHTTPHosts lists host names a webhook may reach over plain
 	// http:// (decision D12). Empty by default: https only.
 	AllowHTTPHosts []string `yaml:"allow_http_hosts"`
@@ -267,7 +284,7 @@ const (
 )
 
 // credentialKinds are the source kinds that send token_env or auth.
-var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "npm", "pypi"}
+var credentialKinds = []string{"github-release", "github-tag", "gitlab-release", "go-proxy", "maven", "npm", "pypi"}
 
 // urlKinds are the source kinds whose URL is a watch coordinate (ADR 0038):
 // they take no key under sources.<kind> and no named instance (#97 D57).
@@ -549,6 +566,7 @@ func applyEnv(cfg *Config, env map[string]string) error {
 	list("ROLES", &cfg.Roles)
 	list("HTTP_ALLOW_NETWORKS", &cfg.HTTP.AllowNetworks)
 	list("HTTP_ALLOW_HTTP_HOSTS", &cfg.HTTP.AllowHTTPHosts)
+	list("HTTP_ALLOW_PRIVATE_HOSTS", &cfg.HTTP.AllowPrivateHosts)
 	if v, ok := env[envPrefix+"HTTP_CA_FILE"]; ok {
 		cfg.HTTP.CAFile = v
 	}
@@ -661,6 +679,25 @@ func (c *Config) Validate() error {
 			bad("http.allow_http_hosts[%d] %q: must be a lower-case host name or IPv4 address, without scheme or port", i, h)
 		}
 	}
+	if n := len(c.HTTP.AllowPrivateHosts); n > MaxAllowPrivateHosts {
+		bad("http.allow_private_hosts: at most %d entries, got %d", MaxAllowPrivateHosts, n)
+	}
+	seenPrivate := make(map[string]bool, len(c.HTTP.AllowPrivateHosts))
+	for i, h := range c.HTTP.AllowPrivateHosts {
+		switch _, err := netip.ParseAddr(h); {
+		case len(h) > maxHostNameLen:
+			bad("http.allow_private_hosts[%d] %q: longer than %d characters", i, h, maxHostNameLen)
+		case strings.IndexFunc(h, func(r rune) bool { return r >= utf8.RuneSelf }) >= 0:
+			bad("http.allow_private_hosts[%d] %q: must be ASCII; write an internationalised name in its xn-- form", i, h)
+		case err == nil || netguard.NonCanonicalIP(h):
+			bad("http.allow_private_hosts[%d] %q: an IP address; use http.allow_networks for addresses", i, h)
+		case !hostRE.MatchString(h):
+			bad("http.allow_private_hosts[%d] %q: must be a lower-case host name, without wildcard, scheme, port or trailing dot", i, h)
+		case seenPrivate[h]:
+			bad("http.allow_private_hosts[%d] %q: listed twice", i, h)
+		}
+		seenPrivate[h] = true
+	}
 
 	if strings.ContainsAny(c.HTTP.CAFile, "\r\n") {
 		bad("http.ca_file: must be a single-line path")
@@ -699,6 +736,10 @@ func (c *Config) Validate() error {
 				bad("sources.%s.base_url: must be an absolute http(s) URL", k)
 			case u.User != nil:
 				bad("sources.%s.base_url: credentials not allowed in base_url; use token_env or auth", k)
+			case kindOf(k, s) == "oci" && (strings.EqualFold(u.Hostname(), "docker.io") || strings.EqualFold(u.Hostname(), "index.docker.io")):
+				bad("sources.%s.base_url: %s is not a registry endpoint; Docker Hub's registry is https://registry-1.docker.io (or leave base_url unset)", k, u.Hostname())
+			case kindOf(k, s) == "oci" && (strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != ""):
+				bad("sources.%s.base_url: an oci registry is a bare origin (scheme and host, no path, query or fragment)", k)
 			}
 		}
 		switch {

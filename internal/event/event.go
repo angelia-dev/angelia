@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/angelia-dev/angelia/internal/policy"
+	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/crates"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
 	"github.com/angelia-dev/angelia/internal/store"
@@ -33,7 +34,7 @@ const (
 	TypeYanked     = "dev.angelia.release.yanked.v1"
 
 	// MaxNotesBytes bounds notes.body, in bytes of UTF-8.
-	MaxNotesBytes = 16384
+	MaxNotesBytes = source.MaxNotesBytes
 )
 
 // ShortType returns the short type that subscription filters use: the type
@@ -91,28 +92,15 @@ type URLs struct {
 	Artifact  *string `json:"artifact"`
 }
 
-// Notes is the release notes text. No source fetches notes yet (PRD F12), so
-// events carry null notes; NewNotes is the constructor to use then.
-type Notes struct {
-	Format    string `json:"format"`
-	Body      string `json:"body"`
-	Truncated bool   `json:"truncated"`
-}
+// Notes is the release notes text: the same type as source.Notes, so that a
+// source's notes travel to the event unchanged. Sources fill it from the
+// upstream release body (github-release, gitlab-release) through
+// source.NewNotes; the body is untrusted upstream content (ADR 0036).
+type Notes = source.Notes
 
-// NewNotes returns notes whose body is cut to MaxNotesBytes at a UTF-8
-// character boundary, Truncated telling whether it was cut.
-func NewNotes(format, body string) *Notes {
-	n := &Notes{Format: format, Body: body}
-	if len(body) <= MaxNotesBytes {
-		return n
-	}
-	cut := MaxNotesBytes
-	for cut > 0 && !utf8.RuneStart(body[cut]) {
-		cut--
-	}
-	n.Body, n.Truncated = body[:cut], true
-	return n
-}
+// NewNotes is source.NewNotes: it cleans body, cuts it to MaxNotesBytes at a
+// UTF-8 character boundary and returns nil when nothing is left.
+func NewNotes(format, body string) *Notes { return source.NewNotes(format, body) }
 
 // encodePayload marshals env into the stored payload of its event. A NUL
 // character in any string, which json.Marshal writes as the escape \u0000,
@@ -278,7 +266,7 @@ func Build(in Input) (Envelope, error) {
 				Changelog: validURL(r.NotesURL),
 				Artifact:  validURL(artifactURL(kind, r.Metadata)),
 			},
-			Notes: nil, // until notes enrichment (PRD F12)
+			Notes: r.Notes,
 			Watch: Watch{ID: in.Watch.ID, Name: name, Labels: labels},
 			PURL:  PURL(kind, pkg, r.Raw, r.Metadata, in.RegistryURL),
 		},

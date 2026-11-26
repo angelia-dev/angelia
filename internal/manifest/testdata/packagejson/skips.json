@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "local-a": "file:../local-a",
+    "local-b": "link:../local-b",
+    "local-c": "portal:../local-c",
+    "ws": "workspace:*",
+    "git-a": "git+https://example.com/org/repo.git#v1",
+    "git-b": "git://example.com/org/repo.git",
+    "git-c": "github:org/repo",
+    "git-d": "org/repo",
+    "git-e": "org/repo#semver:^1.0.0",
+    "tarball": "https://example.com/pkg-1.0.0.tgz",
+    "plain-http": "http://example.com/pkg-1.0.0.tgz",
+    "number": 5,
+    "ok": "^1.0.0"
+  }
+}

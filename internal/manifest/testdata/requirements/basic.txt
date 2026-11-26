@@ -1,0 +1,16 @@
+# Synthetic manifest for the parser tests.
+requests==2.31.0
+Flask[async]>=2.0,<3  # a trailing comment
+Django >= 4.2 ; python_version >= "3.9"
+PyYAML
+zope.interface~=6.0
+my_Package.Name==1.0.0
+   numpy   ==   1.26.4
+pandas (>=2.0)
+
+# a continuation joins the next line
+black==24.1.0 \
+    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+httpx>=0.27 \
+  ; python_version >= "3.8"
+wildcard==1.2.*
