@@ -15,7 +15,8 @@
   "urls": {
     "release": "https://pypi.org/project/requests/2.33.0/",
     "changelog": "https://github.com/psf/requests/blob/main/HISTORY.md",
-    "artifact": null
+    "artifact": null,
+    "repository": "https://github.com/psf/requests"
   },
   "notes": null,
   "watch": {

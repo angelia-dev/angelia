@@ -18,6 +18,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source"
 	"github.com/angelia-dev/angelia/internal/source/crates"
 	"github.com/angelia-dev/angelia/internal/source/pypi"
+	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/store"
 	"github.com/angelia-dev/angelia/internal/ulid"
 )
@@ -90,6 +91,9 @@ type URLs struct {
 	Release   *string `json:"release"`
 	Changelog *string `json:"changelog"`
 	Artifact  *string `json:"artifact"`
+	// Repository is the source repository as the registry metadata or the
+	// forge declares it, https://host/owner/name; declared, not verified.
+	Repository *string `json:"repository"`
 }
 
 // Notes is the release notes text: the same type as source.Notes, so that a
@@ -262,9 +266,10 @@ func Build(in Input) (Envelope, error) {
 			DetectedAt:          timestamp(r.DetectedAt),
 			CooldownSatisfiedAt: optTimestamp(r.CooldownSatisfiedAt),
 			URLs: URLs{
-				Release:   validURL(r.URL),
-				Changelog: validURL(r.NotesURL),
-				Artifact:  validURL(artifactURL(kind, r.Metadata)),
+				Release:    validURL(r.URL),
+				Changelog:  validURL(r.NotesURL),
+				Artifact:   validURL(artifactURL(kind, r.Metadata)),
+				Repository: validURL(repositoryURL(kind, pkg, r.Metadata, in.RegistryURL)),
 			},
 			Notes: r.Notes,
 			Watch: Watch{ID: in.Watch.ID, Name: name, Labels: labels},
@@ -317,6 +322,33 @@ func artifactURL(kind string, md map[string]any) string {
 	}
 	s, _ := md["tarball"].(string)
 	return s
+}
+
+// repositoryURL is the source repository link of a release (urls.repository,
+// spec 0.15.0), "" when unknown. pypi and npm take the link their source
+// found in the package's own metadata (Metadata["repository_url"], declared
+// by the publisher, not verified) and re-normalize it. github-release,
+// github-tag and gitlab-release name their repository by their coordinates;
+// on a self-hosted base (registryURL set) the public forge's page would be
+// wrong, so no link is given. Other kinds, plugins included, give none.
+func repositoryURL(kind, pkg string, md map[string]any, registryURL string) string {
+	var raw string
+	switch kind {
+	case "pypi", "npm":
+		raw, _ = md["repository_url"].(string)
+	case "github-release", "github-tag":
+		if registryURL == "" {
+			raw = "https://" + repolink.GitHub + "/" + pkg
+		}
+	case "gitlab-release":
+		if registryURL == "" {
+			raw = "https://" + repolink.GitLab + "/" + pkg
+		}
+	}
+	if r, ok := repolink.Parse(raw); ok {
+		return r.URL()
+	}
+	return ""
 }
 
 // timestamp formats t as the spec wants: UTC, Z, at most milliseconds.

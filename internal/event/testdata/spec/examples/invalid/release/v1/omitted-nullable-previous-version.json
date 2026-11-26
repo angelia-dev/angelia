@@ -14,7 +14,8 @@
   "urls": {
     "release": null,
     "changelog": null,
-    "artifact": null
+    "artifact": null,
+    "repository": null
   },
   "notes": null,
   "watch": {

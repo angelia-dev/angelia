@@ -1,5 +1,5 @@
 Vendored from https://github.com/angelia-dev/spec
-Commit: 5534e1d94d68c1027fcc8b26c404a42cfaa22929 (main, spec 0.13.0)
+Commit: e3a857f63cf5b1cb0f955154cc6c71d8e770d1da (branch story/84-urls-repository, spec 0.15.0)
 
 Files, unchanged:
   schemas/release/v1.json

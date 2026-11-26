@@ -44,9 +44,10 @@ func Samples() []Sample {
 			DetectedAt:          "2026-10-27T14:15:00Z",
 			CooldownSatisfiedAt: ptr("2026-10-30T14:02:11Z"),
 			URLs: event.URLs{
-				Release:   ptr("https://pypi.org/project/requests/2.33.0/"),
-				Changelog: ptr("https://pypi.org/project/requests/2.33.0/#history"),
-				Artifact:  ptr("https://files.pythonhosted.org/packages/source/r/requests/requests-2.33.0.tar.gz"),
+				Release:    ptr("https://pypi.org/project/requests/2.33.0/"),
+				Changelog:  ptr("https://pypi.org/project/requests/2.33.0/#history"),
+				Artifact:   ptr("https://files.pythonhosted.org/packages/source/r/requests/requests-2.33.0.tar.gz"),
+				Repository: ptr("https://github.com/psf/requests"),
 			},
 			Notes: event.NewNotes("markdown", "## 2.33.0\n\n- Sample release notes."),
 			Watch: event.Watch{ID: watchID, Name: ptr("requests"), Labels: map[string]string{"team": "platform", "repo": "api"}},

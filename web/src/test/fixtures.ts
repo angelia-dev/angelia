@@ -64,7 +64,7 @@ export const eventRecord = (seq: number, over: { version?: string; time?: string
         published_at: null,
         detected_at: new Date().toISOString(),
         cooldown_satisfied_at: null,
-        urls: { release: null, changelog: null, artifact: null },
+        urls: { release: null, changelog: null, artifact: null, repository: null },
         notes: null,
         watch: { id: 'ID-requests', name: 'requests', labels: {} },
         purl: null,

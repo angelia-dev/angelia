@@ -15,7 +15,8 @@
   "urls": {
     "release": "https://github.com/cli/cli/releases/tag/v2.62.0",
     "changelog": "https://github.com/cli/cli/releases/tag/v2.62.0",
-    "artifact": null
+    "artifact": null,
+    "repository": "https://github.com/cli/cli"
   },
   "notes": {
     "format": "markdown",

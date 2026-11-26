@@ -82,7 +82,7 @@ func TestBuildPyPIExample(t *testing.T) {
 		`"scheme":"pep440","bump":"minor","backport":false,"prerelease":false,"yanked":false,` +
 		`"published_at":"2026-10-27T14:02:11Z","detected_at":"2026-10-30T17:00:00Z",` +
 		`"cooldown_satisfied_at":"2026-10-30T14:02:11Z","urls":{"release":"https://pypi.org/project/requests/2.33.0/",` +
-		`"changelog":"https://github.com/psf/requests/blob/main/HISTORY.md","artifact":null},"notes":null,` +
+		`"changelog":"https://github.com/psf/requests/blob/main/HISTORY.md","artifact":null,"repository":null},"notes":null,` +
 		`"watch":{"id":"01JBX1Z3M4N5P6Q7R8S9T0V1W2","name":"requests","labels":{"repo":"api","team":"platform"}},` +
 		`"purl":"pkg:pypi/requests@2.33.0"}}`
 	if string(got) != want {
@@ -477,4 +477,80 @@ func TestBuildNotes(t *testing.T) {
 			t.Fatalf("truncated notes = truncated %v, %d bytes", got["truncated"], len(got["body"].(string)))
 		}
 	})
+}
+
+// urls.repository (spec 0.15.0, issue #84 D83): pypi and npm carry the link
+// their source found in the package metadata; the forge kinds derive it from
+// their coordinates on the public base only; every other kind gives null.
+func TestBuildURLsRepository(t *testing.T) {
+	s := loadSchemas(t)
+	cases := []struct {
+		name     string
+		tgt      store.Target
+		registry string
+		md       map[string]any
+		want     string // "" is null
+	}{
+		{"pypi with a link", target("pypi", map[string]string{"name": "requests"}), "", map[string]any{"repository_url": "https://github.com/psf/requests"}, "https://github.com/psf/requests"},
+		{"pypi without a link", target("pypi", map[string]string{"name": "protobuf"}), "", map[string]any{"project": "protobuf"}, ""},
+		{"pypi on a mirror keeps the declared link", target("pypi", map[string]string{"name": "requests"}), "https://mirror.example", map[string]any{"repository_url": "https://github.com/psf/requests"}, "https://github.com/psf/requests"},
+		{"pypi gitlab link", target("pypi", map[string]string{"name": "x"}), "", map[string]any{"repository_url": "https://gitlab.com/g/s/p"}, "https://gitlab.com/g/s/p"},
+		{"pypi link of a stored snapshot is renormalized", target("pypi", map[string]string{"name": "x"}), "", map[string]any{"repository_url": "git+https://github.com/a/b.git"}, "https://github.com/a/b"},
+		{"pypi link that is not a forge", target("pypi", map[string]string{"name": "x"}), "", map[string]any{"repository_url": "https://evil.example/a/b"}, ""},
+		{"pypi link of the wrong type", target("pypi", map[string]string{"name": "x"}), "", map[string]any{"repository_url": 7}, ""},
+		{"npm scoped", target("npm", map[string]string{"name": "@babel/core"}), "", map[string]any{"repository_url": "https://github.com/babel/babel", "repository_directory": "packages/babel-core"}, "https://github.com/babel/babel"},
+		{"npm without a link", target("npm", map[string]string{"name": "left-pad"}), "", nil, ""},
+		{"github-release on the public base", target("github-release", map[string]string{"repo": "cli/cli"}), "", nil, "https://github.com/cli/cli"},
+		{"github-tag on the public base", target("github-tag", map[string]string{"repo": "cli/cli"}), "", nil, "https://github.com/cli/cli"},
+		{"github-release on GitHub Enterprise", target("github-release", map[string]string{"repo": "cli/cli"}), "https://ghe.example/api/v3", nil, ""},
+		{"github-release with a coordinate that is no repository", target("github-release", map[string]string{"repo": "cli"}), "", nil, ""},
+		{"gitlab-release nested project", target("gitlab-release", map[string]string{"project": "group/sub/proj"}), "", nil, "https://gitlab.com/group/sub/proj"},
+		{"gitlab-release numeric project id", target("gitlab-release", map[string]string{"project": "12345"}), "", nil, ""},
+		{"gitlab-release self-managed", target("gitlab-release", map[string]string{"project": "group/proj"}), "https://gitlab.example.org", nil, ""},
+		{"crates", target("crates", map[string]string{"name": "serde"}), "", map[string]any{"crate_name": "serde", "repository_url": "https://github.com/serde-rs/serde"}, ""},
+		{"plugin kind", target("my-plugin", map[string]string{"name": "thing"}), "", map[string]any{"repository_url": "https://github.com/a/b"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env, err := Build(Input{
+				ID: eventID, Instance: "angelia", Target: c.tgt, RegistryURL: c.registry,
+				Watch:   store.Watch{ID: watchID},
+				Release: policy.Release{Raw: "1.0.0", Normalized: "1.0.0", Scheme: "semver", DetectedAt: detected, Metadata: c.md},
+				Time:    emitted,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := validEvent(t, s, env)["data"].(map[string]any)["urls"].(map[string]any)
+			repo, present := got["repository"]
+			if !present {
+				t.Fatal("urls.repository is missing; the key is always present")
+			}
+			switch {
+			case c.want == "" && repo != nil:
+				t.Errorf("urls.repository = %v, want null", repo)
+			case c.want != "" && repo != c.want:
+				t.Errorf("urls.repository = %v, want %q", repo, c.want)
+			}
+		})
+	}
+}
+
+// A yank event rebuilt from an event stored before the field existed still
+// has the key.
+func TestBuildYankKeepsRepositoryKey(t *testing.T) {
+	s := loadSchemas(t)
+	old := `{"specversion":"1.0","type":"dev.angelia.release.published.v1","source":"angelia://angelia/watches/` + watchID + `","id":"` + eventID +
+		`","subject":"pypi:requests@2.33.0","time":"2026-10-30T17:00:02.512Z","datacontenttype":"application/json","dataschema":"` + DataSchema +
+		`","data":{"source":"pypi","package":"requests","version":"2.33.0","normalized_version":"2.33.0","previous_version":null,"scheme":"pep440","bump":null,` +
+		`"backport":false,"prerelease":false,"yanked":false,"published_at":null,"detected_at":"2026-10-30T17:00:00Z","cooldown_satisfied_at":null,` +
+		`"urls":{"release":null,"changelog":null,"artifact":null},"notes":null,"watch":{"id":"` + watchID + `","name":null,"labels":{}},"purl":null}}`
+	env, err := BuildYank(YankInput{ID: "01JBX2A7C8D9E0F1G2H3J4K5M7", Instance: "angelia", Watch: store.Watch{ID: watchID}, Original: []byte(old), Time: emitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := validEvent(t, s, env)["data"].(map[string]any)["urls"].(map[string]any)
+	if v, ok := urls["repository"]; !ok || v != nil {
+		t.Errorf("urls = %v, want repository: null", urls)
+	}
 }

@@ -14,7 +14,8 @@
   "cooldown_satisfied_at": "2026-10-30T14:02:11Z",
   "urls": {
     "release": "https://pypi.org/project/requests/2.33.0/",
-    "changelog": "https://github.com/psf/requests/blob/main/HISTORY.md"
+    "changelog": "https://github.com/psf/requests/blob/main/HISTORY.md",
+    "repository": "https://github.com/psf/requests"
   },
   "notes": null,
   "watch": {

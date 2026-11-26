@@ -32,7 +32,7 @@ the same names as on the wire, lower case with underscores.
 | `.data.prerelease`, `.data.backport`, `.data.yanked` | booleans |
 | `.data.published_at`, `.data.cooldown_satisfied_at` | RFC 3339 timestamp or **null** |
 | `.data.detected_at` | RFC 3339 timestamp |
-| `.data.urls.release`, `.data.urls.changelog`, `.data.urls.artifact` | URL or **null** |
+| `.data.urls.release`, `.data.urls.changelog`, `.data.urls.artifact`, `.data.urls.repository` | URL or **null**. `.repository` is the source repository (`https://host/owner/name`) as the package's registry metadata or the forge declares it, not verified; **null** when unknown |
 | `.data.notes` | an object with `.format`, `.body`, `.truncated` for `github-release` and `gitlab-release` releases that have a body; **null** for other sources and for releases without one. `.body` is untrusted upstream text (at most 16384 bytes) |
 | `.data.watch.id`, `.data.watch.name` (or null), `.data.watch.labels` (a map, may be empty) | the watch |
 

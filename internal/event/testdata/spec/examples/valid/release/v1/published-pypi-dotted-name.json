@@ -15,7 +15,8 @@
   "urls": {
     "release": "https://pypi.org/project/zope-interface/7.1.1/",
     "changelog": "https://github.com/zopefoundation/zope.interface/blob/master/CHANGES.rst",
-    "artifact": null
+    "artifact": null,
+    "repository": "https://github.com/zopefoundation/zope.interface"
   },
   "notes": null,
   "watch": {

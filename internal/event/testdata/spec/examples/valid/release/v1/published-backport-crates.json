@@ -15,7 +15,8 @@
   "urls": {
     "release": "https://crates.io/crates/example-crate/1.9.4",
     "changelog": null,
-    "artifact": "https://static.crates.io/crates/example-crate/example-crate-1.9.4.crate"
+    "artifact": "https://static.crates.io/crates/example-crate/example-crate-1.9.4.crate",
+    "repository": null
   },
   "notes": null,
   "watch": {

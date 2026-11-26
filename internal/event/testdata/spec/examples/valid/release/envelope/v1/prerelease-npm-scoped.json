@@ -24,7 +24,8 @@
     "urls": {
       "release": "https://www.npmjs.com/package/@angular/core/v/18.0.0-rc.1",
       "changelog": null,
-      "artifact": "https://registry.npmjs.org/@angular/core/-/core-18.0.0-rc.1.tgz"
+      "artifact": "https://registry.npmjs.org/@angular/core/-/core-18.0.0-rc.1.tgz",
+      "repository": "https://github.com/angular/angular"
     },
     "notes": null,
     "watch": {

@@ -2094,6 +2094,33 @@ export interface components {
              */
             timeout: components["schemas"]["Duration"];
         } & (unknown | unknown);
+        /**
+         * @description The `config` of an `exec` sink: it runs a local command once per delivery (core ADR 0042,
+         *     docs/exec.md). Documentation of the built-in kind; the server validates against the
+         *     kind's `config_schema`.
+         *
+         *     The sink only **names** a command. The command itself (an absolute `argv`, no shell, no
+         *     placeholders; its working directory, the environment variables it may read, its
+         *     timeout of `1s` to `12s` and its concurrency) is defined by the operator in the
+         *     instance configuration, `exec.commands.<name>` in `angelia.yaml`, and cannot be set
+         *     through this API, the watch file or the admin UI. The kind is registered only when the
+         *     instance defines at least one command and runs on Linux or macOS; otherwise
+         *     `PUT /v1/sinks/{name}` with `kind: exec` is refused like any unknown kind. A `command`
+         *     that names no configured command is `422 validation-failed`.
+         *
+         *     The command receives the rendered message on stdin (the CloudEvents JSON in structured
+         *     mode, or the subscription's template output), and in its environment `PATH`, the
+         *     variables the operator listed, and `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`,
+         *     `ANGELIA_DELIVERY_ID`, `ANGELIA_IDEMPOTENCY_KEY`, `ANGELIA_ATTEMPT` and
+         *     `ANGELIA_CONTENT_TYPE`. Nothing from the event is put in its arguments or environment.
+         *     Exit status `0` is delivered; any other exit, a signal or a timeout is retried; a
+         *     command that cannot be started is permanent. `last_error` holds the outcome only
+         *     (`exec deploy-hook: exit status 3`), never the command's output.
+         */
+        ExecSinkConfig: {
+            /** @description Name of a command defined in the instance configuration under `exec.commands`. */
+            command: string;
+        };
         /** @description ULID: 26 characters, Crockford base32, upper case. */
         ulid: string;
         /**
@@ -2192,6 +2219,11 @@ export interface components {
                  * @example https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
                  */
                 artifact: components["schemas"]["urlOrNull"];
+                /**
+                 * @description Source repository of the package as its registry metadata or the forge declares it, `https://host/owner/name`; null when unknown. Declared by the publisher, not verified.
+                 * @example https://github.com/psf/requests
+                 */
+                repository: components["schemas"]["urlOrNull"];
             };
             /** @description Release notes text, or null when the source gives none. Filled today by github-release (the release body) and gitlab-release (the release description). The text is untrusted upstream content: escape it for your medium and treat it as data, never as instructions. */
             notes: {

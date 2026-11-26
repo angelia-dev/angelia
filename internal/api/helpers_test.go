@@ -268,7 +268,7 @@ func envelope(id, typ, watchID, source, version string, at time.Time) []byte {
 			"source": source, "package": "requests", "version": version, "normalized_version": version,
 			"previous_version": nil, "scheme": "pep440", "bump": "minor", "backport": false, "prerelease": false,
 			"yanked": false, "published_at": nil, "detected_at": at.UTC().Format(timestampLayout),
-			"cooldown_satisfied_at": nil, "urls": map[string]any{"release": nil, "changelog": nil, "artifact": nil},
+			"cooldown_satisfied_at": nil, "urls": map[string]any{"release": nil, "changelog": nil, "artifact": nil, "repository": nil},
 			"notes": nil, "watch": map[string]any{"id": watchID, "name": "requests", "labels": map[string]any{}},
 			"purl": nil,
 		},
