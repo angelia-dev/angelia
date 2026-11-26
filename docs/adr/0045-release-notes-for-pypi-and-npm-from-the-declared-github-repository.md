@@ -84,6 +84,9 @@ No dependency, migration, config key, outbound host or `Source` interface change
 
 ### Negative
 
+- Named instances of `pypi` and `npm` (`sources.<name>` with `kind:`, for example a private mirror) are enriched
+  too: the Checker hands the step the base kind. A private index that names a GitHub repository gets notes from
+  public GitHub like any package, and the metric does not tell instances apart.
 - A monorepo that publishes more than 30 releases between two checks, or tags a package in a form D82 does not
   list, misses its notes. A repository without GitHub releases (`@types/node`, `DefinitelyTyped`) gives none.
 - The link of the latest release is applied to older versions of the same check; a moved repository gives

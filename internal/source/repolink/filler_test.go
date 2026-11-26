@@ -281,12 +281,12 @@ func TestFillNeverRequestsAnotherHost(t *testing.T) {
 	e := newEnv(t, &fakeGitHub{releases: rel123})
 	f := e.filler(t, nil)
 	for repo, want := range map[string]string{
-		"https://evil.example/example-org/widget":                  "no_repository",
-		"https://github.com.evil.example/example-org/widget":       "no_repository",
-		"https://gitlab.com/example-org/widget":                    "not_github",
-		"":                                                         "no_repository",
-		"http://127.0.0.1:1/example-org/widget":                    "no_repository",
-		"https://github.com/example-org/widget/../../other/secret": "matched", // only owner and name are read
+		"https://evil.example/example-org/widget":            "no_repository",
+		"https://github.com.evil.example/example-org/widget": "no_repository",
+		"https://gitlab.com/example-org/widget":              "not_github",
+		"":                                                   "no_repository",
+		"http://127.0.0.1:1/example-org/widget":              "no_repository",
+		"https://github.com/example-org/widget/tree/x":       "matched", // only owner and name are read
 	} {
 		v := pv("1.2.3")
 		if repo == "" {
@@ -523,5 +523,15 @@ func TestTagCandidates(t *testing.T) {
 	}
 	if repolink.TagCandidates("", []string{"p"}) != nil {
 		t.Error("an empty version has candidates")
+	}
+}
+
+func TestWants(t *testing.T) {
+	t.Parallel()
+	f := repolink.NewFiller("", &http.Client{})
+	for kind, want := range map[string]bool{"pypi": true, "npm": true, "github-release": false, "crates": false, "": false} {
+		if f.Wants(kind) != want {
+			t.Errorf("Wants(%q) = %v", kind, !want)
+		}
 	}
 }

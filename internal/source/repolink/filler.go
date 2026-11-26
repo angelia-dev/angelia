@@ -145,12 +145,16 @@ func NewFiller(baseURL string, hc *http.Client, opts ...Option) *Filler {
 	return f
 }
 
+// Wants reports whether Fill enriches versions of a source kind (pypi and
+// npm; the Checker passes the base kind of a named instance).
+func (f *Filler) Wants(kind string) bool { return slices.Contains(Kinds, kind) }
+
 // Fill returns versions with Notes and NotesURL set from the matching GitHub
 // release, for the versions of t's kind that have none yet. Other kinds, and
 // versions that already carry Notes, are returned unchanged. The versions
 // should be the new ones of a check, newest first. It never fails.
 func (f *Filler) Fill(ctx context.Context, t source.Target, versions []source.Version) []source.Version {
-	if !slices.Contains(Kinds, t.Kind) {
+	if !f.Wants(t.Kind) {
 		return versions
 	}
 	var want []int

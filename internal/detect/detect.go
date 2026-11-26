@@ -35,6 +35,10 @@ type Sources interface {
 // fails, and an unchanged copy is a valid answer. repolink.Filler implements
 // it.
 type NotesFiller interface {
+	// Wants reports whether Fill does anything for a source kind. The
+	// Checker asks first, so a check of another kind costs no read of the
+	// known set.
+	Wants(kind string) bool
 	Fill(ctx context.Context, t source.Target, versions []source.Version) []source.Version
 }
 
@@ -67,7 +71,7 @@ type Checker struct {
 	// it is committed (ADR 0045). The step runs only for a fetch that
 	// returned data (not a 304), only when the target already has a known
 	// set (its first check is the baseline and emits nothing), only for
-	// versions that are new, not yanked and not among the MaxNotesVersions
+	// versions that are new, not yanked and among the MaxNotesVersions
 	// newest, and never inside the commit's transaction. A failure of the
 	// step never fails the check.
 	Notes NotesFiller
@@ -157,7 +161,7 @@ func (c *Checker) Check(ctx context.Context, t store.Target) (scheduler.Outcome,
 // transaction, so no network call happens inside it. fetched is not modified.
 func (c *Checker) fillNotes(ctx context.Context, log *slog.Logger, t store.Target, fetched []source.Version) []source.Version {
 	kv, ok := c.Store.(KnownVersions)
-	if !ok || len(fetched) == 0 {
+	if !ok || len(fetched) == 0 || !c.Notes.Wants(t.Kind) {
 		return fetched
 	}
 	known, err := kv.ListVersions(ctx, t.ID)

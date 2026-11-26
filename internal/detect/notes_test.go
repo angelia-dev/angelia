@@ -21,6 +21,7 @@ import (
 	"github.com/angelia-dev/angelia/internal/source/repolink"
 	"github.com/angelia-dev/angelia/internal/source/sourcetest"
 	"github.com/angelia-dev/angelia/internal/store"
+	"github.com/angelia-dev/angelia/internal/store/sqlite"
 )
 
 // githubHub is a counting fake of api.github.com for example-org/demo.
@@ -225,7 +226,12 @@ func TestNotesStepFiveNewestOfEight(t *testing.T) {
 }
 
 // recordingFiller records what the step hands over.
-type recordingFiller struct{ got [][]source.Version }
+type recordingFiller struct {
+	got     [][]source.Version
+	nowants bool
+}
+
+func (r *recordingFiller) Wants(string) bool { return !r.nowants }
 
 func (r *recordingFiller) Fill(_ context.Context, _ source.Target, vs []source.Version) []source.Version {
 	r.got = append(r.got, vs)
@@ -459,4 +465,42 @@ func TestNotesStepEndToEndWithCooldown(t *testing.T) {
 		t.Errorf("event %s", ev[0].Payload)
 	}
 	validateData(t, schema, ev[0].Payload)
+}
+
+// countingStore counts reads of the known set.
+type countingStore struct {
+	*sqlite.Store
+	reads int
+}
+
+func (c *countingStore) ListVersions(ctx context.Context, id string) ([]store.Version, error) {
+	c.reads++
+	return c.Store.ListVersions(ctx, id)
+}
+
+// A check of a kind the filler does not want reads no known set and hands
+// nothing over; one it wants does read it.
+func TestNotesStepAsksTheKindFirst(t *testing.T) {
+	for _, wants := range []bool{false, true} {
+		f := newFixture(t)
+		cs := &countingStore{Store: f.st}
+		rf := &recordingFiller{nowants: !wants}
+		c := f.checker(t0)
+		c.Store, c.Notes = cs, rf
+		f.src.Set("demo", ver("1.0.0", t0.Add(-48*time.Hour)))
+		out, err := c.Check(t.Context(), f.tg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.tg.FetchState = out.FetchState
+		f.src.Set("demo", ver("1.1.0", t1.Add(-time.Minute)), ver("1.0.0", t0.Add(-48*time.Hour)))
+		c = f.checker(t1)
+		c.Store, c.Notes = cs, rf
+		if _, err := c.Check(t.Context(), f.tg); err != nil {
+			t.Fatal(err)
+		}
+		if wants != (cs.reads > 0) || wants != (len(rf.got) == 1) {
+			t.Errorf("wants %v: %d known-set reads, %d Fill calls", wants, cs.reads, len(rf.got))
+		}
+	}
 }
