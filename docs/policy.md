@@ -56,6 +56,8 @@ check anyway, that watch is skipped for the check with an `ERROR` log and emits 
 - A version the scheme cannot parse (a lexical fallback such as `latest`) never matches a non-empty
   constraint.
 - At most 256 bytes and 16 comparators, on one line.
+- The syntax is Angelia's for every scheme: a `maven` watch writes `>=1.0 <2.0`, not Maven's range
+  `[1.0,2.0)`.
 - No caret, tilde or wildcard ranges (`^1.2`, `~1.2`, `1.x`) in Phase 0. The error names the
   unsupported operator (`unsupported operator "~"`) or the missing separator (`>=1<2`: `missing
   separator before "<2"`).

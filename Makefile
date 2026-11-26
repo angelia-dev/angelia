@@ -26,6 +26,8 @@ FUZZ_TARGETS := \
 	./internal/version/semver:FuzzParseLoose \
 	./internal/version/pep440:FuzzParse \
 	./internal/version/pep440:FuzzCompare \
+	./internal/version/maven:FuzzParse \
+	./internal/version/maven:FuzzCompare \
 	./internal/version/calver:FuzzParse \
 	./internal/version/calver:FuzzCompare \
 	./internal/version/schemes:FuzzFallbackParse \
