@@ -1139,14 +1139,13 @@ export interface components {
         EventRecord: {
             seq: components["schemas"]["Seq"];
             /**
-             * @description The CloudEvents envelope, a `oneOf` keyed on its `type`: each branch is the envelope
-             *     schema of a family of event types and applies its rules to the types it names. Today the
-             *     one branch is [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
-             *     whose `type` accepts any `dev.angelia.<short type>.v<major>` name and which applies the
-             *     release rules to the three release types. Further branches, for new event types, are
-             *     additive and come in minor releases. New event types can appear in a minor release.
-             *     Consumers must ignore events whose type they do not know. (No `discriminator` keyword:
-             *     generators turn its mapping into a closed list of types.)
+             * @description The CloudEvents envelope exactly as it was emitted, described by
+             *     [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
+             *     the single v1 envelope of every event type: its `type` accepts any
+             *     `dev.angelia.<short type>.v<major>` name, and each type the spec defines adds its rules
+             *     to it (an `if`/`then` entry keyed on `type`). A new event type adds such an entry to
+             *     that schema in a minor release, which is additive. New event types can appear in a minor
+             *     release. Consumers must ignore events whose type they do not know.
              */
             event: components["schemas"]["v1-2"];
             /** @description For a `release.yanked` event, the id of the event it yanks (the earlier `release.published` or `release.prerelease` of the same watch); `null` for other types. */
@@ -2297,7 +2296,7 @@ export interface components {
         };
         /**
          * Angelia event envelope, v1 (draft, pre-1.0)
-         * @description Angelia's profile of a CloudEvents 1.0 event in JSON structured mode. The set of event types is open: type is any dev.angelia.<short type>.v<major> name, and new types can appear in a minor release of the spec. Consumers must ignore events whose type they do not know. The release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1 share one data schema (schemas/release/v1.json); for them, subject and dataschema follow the release rules (one then branch per type), and data, like that of any event whose dataschema names schemas/release/v1.json, must validate against it. For another type, subject is a non-empty string, dataschema the URI of that type's data schema, and data is not checked by this schema. DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.
+         * @description Angelia's profile of a CloudEvents 1.0 event in JSON structured mode. The set of event types is open: type is any dev.angelia.<short type>.v<major> name, and new types can appear in a minor release of the spec. Consumers must ignore events whose type they do not know. The release event types dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1 share one data schema (schemas/release/v1.json); for them, subject and dataschema follow the release rules (one allOf if/then entry per type), and data, like that of any event whose dataschema names schemas/release/v1.json, must validate against it (one allOf if/then entry keyed on dataschema). This is the single v1 envelope of every event type: a new type adds its own if/then entries to allOf (its subject and dataschema rules, and the data rule of its data schema), which narrows only events of a type nobody emitted before, so it is an additive change. For a type with no entry, subject is a non-empty string, dataschema the URI of that type's data schema, and data is not checked by this schema. DRAFT: while the spec repository is at version 0.x this profile may still change in a breaking way in any 0.x minor release; it is frozen at spec 1.0.0. v1 defines no extension attributes and producers emit none, but other producers or intermediaries (brokers, tracing) may add CloudEvents extension attributes: any attribute whose name is 1 to 20 lower-case letters or digits is allowed, and consumers must ignore attributes they do not know. Other unknown names are rejected.
          */
         "v1-2": ({
             /**
@@ -2306,7 +2305,7 @@ export interface components {
              */
             specversion: "1.0";
             /**
-             * @description Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v<major> suffix; it is what subscription filters use. An open set: today's types are dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1; adding a type is a minor (additive) change. Consumers must ignore events whose type they do not know.
+             * @description Event type: reverse-DNS prefix dev.angelia., the short type, then .v<major>. The short type (for example release.published) is the type without the dev.angelia. prefix and the .v<major> suffix; it is what subscription filters use. Each dot-separated segment is non-empty. An open set: today's types are dev.angelia.release.published.v1, dev.angelia.release.yanked.v1 and dev.angelia.release.prerelease.v1; adding a type is a minor (additive) change. Consumers must ignore events whose type they do not know.
              * @example dev.angelia.release.published.v1
              */
             type: string;

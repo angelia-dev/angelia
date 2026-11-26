@@ -1,5 +1,5 @@
 Vendored from https://github.com/angelia-dev/spec
-Commit: fede24970964f20af999f2b1da9c64758c731040 (branch story/102-open-event-types, spec 0.16.0)
+Commit: ba1281e16713642a906ec500d009e10a113b0113 (branch story/102-open-event-types, spec 0.16.0)
 
 Files, unchanged:
   schemas/release/v1.json

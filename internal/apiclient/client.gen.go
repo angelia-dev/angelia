@@ -708,14 +708,13 @@ type EventPage struct {
 
 // EventRecord One event of the log with its cursor position. `event` is the CloudEvents envelope exactly as it was emitted and delivered.
 type EventRecord struct {
-	// Event The CloudEvents envelope, a `oneOf` keyed on its `type`: each branch is the envelope
-	// schema of a family of event types and applies its rules to the types it names. Today the
-	// one branch is [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
-	// whose `type` accepts any `dev.angelia.<short type>.v<major>` name and which applies the
-	// release rules to the three release types. Further branches, for new event types, are
-	// additive and come in minor releases. New event types can appear in a minor release.
-	// Consumers must ignore events whose type they do not know. (No `discriminator` keyword:
-	// generators turn its mapping into a closed list of types.)
+	// Event The CloudEvents envelope exactly as it was emitted, described by
+	// [schemas/release/envelope/v1.json](https://github.com/angelia-dev/spec/blob/main/schemas/release/envelope/v1.json),
+	// the single v1 envelope of every event type: its `type` accepts any
+	// `dev.angelia.<short type>.v<major>` name, and each type the spec defines adds its rules
+	// to it (an `if`/`then` entry keyed on `type`). A new event type adds such an entry to
+	// that schema in a minor release, which is additive. New event types can appear in a minor
+	// release. Consumers must ignore events whose type they do not know.
 	Event json.RawMessage `json:"event"`
 
 	// RefEventId For a `release.yanked` event, the id of the event it yanks (the earlier `release.published` or `release.prerelease` of the same watch); `null` for other types.

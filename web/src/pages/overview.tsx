@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { fetchCapped, fetchDeliveries, fetchEventsNewest, fetchWatches } from '@/api/queries'
-import { isReleaseRecord, type Delivery, type ReleaseEventRecord, type Watch } from '@/api/types'
+import { isReleaseRecord, RELEASE_SHORT_TYPES, type Delivery, type ReleaseEventRecord, type Watch } from '@/api/types'
 import { DeliveryStatusBadge, ErrorCount, RelativeTime } from '@/components/badges'
 import { EmptyState, ErrorState, Head, PageHeader, Skeleton } from '@/components/states'
 import { Stamp } from '@/components/ui/badge'
@@ -91,8 +91,10 @@ async function loadEvents(): Promise<{
   let recent: ReleaseEventRecord[] | undefined
   const latest: Record<string, ReleaseEventRecord> = {}
   for (let i = 0; i < EVENT_COUNT_PAGES; i++) {
-    const page = await fetchEventsNewest({}, before, EVENT_COUNT_PAGE)
-    // Events of a type this UI does not know are skipped (spec: consumers ignore unknown types).
+    // Only the release types are asked for, so a page full of events of a type this UI does not
+    // know still yields releases; the client-side filter is a second guard (spec: consumers
+    // ignore unknown types).
+    const page = await fetchEventsNewest({ types: RELEASE_SHORT_TYPES }, before, EVENT_COUNT_PAGE)
     const releases = page.items.filter(isReleaseRecord)
     if (recent === undefined) {
       recent = releases.slice(0, 10)

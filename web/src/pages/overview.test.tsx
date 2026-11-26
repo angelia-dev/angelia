@@ -54,6 +54,23 @@ describe('overview', () => {
     expect(latest).not.toHaveTextContent('example:requests')
   })
 
+  it('asks for the release types, so a log full of unknown types still shows releases', async () => {
+    const api = mockApi({
+      '/v1/me': me(),
+      '/v1/watches': page([watch('a')]),
+      '/v1/events': ({ url }) =>
+        url.searchParams.getAll('type').length > 0
+          ? eventPageDesc([eventRecord(2), eventRecord(1)])
+          : eventPageDesc([unknownEventRecord(5), unknownEventRecord(4), unknownEventRecord(3)], true),
+      '/v1/deliveries': page([]),
+    })
+    renderApp()
+    const latest = await screen.findByRole('table', { name: 'Latest events' })
+    await vi.waitFor(() => expect(within(latest).getAllByRole('row').slice(1)).toHaveLength(2))
+    const q = api.calls.find((c) => c.url.pathname === '/v1/events')?.url.searchParams
+    expect(q?.getAll('type')).toEqual(['release.published', 'release.yanked', 'release.prerelease'])
+  })
+
   it('labels a capped count with a plus sign and stops paging', async () => {
     const api = mockApi({
       '/v1/me': me(),

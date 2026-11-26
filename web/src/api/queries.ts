@@ -76,6 +76,8 @@ export const fetchVersions = (name: string) => (cursor: string | undefined) =>
 export interface EventFilters {
   watch?: string
   type?: ShortEventType
+  /** Several types at once (the `type` query parameter repeated); wins over `type`. */
+  types?: ShortEventType[]
   source?: string
 }
 
@@ -95,7 +97,7 @@ export const fetchEventsNewest = (filters: EventFilters, before?: number, limit 
           before,
           limit,
           watch: filters.watch ? [filters.watch] : undefined,
-          type: filters.type ? [filters.type] : undefined,
+          type: filters.types ?? (filters.type ? [filters.type] : undefined),
           source: filters.source ? [filters.source] : undefined,
         },
       },

@@ -372,8 +372,8 @@ func TestValidatorAgainstSpecExamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n < 46 {
-		t.Fatalf("checked %d examples, want the 46 vendored ones", n)
+	if n < 47 {
+		t.Fatalf("checked %d examples, want the 47 vendored ones", n)
 	}
 }
 
@@ -396,6 +396,7 @@ func TestEnvelopeOpenTypeSet(t *testing.T) {
 	for name, mod := range map[string]func(e map[string]any){
 		"type outside dev.angelia.":     func(e map[string]any) { e["type"] = "com.example.thing.v1" },
 		"type without major":            func(e map[string]any) { e["type"] = "dev.angelia.example.future" },
+		"type with an empty segment":    func(e map[string]any) { e["type"] = "dev.angelia.example..future.v1" },
 		"release type, unknown data":    func(e map[string]any) { e["type"] = TypePublished },
 		"empty subject":                 func(e map[string]any) { e["subject"] = "" },
 		"release dataschema, bad data":  func(e map[string]any) { e["dataschema"] = dataSchemaID },

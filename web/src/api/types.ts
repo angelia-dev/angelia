@@ -19,6 +19,8 @@ export type ShortEventType = S['ShortEventType']
 
 /** The release event types; the envelope's `type` is an open set (spec docs/release-event-v1.md). */
 export const RELEASE_EVENT_TYPES = ['dev.angelia.release.published.v1', 'dev.angelia.release.yanked.v1', 'dev.angelia.release.prerelease.v1'] as const
+/** The short types of the release events, the ones a request may name (spec ShortEventType). */
+export const RELEASE_SHORT_TYPES: ShortEventType[] = ['release.published', 'release.yanked', 'release.prerelease']
 export type ReleaseData = S['v1']
 /** An event of one of the release types, whose `data` follows the release data schema. */
 export type ReleaseEventRecord = EventRecord & {
