@@ -1,7 +1,9 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `8e98902`
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `87249d1`
+("feat(openapi): gitlab-pipeline-trigger sink config (0.11.0) (#24)", spec 0.11.0) on the spec repository's `main`. Spec 0.11.0 adds `GitlabPipelineTriggerSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 56); the MCP tool contract and the event schemas are unchanged by 0.11.0.
+Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `8e98902`
 ("docs(schemas): list maven among the known version schemes (#25)", spec 0.10.2) on the spec repository's
 `main`. Spec 0.10.2 changes descriptions only: `maven` becomes a known value of `data.scheme` and of the
 watch `scheme` (OpenAPI and MCP). Spec 0.10.1 (commit `a8250b0`, #22) changed descriptions only too: which

@@ -180,7 +180,9 @@ loopback, private, link-local, CGNAT (`100.64.0.0/10`), multicast, broadcast, `0
   `http.allow_http_hosts` (`config check` rejects a credentialed source whose `base_url` is such an `http://`
   URL outside the list). See [Private registries and mirrors](private-registries.md#proxy).
 
-See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink
+See [webhooks.md](webhooks.md) for the webhook sink, [github-dispatch.md](github-dispatch.md) for the GitHub dispatch sink,
+[gitlab-pipeline-trigger.md](gitlab-pipeline-trigger.md) for the GitLab pipeline trigger sink (a plain-`http://`
+`base_url` is delivered only to a host of `allow_http_hosts`, checked at every delivery)
 and [shoutrrr.md](shoutrrr.md) for the chat and push sink. A `shoutrrr` sink derives its HTTP origins from its URL
 secret; each is checked against `allow_http_hosts` and `allow_networks` at every delivery.
 
@@ -570,7 +572,7 @@ The folder name is the plugin's kind:
   `plugins_dir` that exists but cannot be read fails `config check` when you configured it, and is only a
   warning for the default (it may belong to the service user).
 - A plugin's kind should not be a built-in kind (sources `crates`, `github-release`, `github-tag`,
-  `gitlab-release`, `go-proxy`, `maven`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`): `config check` warns
+  `gitlab-release`, `go-proxy`, `maven`, `npm`, `pypi`; sinks `webhook`, `github-dispatch`, `gitlab-pipeline-trigger`, `shoutrrr`): `config check` warns
   `plugin kind crates is a built-in kind; the built-in is used`. Name a plugin for a registry the built-ins do not cover, such as
   `cargo-registry`.
 - Each folder must hold a `manifest.json` whose `kind` is the folder name. Entries whose name starts with `.`

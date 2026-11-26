@@ -156,7 +156,7 @@ watches:
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch` or `shoutrrr` |
+| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `gitlab-pipeline-trigger` or `shoutrrr` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -196,6 +196,24 @@ and `config check` warns. Signing, rotation, responses and the receiver's side: 
 `event_type` and the values of `inputs` are [templates](templates.md), checked when the file loads like a
 subscription template. A missing token reference is an error, and an unset `token_env` variable is a warning, as
 for the webhook. The defaults are written into the stored configuration.
+
+`gitlab-pipeline-trigger` config ([gitlab-pipeline-trigger.md](gitlab-pipeline-trigger.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `project` | string | yes | none | a full path (`group/subgroup/name`, 2 to 20 segments) or a numeric project id; sent URL-encoded as one path segment |
+| `ref` | string | yes | none | the branch or tag the pipeline runs on; 1 to 255 characters, no control characters; a literal, not a template |
+| `base_url` | string | no | `https://gitlab.com` | the instance root, or with a relative root (`https://example.com/gitlab`); a trailing `/api/v4` is ignored; no userinfo, query or fragment. `https://`; `http://` only for a host in `http.allow_http_hosts` (checked at every delivery, and `config check` warns). The token is sent only here (`x-angelia-destination`) |
+| `token_env` | string | exactly one of the two | none | name of an environment variable holding the pipeline trigger token; a name starting with `ANGELIA_` is refused |
+| `token_ref` | string | exactly one of the two | none | name of a [stored secret](configuration.md#stored-secrets) holding the token (`^[a-z0-9][a-z0-9._-]{0,62}$`) |
+| `variables` | map of string (template) | no | none | at most 50; a name matches `^[A-Za-z0-9_]{1,255}$` and must not end in `_env` or `_ref`; a value is a template of at most 4096 bytes |
+| `inputs` | map of string (template) | no | none | at most 50; a name matches `^[A-Za-z0-9_-]{1,255}$` and must not end in `_env` or `_ref`; a value is a template of at most 4096 bytes |
+| `timeout` | duration | no | `10s` | `1s` to `2m`; above the dispatcher's 15 s deliver timeout has no effect and `config check` warns |
+
+With neither `variables` nor `inputs` the pipeline gets the `ANGELIA_*` variables listed in the sink's page; with
+either, only those entries. The values are [templates](templates.md), checked when the file loads like a
+subscription template, and cut to 2048 bytes. A subscription's own `template` has no effect on this sink and
+`config check` warns. The defaults are written into the stored configuration.
 
 `shoutrrr` config ([shoutrrr.md](shoutrrr.md); `additionalProperties: false`):
 
