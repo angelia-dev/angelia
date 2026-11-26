@@ -8,7 +8,8 @@ last section), implemented in `internal/watchfile`.** It becomes a public contra
 
 Until the REST API exists, `angelia serve --watches watches.yaml` loads **watches, sinks and
 subscriptions** from one YAML file and reconciles them into the store. A complete example is in
-[examples/watches.yaml](../examples/watches.yaml).
+[examples/watches.yaml](../examples/watches.yaml). `angelia import` writes a watch file for the dependencies of a
+manifest ([cli.md](cli.md#import)).
 
 ## 1. Relation to the instance configuration
 

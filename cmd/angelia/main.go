@@ -38,7 +38,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("config", "", "path to the instance config file (default $ANGELIA_CONFIG)")
 	root.AddCommand(newVersionCmd(), newConfigCmd(), newServeCmd(), newHealthcheckCmd())
 	root.AddCommand(newWatchCmd(), newSinkCmd(), newSubCmd(), newEventCmd(), newDeliveryCmd())
-	root.AddCommand(newApplyCmd())
+	root.AddCommand(newApplyCmd(), newImportCmd())
 	root.AddCommand(newReplayCmd())
 	root.AddCommand(newSecretCmd(), newSecretsCmd())
 	root.AddCommand(newWebhookCmd())

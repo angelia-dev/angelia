@@ -1,0 +1,6 @@
+Requests==2.0
+requests
+REQUESTS>=1
+Typing_Extensions
+typing-extensions
+typing.extensions
