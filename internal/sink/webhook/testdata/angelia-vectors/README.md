@@ -1,10 +1,10 @@
 # Angelia webhook vectors
 
 `vectors.json` is copied unchanged from the [spec repository](https://github.com/angelia-dev/spec)
-at commit `d9019f6` ("feat(webhooks): publish Standard Webhooks test vectors for Angelia deliveries (#11)"),
+at commit `4e93bc6` ("fix(webhooks): vector bodies carry urls.repository, signatures recomputed", branch `story/84-urls-repository`; first published at `d9019f6`, #11),
 path `webhooks/v1/vectors.json`.
 
-- **sha256:** `1f13737bcf41e121cb8536f4e26749aa0f2d41a689c33e8d0c7be2502ab6e712`
+- **sha256:** `d72fb8781f9a0f391d999033da11394d150cbdbbe03175949015c27345895487`
 
 The spec repository is the source of truth: never edit this file here. To update, copy the file
 from a newer spec commit, record the commit and sha256 above, and run `go test ./internal/sink/webhook/`.
