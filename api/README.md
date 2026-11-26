@@ -1,7 +1,9 @@
 # Vendored API contract
 
 These files are copied unchanged from the [spec repository](https://github.com/angelia-dev/spec).
-`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `5534e1d`
+`openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `f20d2c9`
+("feat(openapi): exec sink config naming an operator-defined command (0.14.0) (#28)", spec 0.14.0) on the spec repository's `main`. Spec 0.14.0 adds `ExecSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 59); the MCP tool contract and the event schemas are unchanged by 0.14.0.
+Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `5534e1d`
 ("feat(openapi): mqtt sink config (0.13.0) (#27)", spec 0.13.0) on the spec repository's `main`. Spec 0.13.0 adds `MqttSinkConfig` under `SinkConfig.x-angelia-kind-config` (spec docs/api.md item 58); the MCP tool contract and the event schemas are unchanged by 0.13.0.
 Before that, `openapi/angelia.v1.yaml`, `schemas/release/v1.json` and `mcp/tools.v1.json` are at commit `e013106`
 ("docs(openapi): http-json and http-regex watches (0.12.0) (#26)", spec 0.12.0) on the spec repository's `main`. Spec 0.12.0 documents the `http-json` and `http-regex` watch coordinates and the `admin` scope needed to create or retarget such a watch (spec docs/api.md item 57), in the OpenAPI document and the MCP `add_watch` tool; no schema rule changes.

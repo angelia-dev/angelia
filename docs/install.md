@@ -162,6 +162,11 @@ journalctl -u angelia -f
 The logs are JSON lines by default; set `log.format: text` for reading by eye. `angelia serve` stops cleanly on
 SIGTERM.
 
+Commands of [exec sinks](exec.md) run inside this sandbox too, as the `angelia` user: the file system is
+read-only except `/var/lib/angelia` (add `ReadWritePaths=` for a directory a hook writes to), and the address
+families and capabilities above apply to them. In the container image (section 3) an exec sink needs a derived
+image; a webhook to a sidecar is usually simpler.
+
 ## 3. Or run the container
 
 The image is `ghcr.io/angelia-dev/angelia:<version>` (linux/amd64 and arm64, distroless, no shell, uid 65532). The

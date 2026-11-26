@@ -52,6 +52,9 @@ func newConfigCheckCmd() *cobra.Command {
 			if _, err := cfg.HTTP.LoadCAPool(); err != nil {
 				return fmt.Errorf("invalid configuration: %w", err)
 			}
+			if err := checkExecCommands(cfg); err != nil {
+				return fmt.Errorf("invalid configuration: %w", err)
+			}
 			if err := checkUISecretFiles(cfg, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
@@ -143,7 +146,7 @@ func pluginKindWarnings(cfg *config.Config, plugins []config.InstalledPlugin) ([
 	if err != nil {
 		return nil, err
 	}
-	builtin := slices.Concat(reg.Kinds(), watchfile.SinkKinds)
+	builtin := slices.Concat(reg.Kinds(), watchfile.SinkKinds, execSinkKinds(cfg))
 	var warns []string
 	for _, p := range plugins {
 		if slices.Contains(builtin, p.Kind) {

@@ -160,7 +160,7 @@ watches:
 | Key | Type | Required | Default | Validation |
 |---|---|---|---|---|
 | `name` | string | yes | none | section 2.1 |
-| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `gitlab-pipeline-trigger`, `shoutrrr` or `mqtt` |
+| `kind` | string | yes | none | a registered sink kind: `webhook`, `github-dispatch`, `gitlab-pipeline-trigger`, `shoutrrr`, `mqtt`, or `exec` when the instance configuration defines commands under `exec.commands` |
 | `config` | map | yes (may be `{}` if the kind allows) | none | validated by that sink's `Validate`; unknown keys are errors |
 
 `webhook` config:
@@ -248,6 +248,15 @@ is a warning, as for the webhook.
 
 A password over `mqtt://` is a warning: it travels in cleartext. `config check` also warns when the broker is a
 private address literal outside `http.allow_networks`. The defaults are written into the stored configuration.
+
+`exec` config ([exec.md](exec.md); `additionalProperties: false`):
+
+| Key | Type | Required | Default | Validation |
+|---|---|---|---|---|
+| `command` | string | yes | none | the name of a command defined under `exec.commands` in the instance configuration; an unknown name is an error with its line |
+
+The command line, its directory, environment, timeout and concurrency are only in `angelia.yaml`: a watch file
+cannot set them. Without `exec.commands` in `angelia.yaml`, `kind: exec` is an error that points there.
 
 ### 2.5 `subscriptions[]`
 

@@ -448,12 +448,16 @@ func TestNetClientAllowPrivateHosts(t *testing.T) {
 // Every sink kind the watch file accepts is registered for delivery, so a
 // new built-in kind plugs in through builtinSinks.
 func TestBuiltinSinksMatchWatchFileKinds(t *testing.T) {
-	var kinds []string
 	nc, err := netguard.New(netguard.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range builtinSinks(&config.Config{}, nc, nil, nil) {
+	sinks, err := builtinSinks(&config.Config{}, nc, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, s := range sinks {
 		kinds = append(kinds, s.Kind())
 	}
 	slices.Sort(kinds)

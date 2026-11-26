@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Angelia API
-  version: 0.13.0
+  version: 0.14.0
   summary: REST API of Angelia, the self-hosted release event bus.
   description: |
     REST API of an Angelia instance: manage watches, sinks and subscriptions, read the
@@ -3178,6 +3178,8 @@ components:
           $ref: '#/components/schemas/MqttSinkConfig'
         shoutrrr:
           $ref: '#/components/schemas/ShoutrrrSinkConfig'
+        exec:
+          $ref: '#/components/schemas/ExecSinkConfig'
     SinkPage:
       type: object
       required: [items, next_cursor]
@@ -4188,6 +4190,37 @@ components:
         - required: [url_env]
           not:
             required: [url_ref]
+    ExecSinkConfig:
+      description: |
+        The `config` of an `exec` sink: it runs a local command once per delivery (core ADR 0042,
+        docs/exec.md). Documentation of the built-in kind; the server validates against the
+        kind's `config_schema`.
+
+        The sink only **names** a command. The command itself (an absolute `argv`, no shell, no
+        placeholders; its working directory, the environment variables it may read, its
+        timeout of `1s` to `12s` and its concurrency) is defined by the operator in the
+        instance configuration, `exec.commands.<name>` in `angelia.yaml`, and cannot be set
+        through this API, the watch file or the admin UI. The kind is registered only when the
+        instance defines at least one command and runs on Linux or macOS; otherwise
+        `PUT /v1/sinks/{name}` with `kind: exec` is refused like any unknown kind. A `command`
+        that names no configured command is `422 validation-failed`.
+
+        The command receives the rendered message on stdin (the CloudEvents JSON in structured
+        mode, or the subscription's template output), and in its environment `PATH`, the
+        variables the operator listed, and `ANGELIA_EVENT_ID`, `ANGELIA_EVENT_TYPE`,
+        `ANGELIA_DELIVERY_ID`, `ANGELIA_IDEMPOTENCY_KEY`, `ANGELIA_ATTEMPT` and
+        `ANGELIA_CONTENT_TYPE`. Nothing from the event is put in its arguments or environment.
+        Exit status `0` is delivered; any other exit, a signal or a timeout is retried; a
+        command that cannot be started is permanent. `last_error` holds the outcome only
+        (`exec deploy-hook: exit status 3`), never the command's output.
+      type: object
+      required: [command]
+      additionalProperties: false
+      properties:
+        command:
+          description: Name of a command defined in the instance configuration under `exec.commands`.
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
 
   examples:
     WatchPut:

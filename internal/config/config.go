@@ -88,6 +88,8 @@ type Config struct {
 	API      API               `yaml:"api"`
 	// UI is the admin web UI (ADR 0033); see ui.go.
 	UI UI `yaml:"ui"`
+	// Exec defines the commands exec sinks may run (ADR 0042); see exec.go.
+	Exec Exec `yaml:"exec"`
 	// PluginsDir holds one folder per installed plugin,
 	// <plugins_dir>/<kind>/ with manifest.json, plugin.wasm and grants.yaml
 	// (ADR 0025); read it with LoadPlugins. Load sets it to
@@ -703,6 +705,7 @@ func (c *Config) Validate() error {
 		bad("http.ca_file: must be a single-line path")
 	}
 	errs = append(errs, c.HTTP.HostLimits.validate()...)
+	errs = append(errs, c.Exec.validate()...)
 
 	kinds := make([]string, 0, len(c.Sources))
 	for k := range c.Sources {
@@ -914,6 +917,7 @@ func (c *Config) resolveTokens(env map[string]string) {
 		}
 		c.Tokens[k] = newSecret(env[name])
 	}
+	c.warnings = append(c.warnings, c.Exec.execWarnings(env)...)
 }
 
 // Warnings lists non-fatal findings, such as a token_env naming an unset variable.

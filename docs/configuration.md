@@ -37,6 +37,7 @@ Check a configuration with `angelia config check [--config FILE]`.
 | `sources.<kind>.auth.username` | none | empty | the basic-auth user name (not secret) |
 | `sources.<kind>.auth.password_ref` | none | empty | name of a stored secret (basic) |
 | `plugins_dir` | `ANGELIA_PLUGINS_DIR` | `<data dir>/plugins` | absolute path; see [Installed plugins](#installed-plugins) |
+| `exec.commands.<name>` | none | empty | a command an [exec sink](exec.md) may run: `argv` (required; `argv[0]` an absolute path, no shell), `dir`, `env` (names, never `ANGELIA_`), `timeout` (`1s` to `12s`, default `10s`), `max_concurrent` (1 to 8, default 1). Linux and macOS only; without a command the `exec` sink kind does not exist |
 | `api.allowed_env` | none | empty | list of environment variable names; never a name starting with `ANGELIA_` |
 | `api.bootstrap_token_file` | `ANGELIA_API_BOOTSTRAP_TOKEN_FILE` | empty | path of a file holding one API token, stored as the first admin token; see [API tokens](#api-tokens) |
 | `ui.public_url` | none | empty | `https://host[:port]`, no path; `http://` only for a loopback host |
